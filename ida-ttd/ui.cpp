@@ -34,14 +34,20 @@ namespace idattd
         cols->at(1) = e.name.c_str();
     }
 
-    ea_t idaapi PositionChooser::get_ea(size_t n) const
+    // Double-click / Enter: queue navigation to the selected position. We must
+    // NOT resume the debugger synchronously from inside a chooser callback, and
+    // we must never do it from get_ea() (IDA calls get_ea while rendering rows,
+    // which would resume the debugger once per visible row). Hence: defer with
+    // request_continue_process() + run_requests().
+    chooser_t::cbret_t idaapi PositionChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && n < m_positions.size() )
+        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_positions.size() )
         {
             m_mgr->set_next_position(m_positions[n].pos);
-            continue_process();
+            request_continue_process();
+            run_requests();
         }
-        return BADADDR;
+        return cbret_t(n, NOTHING_CHANGED);
     }
 
     //=======================================================================

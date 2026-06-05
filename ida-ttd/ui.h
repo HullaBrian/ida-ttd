@@ -13,9 +13,9 @@ namespace idattd
     public:
         explicit PositionChooser(TraceManager *mgr);
 
-        size_t idaapi get_count() const override;
-        void   idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        ea_t   idaapi get_ea(size_t n) const override;
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
 
     private:
         TraceManager                            *m_mgr;

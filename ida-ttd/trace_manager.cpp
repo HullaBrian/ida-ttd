@@ -550,7 +550,8 @@ namespace idattd
             return;
         }
         m_backwardSingleStep = true;
-        continue_process();
+        request_continue_process();
+        run_requests();
     }
 
     //-----------------------------------------------------------------------
@@ -579,7 +580,8 @@ namespace idattd
 
         Position p{ (SequenceId)seq, (StepCount)steps };
         set_next_position(p);
-        continue_process();
+        request_continue_process();
+        run_requests();
     }
 
     //-----------------------------------------------------------------------
