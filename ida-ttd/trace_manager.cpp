@@ -1,0 +1,645 @@
+#include "trace_manager.h"
+#include "registers.h"
+#include "plugin.h"
+
+using namespace TTD;
+using namespace TTD::Replay;
+
+namespace idattd
+{
+    //=======================================================================
+    // String helpers
+    //=======================================================================
+    static std::string to_utf8(const wchar_t *w, size_t len)
+    {
+        if ( w == nullptr || len == 0 )
+            return std::string();
+        int n = WideCharToMultiByte(CP_UTF8, 0, w, (int)len, nullptr, 0, nullptr, nullptr);
+        if ( n <= 0 )
+            return std::string();
+        std::string s((size_t)n, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w, (int)len, s.data(), n, nullptr, nullptr);
+        return s;
+    }
+
+    static std::string to_utf8(const wchar_t *w)
+    {
+        return to_utf8(w, w != nullptr ? wcslen(w) : 0);
+    }
+
+    static std::wstring to_wstring(const char *s)
+    {
+        if ( s == nullptr || *s == '\0' )
+            return std::wstring();
+        int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+        if ( n <= 0 )
+            return std::wstring();
+        std::wstring w((size_t)n, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), n);
+        if ( !w.empty() && w.back() == L'\0' )
+            w.pop_back();
+        return w;
+    }
+
+    static std::string base_name(const std::string &path)
+    {
+        size_t p = path.find_last_of("\\/");
+        return p == std::string::npos ? path : path.substr(p + 1);
+    }
+
+    //=======================================================================
+    // IdaErrorReporting
+    //=======================================================================
+    void __fastcall IdaErrorReporting::VPrintError(char const *pFmt, va_list argList)
+    {
+        char buf[2048];
+        qvsnprintf(buf, sizeof(buf), pFmt, argList);
+        msg("[ida-ttd] TTD: %s\n", buf);
+    }
+
+    //=======================================================================
+    // Index build progress
+    //=======================================================================
+    static void __stdcall index_progress(void const * /*ctx*/, IndexBuildProgressType const *d) noexcept
+    {
+        if ( d != nullptr && d->KeyframeCount > 0 )
+        {
+            int pct = (int)((uint64_t)d->KeyframesProcessed * 100 / d->KeyframeCount);
+            replace_wait_box("Building TTD index... %d%%", pct);
+        }
+    }
+
+    //=======================================================================
+    // TraceManager
+    //=======================================================================
+    TraceManager::TraceManager()
+    {
+        m_nextPosition = Position::Min;
+    }
+
+    //-----------------------------------------------------------------------
+    thid_t TraceManager::current_tid() const
+    {
+        const ThreadInfo &ti = m_cursor->GetThreadInfo();
+        return (thid_t)(uint32_t)ti.Id;
+    }
+
+    //-----------------------------------------------------------------------
+    ea_t TraceManager::program_counter() const
+    {
+        return (ea_t)(uint64_t)m_cursor->GetProgramCounter();
+    }
+
+    //-----------------------------------------------------------------------
+    std::map<uint32_t, thid_t> TraceManager::snapshot_threads() const
+    {
+        std::map<uint32_t, thid_t> result;
+        size_t n = m_cursor->GetThreadCount();
+        const ActiveThreadInfo *list = m_cursor->GetThreadList();
+        for ( size_t i = 0; i < n; i++ )
+            result[(uint32_t)list[i]->UniqueId] = (thid_t)(uint32_t)list[i]->Id;
+        return result;
+    }
+
+    //-----------------------------------------------------------------------
+    std::set<const Module *> TraceManager::snapshot_modules() const
+    {
+        std::set<const Module *> result;
+        size_t n = m_cursor->GetModuleCount();
+        const ModuleInstance *list = m_cursor->GetModuleList();
+        for ( size_t i = 0; i < n; i++ )
+            result.insert(list[i].pModule);
+        return result;
+    }
+
+    //-----------------------------------------------------------------------
+    bool TraceManager::is_target_module(const Module &m) const
+    {
+        if ( m_targetName.empty() )
+            return false;
+        std::string bn = base_name(to_utf8(m.pName, m.NameLength));
+        return _stricmp(bn.c_str(), m_targetName.c_str()) == 0;
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::emit_module_load(const Module &m)
+    {
+        std::string name = to_utf8(m.pName, m.NameLength);
+        ea_t base   = (ea_t)(uint64_t)m.Address;
+        ea_t rebase = is_target_module(m) ? base : BADADDR;
+        m_events.add_lib_load(name, base, rebase, (asize_t)m.Size);
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_init()
+    {
+        if ( m_plugin != nullptr )
+            m_plugin->show_actions();
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_term()
+    {
+        if ( m_plugin != nullptr )
+            m_plugin->hide_actions();
+        m_cursor.reset();
+        m_engine.reset();
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_get_processes(procinfo_vec_t *procs)
+    {
+        process_info_t info;
+        info.pid  = m_pid;
+        info.name = "TTD trace";
+        procs->push_back(info);
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_get_debapp_attrs(debapp_attrs_t *attrs)
+    {
+        attrs->addrsize = m_is64 ? 8 : 4;
+        attrs->is_be    = false;
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_start_process(const char *path, const char *input_path, qstring *errbuf)
+    {
+        m_isForward          = true;
+        m_resumeMode         = RESMOD_NONE;
+        m_hasNextPosition    = false;
+        m_backwardSingleStep = false;
+        m_activeBpts         = 0;
+        m_is64               = inf_is_64bit();
+        m_targetName         = base_name(input_path != nullptr ? input_path : "");
+
+        if ( path == nullptr || !std::filesystem::exists(path) )
+        {
+            msg("[ida-ttd] trace file not found: %s\n", path != nullptr ? path : "(null)");
+            msg("[ida-ttd] Put the .run trace path in the 'Application' field of the debugger dialog.\n");
+            return DRC_NOFILE;
+        }
+
+        // Validate the TTD magic ("TTDLog").
+        {
+            std::ifstream f(path, std::ios::binary);
+            char magic[6] = { 0 };
+            if ( !f.is_open() || !f.read(magic, sizeof(magic))
+              || memcmp(magic, "TTDLog", sizeof(magic)) != 0 )
+            {
+                msg("[ida-ttd] not a valid TTD trace (bad magic): %s\n", path);
+                return DRC_NOFILE;
+            }
+        }
+
+        auto made = MakeReplayEngine();
+        m_engine = std::move(made.first);
+        if ( made.second != 0 || !m_engine )
+        {
+            msg("[ida-ttd] failed to create the TTD replay engine (0x%08X).\n", made.second);
+            msg("[ida-ttd] Are TTDReplay.dll / TTDReplayCPU.dll next to ida.exe?\n");
+            return DRC_FAILED;
+        }
+
+        m_engine->RegisterDebugModeAndLogging(DebugModeType::None, &m_err);
+
+        std::wstring wpath = to_wstring(path);
+        if ( !m_engine->Initialize(wpath.c_str()) )
+        {
+            msg("[ida-ttd] failed to load the trace: %s\n", path);
+            return DRC_FAILED;
+        }
+
+        // Build the memory index if it is not already present. Without it,
+        // memory reads are severely limited.
+        if ( m_engine->GetIndexStatus() != IndexStatus::IndexFileLoaded )
+        {
+            show_wait_box("Building TTD index...");
+            m_engine->BuildIndex(index_progress, nullptr, IndexBuildFlags::None);
+            hide_wait_box();
+        }
+
+        m_cursor = UniqueCursor{ m_engine->NewCursor() };
+        if ( !m_cursor )
+        {
+            msg("[ida-ttd] failed to create a cursor.\n");
+            return DRC_FAILED;
+        }
+        m_cursor->SetPosition(Position::Min);
+
+        if ( m_plugin != nullptr )
+            m_plugin->show_actions();
+
+        // ---- Build the initial set of debug events -------------------------
+        size_t modCount = m_engine->GetModuleCount();
+        const Module *mods = m_engine->GetModuleList();
+
+        ea_t mainBase = BADADDR;
+        if ( modCount > 0 )
+        {
+            const Module &main = mods[0];
+            mainBase = (ea_t)(uint64_t)main.Address;
+            std::string name = to_utf8(main.pName, main.NameLength);
+            ea_t rebase = is_target_module(main) ? mainBase : BADADDR;
+            m_events.add_process_start(m_pid, current_tid(), name, mainBase, rebase, (asize_t)main.Size);
+        }
+        else
+        {
+            m_events.add_process_start(m_pid, current_tid(), "trace", BADADDR, BADADDR, 0);
+        }
+
+        // Threads currently alive (other than the current one).
+        thid_t cur_tid = current_tid();
+        for ( const auto &kv : snapshot_threads() )
+        {
+            if ( kv.second != cur_tid )
+                m_events.add_thread_start(m_pid, kv.second);
+        }
+
+        // Modules currently loaded (other than the main one already reported).
+        {
+            size_t n = m_cursor->GetModuleCount();
+            const ModuleInstance *list = m_cursor->GetModuleList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                const Module &m = *list[i].pModule;
+                if ( (ea_t)(uint64_t)m.Address == mainBase )
+                    continue;
+                emit_module_load(m);
+            }
+        }
+
+        // Finally, suspend at the entry position.
+        m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_get_debug_event(gdecode_t *code, debug_event_t *event, int /*timeout_ms*/)
+    {
+        if ( m_events.empty() )
+        {
+            *code = GDE_NO_EVENT;
+            return DRC_OK;
+        }
+        *event = m_events.pop();
+        *code  = m_events.empty() ? GDE_ONE_EVENT : GDE_MANY_EVENTS;
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
+    {
+        *nbytes = 0;
+        if ( !m_cursor || buffer == nullptr || size == 0 )
+            return DRC_OK;
+
+        MemoryBuffer mb = m_cursor->QueryMemoryBuffer(
+            GuestAddress{ (uint64_t)ea },
+            BufferView{ buffer, size });
+        *nbytes = mb.Memory.Size;
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
+    {
+        memory_info_t mi;
+        mi.start_ea = 0;
+        mi.end_ea   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
+        mi.name     = "TTD";
+        mi.bitness  = m_is64 ? 2 : 1;
+        mi.perm     = SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC;
+        ranges->push_back(mi);
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_read_registers(thid_t tid, int /*clsmask*/, regval_t *values)
+    {
+        if ( !m_cursor )
+            return DRC_FAILED;
+        ThreadId t = tid == NO_THREAD ? ThreadId::Invalid : (ThreadId)(uint32_t)tid;
+        CROSS_PLATFORM_CONTEXT ctx = m_cursor->GetCrossPlatformContext(t);
+        fill_regvals(ctx, m_is64, values);
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_rebase_if_required_to(ea_t new_base)
+    {
+        rebase_program(new_base - get_imagebase(), MSF_FIXONCE);
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    static DataAccessMask access_mask_from_bpt(bpttype_t type)
+    {
+        switch ( type )
+        {
+            case BPT_WRITE:   return DataAccessMask::Write;
+            case BPT_READ:    return DataAccessMask::Read;
+            case BPT_RDWR:    return DataAccessMask::Read | DataAccessMask::Write;
+            case BPT_EXEC:    return DataAccessMask::Execute;
+            default:          return DataAccessMask::Execute;
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel)
+    {
+        *nbpts = 0;
+        if ( !m_cursor )
+            return DRC_FAILED;
+
+        for ( int i = 0; i < nadd; i++ )
+        {
+            DataAccessMask mask = access_mask_from_bpt(bpts[i].type);
+            uint64_t sz = mask == DataAccessMask::Execute
+                        ? 1
+                        : (bpts[i].size > 0 ? (uint64_t)bpts[i].size : 1);
+            MemoryWatchpointData wp{};
+            wp.Address    = GuestAddress{ (uint64_t)bpts[i].ea };
+            wp.Size       = sz;
+            wp.AccessMask = mask;
+            if ( m_cursor->AddMemoryWatchpoint(wp) )
+                m_activeBpts++;
+            bpts[i].code = BPT_OK;
+            (*nbpts)++;
+        }
+
+        for ( int i = 0; i < ndel; i++ )
+        {
+            update_bpt_info_t &b = bpts[nadd + i];
+            DataAccessMask mask = access_mask_from_bpt(b.type);
+            uint64_t sz = mask == DataAccessMask::Execute
+                        ? 1
+                        : (b.size > 0 ? (uint64_t)b.size : 1);
+            MemoryWatchpointData wp{};
+            wp.Address    = GuestAddress{ (uint64_t)b.ea };
+            wp.Size       = sz;
+            wp.AccessMask = mask;
+            if ( m_cursor->RemoveMemoryWatchpoint(wp) && m_activeBpts > 0 )
+                m_activeBpts--;
+            b.code = BPT_OK;
+            (*nbpts)++;
+        }
+
+        m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_set_backwards(bool backwards)
+    {
+        m_isForward = !backwards;
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_set_resume_mode(thid_t /*tid*/, resume_mode_t resmod)
+    {
+        m_resumeMode = resmod;
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    EventType TraceManager::navigate_steps(bool forward, StepCount steps)
+    {
+        auto threads_before = snapshot_threads();
+        auto mods_before    = snapshot_modules();
+
+        ICursorView::ReplayResult r = forward
+            ? m_cursor->ReplayForward(Position::Max, steps)
+            : m_cursor->ReplayBackward(Position::Min, steps);
+
+        auto threads_after = snapshot_threads();
+        auto mods_after    = snapshot_modules();
+        apply_differences(threads_before, threads_after, mods_before, mods_after);
+        return r.StopReason;
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::navigate_to(const Position &p)
+    {
+        auto threads_before = snapshot_threads();
+        auto mods_before    = snapshot_modules();
+        m_cursor->SetPosition(p);
+        auto threads_after = snapshot_threads();
+        auto mods_after    = snapshot_modules();
+        apply_differences(threads_before, threads_after, mods_before, mods_after);
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::apply_differences(const std::map<uint32_t, thid_t> &threads_before,
+                                         const std::map<uint32_t, thid_t> &threads_after,
+                                         const std::set<const Module *> &mods_before,
+                                         const std::set<const Module *> &mods_after)
+    {
+        for ( const auto &kv : threads_before )
+            if ( threads_after.find(kv.first) == threads_after.end() )
+                m_events.add_thread_exit(m_pid, kv.second);
+
+        for ( const auto &kv : threads_after )
+            if ( threads_before.find(kv.first) == threads_before.end() )
+                m_events.add_thread_start(m_pid, kv.second);
+
+        for ( const Module *m : mods_before )
+            if ( mods_after.find(m) == mods_after.end() && !is_target_module(*m) )
+                m_events.add_lib_unload(to_utf8(m->pName, m->NameLength), (ea_t)(uint64_t)m->Address);
+
+        for ( const Module *m : mods_after )
+            if ( mods_before.find(m) == mods_before.end() )
+                emit_module_load(*m);
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_resume(debug_event_t *event)
+    {
+        // Only act when continuing from a stop (breakpoint or single step).
+        if ( event->eid() != BREAKPOINT && event->eid() != STEP )
+            return DRC_OK;
+
+        if ( m_hasNextPosition )
+        {
+            navigate_to(m_nextPosition);
+            m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+            m_hasNextPosition = false;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
+        if ( m_backwardSingleStep )
+        {
+            navigate_steps(false, StepCount{ 1 });
+            m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+            m_backwardSingleStep = false;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
+        switch ( m_resumeMode )
+        {
+            case RESMOD_INTO:
+            {
+                EventType sr = navigate_steps(true, StepCount{ 1 });
+                if ( sr == EventType::MemoryWatchpoint )
+                    m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+                else
+                    m_events.add_step(m_pid, current_tid(), program_counter());
+                break;
+            }
+            case RESMOD_BACKINTO:
+            {
+                EventType sr = navigate_steps(false, StepCount{ 1 });
+                if ( sr == EventType::MemoryWatchpoint )
+                    m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+                else
+                    m_events.add_step(m_pid, current_tid(), program_counter());
+                break;
+            }
+            case RESMOD_NONE:
+            default:
+            {
+                // Run/continue in the currently selected direction until a
+                // watchpoint hits or the trace boundary is reached.
+                navigate_steps(m_isForward, StepCount::Max);
+                m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+                break;
+            }
+        }
+
+        m_resumeMode = RESMOD_NONE;
+        return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_exit_process()
+    {
+        m_events.add_process_exit(m_pid);
+        return DRC_OK;
+    }
+
+    //=======================================================================
+    // UI helpers
+    //=======================================================================
+    void TraceManager::set_next_position(const Position &p)
+    {
+        m_nextPosition    = p;
+        m_hasNextPosition = true;
+    }
+
+    //-----------------------------------------------------------------------
+    Position TraceManager::current_position() const
+    {
+        if ( !m_cursor )
+            return Position::Invalid;
+        return m_cursor->GetPosition();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::request_backward_step()
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+        m_backwardSingleStep = true;
+        continue_process();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::goto_position()
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+
+        qstring str;
+        if ( !ask_str(&str, 0, "Go to position (Sequence:Steps in hex)") )
+            return;
+
+        const char *s = str.c_str();
+        const char *colon = strchr(s, ':');
+        if ( colon == nullptr )
+        {
+            warning("Invalid position. Expected format Sequence:Steps, e.g. 4B17B:1D4D");
+            return;
+        }
+
+        uint64_t seq   = strtoull(std::string(s, colon).c_str(), nullptr, 16);
+        uint64_t steps = strtoull(colon + 1, nullptr, 16);
+
+        Position p{ (SequenceId)seq, (StepCount)steps };
+        set_next_position(p);
+        continue_process();
+    }
+
+    //-----------------------------------------------------------------------
+    std::vector<TraceManager::NamedPosition> TraceManager::collect_positions() const
+    {
+        std::vector<NamedPosition> out;
+        if ( !m_engine )
+            return out;
+
+        {
+            size_t n = m_engine->GetThreadCreatedEventCount();
+            const ThreadCreatedEvent *list = m_engine->GetThreadCreatedEventList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                qstring nm;
+                nm.sprnt("Thread 0x%X created", (uint32_t)list[i].pThreadInfo->Id);
+                out.push_back({ std::string(nm.c_str()), list[i].Position });
+            }
+        }
+        {
+            size_t n = m_engine->GetThreadTerminatedEventCount();
+            const ThreadTerminatedEvent *list = m_engine->GetThreadTerminatedEventList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                qstring nm;
+                nm.sprnt("Thread 0x%X exited", (uint32_t)list[i].pThreadInfo->Id);
+                out.push_back({ std::string(nm.c_str()), list[i].Position });
+            }
+        }
+        {
+            size_t n = m_engine->GetModuleLoadedEventCount();
+            const ModuleLoadedEvent *list = m_engine->GetModuleLoadedEventList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                std::string nm = "Load " + base_name(to_utf8(list[i].pModule->pName, list[i].pModule->NameLength));
+                out.push_back({ nm, list[i].Position });
+            }
+        }
+        {
+            size_t n = m_engine->GetModuleUnloadedEventCount();
+            const ModuleUnloadedEvent *list = m_engine->GetModuleUnloadedEventList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                std::string nm = "Unload " + base_name(to_utf8(list[i].pModule->pName, list[i].pModule->NameLength));
+                out.push_back({ nm, list[i].Position });
+            }
+        }
+        {
+            size_t n = m_engine->GetExceptionEventCount();
+            const ExceptionEvent *list = m_engine->GetExceptionEventList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                qstring nm;
+                nm.sprnt("Exception 0x%08X @ 0x%llX", list[i].Code, (uint64_t)list[i].ProgramCounter);
+                out.push_back({ std::string(nm.c_str()), list[i].Position });
+            }
+        }
+
+        std::sort(out.begin(), out.end(),
+                  [](const NamedPosition &a, const NamedPosition &b) { return a.pos < b.pos; });
+        return out;
+    }
+}
