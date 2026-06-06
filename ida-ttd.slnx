@@ -2,5 +2,5 @@
   <Configurations>
     <Platform Name="x64" />
   </Configurations>
-  <Project Path="ida-ttd/ida-ttd.vcxproj" />
+  <Project Path="ida-ttd/ida-ttd.vcxproj" Id="55864e0c-4c71-4cec-83f0-448f5260a487" />
 </Solution>

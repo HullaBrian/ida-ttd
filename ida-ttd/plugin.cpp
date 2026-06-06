@@ -1,30 +1,58 @@
 #include "plugin.h"
 #include "registers.h"
 
+// Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
+// actions, including the "continue backwards" action IDA has no native icon for.
+#include "icons.hh"
+
 namespace idattd
 {
+    static const char *TTD_TOOLBAR = "TTDToolBar";
     //-----------------------------------------------------------------------
     Plugin::Plugin()
     {
         configure_debugger(m_debugger, inf_is_64bit());
         m_mgr.set_plugin(this);
+        m_tracer.set_manager(&m_mgr);
+        m_tracer.set_64bit(inf_is_64bit());
+
+        m_dbgEvents.p = this;
+        m_uiEvents.p  = this;
 
         register_actions();
         hook_event_listener(HT_IDD, this);
+        hook_event_listener(HT_DBG, &m_dbgEvents);
+        hook_event_listener(HT_UI,  &m_uiEvents);
     }
 
     //-----------------------------------------------------------------------
     Plugin::~Plugin()
     {
+        unhook_event_listener(HT_UI,  &m_uiEvents);
+        unhook_event_listener(HT_DBG, &m_dbgEvents);
         unhook_event_listener(HT_IDD, this);
-        hide_actions();
         unregister_actions();
+        for ( int ic : { m_icoContinue, m_icoRevContinue, m_icoStepInto,
+                         m_icoStepOver, m_icoStepOut, m_icoStepBack } )
+            if ( ic != -1 )
+                free_custom_icon(ic);
+    }
+
+    //-----------------------------------------------------------------------
+    void Plugin::load_icons()
+    {
+        auto svg = [](const char *s, size_t len) { return load_custom_icon(s, (unsigned)len, "svg"); };
+        m_icoContinue    = svg(icon_continue_svg,         sizeof(icon_continue_svg) - 1);
+        m_icoRevContinue = svg(icon_reverse_continue_svg, sizeof(icon_reverse_continue_svg) - 1);
+        m_icoStepInto    = svg(icon_step_into_svg,        sizeof(icon_step_into_svg) - 1);
+        m_icoStepOver    = svg(icon_step_over_svg,        sizeof(icon_step_over_svg) - 1);
+        m_icoStepOut     = svg(icon_step_out_svg,         sizeof(icon_step_out_svg) - 1);
+        m_icoStepBack    = svg(icon_step_back_svg,        sizeof(icon_step_back_svg) - 1);
     }
 
     //-----------------------------------------------------------------------
     bool idaapi Plugin::run(size_t)
     {
-        // The plugin is a debugger backend; there is no standalone action.
         info("ida-ttd: select 'TTD trace replayer' under Debugger > Switch debugger, "
              "then start with a .run trace file as the application.");
         return true;
@@ -33,43 +61,206 @@ namespace idattd
     //-----------------------------------------------------------------------
     void Plugin::register_actions()
     {
-        m_stepBack.mgr = &m_mgr;
-        m_timeline.mgr = &m_mgr;
-        m_goto.mgr     = &m_mgr;
+        load_icons();
+
+        // Wire handler back-pointers.
+        m_runBack.mgr     = &m_mgr;
+        m_timeline.mgr    = &m_mgr;
+        m_posLabel.mgr    = &m_mgr;
+        m_goto.mgr        = &m_mgr;
+        m_analyzeFunc.mgr = &m_mgr;
+
+        m_traceFunc.mgr  = &m_mgr;  m_traceFunc.tracer  = &m_tracer;
+        m_tracePat.mgr   = &m_mgr;  m_tracePat.tracer   = &m_tracer;
+        m_openTraced.mgr = &m_mgr;  m_openTraced.tracer = &m_tracer;
+        m_openEvents.mgr = &m_mgr;  m_openEvents.tracer = &m_tracer;
+        m_runTrace.mgr   = &m_mgr;  m_runTrace.tracer   = &m_tracer;
 
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::STEP_BACK, "Step backwards", &m_stepBack, this,
-            "Ctrl+Shift+F7", "Time travel one instruction backwards", -1));
+            actions::RUN_BACK, "Continue backwards", &m_runBack, this,
+            nullptr, "Continue backwards: run backward to the previous breakpoint or the start of the trace", m_icoRevContinue));
+        // Live trace-position readout (text-only toolbar button; click copies).
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::TIMELINE, "TTD timeline", &m_timeline, this,
-            "Ctrl+Shift+T", "Open the TTD trace timeline", -1));
+            actions::POS_LABEL, "TTD position", &m_posLabel, this,
+            nullptr, "Current TTD position (Sequence:Steps) — click to copy it to the clipboard", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::GOTO_POS, "Go to position", &m_goto, this,
-            "Ctrl+Shift+G", "Jump to a Sequence:Steps trace position", -1));
+            actions::ANALYZE_FUNC, "TTD: Analyze whole function", &m_analyzeFunc, this,
+            "Ctrl+Shift+A", "Analyze whole function: walk the trace backward to find the enclosing "
+            "function's entry and define it (runs behind a cancellable wait box)", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::TRACE_FUNC, "TTD: Find all calls to this function", &m_traceFunc, this,
+            "Ctrl+Shift+C", "Find all calls to this function: sweep the whole trace and list every call with its arguments and return value", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::TRACE_PAT, "TTD: Find calls by name/pattern...", &m_tracePat, this,
+            "Ctrl+Shift+F", "Find calls by name/pattern: trace every function matching a wildcard like 'kernel32!Virtual*' in one sweep", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::OPEN_EVENTS, "TTD: Trace events...", &m_openEvents, this,
+            nullptr, "Trace events: open the recorded calls (arguments and return values)", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::OPEN_TRACED, "TTD: Traced functions...", &m_openTraced, this,
+            nullptr, "Traced functions: manage the list of functions selected for call tracing", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::RUN_TRACE, "TTD: Re-run trace", &m_runTrace, this,
+            nullptr, "Re-run trace: re-sweep the trace for all currently traced functions", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::TIMELINE, "TTD: Timeline...", &m_timeline, this,
+            "Ctrl+Shift+T", "Timeline: open the TTD trace timeline of notable positions", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::GOTO_POS, "TTD: Go to position...", &m_goto, this,
+            "Ctrl+Shift+G", "Go to position: jump to a Sequence:Steps trace position", -1));
+
+        // Top-level TTD menu (extras + a mirror of the movement commands).
+        attach_action_to_menu("TTD/Find all calls to function", actions::TRACE_FUNC,  SETMENU_APP);
+        attach_action_to_menu("TTD/Find calls by name or pattern", actions::TRACE_PAT, SETMENU_APP);
+        attach_action_to_menu("TTD/Analyze whole function",     actions::ANALYZE_FUNC, SETMENU_APP);
+        attach_action_to_menu("TTD/Trace events",               actions::OPEN_EVENTS, SETMENU_APP);
+        attach_action_to_menu("TTD/Traced functions",           actions::OPEN_TRACED, SETMENU_APP);
+        attach_action_to_menu("TTD/Re-run trace",               actions::RUN_TRACE,   SETMENU_APP);
+        attach_action_to_menu("TTD/Timeline",                   actions::TIMELINE,    SETMENU_APP);
+        attach_action_to_menu("TTD/Go to position",             actions::GOTO_POS,    SETMENU_APP);
+        attach_action_to_menu("TTD/Continue backwards",         actions::RUN_BACK,    SETMENU_APP);
     }
 
     //-----------------------------------------------------------------------
     void Plugin::unregister_actions()
     {
-        unregister_action(actions::STEP_BACK);
-        unregister_action(actions::TIMELINE);
-        unregister_action(actions::GOTO_POS);
+        const char *names[] = {
+            actions::RUN_BACK, actions::POS_LABEL, actions::TRACE_FUNC, actions::TRACE_PAT,
+            actions::ANALYZE_FUNC, actions::OPEN_EVENTS, actions::OPEN_TRACED, actions::RUN_TRACE,
+            actions::TIMELINE, actions::GOTO_POS,
+        };
+        for ( const char *n : names )
+            unregister_action(n);
     }
 
     //-----------------------------------------------------------------------
+    // Build the TTD toolbar on session start so it only appears while a trace is
+    // being replayed. Native debug-movement actions exist once a debugger is
+    // active, so we (re)skin them with the codicon icons here too.
     void Plugin::show_actions()
     {
-        attach_action_to_toolbar("DebugToolBar", actions::STEP_BACK);
-        attach_action_to_toolbar("DebugToolBar", actions::TIMELINE);
-        attach_action_to_toolbar("DebugToolBar", actions::GOTO_POS);
+        if ( m_toolbarShown )
+        {
+            update_position_label();
+            return;
+        }
+        m_toolbarShown = true;
+
+        // Re-skin the native debug-movement actions with the codicon glyphs.
+        update_action_icon("ProcessStart",            m_icoContinue);
+        update_action_icon("ThreadStepInto",          m_icoStepInto);
+        update_action_icon("ThreadStepOver",          m_icoStepOver);
+        update_action_icon("ThreadRunUntilReturn",    m_icoStepOut);
+        update_action_icon("ThreadStepIntoBackwards", m_icoStepBack);
+
+        create_toolbar(TTD_TOOLBAR, "TTD");
+        // Live position readout, then all forward buttons, then all backward
+        // buttons, then the TTD extras.
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::POS_LABEL);
+        // --- forward ---
+        attach_action_to_toolbar(TTD_TOOLBAR, "ProcessStart");           // Continue
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepInto");         // Step into
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOver");         // Step over
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunUntilReturn");   // Run until return
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunToCursor");      // Run to cursor
+        // --- backward ---
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_BACK);        // Continue backwards
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepIntoBackwards");
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOverBackwards");
+        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunToCursorBackwards");
+        // --- TTD extras ---
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::TIMELINE);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::GOTO_POS);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::ANALYZE_FUNC);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::TRACE_FUNC);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::TRACE_PAT);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::OPEN_EVENTS);
+
+        update_position_label();
     }
 
     //-----------------------------------------------------------------------
     void Plugin::hide_actions()
     {
-        detach_action_from_toolbar("DebugToolBar", actions::STEP_BACK);
-        detach_action_from_toolbar("DebugToolBar", actions::TIMELINE);
-        detach_action_from_toolbar("DebugToolBar", actions::GOTO_POS);
+        if ( !m_toolbarShown )
+            return;
+        delete_toolbar(TTD_TOOLBAR);
+        m_toolbarShown = false;
+    }
+
+    //-----------------------------------------------------------------------
+    // Refresh the text on the toolbar's position button from the live cursor.
+    void Plugin::update_position_label()
+    {
+        qstring label;
+        if ( m_mgr.is_active() )
+        {
+            TTD::Replay::Position p = m_mgr.current_position();
+            label.sprnt("TTD %llX:%llX", (uint64_t)p.Sequence, (uint64_t)p.Steps);
+        }
+        else
+        {
+            label = "TTD";
+        }
+        update_action_label(actions::POS_LABEL, label.c_str());
+    }
+
+    //=======================================================================
+    // HT_DBG: resolve export symbols when a module's segment becomes available.
+    //=======================================================================
+    ssize_t idaapi DbgEventListener::on_event(ssize_t code, va_list va)
+    {
+        if ( p == nullptr || ::dbg != &p->debugger() )
+            return 0;
+
+        switch ( code )
+        {
+            case dbg_process_start:
+            case dbg_library_load:
+            {
+                const debug_event_t *ev = va_arg(va, const debug_event_t *);
+                if ( ev != nullptr )
+                {
+                    const modinfo_t &mi = ev->modinfo();
+                    p->manager().resolve_symbols((ea_t)mi.base, p->manager().is64());
+                }
+                p->update_position_label();
+                break;
+            }
+            case dbg_suspend_process:
+                // Fires after every stop (step/breakpoint/goto), once memory is
+                // valid for the new position: name newly-revealed module exports,
+                // disassemble around RIP, and refresh the toolbar readout.
+                p->manager().on_suspended();
+                p->update_position_label();
+                break;
+            default:
+                break;
+        }
+        return 0;
+    }
+
+    //=======================================================================
+    // HT_UI: add "Trace this function" to the disassembly context menu.
+    //=======================================================================
+    ssize_t idaapi UiEventListener::on_event(ssize_t code, va_list va)
+    {
+        if ( p == nullptr )
+            return 0;
+
+        // Only augment menus while our debugger backend is the active one.
+        if ( code == ui_finish_populating_widget_popup && ::dbg == &p->debugger() )
+        {
+            TWidget    *widget = va_arg(va, TWidget *);
+            TPopupMenu *popup  = va_arg(va, TPopupMenu *);
+            // (action_activation_ctx_t* ctx follows; not needed here)
+            if ( widget != nullptr && get_widget_type(widget) == BWN_DISASM )
+            {
+                attach_action_to_popup(widget, popup, actions::TRACE_FUNC, "TTD/");
+                attach_action_to_popup(widget, popup, actions::ANALYZE_FUNC, "TTD/");
+            }
+        }
+        return 0;
     }
 
     //-----------------------------------------------------------------------

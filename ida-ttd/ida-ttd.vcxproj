@@ -100,7 +100,11 @@
     <ClInclude Include="event_queue.h" />
     <ClInclude Include="registers.h" />
     <ClInclude Include="trace_manager.h" />
+    <ClInclude Include="symbols.h" />
+    <ClInclude Include="callconv.h" />
+    <ClInclude Include="tracer.h" />
     <ClInclude Include="ui.h" />
+    <ClInclude Include="icons.hh" />
     <ClInclude Include="plugin.h" />
   </ItemGroup>
   <ItemGroup>
@@ -108,6 +112,9 @@
     <ClCompile Include="event_queue.cpp" />
     <ClCompile Include="registers.cpp" />
     <ClCompile Include="trace_manager.cpp" />
+    <ClCompile Include="symbols.cpp" />
+    <ClCompile Include="callconv.cpp" />
+    <ClCompile Include="tracer.cpp" />
     <ClCompile Include="ui.cpp" />
     <ClCompile Include="plugin.cpp" />
   </ItemGroup>

@@ -52,8 +52,36 @@ namespace idattd
         void                       set_next_position(const TTD::Replay::Position &p);
         void                       goto_position();
         void                       request_backward_step();
+        void                       request_single_step(bool forward);
+        void                       request_run(bool forward);
         TTD::Replay::Position              current_position() const;
         std::vector<NamedPosition> collect_positions() const;
+
+        // Create a fresh cursor over the loaded trace (empty if no trace). Used
+        // by the function tracer for independent sweeps.
+        TTD::Replay::UniqueCursor  make_cursor();
+        bool                       is64() const { return m_is64; }
+
+        // Resolve a name pattern to the set of matching function addresses.
+        // Supports shell-style wildcards (* and ?), case-insensitive, with an
+        // optional "module!" qualifier, e.g. "kernel32!Virtual*" or "*Alloc".
+        std::vector<ea_t>          resolve_function_pattern(const char *pattern) const;
+
+        // Apply offline export-symbol names for the module loaded at 'base',
+        // reading its PE at the module's recorded load position. Deduplicated:
+        // a given base is only attempted once per trace.
+        void                       resolve_symbols(ea_t base, bool is64);
+
+        // Called once per stop (from HT_DBG dbg_suspend_process), when the
+        // debugger memory cache is valid for the new position: name exports for
+        // any newly-seen module and disassemble a run of code around RIP.
+        void                       on_suspended();
+
+        // Explicit, user-triggered deep analysis: walk the trace backward from the
+        // current position to find the enclosing function's entry and define the
+        // whole function. Expensive (per-step backward replay), so it runs behind
+        // a cancellable wait box — never automatically.
+        void                       analyze_whole_function();
 
     private:
         thid_t                     current_tid() const;
@@ -61,13 +89,29 @@ namespace idattd
         std::map<uint32_t, thid_t> snapshot_threads() const;
         std::set<const TTD::Replay::Module *> snapshot_modules() const;
         TTD::Replay::EventType navigate_steps(bool forward, TTD::Replay::StepCount steps);
+        // Forward step-over (step_out=false) / step-out (step_out=true), honoring
+        // user breakpoints. Returns EventType::MemoryWatchpoint if a breakpoint
+        // was hit during the run, otherwise a normal-stop reason.
+        TTD::Replay::EventType navigate_over(bool step_out);
+        // Run forward to 'addr' on thread 'utid' with SP >= min_sp (skips deeper
+        // recursion); also stops on any user breakpoint. Returns 0=reached addr,
+        // 1=user breakpoint, 2=trace boundary.
+        int   run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid);
         void  navigate_to(const TTD::Replay::Position &p);
+        // Record a stop (breakpoint when !is_step, single-step otherwise) at the
+        // cursor's current PC, and queue code creation there so runtime-revealed
+        // code is disassembled as a whole block rather than one insn at a time.
+        void  emit_stop(bool is_step);
         void  apply_differences(const std::map<uint32_t, thid_t> &threads_before,
                                 const std::map<uint32_t, thid_t> &threads_after,
                                 const std::set<const TTD::Replay::Module *> &mods_before,
                                 const std::set<const TTD::Replay::Module *> &mods_after);
         bool  is_target_module(const TTD::Replay::Module &m) const;
         void  emit_module_load(const TTD::Replay::Module &m);
+        void  resolve_loaded_modules();   // resolve exports for every loaded module
+        // Cheap, replay-free disassembly of the block at/below 'pc' (RIP is an
+        // exact boundary). Runs on every stop; must not walk the trace.
+        void  analyze_current_function(ea_t pc);
 
     private:
         Plugin           *m_plugin = nullptr;
@@ -76,10 +120,16 @@ namespace idattd
         TTD::Replay::UniqueReplayEngine m_engine;
         TTD::Replay::UniqueCursor       m_cursor;
 
+        TTD::Replay::UniqueCursor       m_symCursor; // scratch cursor for symbol reads
+        std::set<ea_t>                  m_resolvedBases; // modules whose exports we've named
+
         EventQueue   m_events;
         bool         m_is64 = false;
         bool         m_isForward = true;
         bool         m_backwardSingleStep = false;
+        bool         m_forwardSingleStep = false;
+        bool         m_runOnce = false;
+        bool         m_runForward = true;
         resume_mode_t m_resumeMode = RESMOD_NONE;
         int          m_activeBpts = 0;
 

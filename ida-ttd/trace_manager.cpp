@@ -1,6 +1,7 @@
 #include "trace_manager.h"
 #include "registers.h"
 #include "plugin.h"
+#include "symbols.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -144,7 +145,9 @@ namespace idattd
         if ( m_plugin != nullptr )
             m_plugin->hide_actions();
         m_cursor.reset();
+        m_symCursor.reset();
         m_engine.reset();
+        m_resolvedBases.clear();
         return DRC_OK;
     }
 
@@ -173,7 +176,10 @@ namespace idattd
         m_resumeMode         = RESMOD_NONE;
         m_hasNextPosition    = false;
         m_backwardSingleStep = false;
+        m_forwardSingleStep  = false;
+        m_runOnce            = false;
         m_activeBpts         = 0;
+        m_resolvedBases.clear();
         m_is64               = inf_is_64bit();
         m_targetName         = base_name(input_path != nullptr ? input_path : "");
 
@@ -274,7 +280,7 @@ namespace idattd
         }
 
         // Finally, suspend at the entry position.
-        m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+        emit_stop(false);
         return DRC_OK;
     }
 
@@ -424,6 +430,298 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    // Run forward to 'addr' on a specific thread/frame, honoring breakpoints.
+    int TraceManager::run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid)
+    {
+        MemoryWatchpointData wp{};
+        wp.Address    = GuestAddress{ (uint64_t)addr };
+        wp.Size       = 1;
+        wp.AccessMask = DataAccessMask::Execute;
+        m_cursor->AddMemoryWatchpoint(wp);
+
+        // The callback is shared by ALL watchpoints on the cursor: accept the
+        // step-target only on the right thread/frame, but always stop on any
+        // other (user) breakpoint.
+        auto stop_cb = [addr, min_sp, utid](ICursorView::MemoryWatchpointResult const &w,
+                                            IThreadView const *t) noexcept -> bool
+        {
+            if ( (uint64_t)w.Address == (uint64_t)addr )
+                return (uint32_t)t->GetThreadInfo().UniqueId == utid
+                    && (uint64_t)t->GetStackPointer() >= min_sp;
+            return true; // user breakpoint
+        };
+        m_cursor->SetMemoryWatchpointCallback(stop_cb);
+        m_cursor->SetEventMask(EventMask::MemoryWatchpoint);
+
+        ICursorView::ReplayResult r = m_cursor->ReplayForward();
+
+        m_cursor->RemoveMemoryWatchpoint(wp);
+        m_cursor->SetMemoryWatchpointCallback(nullptr, 0);
+        m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
+
+        if ( r.StopReason != EventType::MemoryWatchpoint )
+            return 2; // hit the trace boundary
+        ea_t pc = program_counter();
+        return pc == addr ? 0 : 1; // 0 = landed at target, 1 = user breakpoint
+    }
+
+    //-----------------------------------------------------------------------
+    // Forward step-over / step-out implemented on the main cursor: step-over a
+    // call by running to the return site; step-out by repeating until the frame
+    // is unwound. Single instructions are stepped directly.
+    EventType TraceManager::navigate_over(bool step_out)
+    {
+        auto threads_before = snapshot_threads();
+        auto mods_before    = snapshot_modules();
+
+        uint64_t start_sp = (uint64_t)m_cursor->GetStackPointer();
+        uint32_t utid     = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
+        bool hit_bpt = false;
+
+        for ( ;; )
+        {
+            ea_t  pc = program_counter();
+            insn_t insn;
+            int len = decode_insn(&insn, pc);
+            bool is_call = len > 0 && is_call_insn(insn);
+
+            if ( is_call )
+            {
+                int oc = run_to_addr_guarded((ea_t)((uint64_t)pc + len), start_sp, utid);
+                if ( oc == 1 ) { hit_bpt = true; break; }
+                if ( oc == 2 ) break; // boundary
+            }
+            else
+            {
+                ICursorView::ReplayResult r = m_cursor->ReplayForward(Position::Max, StepCount{ 1 });
+                if ( r.StopReason == EventType::MemoryWatchpoint ) { hit_bpt = true; break; }
+                if ( r.StopReason == EventType::Position
+                  || r.StopReason == EventType::Process
+                  || r.StopReason == EventType::Error )
+                    break;
+            }
+
+            if ( !step_out )
+                break;                                  // step-over: a single iteration
+            if ( (uint64_t)m_cursor->GetStackPointer() > start_sp )
+                break;                                  // step-out: frame has returned
+        }
+
+        auto threads_after = snapshot_threads();
+        auto mods_after    = snapshot_modules();
+        apply_differences(threads_before, threads_after, mods_before, mods_after);
+
+        return hit_bpt ? EventType::MemoryWatchpoint : EventType::Position;
+    }
+
+    //-----------------------------------------------------------------------
+    // Define an instruction at the exact address 'ea'. Addresses passed here come
+    // from the trace (real executed PCs), so they are true instruction
+    // boundaries; clear any stale/garbage item overlapping ea first so we never
+    // leave RIP pointing inside a wrongly-sized instruction.
+    static void force_insn(ea_t ea)
+    {
+        flags64_t fl = get_flags(ea);
+        if ( is_code(fl) && get_item_head(ea) == ea )
+            return;                          // already a correct instruction head
+        del_items(ea, DELIT_EXPAND);         // drop any item overlapping ea
+        create_insn(ea);
+    }
+
+    //-----------------------------------------------------------------------
+    // Lay out the code at and below PC. This runs on every stop, so it must be
+    // CHEAP — no trace replay. PC is RIP, a real instruction boundary, so a
+    // straight-line decode from it is exact: we force a clean instruction at PC
+    // (killing the "RIP is not code" prompt) and disassemble forward by flow,
+    // advancing past calls (not into them) up to a bounded window or a return.
+    //
+    // We deliberately do NOT walk the trace backward to find the function start
+    // or lay out the lines above PC. In TTD every backward single-step re-seeks
+    // toward a keyframe, so doing hundreds per stop froze the UI for tens of
+    // seconds. The block-below-PC layout plus export naming keeps stepping
+    // usable; earlier instructions get laid out as you reach them. (A one-shot,
+    // user-triggered "analyze whole function" could do the expensive backward
+    // walk behind a wait box if needed.)
+    void TraceManager::analyze_current_function(ea_t pc)
+    {
+        segment_t *seg = getseg(pc);
+        if ( seg == nullptr )
+            return;
+        if ( get_func(pc) != nullptr )
+            return;             // already inside a defined function
+
+        force_insn(pc);         // exact boundary; clears any stale overlapping item
+
+        ea_t limit = pc + 0x1000;
+        if ( limit < pc || limit > seg->end_ea )
+            limit = seg->end_ea;
+        ea_t ip = pc;
+        for ( int guard = 0; ip != BADADDR && ip < limit && guard < 8192; guard++ )
+        {
+            insn_t insn;
+            if ( is_code(get_flags(ip)) )
+            {
+                ea_t nxt = get_item_end(ip);
+                ip = nxt > ip ? nxt : ip + 1;
+                continue;
+            }
+            int len = create_insn(ip, &insn);
+            if ( len <= 0 )
+                break;
+            if ( is_ret_insn(insn) )
+                break;          // end of this block
+            ip += len;
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    // Deep, on-demand analysis: reconstruct the current thread's call structure by
+    // walking the trace backward (stepping over nested calls via a call-depth
+    // counter) to find the enclosing function's entry, then define it. This is the
+    // expensive path the per-stop handler intentionally avoids, so it runs on a
+    // private cursor behind a cancellable wait box.
+    void TraceManager::analyze_whole_function()
+    {
+        if ( !m_cursor || !m_engine )
+        {
+            warning("Analysis is only available while replaying a trace.");
+            return;
+        }
+        ea_t pc = program_counter();
+        if ( getseg(pc) == nullptr )
+            return;
+        if ( get_func(pc) != nullptr )
+        {
+            info("0x%llX is already inside a defined function.", (uint64_t)pc);
+            return;
+        }
+
+        UniqueCursor cur{ m_engine->NewCursor() };
+        if ( !cur )
+            return;
+        cur->SetPosition(m_cursor->GetPosition());
+        uint32_t target_tid = (uint32_t)cur->GetThreadInfo().Id;
+
+        std::vector<ea_t> frame_pcs;
+        std::set<ea_t>    seen;
+        frame_pcs.push_back(pc);
+        seen.insert(pc);
+        ea_t entry   = BADADDR;
+        ea_t last_pc = pc;
+        int  depth   = 0;
+
+        const int MAX_INSN = 50000;
+        const int MAX_STEP = 1000000;
+        int examined = 0, steps = 0;
+        bool cancelled = false;
+        Position prev = cur->GetPosition();
+
+        show_wait_box("Analyzing function from the trace (Cancel to stop)...");
+        while ( examined < MAX_INSN && steps < MAX_STEP )
+        {
+            if ( (steps & 0x3FF) == 0 )
+            {
+                replace_wait_box("Analyzing function: %d instructions examined...", examined);
+                if ( user_cancelled() ) { cancelled = true; break; }
+            }
+
+            cur->ReplayBackward(Position::Min, StepCount{ 1 });
+            steps++;
+            Position now = cur->GetPosition();
+            if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
+                break;                              // reached the start of the trace
+            prev = now;
+
+            if ( (uint32_t)cur->GetThreadInfo().Id != target_tid )
+                continue;
+            examined++;
+
+            ea_t   npc = (ea_t)(uint64_t)cur->GetProgramCounter();
+            insn_t insn;
+            bool   call = false, ret = false;
+            if ( decode_insn(&insn, npc) > 0 )
+            {
+                call = is_call_insn(insn);
+                ret  = is_ret_insn(insn);
+            }
+
+            if ( call )
+            {
+                if ( depth == 0 ) { entry = last_pc; break; }
+                depth--;
+            }
+            else if ( ret )
+            {
+                depth++;
+            }
+
+            if ( depth == 0 && seen.insert(npc).second )
+                frame_pcs.push_back(npc);
+            last_pc = npc;
+        }
+        hide_wait_box();
+
+        std::sort(frame_pcs.begin(), frame_pcs.end());
+        for ( ea_t a : frame_pcs )
+            force_insn(a);
+
+        if ( cancelled )
+        {
+            msg("[ida-ttd] function analysis cancelled (%d instructions, %d defined).\n",
+                examined, (int)frame_pcs.size());
+        }
+        else if ( entry != BADADDR )
+        {
+            force_insn(entry);
+            add_func(entry);
+            msg("[ida-ttd] defined function at 0x%llX (entry of the call at the "
+                "current position; %d instructions).\n", (uint64_t)entry, examined);
+            jumpto(entry);
+        }
+        else
+        {
+            warning("Could not find the function entry within %d instructions.\n"
+                    "Laid out the %d instruction(s) found in this frame.",
+                    examined, (int)frame_pcs.size());
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::on_suspended()
+    {
+        if ( !m_cursor )
+            return;
+        // Name exports of any module loaded at this position first, so a call to a
+        // freshly-revealed export renders with its name rather than loc_/sub_.
+        resolve_loaded_modules();
+        analyze_current_function(program_counter());
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::resolve_loaded_modules()
+    {
+        if ( !m_cursor )
+            return;
+        size_t n = m_cursor->GetModuleCount();
+        const ModuleInstance *list = m_cursor->GetModuleList();
+        for ( size_t i = 0; i < n; i++ )
+            if ( list[i].pModule != nullptr )
+                resolve_symbols((ea_t)(uint64_t)list[i].pModule->Address, m_is64);
+    }
+
+    void TraceManager::emit_stop(bool is_step)
+    {
+        // Just queue the stop event here (during ev_resume). The actual
+        // disassembly/symbol work happens in on_suspended(), once IDA has
+        // invalidated its debugger memory cache for the new position.
+        ea_t pc = program_counter();
+        if ( is_step )
+            m_events.add_step(m_pid, current_tid(), pc);
+        else
+            m_events.add_breakpoint(m_pid, current_tid(), pc);
+    }
+
+    //-----------------------------------------------------------------------
     void TraceManager::navigate_to(const Position &p)
     {
         auto threads_before = snapshot_threads();
@@ -467,7 +765,7 @@ namespace idattd
         if ( m_hasNextPosition )
         {
             navigate_to(m_nextPosition);
-            m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+            emit_stop(false);
             m_hasNextPosition = false;
             m_resumeMode = RESMOD_NONE;
             return DRC_OK;
@@ -476,8 +774,26 @@ namespace idattd
         if ( m_backwardSingleStep )
         {
             navigate_steps(false, StepCount{ 1 });
-            m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+            emit_stop(false);
             m_backwardSingleStep = false;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
+        if ( m_forwardSingleStep )
+        {
+            navigate_steps(true, StepCount{ 1 });
+            emit_stop(false);
+            m_forwardSingleStep = false;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
+        if ( m_runOnce )
+        {
+            navigate_steps(m_runForward, StepCount::Max);
+            emit_stop(false);
+            m_runOnce = false;
             m_resumeMode = RESMOD_NONE;
             return DRC_OK;
         }
@@ -487,19 +803,27 @@ namespace idattd
             case RESMOD_INTO:
             {
                 EventType sr = navigate_steps(true, StepCount{ 1 });
-                if ( sr == EventType::MemoryWatchpoint )
-                    m_events.add_breakpoint(m_pid, current_tid(), program_counter());
-                else
-                    m_events.add_step(m_pid, current_tid(), program_counter());
+                emit_stop(sr != EventType::MemoryWatchpoint);
                 break;
             }
             case RESMOD_BACKINTO:
             {
                 EventType sr = navigate_steps(false, StepCount{ 1 });
-                if ( sr == EventType::MemoryWatchpoint )
-                    m_events.add_breakpoint(m_pid, current_tid(), program_counter());
-                else
-                    m_events.add_step(m_pid, current_tid(), program_counter());
+                emit_stop(sr != EventType::MemoryWatchpoint);
+                break;
+            }
+            case RESMOD_OVER:
+            {
+                EventType sr = m_isForward ? navigate_over(false)
+                                           : navigate_steps(false, StepCount{ 1 });
+                emit_stop(sr != EventType::MemoryWatchpoint);
+                break;
+            }
+            case RESMOD_OUT:
+            {
+                EventType sr = m_isForward ? navigate_over(true)
+                                           : navigate_steps(false, StepCount{ 1 });
+                emit_stop(sr != EventType::MemoryWatchpoint);
                 break;
             }
             case RESMOD_NONE:
@@ -508,7 +832,7 @@ namespace idattd
                 // Run/continue in the currently selected direction until a
                 // watchpoint hits or the trace boundary is reached.
                 navigate_steps(m_isForward, StepCount::Max);
-                m_events.add_breakpoint(m_pid, current_tid(), program_counter());
+                emit_stop(false);
                 break;
             }
         }
@@ -552,6 +876,189 @@ namespace idattd
         m_backwardSingleStep = true;
         request_continue_process();
         run_requests();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::request_single_step(bool forward)
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+        if ( forward )
+            m_forwardSingleStep = true;
+        else
+            m_backwardSingleStep = true;
+        request_continue_process();
+        run_requests();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::request_run(bool forward)
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+        m_runOnce    = true;
+        m_runForward = forward;
+        request_continue_process();
+        run_requests();
+    }
+
+    //-----------------------------------------------------------------------
+    TTD::Replay::UniqueCursor TraceManager::make_cursor()
+    {
+        if ( !m_engine )
+            return TTD::Replay::UniqueCursor{};
+        return TTD::Replay::UniqueCursor{ m_engine->NewCursor() };
+    }
+
+    //-----------------------------------------------------------------------
+    // Case-insensitive shell wildcard match ('*' = any run, '?' = one char).
+    static bool wildcard_match(const char *pat, const char *str)
+    {
+        const char *star = nullptr;
+        const char *ss   = str;
+        const char *p    = pat;
+        const char *s    = str;
+        while ( *s != '\0' )
+        {
+            if ( *p == '?' || tolower((unsigned char)*p) == tolower((unsigned char)*s) )
+            {
+                p++;
+                s++;
+            }
+            else if ( *p == '*' )
+            {
+                star = p++;
+                ss   = s;
+            }
+            else if ( star != nullptr )
+            {
+                p = star + 1;
+                s = ++ss;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        while ( *p == '*' )
+            p++;
+        return *p == '\0';
+    }
+
+    //-----------------------------------------------------------------------
+    std::vector<ea_t> TraceManager::resolve_function_pattern(const char *pattern) const
+    {
+        std::vector<ea_t> out;
+        if ( !m_engine || pattern == nullptr )
+            return out;
+
+        // Split an optional "module!" qualifier off the name pattern.
+        std::string pat = pattern;
+        std::string modpat, namepat;
+        size_t bang = pat.find('!');
+        if ( bang != std::string::npos )
+        {
+            modpat  = pat.substr(0, bang);
+            namepat = pat.substr(bang + 1);
+        }
+        else
+        {
+            namepat = pat;
+        }
+        if ( namepat.empty() )
+            return out;
+
+        // Build module address ranges (only needed when a module filter exists).
+        struct ModRange { ea_t base; ea_t end; std::string name; std::string stem; };
+        std::vector<ModRange> mods;
+        if ( !modpat.empty() )
+        {
+            size_t n = m_engine->GetModuleCount();
+            const Module *list = m_engine->GetModuleList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                ea_t b = (ea_t)(uint64_t)list[i].Address;
+                std::string bn = base_name(to_utf8(list[i].pName, list[i].NameLength));
+                std::string stem = bn;
+                size_t dot = stem.find_last_of('.');
+                if ( dot != std::string::npos )
+                    stem.erase(dot);
+                mods.push_back({ b, b + (ea_t)list[i].Size, bn, stem });
+            }
+        }
+
+        std::set<ea_t> seen;
+        size_t nn = get_nlist_size();
+        for ( size_t i = 0; i < nn; i++ )
+        {
+            const char *nm = get_nlist_name(i);
+            if ( nm == nullptr || !wildcard_match(namepat.c_str(), nm) )
+                continue;
+            ea_t ea = get_nlist_ea(i);
+
+            if ( !modpat.empty() )
+            {
+                bool ok = false;
+                for ( const ModRange &m : mods )
+                {
+                    if ( ea >= m.base && ea < m.end )
+                    {
+                        ok = wildcard_match(modpat.c_str(), m.name.c_str())
+                          || wildcard_match(modpat.c_str(), m.stem.c_str());
+                        break;
+                    }
+                }
+                if ( !ok )
+                    continue;
+            }
+
+            func_t *f = get_func(ea);
+            ea_t key = f != nullptr ? f->start_ea : ea;
+            if ( seen.insert(key).second )
+                out.push_back(key);
+        }
+        return out;
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::resolve_symbols(ea_t base, bool is64)
+    {
+        if ( !m_engine || base == BADADDR )
+            return;
+        if ( !m_resolvedBases.insert(base).second )
+            return;     // already attempted for this module
+
+        // Find the load event for the module at this base so we can park the
+        // scratch cursor exactly where the image is recorded as mapped.
+        size_t n = m_engine->GetModuleLoadedEventCount();
+        const ModuleLoadedEvent *list = m_engine->GetModuleLoadedEventList();
+        const ModuleLoadedEvent *hit = nullptr;
+        for ( size_t i = 0; i < n; i++ )
+        {
+            if ( list[i].pModule != nullptr
+              && (ea_t)(uint64_t)list[i].pModule->Address == base )
+            {
+                hit = &list[i];
+                break;
+            }
+        }
+
+        if ( !m_symCursor )
+            m_symCursor = TTD::Replay::UniqueCursor{ m_engine->NewCursor() };
+        if ( !m_symCursor )
+            return;
+
+        m_symCursor->SetPosition(hit != nullptr ? hit->Position : Position::Min);
+        size_t named = apply_module_exports(m_symCursor.get(), base, is64);
+        if ( named > 0 )
+            msg("[ida-ttd] symbols: named %u export(s) at base 0x%llX\n",
+                (unsigned)named, (uint64_t)base);
     }
 
     //-----------------------------------------------------------------------

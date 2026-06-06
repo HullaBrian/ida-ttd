@@ -105,8 +105,14 @@ namespace idattd
         dbg.bpt_size         = 1;
         dbg.filetype         = inf_get_filetype();
 
-        // Forward single-step and backward single-step (time travel).
-        dbg.resume_modes = DBG_RESMOD_STEP_INTO | DBG_RESMOD_STEP_BACKINTO;
+        // Advertise the full forward step set plus backward single-step. With
+        // DBG_FLAG_TTD this makes IDA render its native debugger toolbar/menu
+        // buttons (step into/over/out, run, and their backward variants) using
+        // IDA's own icons -- no custom toolbar needed.
+        dbg.resume_modes = DBG_RESMOD_STEP_INTO
+                         | DBG_RESMOD_STEP_OVER
+                         | DBG_RESMOD_STEP_OUT
+                         | DBG_RESMOD_STEP_BACKINTO;
     }
 
     //-----------------------------------------------------------------------

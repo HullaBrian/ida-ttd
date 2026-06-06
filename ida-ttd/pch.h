@@ -42,6 +42,10 @@
 #include <name.hpp>
 #include <bytes.hpp>
 #include <netnode.hpp>
+#include <funcs.hpp>
+#include <typeinf.hpp>
+#include <ua.hpp>
+#include <auto.hpp>
 
 // ---------------------------------------------------------------------------
 // Microsoft TTD Replay SDK
