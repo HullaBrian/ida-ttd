@@ -277,6 +277,13 @@ namespace idattd
         return 1;
     }
 
+    int idaapi StepOutBackHandler::activate(action_activation_ctx_t *)
+    {
+        if ( mgr != nullptr )
+            mgr->request_step_out_backward();
+        return 1;
+    }
+
     int idaapi OpenTimelineHandler::activate(action_activation_ctx_t *)
     {
         if ( mgr == nullptr || !mgr->is_active() )

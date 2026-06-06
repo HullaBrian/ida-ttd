@@ -25,6 +25,15 @@ namespace idattd
         ssize_t idaapi on_event(ssize_t code, va_list va) override;
     };
 
+    // Listener for HT_IDB notifications — when names change (e.g. a PDB finishes
+    // downloading and IDA applies symbols), refresh the call stack so frames show
+    // names instead of raw VAs.
+    struct IdbEventListener : public event_listener_t
+    {
+        Plugin *p = nullptr;
+        ssize_t idaapi on_event(ssize_t code, va_list va) override;
+    };
+
     // The plugin object. It is both the plugmod_t returned from init() and the
     // HT_IDD event listener that receives all debugger (ev_*) notifications for
     // our debugger_t.
@@ -56,9 +65,11 @@ namespace idattd
 
         DbgEventListener m_dbgEvents;
         UiEventListener  m_uiEvents;
+        IdbEventListener m_idbEvents;
 
         // TTD-specific navigation (most stepping is IDA's native actions).
         RunBackHandler      m_runBack;   // IDA has no native "continue backwards"
+        StepOutBackHandler  m_stepOutBack; // ...nor "step out backwards"
         OpenTimelineHandler m_timeline;
         PositionCopyHandler m_posLabel;  // toolbar timestamp; click copies position
         GotoPositionHandler m_goto;
@@ -77,7 +88,15 @@ namespace idattd
         int  m_icoStepInto    = -1;
         int  m_icoStepOver    = -1;
         int  m_icoStepOut     = -1;
-        int  m_icoStepBack    = -1;
+        int  m_icoStepBack    = -1;      // circle-arrow glyph; used for step-over-back
+        int  m_icoStepIntoBack = -1;     // mirrored step-into (blue)
+        int  m_icoStepOutBack = -1;      // step-out (blue)
+        int  m_icoRunToCur    = -1;
+        int  m_icoRunToCurBack = -1;
+        // TTD action icons (custom actions, set at registration time).
+        int  m_icoTimeline    = -1;
+        int  m_icoGoto        = -1;
+        int  m_icoFuncSearch  = -1;
         bool m_toolbarShown   = false;
     };
 }

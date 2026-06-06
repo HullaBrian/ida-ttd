@@ -107,6 +107,16 @@ namespace idattd
         { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
     };
 
+    // IDA has no native "step out backwards", so we add one (run backward out of
+    // the current function to its call site).
+    struct StepOutBackHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+    };
+
     struct GotoPositionHandler : public action_handler_t
     {
         TraceManager *mgr = nullptr;
@@ -186,6 +196,7 @@ namespace idattd
     namespace actions
     {
         constexpr const char *RUN_BACK     = "idattd:run_back";
+        constexpr const char *STEP_OUT_BACK = "idattd:step_out_back";
         constexpr const char *POS_LABEL    = "idattd:pos_label";
         constexpr const char *TIMELINE     = "idattd:timeline";
         constexpr const char *GOTO_POS     = "idattd:goto_position";

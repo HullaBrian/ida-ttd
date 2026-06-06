@@ -54,6 +54,7 @@ namespace idattd
         void                       request_backward_step();
         void                       request_single_step(bool forward);
         void                       request_run(bool forward);
+        void                       request_step_out_backward();
         TTD::Replay::Position              current_position() const;
         std::vector<NamedPosition> collect_positions() const;
 
@@ -71,6 +72,10 @@ namespace idattd
         // reading its PE at the module's recorded load position. Deduplicated:
         // a given base is only attempted once per trace.
         void                       resolve_symbols(ea_t base, bool is64);
+
+        // Silently drive IDA's PDB plugin to load symbols for the module at
+        // 'base' (no per-module "load symbols?" prompt). Deduplicated per module.
+        void                       load_module_pdb(ea_t base);
 
         // Called once per stop (from HT_DBG dbg_suspend_process), when the
         // debugger memory cache is valid for the new position: name exports for
@@ -93,6 +98,10 @@ namespace idattd
         // user breakpoints. Returns EventType::MemoryWatchpoint if a breakpoint
         // was hit during the run, otherwise a normal-stop reason.
         TTD::Replay::EventType navigate_over(bool step_out);
+        // Run backward until the current function is exited (we reach the call
+        // that entered this frame), honoring user breakpoints. Shows a cancellable
+        // wait box because it single-steps backward.
+        TTD::Replay::EventType navigate_out_backward();
         // Run forward to 'addr' on thread 'utid' with SP >= min_sp (skips deeper
         // recursion); also stops on any user breakpoint. Returns 0=reached addr,
         // 1=user breakpoint, 2=trace boundary.
@@ -109,9 +118,18 @@ namespace idattd
         bool  is_target_module(const TTD::Replay::Module &m) const;
         void  emit_module_load(const TTD::Replay::Module &m);
         void  resolve_loaded_modules();   // resolve exports for every loaded module
-        // Cheap, replay-free disassembly of the block at/below 'pc' (RIP is an
-        // exact boundary). Runs on every stop; must not walk the trace.
+        // Cheap, replay-free disassembly of the function at 'pc'. Prefers the
+        // module's .pdata bounds (whole function at once); falls back to linear
+        // forward layout. Runs on every stop; must not walk the trace.
         void  analyze_current_function(ea_t pc);
+        // Look up the [start,end) of the function containing 'pc' from the cached
+        // .pdata ranges of its module. Returns false if unknown (x86, no .pdata).
+        bool  function_range_at(ea_t pc, ea_t &start, ea_t &end) const;
+        // For runtime-allocated code with no module/.pdata (shellcode, unpacked):
+        // seek a scratch cursor a little before the current position and replay
+        // FORWARD (cheap), laying out the real executed instructions around PC so
+        // a window of code is disassembled in both directions, not one at a time.
+        void  lay_out_window(ea_t pc);
 
     private:
         Plugin           *m_plugin = nullptr;
@@ -121,7 +139,14 @@ namespace idattd
         TTD::Replay::UniqueCursor       m_cursor;
 
         TTD::Replay::UniqueCursor       m_symCursor; // scratch cursor for symbol reads
+        TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
+        ea_t                            m_winLo = BADADDR; // last laid-out window range
+        ea_t                            m_winHi = 0;
         std::set<ea_t>                  m_resolvedBases; // modules whose exports we've named
+        std::set<ea_t>                  m_pdbBases;      // modules whose PDB we've requested
+        // Per-module function bounds from the PE exception table (.pdata), keyed
+        // by module base; each vector is sorted by start address.
+        std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
 
         EventQueue   m_events;
         bool         m_is64 = false;
@@ -130,6 +155,7 @@ namespace idattd
         bool         m_forwardSingleStep = false;
         bool         m_runOnce = false;
         bool         m_runForward = true;
+        bool         m_stepOutBackward = false;
         resume_mode_t m_resumeMode = RESMOD_NONE;
         int          m_activeBpts = 0;
 

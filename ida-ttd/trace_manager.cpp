@@ -146,8 +146,11 @@ namespace idattd
             m_plugin->hide_actions();
         m_cursor.reset();
         m_symCursor.reset();
+        m_anaCursor.reset();
         m_engine.reset();
         m_resolvedBases.clear();
+        m_pdbBases.clear();
+        m_funcRanges.clear();
         return DRC_OK;
     }
 
@@ -178,10 +181,22 @@ namespace idattd
         m_backwardSingleStep = false;
         m_forwardSingleStep  = false;
         m_runOnce            = false;
+        m_stepOutBackward    = false;
         m_activeBpts         = 0;
         m_resolvedBases.clear();
+        m_pdbBases.clear();
+        m_funcRanges.clear();
+        m_winLo              = BADADDR;
+        m_winHi              = 0;
         m_is64               = inf_is_64bit();
         m_targetName         = base_name(input_path != nullptr ? input_path : "");
+
+        // We load module PDBs ourselves, silently (see load_module_pdb), so turn
+        // OFF IDA's automatic debug-file loading — otherwise it pops a "load
+        // symbols?" confirmation for every module. (set_debugger_options REPLACES
+        // the option set and returns the old one, so clear just this bit.)
+        uint dopts = set_debugger_options(0);
+        set_debugger_options(dopts & ~(uint)DOPT_LOAD_DINFO);
 
         if ( path == nullptr || !std::filesystem::exists(path) )
         {
@@ -515,6 +530,68 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    // Backward step-out: run the cursor backward until we leave the current
+    // function, i.e. land on the call instruction that entered this frame. We
+    // reconstruct call depth from the executed instructions (a call seen at
+    // depth 0 going backward is that entry call), stepping over nested callees.
+    // This single-steps backward, so it shows a cancellable wait box.
+    EventType TraceManager::navigate_out_backward()
+    {
+        auto threads_before = snapshot_threads();
+        auto mods_before    = snapshot_modules();
+
+        uint32_t utid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
+        int  depth   = 0;
+        bool hit_bpt = false;
+        Position prev = m_cursor->GetPosition();
+
+        show_wait_box("Stepping out backwards (Cancel to stop)...");
+        const int CAP = 5000000;
+        for ( int i = 0; i < CAP; i++ )
+        {
+            if ( (i & 0x3FF) == 0 && user_cancelled() )
+                break;
+
+            ICursorView::ReplayResult r = m_cursor->ReplayBackward(Position::Min, StepCount{ 1 });
+            if ( r.StopReason == EventType::MemoryWatchpoint ) { hit_bpt = true; break; }
+
+            Position now = m_cursor->GetPosition();
+            if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
+                break;                                  // reached the start of the trace
+            prev = now;
+
+            if ( (uint32_t)m_cursor->GetThreadInfo().UniqueId != utid )
+                continue;                               // other thread; keep rewinding
+
+            ea_t   pc = program_counter();
+            insn_t insn;
+            bool   call = false, ret = false;
+            if ( decode_insn(&insn, pc) > 0 )
+            {
+                call = is_call_insn(insn);
+                ret  = is_ret_insn(insn);
+            }
+            if ( call )
+            {
+                if ( depth == 0 )
+                    break;                              // the call that entered this frame
+                depth--;
+            }
+            else if ( ret )
+            {
+                depth++;
+            }
+        }
+        hide_wait_box();
+
+        auto threads_after = snapshot_threads();
+        auto mods_after    = snapshot_modules();
+        apply_differences(threads_before, threads_after, mods_before, mods_after);
+
+        return hit_bpt ? EventType::MemoryWatchpoint : EventType::Position;
+    }
+
+    //-----------------------------------------------------------------------
     // Define an instruction at the exact address 'ea'. Addresses passed here come
     // from the trace (real executed PCs), so they are true instruction
     // boundaries; clear any stale/garbage item overlapping ea first so we never
@@ -529,19 +606,20 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    // Lay out the code at and below PC. This runs on every stop, so it must be
-    // CHEAP — no trace replay. PC is RIP, a real instruction boundary, so a
-    // straight-line decode from it is exact: we force a clean instruction at PC
-    // (killing the "RIP is not code" prompt) and disassemble forward by flow,
-    // advancing past calls (not into them) up to a bounded window or a return.
+    // Lay out the function around PC. Runs on every stop, so it must be CHEAP —
+    // no trace replay.
     //
-    // We deliberately do NOT walk the trace backward to find the function start
-    // or lay out the lines above PC. In TTD every backward single-step re-seeks
-    // toward a keyframe, so doing hundreds per stop froze the UI for tens of
-    // seconds. The block-below-PC layout plus export naming keeps stepping
-    // usable; earlier instructions get laid out as you reach them. (A one-shot,
-    // user-triggered "analyze whole function" could do the expensive backward
-    // walk behind a wait box if needed.)
+    // Primary path (x64, WinDbg-style): the module's .pdata exception table gives
+    // the EXACT [start,end) of the enclosing function (recovered offline in
+    // resolve_symbols). We disassemble the whole range at once, so the code BEFORE
+    // PC is already laid out — stepping backward no longer reveals one instruction
+    // at a time. The bounds are authoritative, so there's no mis-alignment or
+    // "RIP not code" prompt.
+    //
+    // Fallback (x86, or a module with no .pdata): linear forward layout from PC.
+    // PC is RIP — a real boundary — so a straight-line decode is exact; we stop at
+    // the first return. (Lines above PC only appear as you reach them; the deep,
+    // user-triggered "Analyze whole function" can still recover the rest.)
     void TraceManager::analyze_current_function(ea_t pc)
     {
         segment_t *seg = getseg(pc);
@@ -550,28 +628,115 @@ namespace idattd
         if ( get_func(pc) != nullptr )
             return;             // already inside a defined function
 
-        force_insn(pc);         // exact boundary; clears any stale overlapping item
-
-        ea_t limit = pc + 0x1000;
-        if ( limit < pc || limit > seg->end_ea )
-            limit = seg->end_ea;
-        ea_t ip = pc;
-        for ( int guard = 0; ip != BADADDR && ip < limit && guard < 8192; guard++ )
+        ea_t fstart, fend;
+        if ( function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg->end_ea )
         {
-            insn_t insn;
+            // Disassemble the whole function. Embedded data (e.g. jump tables)
+            // can't be decoded — skip a byte and keep going rather than abort.
+            ea_t ip = fstart;
+            for ( int guard = 0; ip < fend && guard < 0x20000; guard++ )
+            {
+                if ( is_code(get_flags(ip)) )
+                {
+                    ea_t nxt = get_item_end(ip);
+                    ip = nxt > ip ? nxt : ip + 1;
+                    continue;
+                }
+                int len = create_insn(ip);
+                ip += len > 0 ? len : 1;
+            }
+            add_func(fstart, fend);     // define it with the authoritative bounds
+            return;
+        }
+
+        // ---- runtime-allocated code (no module / no .pdata): shellcode, unpacked
+        // code, JIT. Use the trace to lay out a window of actually-executed code
+        // around PC (correct boundaries, both directions). ----
+        lay_out_window(pc);
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::lay_out_window(ea_t pc)
+    {
+        if ( !m_engine || !m_cursor )
+            return;
+
+        // Already have a laid-out window comfortably surrounding PC? Skip the
+        // replay (cheap path while stepping inside the same region).
+        if ( pc >= m_winLo + 0x40 && pc + 0x40 <= m_winHi && is_code(get_flags(pc)) )
+            return;
+
+        if ( !m_anaCursor )
+            m_anaCursor = UniqueCursor{ m_engine->NewCursor() };
+        if ( !m_anaCursor )
+        {
+            force_insn(pc);
+            return;
+        }
+
+        const uint64_t BEFORE = 64;    // instructions of context before PC
+        const uint64_t AFTER  = 192;   // instructions after PC
+        const ea_t     W      = 0x2000;// only realize code within +/-W of PC
+
+        Position cur = m_cursor->GetPosition();
+        uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
+
+        // Seek the scratch cursor a little before the current position, then
+        // replay FORWARD (cheap — no per-step keyframe re-seek like going back).
+        Position start = cur;
+        start.Steps = (StepCount)((uint64_t)cur.Steps > BEFORE ? (uint64_t)cur.Steps - BEFORE : 0);
+        m_anaCursor->SetPosition(start);
+
+        std::set<ea_t> pcs;
+        int budget = (int)((BEFORE + AFTER) * 3) + 256;  // extra for thread interleaving
+        Position prev = m_anaCursor->GetPosition();
+        for ( int i = 0; i < budget; i++ )
+        {
+            if ( (uint32_t)m_anaCursor->GetThreadInfo().UniqueId == tid )
+            {
+                ea_t a = (ea_t)(uint64_t)m_anaCursor->GetProgramCounter();
+                ea_t d = a > pc ? a - pc : pc - a;
+                if ( d <= W )
+                    pcs.insert(a);
+            }
+            m_anaCursor->ReplayForward(Position::Max, StepCount{ 1 });
+            Position now = m_anaCursor->GetPosition();
+            if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
+                break;                  // reached the end of the trace
+            prev = now;
+        }
+
+        // Realize the exact executed instructions (these are real boundaries).
+        for ( ea_t a : pcs )
+            force_insn(a);
+
+        if ( pcs.empty() )
+        {
+            force_insn(pc);             // at least the current instruction
+            m_winLo = m_winHi = BADADDR;
+            return;
+        }
+
+        // Extend forward by linear decode from the furthest laid-out instruction
+        // (exact: it starts on a real boundary) so the user can scroll ahead.
+        ea_t ip = *pcs.rbegin();
+        ea_t flimit = pc + 0x200;
+        for ( int g = 0; ip < flimit && g < 4096; g++ )
+        {
             if ( is_code(get_flags(ip)) )
             {
                 ea_t nxt = get_item_end(ip);
                 ip = nxt > ip ? nxt : ip + 1;
                 continue;
             }
-            int len = create_insn(ip, &insn);
+            int len = create_insn(ip);
             if ( len <= 0 )
                 break;
-            if ( is_ret_insn(insn) )
-                break;          // end of this block
             ip += len;
         }
+
+        m_winLo = *pcs.begin();
+        m_winHi = ip > *pcs.rbegin() ? ip : *pcs.rbegin();
     }
 
     //-----------------------------------------------------------------------
@@ -798,6 +963,15 @@ namespace idattd
             return DRC_OK;
         }
 
+        if ( m_stepOutBackward )
+        {
+            navigate_out_backward();
+            emit_stop(false);
+            m_stepOutBackward = false;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
         switch ( m_resumeMode )
         {
             case RESMOD_INTO:
@@ -904,6 +1078,19 @@ namespace idattd
         }
         m_runOnce    = true;
         m_runForward = forward;
+        request_continue_process();
+        run_requests();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::request_step_out_backward()
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+        m_stepOutBackward = true;
         request_continue_process();
         run_requests();
     }
@@ -1027,6 +1214,57 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    void TraceManager::load_module_pdb(ea_t base)
+    {
+        if ( base == BADADDR || !m_engine )
+            return;
+        if ( !m_pdbBases.insert(base).second )
+            return;     // already requested for this module
+
+        // The module's path lets the PDB plugin find the PE / its debug directory
+        // (it can also read the PE from debugger memory at 'base').
+        std::string path;
+        size_t n = m_engine->GetModuleCount();
+        const Module *list = m_engine->GetModuleList();
+        for ( size_t i = 0; i < n; i++ )
+        {
+            if ( (ea_t)(uint64_t)list[i].Address == base )
+            {
+                path = to_utf8(list[i].pName, list[i].NameLength);
+                break;
+            }
+        }
+        if ( path.empty() )
+            return;
+
+        // Drive the PDB plugin with PDB_CC_USER_WITH_DATA (3): it reads the load
+        // address + path from the "$ pdb" netnode and applies symbols WITHOUT the
+        // "load symbols?" prompt that the automatic DOPT_LOAD_DINFO path shows.
+        static const char *PDB_NODE_NAME = "$ pdb";
+        const int PDB_DLLBASE_NODE_IDX  = 0;
+        const int PDB_DLLNAME_NODE_IDX  = 0;
+        const int PDB_CC_USER_WITH_DATA = 3;
+        netnode pdbnode;
+        pdbnode.create(PDB_NODE_NAME);
+        pdbnode.altset(PDB_DLLBASE_NODE_IDX, base);
+        pdbnode.supset(PDB_DLLNAME_NODE_IDX, path.c_str(), path.size() + 1);
+
+        // Suppress the plugin's dialogs while it runs: when offline / the PDB
+        // can't be found, it would otherwise pop an error or file-locate dialog
+        // for every module. With 'batch' set those are turned into log lines, and
+        // we report the miss to the output window ourselves.
+        bool old_batch = batch;
+        batch = true;
+        bool ran = load_and_run_plugin("pdb", PDB_CC_USER_WITH_DATA);
+        batch = old_batch;
+
+        // The plugin writes its success flag back into the same netnode slot.
+        if ( !ran || pdbnode.altval(PDB_DLLBASE_NODE_IDX) == 0 )
+            msg("[ida-ttd] PDB symbols not resolved for %s (offline or unavailable).\n",
+                base_name(path).c_str());
+    }
+
+    //-----------------------------------------------------------------------
     void TraceManager::resolve_symbols(ea_t base, bool is64)
     {
         if ( !m_engine || base == BADADDR )
@@ -1056,9 +1294,62 @@ namespace idattd
 
         m_symCursor->SetPosition(hit != nullptr ? hit->Position : Position::Min);
         size_t named = apply_module_exports(m_symCursor.get(), base, is64);
-        if ( named > 0 )
-            msg("[ida-ttd] symbols: named %u export(s) at base 0x%llX\n",
-                (unsigned)named, (uint64_t)base);
+
+        // Recover this module's function boundaries from its .pdata exception
+        // table so we can lay out whole functions (incl. code before the current
+        // PC) when the user steps into runtime-only code — no symbols, no replay.
+        // Prefer the on-disk PE (reliable); fall back to recorded memory, since
+        // TTD may not have captured the .pdata section.
+        std::string modpath = hit != nullptr && hit->pModule != nullptr
+                            ? to_utf8(hit->pModule->pName, hit->pModule->NameLength)
+                            : std::string();
+        std::vector<std::pair<ea_t, ea_t>> ranges;
+        size_t nfunc = parse_pdata_functions_from_file(modpath.c_str(), base, is64, ranges);
+        if ( nfunc == 0 )
+            nfunc = parse_pdata_functions(m_symCursor.get(), base, is64, ranges);
+        if ( nfunc > 0 )
+            m_funcRanges[base] = std::move(ranges);
+
+        msg("[ida-ttd] %s @ 0x%llX: %u export(s), %u function range(s)\n",
+            base_name(modpath).c_str(), (uint64_t)base, (unsigned)named, (unsigned)nfunc);
+    }
+
+    //-----------------------------------------------------------------------
+    bool TraceManager::function_range_at(ea_t pc, ea_t &start, ea_t &end) const
+    {
+        if ( !m_engine )
+            return false;
+
+        // Which module is PC in?
+        ea_t modbase = BADADDR;
+        size_t n = m_engine->GetModuleCount();
+        const Module *list = m_engine->GetModuleList();
+        for ( size_t i = 0; i < n; i++ )
+        {
+            ea_t b = (ea_t)(uint64_t)list[i].Address;
+            ea_t e = b + (ea_t)list[i].Size;
+            if ( pc >= b && pc < e ) { modbase = b; break; }
+        }
+        if ( modbase == BADADDR )
+            return false;
+
+        auto it = m_funcRanges.find(modbase);
+        if ( it == m_funcRanges.end() )
+            return false;
+
+        // Last range whose start <= pc, then verify pc is within it.
+        const std::vector<std::pair<ea_t, ea_t>> &v = it->second;
+        auto up = std::upper_bound(v.begin(), v.end(), std::make_pair(pc, (ea_t)BADADDR));
+        if ( up == v.begin() )
+            return false;
+        --up;
+        if ( pc >= up->first && pc < up->second )
+        {
+            start = up->first;
+            end   = up->second;
+            return true;
+        }
+        return false;
     }
 
     //-----------------------------------------------------------------------

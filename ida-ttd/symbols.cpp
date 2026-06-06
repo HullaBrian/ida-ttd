@@ -122,4 +122,129 @@ namespace idattd
 
         return named;
     }
+
+    //-----------------------------------------------------------------------
+    size_t parse_pdata_functions(ICursorView *cursor, ea_t base, bool is64,
+                                 std::vector<std::pair<ea_t, ea_t>> &out)
+    {
+        out.clear();
+        // The RUNTIME_FUNCTION table only exists for x64 (x86 SEH is different).
+        if ( cursor == nullptr || base == BADADDR || !is64 )
+            return 0;
+
+        uint64_t b = (uint64_t)base;
+        IMAGE_DOS_HEADER dos{};
+        if ( !read_val(cursor, b, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
+            return 0;
+
+        IMAGE_NT_HEADERS64 nt{};
+        if ( !read_val(cursor, b + (uint32_t)dos.e_lfanew, &nt) || nt.Signature != IMAGE_NT_SIGNATURE )
+            return 0;
+
+        const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        uint32_t rva  = dd.VirtualAddress;
+        uint32_t size = dd.Size;
+        if ( rva == 0 || size == 0 )
+            return 0;
+
+        // RUNTIME_FUNCTION = { uint32 BeginRva; uint32 EndRva; uint32 UnwindRva; }.
+        struct RtFunc { uint32_t Begin, End, Unwind; };
+        size_t maxEntries = size / sizeof(RtFunc);
+        if ( maxEntries == 0 )
+            return 0;
+
+        std::vector<RtFunc> buf(maxEntries);
+        MemoryBuffer mb = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + rva }, BufferView{ buf.data(), maxEntries * sizeof(RtFunc) });
+        size_t got = mb.Memory.Size / sizeof(RtFunc);
+
+        out.reserve(got);
+        for ( size_t i = 0; i < got; i++ )
+        {
+            const RtFunc &rf = buf[i];
+            if ( rf.Begin == 0 || rf.End <= rf.Begin )
+                continue;
+            out.emplace_back((ea_t)(b + rf.Begin), (ea_t)(b + rf.End));
+        }
+        std::sort(out.begin(), out.end());
+        return out.size();
+    }
+
+    //-----------------------------------------------------------------------
+    size_t parse_pdata_functions_from_file(const char *path, ea_t base, bool is64,
+                                           std::vector<std::pair<ea_t, ea_t>> &out)
+    {
+        out.clear();
+        if ( path == nullptr || *path == '\0' || base == BADADDR || !is64 )
+            return 0;
+
+        std::ifstream f(path, std::ios::binary);
+        if ( !f.is_open() )
+            return 0;
+
+        IMAGE_DOS_HEADER dos{};
+        f.read((char *)&dos, sizeof(dos));
+        if ( !f || dos.e_magic != IMAGE_DOS_SIGNATURE )
+            return 0;
+
+        f.seekg((std::streamoff)(uint32_t)dos.e_lfanew, std::ios::beg);
+        IMAGE_NT_HEADERS64 nt{};
+        f.read((char *)&nt, sizeof(nt));
+        if ( !f || nt.Signature != IMAGE_NT_SIGNATURE
+          || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC )
+            return 0;
+
+        const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+        uint32_t rva  = dd.VirtualAddress;
+        uint32_t size = dd.Size;
+        if ( rva == 0 || size == 0 )
+            return 0;
+
+        // Map the .pdata RVA to a file offset via the section headers (which
+        // follow the optional header).
+        uint64_t secOff = (uint64_t)(uint32_t)dos.e_lfanew + 4
+                        + sizeof(IMAGE_FILE_HEADER) + nt.FileHeader.SizeOfOptionalHeader;
+        f.seekg((std::streamoff)secOff, std::ios::beg);
+
+        uint32_t fileOff = 0;
+        bool     found   = false;
+        for ( uint16_t i = 0; i < nt.FileHeader.NumberOfSections; i++ )
+        {
+            IMAGE_SECTION_HEADER sec{};
+            f.read((char *)&sec, sizeof(sec));
+            if ( !f )
+                break;
+            uint32_t vsize = sec.Misc.VirtualSize != 0 ? sec.Misc.VirtualSize : sec.SizeOfRawData;
+            if ( rva >= sec.VirtualAddress && rva < sec.VirtualAddress + vsize )
+            {
+                fileOff = sec.PointerToRawData + (rva - sec.VirtualAddress);
+                found   = true;
+                break;
+            }
+        }
+        if ( !found )
+            return 0;
+
+        struct RtFunc { uint32_t Begin, End, Unwind; };
+        size_t count = size / sizeof(RtFunc);
+        if ( count == 0 )
+            return 0;
+
+        std::vector<RtFunc> buf(count);
+        f.seekg((std::streamoff)fileOff, std::ios::beg);
+        f.read((char *)buf.data(), (std::streamsize)(count * sizeof(RtFunc)));
+        size_t got = (size_t)f.gcount() / sizeof(RtFunc);
+
+        uint64_t b = (uint64_t)base;
+        out.reserve(got);
+        for ( size_t i = 0; i < got; i++ )
+        {
+            const RtFunc &rf = buf[i];
+            if ( rf.Begin == 0 || rf.End <= rf.Begin )
+                continue;
+            out.emplace_back((ea_t)(b + rf.Begin), (ea_t)(b + rf.End));
+        }
+        std::sort(out.begin(), out.end());
+        return out.size();
+    }
 }
