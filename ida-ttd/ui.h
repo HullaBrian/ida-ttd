@@ -96,7 +96,7 @@ namespace idattd
         TraceManager *mgr = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     struct OpenTimelineHandler : public action_handler_t
@@ -104,7 +104,7 @@ namespace idattd
         TraceManager *mgr = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     // IDA has no native "step out backwards", so we add one (run backward out of
@@ -114,7 +114,7 @@ namespace idattd
         TraceManager *mgr = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     struct GotoPositionHandler : public action_handler_t
@@ -122,7 +122,7 @@ namespace idattd
         TraceManager *mgr = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     // Click handler for the toolbar position readout: copies the current
@@ -132,7 +132,7 @@ namespace idattd
         TraceManager *mgr = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     // Deep, on-demand "define the whole enclosing function" (expensive backward
@@ -142,7 +142,7 @@ namespace idattd
         TraceManager *mgr = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     // One-click: trace the function under the cursor, sweep, and show results.
@@ -162,7 +162,7 @@ namespace idattd
         FunctionTracer *tracer = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     struct OpenTracedHandler : public action_handler_t
@@ -171,7 +171,7 @@ namespace idattd
         FunctionTracer *tracer = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     struct OpenEventsHandler : public action_handler_t
@@ -180,7 +180,7 @@ namespace idattd
         FunctionTracer *tracer = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     struct RunTraceHandler : public action_handler_t
@@ -189,7 +189,7 @@ namespace idattd
         FunctionTracer *tracer = nullptr;
         int           idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
-        { return mgr != nullptr && mgr->is_active() ? AST_ENABLE : AST_DISABLE; }
+        { return AST_ENABLE_ALWAYS; }
     };
 
     // Action identifiers (used for registration + menu/popup attach).

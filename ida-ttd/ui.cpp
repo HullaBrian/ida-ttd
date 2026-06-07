@@ -384,9 +384,9 @@ namespace idattd
 
     action_state_t idaapi TraceFuncHandler::update(action_update_ctx_t *ctx)
     {
-        // Meaningful over a function (or any address with code) while replaying.
-        if ( mgr != nullptr && mgr->is_active()
-          && ctx != nullptr && ctx->cur_ea != BADADDR )
+        // Meaningful over any address with code (the handler warns if no trace is
+        // being replayed when invoked).
+        if ( ctx != nullptr && ctx->cur_ea != BADADDR )
             return AST_ENABLE;
         return AST_DISABLE;
     }

@@ -52,6 +52,7 @@ namespace idattd
 
         void show_actions();    // build the TTD toolbar + override icons (session start)
         void hide_actions();    // tear the TTD toolbar down (session end)
+        void reskin_actions();  // (re)apply the codicon icons to the movement actions
         void update_position_label();   // refresh the live "Seq:Steps" toolbar readout
 
     private:
@@ -97,6 +98,5 @@ namespace idattd
         int  m_icoTimeline    = -1;
         int  m_icoGoto        = -1;
         int  m_icoFuncSearch  = -1;
-        bool m_toolbarShown   = false;
     };
 }

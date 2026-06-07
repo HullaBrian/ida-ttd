@@ -130,6 +130,14 @@ namespace idattd
         // FORWARD (cheap), laying out the real executed instructions around PC so
         // a window of code is disassembled in both directions, not one at a time.
         void  lay_out_window(ea_t pc);
+        // Forward-replay a window around the current position and collect the
+        // current thread's executed instruction addresses within +/-0x2000 of pc
+        // (the shared engine behind lay_out_window and find_dynamic_start).
+        void  collect_window_pcs(ea_t pc, std::set<ea_t> &pcs);
+        // Best guess at the start of the function containing 'pc' for dynamic code:
+        // the lowest executed address contiguous (by instruction) with pc, so a
+        // recursive-descent add_func() there lays out the prologue above pc too.
+        ea_t  find_dynamic_start(ea_t pc);
 
     private:
         Plugin           *m_plugin = nullptr;
@@ -142,11 +150,18 @@ namespace idattd
         TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
         ea_t                            m_winLo = BADADDR; // last laid-out window range
         ea_t                            m_winHi = 0;
+        uint32                          m_savedAf = 0;     // INF_AF saved over the session
+        bool                            m_afSaved = false;
         std::set<ea_t>                  m_resolvedBases; // modules whose exports we've named
         std::set<ea_t>                  m_pdbBases;      // modules whose PDB we've requested
         // Per-module function bounds from the PE exception table (.pdata), keyed
         // by module base; each vector is sorted by start address.
         std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
+        // Functions WE defined in dynamic (non-module) code, keyed by start_ea ->
+        // byte-hash at definition time. Used to detect self-modifying / reused
+        // regions (incl. time-travel to a position where the bytes differ) and
+        // re-disassemble them.
+        std::map<ea_t, uint64_t>        m_dynFuncBytes;
 
         EventQueue   m_events;
         bool         m_is64 = false;

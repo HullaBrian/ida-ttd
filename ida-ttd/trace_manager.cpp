@@ -144,6 +144,11 @@ namespace idattd
     {
         if ( m_plugin != nullptr )
             m_plugin->hide_actions();
+        if ( m_afSaved )
+        {
+            inf_set_af(m_savedAf);   // restore the analysis flags we changed
+            m_afSaved = false;
+        }
         m_cursor.reset();
         m_symCursor.reset();
         m_anaCursor.reset();
@@ -151,6 +156,7 @@ namespace idattd
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
+        m_dynFuncBytes.clear();
         return DRC_OK;
     }
 
@@ -186,9 +192,23 @@ namespace idattd
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
+        m_dynFuncBytes.clear();
         m_winLo              = BADADDR;
         m_winHi              = 0;
         m_is64               = inf_is_64bit();
+
+        // Stop the analysis cascade: each on-stop add_func() traces the current
+        // function, and AF_PROC ("create functions if call is present") would make
+        // IDA recursively create+analyze EVERY callee (stack frames, vars, FLIRT),
+        // fanning out across whole modules and making navigation crawl. We define
+        // the function the user is actually looking at explicitly, so disable the
+        // auto-create-from-calls features for the session (restored in on_term).
+        if ( !m_afSaved )
+        {
+            m_savedAf = inf_get_af();
+            m_afSaved = true;
+        }
+        inf_set_af(m_savedAf & ~(uint32)(AF_PROC | AF_PROCPTR));
         m_targetName         = base_name(input_path != nullptr ? input_path : "");
 
         // We load module PDBs ourselves, silently (see load_module_pdb), so turn
@@ -251,6 +271,14 @@ namespace idattd
             return DRC_FAILED;
         }
         m_cursor->SetPosition(Position::Min);
+
+        // Serve memory like WinDbg/Binja: the Default policy resolves to a
+        // thread-local query that only returns memory the current thread touched
+        // around the current position, so unpacked/written-earlier bytes (e.g. the
+        // rest of a shellcode buffer) read back as zeros. GloballyAggressive looks
+        // across the whole trace to reconstruct the value (lower confidence, but it
+        // is what WinDbg/Binja effectively show) so far fewer bytes come back 0.
+        m_cursor->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
 
         if ( m_plugin != nullptr )
             m_plugin->show_actions();
@@ -606,6 +634,26 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    // FNV-1a hash of up to 'n' bytes at 'ea' (read through the debugger memory,
+    // i.e. the live bytes at the current position). Returns 0 on a short read so a
+    // failed read never looks like a byte change.
+    static uint64_t hash_mem(ea_t ea, size_t n)
+    {
+        uint8_t buf[64];
+        if ( n > sizeof(buf) )
+            n = sizeof(buf);
+        if ( get_bytes(buf, (ssize_t)n, ea) != (ssize_t)n )
+            return 0;
+        uint64_t h = 1469598103934665603ULL;
+        for ( size_t i = 0; i < n; i++ )
+        {
+            h ^= buf[i];
+            h *= 1099511628211ULL;
+        }
+        return h;
+    }
+
+    //-----------------------------------------------------------------------
     // Lay out the function around PC. Runs on every stop, so it must be CHEAP —
     // no trace replay.
     //
@@ -625,14 +673,31 @@ namespace idattd
         segment_t *seg = getseg(pc);
         if ( seg == nullptr )
             return;
-        if ( get_func(pc) != nullptr )
-            return;             // already inside a defined function
+
+        if ( func_t *f = get_func(pc) )
+        {
+            // Already defined. For functions WE built in dynamic memory, detect a
+            // rewrite (self-modifying / reused region, or time-travel to a position
+            // where the same address holds different code) by hashing the bytes and
+            // comparing to definition time. If unchanged (or not ours), keep it.
+            auto it = m_dynFuncBytes.find(f->start_ea);
+            if ( it == m_dynFuncBytes.end() )
+                return;
+            uint64_t h = hash_mem(f->start_ea, 64);
+            if ( h == 0 || h == it->second )
+                return;
+            ea_t fs = f->start_ea, fe = f->end_ea;
+            del_func(fs);
+            del_items(fs, DELIT_EXPAND, (asize_t)(fe - fs));
+            m_dynFuncBytes.erase(it);
+            // fall through to re-disassemble the new code
+        }
 
         ea_t fstart, fend;
         if ( function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg->end_ea )
         {
-            // Disassemble the whole function. Embedded data (e.g. jump tables)
-            // can't be decoded — skip a byte and keep going rather than abort.
+            // Module function with authoritative .pdata bounds: disassemble the
+            // whole range. Embedded data (jump tables) can't decode — skip a byte.
             ea_t ip = fstart;
             for ( int guard = 0; ip < fend && guard < 0x20000; guard++ )
             {
@@ -645,49 +710,51 @@ namespace idattd
                 int len = create_insn(ip);
                 ip += len > 0 ? len : 1;
             }
-            add_func(fstart, fend);     // define it with the authoritative bounds
+            add_func(fstart, fend);
             return;
         }
 
         // ---- runtime-allocated code (no module / no .pdata): shellcode, unpacked
-        // code, JIT. Use the trace to lay out a window of actually-executed code
-        // around PC (correct boundaries, both directions). ----
-        lay_out_window(pc);
+        // code, JIT. Mirror Binary Ninja's debugger: define a function and let
+        // IDA's recursive descent disassemble the WHOLE thing (forward branches +
+        // not-taken branches), seeded at a real start at/above PC so the prologue
+        // above PC is laid out too (for backward stepping). ----
+        ea_t start = find_dynamic_start(pc);
+        force_insn(start);                  // exact-boundary seed
+        add_func(start);                    // BADADDR end -> recursive descent
+        ea_t aend = (pc > start ? pc : start) + 0x2000;
+        plan_and_wait(start, aend);         // force the descent synchronously, bounded
+
+        if ( func_t *nf = get_func(pc) )
+            m_dynFuncBytes[nf->start_ea] = hash_mem(nf->start_ea, 64);
+        else
+            lay_out_window(pc);             // PC reachable only via an indirect edge
     }
 
     //-----------------------------------------------------------------------
-    void TraceManager::lay_out_window(ea_t pc)
+    void TraceManager::collect_window_pcs(ea_t pc, std::set<ea_t> &pcs)
     {
+        pcs.clear();
         if ( !m_engine || !m_cursor )
             return;
-
-        // Already have a laid-out window comfortably surrounding PC? Skip the
-        // replay (cheap path while stepping inside the same region).
-        if ( pc >= m_winLo + 0x40 && pc + 0x40 <= m_winHi && is_code(get_flags(pc)) )
-            return;
-
         if ( !m_anaCursor )
             m_anaCursor = UniqueCursor{ m_engine->NewCursor() };
         if ( !m_anaCursor )
-        {
-            force_insn(pc);
             return;
-        }
 
-        const uint64_t BEFORE = 64;    // instructions of context before PC
-        const uint64_t AFTER  = 192;   // instructions after PC
-        const ea_t     W      = 0x2000;// only realize code within +/-W of PC
+        const uint64_t BEFORE = 64;     // instructions of context before PC
+        const uint64_t AFTER  = 192;    // instructions after PC
+        const ea_t     W      = 0x2000; // only collect addresses within +/-W of PC
 
         Position cur = m_cursor->GetPosition();
         uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
 
-        // Seek the scratch cursor a little before the current position, then
-        // replay FORWARD (cheap — no per-step keyframe re-seek like going back).
+        // Seek a little before the current position, then replay FORWARD (cheap —
+        // no per-step keyframe re-seek like going backward).
         Position start = cur;
         start.Steps = (StepCount)((uint64_t)cur.Steps > BEFORE ? (uint64_t)cur.Steps - BEFORE : 0);
         m_anaCursor->SetPosition(start);
 
-        std::set<ea_t> pcs;
         int budget = (int)((BEFORE + AFTER) * 3) + 256;  // extra for thread interleaving
         Position prev = m_anaCursor->GetPosition();
         for ( int i = 0; i < budget; i++ )
@@ -705,6 +772,49 @@ namespace idattd
                 break;                  // reached the end of the trace
             prev = now;
         }
+    }
+
+    //-----------------------------------------------------------------------
+    ea_t TraceManager::find_dynamic_start(ea_t pc)
+    {
+        std::set<ea_t> pcs;
+        collect_window_pcs(pc, pcs);
+        if ( pcs.empty() )
+            return pc;                  // nothing collected -> start at PC (BN-style)
+
+        auto it = pcs.upper_bound(pc);  // first executed address > pc
+        if ( it == pcs.begin() )
+            return pc;                  // none <= pc
+        --it;                           // largest executed address <= pc
+
+        // Walk down through executed addresses while they chain by instruction
+        // (gap <= max x86 insn length). A larger gap means the lower address is a
+        // different basic block reached by a jump, not the linear prologue.
+        ea_t lo = *it;
+        while ( it != pcs.begin() )
+        {
+            auto pv = std::prev(it);
+            if ( lo - *pv > 15 )
+                break;
+            lo = *pv;
+            --it;
+        }
+        return lo;
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::lay_out_window(ea_t pc)
+    {
+        if ( !m_engine || !m_cursor )
+            return;
+
+        // Already have a laid-out window comfortably surrounding PC? Skip the
+        // replay (cheap path while stepping inside the same region).
+        if ( pc >= m_winLo + 0x40 && pc + 0x40 <= m_winHi && is_code(get_flags(pc)) )
+            return;
+
+        std::set<ea_t> pcs;
+        collect_window_pcs(pc, pcs);
 
         // Realize the exact executed instructions (these are real boundaries).
         for ( ea_t a : pcs )
@@ -856,6 +966,18 @@ namespace idattd
     {
         if ( !m_cursor )
             return;
+
+        // Time travel breaks IDA's "process memory only changes going forward"
+        // assumption: the SAME address can hold different bytes at different
+        // positions (e.g. a buffer that's zero before it's unpacked). After a
+        // position jump IDA keeps the previous position's cached bytes (showing
+        // stale zeros) for everything it doesn't re-read until the next step.
+        // Flush the cached memory contents so IDA re-reads at the new position on
+        // its normal post-suspend redraw. Use invalidate_dbg_state(DBGINV_MEMORY)
+        // WITHOUT DBGINV_REDRAW: invalidate_dbgmem_contents() forces a screen
+        // refresh that rebuilds the debug toolbars and drops the TTD toolbar.
+        invalidate_dbg_state(DBGINV_MEMORY);
+
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.
         resolve_loaded_modules();
@@ -876,9 +998,9 @@ namespace idattd
 
     void TraceManager::emit_stop(bool is_step)
     {
-        // Just queue the stop event here (during ev_resume). The actual
-        // disassembly/symbol work happens in on_suspended(), once IDA has
-        // invalidated its debugger memory cache for the new position.
+        // Just queue the stop event here (during ev_resume). The memory-cache
+        // invalidation and disassembly/symbol work happen in on_suspended(), once
+        // the process is actually in the stopped state.
         ea_t pc = program_counter();
         if ( is_step )
             m_events.add_step(m_pid, current_tid(), pc);

@@ -147,6 +147,11 @@ namespace idattd
         attach_action_to_menu("TTD/Go to position",             actions::GOTO_POS,    SETMENU_APP);
         attach_action_to_menu("TTD/Continue backwards",         actions::RUN_BACK,    SETMENU_APP);
         attach_action_to_menu("TTD/Step out backwards",         actions::STEP_OUT_BACK, SETMENU_APP);
+
+        // Build the toolbar immediately so the TTD buttons are always present.
+        // (The native debug-movement actions register lazily, so show_actions runs
+        // again on session start to pick those up.)
+        show_actions();
     }
 
     //-----------------------------------------------------------------------
@@ -162,16 +167,13 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    // Build the TTD toolbar on session start so it only appears while a trace is
-    // being replayed. Native debug-movement actions exist once a debugger is
-    // active, so we (re)skin them with the codicon icons here too.
-    void Plugin::show_actions()
+    // Re-skin the native debug-movement actions with the codicon glyphs. IDA
+    // registers some of these actions lazily (e.g. ThreadRunToCursorBackwards may
+    // not exist at the first show) and ALSO resets their icons whenever it rebuilds
+    // the debugger toolbars (e.g. after a memory-cache invalidation on a TTD jump),
+    // so this must be reapplied repeatedly — at session start AND on every stop.
+    void Plugin::reskin_actions()
     {
-        // Re-skin the native debug-movement actions with the codicon glyphs on
-        // EVERY call. IDA registers some of these actions lazily (e.g.
-        // ThreadRunToCursorBackwards may not exist yet at the first show), so a
-        // one-shot override at toolbar-creation time would miss them; reapplying
-        // here (also from on_start_process) makes the icons stick.
         update_action_icon("ProcessStart",              m_icoContinue);
         update_action_icon("ThreadStepInto",            m_icoStepInto);
         update_action_icon("ThreadStepOver",            m_icoStepOver);
@@ -180,14 +182,16 @@ namespace idattd
         update_action_icon("ThreadStepOverBackwards",   m_icoStepBack);
         update_action_icon("ThreadRunToCursor",         m_icoRunToCur);
         update_action_icon("ThreadRunToCursorBackwards", m_icoRunToCurBack);
+    }
 
-        if ( m_toolbarShown )
-        {
-            update_position_label();
-            return;
-        }
-        m_toolbarShown = true;
-
+    //-----------------------------------------------------------------------
+    // (Re)build the TTD toolbar. Always rebuilds from scratch (delete + create) so
+    // it survives debugger-desktop resets and never gets stuck hidden. Called at
+    // plugin load and again on session start (when the native debug-movement
+    // actions exist, so they attach too).
+    void Plugin::show_actions()
+    {
+        delete_toolbar(TTD_TOOLBAR);
         create_toolbar(TTD_TOOLBAR, "TTD");
         // Live position readout, then all forward buttons, then all backward
         // buttons, then the TTD extras.
@@ -210,16 +214,15 @@ namespace idattd
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TRACE_PAT);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::OPEN_EVENTS);
 
+        reskin_actions();
         update_position_label();
     }
 
     //-----------------------------------------------------------------------
+    // The toolbar is persistent now (always shown), so this is a no-op; kept as a
+    // hook the TraceManager calls on session teardown.
     void Plugin::hide_actions()
     {
-        if ( !m_toolbarShown )
-            return;
-        delete_toolbar(TTD_TOOLBAR);
-        m_toolbarShown = false;
     }
 
     //-----------------------------------------------------------------------
@@ -259,6 +262,8 @@ namespace idattd
                     p->manager().resolve_symbols((ea_t)mi.base, p->manager().is64());
                     p->manager().load_module_pdb((ea_t)mi.base);  // silent PDB symbols
                 }
+                if ( code == dbg_process_start )
+                    p->show_actions();   // (re)build the toolbar inside the now-active debugger desktop
                 p->update_position_label();
                 break;
             }
@@ -268,6 +273,9 @@ namespace idattd
                 // disassemble around RIP, and refresh the toolbar readout.
                 p->manager().on_suspended();
                 p->update_position_label();
+                // on_suspended() invalidates debugger memory, which makes IDA
+                // rebuild the debug toolbars and reset our action icons — reapply.
+                p->reskin_actions();
                 // Exports were just (re)named; refresh the call stack so frames
                 // show names rather than raw VAs.
                 refresh_call_stack();
