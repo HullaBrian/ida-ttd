@@ -99,7 +99,9 @@ views show the bytes at the new position, not the previous one.
 Requirements:
 
 - Visual Studio 2022+ with the C++ desktop workload (toolset v143/v145).
-- The IDA SDK 9.3, expected at `References/idasdk93/src` (already in this repo).
+- The IDA SDK 9.3, expected at `ida-sdk/src` (already in this repo). The project
+  reads it via the `IdaSdkDir` property (`$(SolutionDir)ida-sdk\src`), using
+  `ida-sdk/src/include` for headers and `ida-sdk/src/lib/x64_win_vc_64` for `ida.lib`.
 - The TTD Replay NuGet package, restored into `packages/` (already present:
   `packages/Microsoft.TimeTravelDebugging.Apis.0.9.5`).
 
@@ -113,7 +115,8 @@ Steps:
    produce a `C1041` error.
 2. If NuGet packages are not restored, run **Restore NuGet Packages** /
    `nuget restore`.
-3. Output is `ida-ttd\x64\Release\ida-ttd.dll`.
+3. Output is `build\Release\ida-ttd.dll` (the project's `OutDir` is
+   `$(SolutionDir)build\$(Configuration)\`).
 
 The project is x64-only because IDA 9.x is a 64-bit application. The TTD SDK
 `.props` file (imported by the project) wires up the SDK include path and the
@@ -125,7 +128,7 @@ x64 `TTDReplay.lib` import-library path; the project links `ida.lib` and
 
 ## Installation
 
-1. Copy `ida-ttd.dll` into your IDA `plugins\` directory
+1. Copy `build\Release\ida-ttd.dll` into your IDA `plugins\` directory
    (e.g. `C:\Program Files\IDA Professional 9.3\plugins\`).
 2. Obtain the Microsoft TTD **runtime** DLLs — `TTDReplay.dll` and
    `TTDReplayCPU.dll`. These are **not** in the NuGet package; get them from a

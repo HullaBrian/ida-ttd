@@ -152,10 +152,14 @@ namespace idattd
         m_cursor.reset();
         m_symCursor.reset();
         m_anaCursor.reset();
+        m_memCursor.reset();
+        m_memPosValid = false;
         m_engine.reset();
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
+        m_moduleImages.clear();
+        m_reconRegions.clear();
         m_dynFuncBytes.clear();
         return DRC_OK;
     }
@@ -341,16 +345,283 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    bool TraceManager::reconstruct_region(ea_t lo, ea_t hi)
+    {
+        if ( !m_engine || !m_cursor || hi <= lo )
+            return false;
+
+        // Already reconstructed something covering this range?
+        for ( const ReconRegion &r : m_reconRegions )
+            if ( r.lo <= lo && hi <= r.hi )
+                return true;
+
+        UniqueCursor cur{ m_engine->NewCursor() };
+        if ( !cur )
+            return false;
+
+        const Position target = m_cursor->GetPosition();
+
+        ReconRegion reg;
+        reg.lo = lo;
+        reg.hi = hi;
+        reg.data.assign((size_t)(hi - lo), 0);
+        reg.known.assign((size_t)(hi - lo), false);
+
+        size_t hits = 0;
+        // On each recorded write touching [lo,hi), copy the just-written bytes (read
+        // thread-locally from the writing thread, which definitely has them) into the
+        // shadow. Replaying sequentially forward means the last write to each byte
+        // before 'target' wins -- i.e. the value as of the current position. Return
+        // false so the watchpoint never stops the replay.
+        auto on_write = [&](ICursorView::MemoryWatchpointResult const &wp,
+                            IThreadView const *t) noexcept -> bool
+        {
+            uint64_t a  = (uint64_t)wp.Address;
+            uint64_t e  = a + wp.Size;
+            uint64_t s  = a > (uint64_t)lo ? a : (uint64_t)lo;
+            uint64_t en = e < (uint64_t)hi ? e : (uint64_t)hi;
+            if ( s >= en )
+                return false;
+            uint8_t  buf[512];
+            uint64_t off = s;
+            while ( off < en )
+            {
+                size_t chunk = (size_t)((en - off) < sizeof(buf) ? (en - off) : sizeof(buf));
+                MemoryBuffer mb = t->QueryMemoryBuffer(GuestAddress{ off }, BufferView{ buf, chunk });
+                size_t got = mb.Memory.Size;
+                if ( got == 0 )
+                    break;
+                for ( size_t i = 0; i < got; i++ )
+                {
+                    reg.data[(size_t)(off - lo) + i]  = buf[i];
+                    reg.known[(size_t)(off - lo) + i] = true;
+                }
+                off += got;
+            }
+            hits++;
+            return false;
+        };
+
+        MemoryWatchpointData wp{};
+        wp.Address    = GuestAddress{ (uint64_t)lo };
+        wp.Size       = (uint64_t)(hi - lo);
+        wp.AccessMask = DataAccessMask::Write;
+        cur->AddMemoryWatchpoint(wp);
+        cur->SetMemoryWatchpointCallback(on_write);
+        cur->SetEventMask(EventMask::MemoryWatchpoint);
+        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially); // chronological -> last write wins
+        cur->SetPosition(Position::Min);
+
+        show_wait_box("HIDECANCEL\nReconstructing memory from recorded writes...");
+        cur->ReplayForward(target);
+        hide_wait_box();
+
+        cur->SetMemoryWatchpointCallback(nullptr, 0);
+
+        size_t nknown = 0;
+        for ( bool b : reg.known )
+            if ( b )
+                nknown++;
+        msg("[ida-ttd] reconstructed 0x%llX-0x%llX: %u/%u byte(s) from %u write(s).\n",
+            (uint64_t)lo, (uint64_t)hi, (unsigned)nknown, (unsigned)reg.data.size(), (unsigned)hits);
+
+        if ( nknown == 0 )
+            return false;
+        m_reconRegions.push_back(std::move(reg));
+        return true;
+    }
+
+    //-----------------------------------------------------------------------
+    const ModuleImage *TraceManager::image_for(ea_t ea, ea_t &base_out)
+    {
+        if ( !m_engine )
+            return nullptr;
+
+        // Which loaded module (if any) contains 'ea'?
+        ea_t   base = BADADDR;
+        std::string path;
+        size_t n = m_engine->GetModuleCount();
+        const Module *list = m_engine->GetModuleList();
+        for ( size_t i = 0; i < n; i++ )
+        {
+            ea_t b = (ea_t)(uint64_t)list[i].Address;
+            ea_t e = b + (ea_t)list[i].Size;
+            if ( ea >= b && ea < e )
+            {
+                base = b;
+                path = to_utf8(list[i].pName, list[i].NameLength);
+                break;
+            }
+        }
+        if ( base == BADADDR )
+            return nullptr;
+
+        base_out = base;
+        auto it = m_moduleImages.find(base);
+        if ( it == m_moduleImages.end() )
+        {
+            ModuleImage img;
+            load_module_image(path.c_str(), img);   // img.ok==false on failure
+            msg("[ida-ttd] image fallback for %s @ 0x%llX: %s\n",
+                base_name(path).c_str(), (uint64_t)base,
+                img.ok ? "loaded" : "file unavailable / not a PE");
+            it = m_moduleImages.emplace(base, std::move(img)).first;
+        }
+        return it->second.ok ? &it->second : nullptr;
+    }
+
+    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
     {
         *nbytes = 0;
         if ( !m_cursor || buffer == nullptr || size == 0 )
             return DRC_OK;
 
-        MemoryBuffer mb = m_cursor->QueryMemoryBuffer(
-            GuestAddress{ (uint64_t)ea },
-            BufferView{ buffer, size });
-        *nbytes = mb.Memory.Size;
+        // Serve reads from a DEDICATED cursor that is only ever positioned, never
+        // executed. The main cursor is our execution cursor (we step/run with it);
+        // a cursor left "in execution" answers memory queries with the thread-local
+        // policy no matter what policy we request, so non-executed bytes (the rest
+        // of a shellcode function) come back as zeros -- the policy arguments below
+        // were simply being ignored. A position-only cursor honors the aggressive
+        // policies and returns what WinDbg/Binja show. Park it at the playhead,
+        // re-seeking only when the position actually changed.
+        if ( !m_memCursor )
+        {
+            m_memCursor = UniqueCursor{ m_engine->NewCursor() };
+            if ( m_memCursor )
+                m_memCursor->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
+            m_memPosValid = false;
+        }
+        ICursorView *mc = m_memCursor ? m_memCursor.get() : m_cursor.get();
+        if ( m_memCursor )
+        {
+            Position cur = m_cursor->GetPosition();
+            if ( !m_memPosValid || cur.Sequence != m_memPos.Sequence || cur.Steps != m_memPos.Steps )
+            {
+                m_memCursor->SetPosition(cur);
+                m_memPos      = cur;
+                m_memPosValid = true;
+            }
+        }
+
+        // QueryMemoryBuffer only ever returns the SINGLE contiguous run that begins
+        // exactly at the queried address. If that address is a "hole" (a byte TTD
+        // didn't record at this position) it returns Size==0 -- and a naive single
+        // call then loses every KNOWN byte further into the buffer. So fill the whole
+        // range in two passes:
+        //
+        //   Pass 1 (authoritative): walk the range querying TTD's recorded memory,
+        //   skipping over holes, so every recorded byte is delivered. This reflects
+        //   the true position-in-time state, including self-modified code.
+        //
+        //   Pass 2 (image fallback): for bytes TTD never recorded, copy from the
+        //   module's on-disk image. TTD only records ACCESSED memory; image-backed
+        //   code that was never executed on this run (the other side of a branch, a
+        //   cold epilogue, the terminating ret) is in the trace at no position, yet
+        //   it is right there in the file -- this is exactly what WinDbg shows. Image
+        //   bytes only fill gaps; recorded bytes always win.
+        static const QueryMemoryPolicy kPolicies[] = {
+            QueryMemoryPolicy::GloballyAggressive,   // the cursor default; cheap first
+            QueryMemoryPolicy::InFragmentAggressive, // look across the whole fragment
+        };
+
+        uint8_t *out = (uint8_t *)buffer;
+        std::vector<bool> filled(size, false);
+        size_t resolved_end = 0;     // one past the last byte we resolved (either source)
+
+        // ---- Pass 1: recorded memory ----
+        size_t off = 0;
+        while ( off < size )
+        {
+            MemoryBuffer mb{};
+            for ( QueryMemoryPolicy p : kPolicies )
+            {
+                mb = mc->QueryMemoryBuffer(
+                    GuestAddress{ (uint64_t)(ea + off) },
+                    BufferView{ out + off, size - off }, p);
+                if ( mb.Memory.Size > 0 )
+                    break;
+            }
+            if ( mb.Memory.Size > 0 )
+            {
+                size_t run = mb.Memory.Size;
+                for ( size_t i = 0; i < run; i++ )
+                    filled[off + i] = true;
+                off         += run;
+                resolved_end = off;
+            }
+            else
+            {
+                out[off] = 0;        // hole: leave 0 for now, later passes may fill it
+                off++;
+            }
+        }
+
+        // ---- Pass R: override with bytes reconstructed from recorded writes ----
+        // For non-module memory the position query only zero-fills (it knows the page
+        // is mapped but has no recorded value to attribute here). Where we've rebuilt
+        // the real bytes from the trace's writes, those win -- they equal the live
+        // value as of the reconstruction position, so this also corrects pass 1's
+        // zero-fill for never-executed code (the other half of a branch, the ret).
+        for ( const ReconRegion &r : m_reconRegions )
+        {
+            ea_t s = ea > r.lo ? ea : r.lo;
+            ea_t e = (ea + (ea_t)size) < r.hi ? (ea + (ea_t)size) : r.hi;
+            for ( ea_t a = s; a < e; a++ )
+            {
+                size_t ri = (size_t)(a - r.lo);
+                if ( !r.known[ri] )
+                    continue;
+                size_t oi = (size_t)(a - ea);
+                out[oi]    = r.data[ri];
+                filled[oi] = true;
+                if ( oi + 1 > resolved_end )
+                    resolved_end = oi + 1;
+            }
+        }
+
+        // ---- Pass 2: on-disk image fills the gaps ----
+        size_t o = 0;
+        while ( o < size )
+        {
+            if ( filled[o] )
+            {
+                o++;
+                continue;
+            }
+            // Measure the contiguous gap so an image run can't clobber recorded bytes.
+            size_t gap = 0;
+            while ( o + gap < size && !filled[o + gap] )
+                gap++;
+
+            ea_t              base = BADADDR;
+            const ModuleImage *img = image_for(ea + o, base);
+            if ( img == nullptr )
+            {
+                o += gap;            // not image-backed: the gap stays zero
+                continue;
+            }
+            // Fill the gap one image-run at a time (a run stops at a section edge).
+            size_t g = 0;
+            while ( g < gap )
+            {
+                uint32_t rva = (uint32_t)((uint64_t)(ea + o + g) - (uint64_t)base);
+                size_t run = read_module_image_rva(*img, rva, out + o + g, gap - g);
+                if ( run == 0 )
+                {
+                    g++;             // zero-fill tail / unmapped rva: leave 0
+                    continue;
+                }
+                for ( size_t i = 0; i < run; i++ )
+                    filled[o + g + i] = true;
+                if ( o + g + run > resolved_end )
+                    resolved_end = o + g + run;
+                g += run;
+            }
+            o += gap;
+        }
+
+        *nbytes = resolved_end;
         return DRC_OK;
     }
 
@@ -717,9 +988,32 @@ namespace idattd
         // ---- runtime-allocated code (no module / no .pdata): shellcode, unpacked
         // code, JIT. Mirror Binary Ninja's debugger: define a function and let
         // IDA's recursive descent disassemble the WHOLE thing (forward branches +
-        // not-taken branches), seeded at a real start at/above PC so the prologue
-        // above PC is laid out too (for backward stepping). ----
-        ea_t start = find_dynamic_start(pc);
+        // not-taken branches), seeded at the function head so the prologue and all
+        // the body above PC are laid out too (so backward stepping reveals code
+        // that's already there instead of one instruction at a time). ----
+        //
+        // Prefer the TRUE head recovered from the trace's call/return structure
+        // (the call that entered this frame). Fall back to the executed-address
+        // contiguity heuristic when no enclosing call was captured -- e.g. the
+        // frame was entered by a jmp/thread-start rather than a call, or the
+        // entering call predates the look-back window.
+        ea_t start = find_dynamic_function_entry(pc);
+        if ( start == BADADDR || start > pc || getseg(start) != seg )
+            start = find_dynamic_start(pc);
+
+        // The position-based memory query returns zero-fill for this region's
+        // never-executed bytes (it's unpacked/JIT code, not a module). Rebuild the
+        // real bytes from the trace's recorded writes so the WHOLE function (not just
+        // the executed path) disassembles -- this is what WinDbg shows. Bounded to a
+        // window from the head; served thereafter by on_read_memory. Then invalidate
+        // IDA's cache for the range so the upcoming create_insn reads the real bytes.
+        ea_t rlo = start;
+        ea_t rhi = (pc > start ? pc : start) + 0x2000;
+        if ( getseg(rhi - 1) != seg )
+            rhi = seg->end_ea;
+        if ( reconstruct_region(rlo, rhi) )
+            invalidate_dbgmem_contents(rlo, rhi - rlo);
+
         force_insn(start);                  // exact-boundary seed
         add_func(start);                    // BADADDR end -> recursive descent
         ea_t aend = (pc > start ? pc : start) + 0x2000;
@@ -800,6 +1094,78 @@ namespace idattd
             --it;
         }
         return lo;
+    }
+
+    //-----------------------------------------------------------------------
+    // Recover the head of the current frame's function from the trace itself.
+    // We replay FORWARD from a position a little before the playhead up to the
+    // playhead, watching the call/return structure via the engine's CallReturn
+    // callback (the same primitive the tracer uses): a CALL pushes (callee,
+    // return-addr) onto a per-thread frame stack, a RET pops it. When we reach
+    // the current position the top of the current thread's stack is the call
+    // that entered this frame, so its target is the function head -- this is the
+    // "change in the callstack" boundary, the dynamic-code analogue of the
+    // .pdata bounds used for module code.
+    //
+    // The look-back is widened until that entering CALL is captured. Each attempt
+    // is ONE SetPosition + forward replay, which is cheap; we deliberately never
+    // single-step backward (that re-seeks a keyframe per step and freezes the UI).
+    ea_t TraceManager::find_dynamic_function_entry(ea_t pc)
+    {
+        qnotused(pc);
+        if ( !m_engine || !m_cursor )
+            return BADADDR;
+        if ( !m_anaCursor )
+            m_anaCursor = UniqueCursor{ m_engine->NewCursor() };
+        if ( !m_anaCursor )
+            return BADADDR;
+
+        const Position cur = m_cursor->GetPosition();
+        const uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
+
+        struct Frame { ea_t entry; uint64_t ret; };
+        std::map<uint32_t, std::vector<Frame>> stacks;
+
+        // CALL: instr == callee (function head), fall_through == return address.
+        // RET:  fall_through == 0; pop the innermost open frame on that thread.
+        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
+                               IThreadView const *t) noexcept
+        {
+            uint32_t utid = (uint32_t)t->GetThreadInfo().UniqueId;
+            if ( (uint64_t)fall_through != 0 )
+            {
+                stacks[utid].push_back(Frame{ (ea_t)(uint64_t)instr, (uint64_t)fall_through });
+            }
+            else
+            {
+                auto it = stacks.find(utid);
+                if ( it != stacks.end() && !it->second.empty() )
+                    it->second.pop_back();
+            }
+        };
+
+        static const uint64_t kWindows[] = { 1024, 8192, 65536 };
+        ea_t entry = BADADDR;
+        for ( uint64_t back : kWindows )
+        {
+            stacks.clear();
+            Position s = cur;
+            s.Steps = (StepCount)((uint64_t)cur.Steps > back ? (uint64_t)cur.Steps - back : 0);
+            m_anaCursor->SetPosition(s);
+            m_anaCursor->SetCallReturnCallback(on_call_ret);
+            m_anaCursor->ReplayForward(cur);                 // stop AT the playhead
+            m_anaCursor->SetCallReturnCallback(nullptr, 0);  // detach the local lambda
+
+            auto it = stacks.find(tid);
+            if ( it != stacks.end() && !it->second.empty() )
+            {
+                entry = it->second.back().entry;
+                break;
+            }
+            if ( (uint64_t)cur.Steps <= back )
+                break;       // the window already reached the start of the sequence
+        }
+        return entry;
     }
 
     //-----------------------------------------------------------------------
@@ -969,14 +1335,22 @@ namespace idattd
 
         // Time travel breaks IDA's "process memory only changes going forward"
         // assumption: the SAME address can hold different bytes at different
-        // positions (e.g. a buffer that's zero before it's unpacked). After a
-        // position jump IDA keeps the previous position's cached bytes (showing
-        // stale zeros) for everything it doesn't re-read until the next step.
-        // Flush the cached memory contents so IDA re-reads at the new position on
-        // its normal post-suspend redraw. Use invalidate_dbg_state(DBGINV_MEMORY)
-        // WITHOUT DBGINV_REDRAW: invalidate_dbgmem_contents() forces a screen
-        // refresh that rebuilds the debug toolbars and drops the TTD toolbar.
-        invalidate_dbg_state(DBGINV_MEMORY);
+        // positions (e.g. a buffer that's zero before it's unpacked). After a jump
+        // IDA keeps the previous position's cached bytes for everything it doesn't
+        // re-read.
+        //
+        // invalidate_dbg_state(DBGINV_MEMORY) only marks the cache dirty; it does
+        // NOT force the listing to re-read, so IDA kept rendering the bytes it first
+        // cached -- which, for code revealed before the index was usable, were the
+        // thread-local-only bytes (executed instructions present, never-executed
+        // code shown as 0). invalidate_dbgmem_contents() is the SDK-sanctioned
+        // "process stopped, re-read memory" call: it flushes AND refreshes, so the
+        // listing re-reads via on_read_memory (now GloballyAggressive) and the
+        // previously-zero bytes appear. The screen refresh rebuilds IDA's debug
+        // toolbars, which is why the dbg_suspend_process handler calls
+        // reskin_actions() right after us -- the TTD toolbar is rebuilt every stop
+        // now, so this no longer drops it.
+        invalidate_dbgmem_contents(BADADDR, 0);
 
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.

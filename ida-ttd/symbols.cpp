@@ -247,4 +247,106 @@ namespace idattd
         std::sort(out.begin(), out.end());
         return out.size();
     }
+
+    //-----------------------------------------------------------------------
+    bool load_module_image(const char *path, ModuleImage &out)
+    {
+        out = ModuleImage{};
+        if ( path == nullptr || *path == '\0' )
+            return false;
+
+        std::ifstream f(path, std::ios::binary | std::ios::ate);
+        if ( !f.is_open() )
+            return false;
+        std::streamoff len = f.tellg();
+        if ( len <= 0 )
+            return false;
+        out.file.resize((size_t)len);
+        f.seekg(0, std::ios::beg);
+        f.read((char *)out.file.data(), (std::streamsize)len);
+        if ( (size_t)f.gcount() != out.file.size() )
+            out.file.resize((size_t)f.gcount());
+
+        const uint8_t *base = out.file.data();
+        size_t         fsz  = out.file.size();
+        if ( fsz < sizeof(IMAGE_DOS_HEADER) )
+            return false;
+
+        const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
+        if ( dos->e_magic != IMAGE_DOS_SIGNATURE )
+            return false;
+
+        uint32_t ntoff = (uint32_t)dos->e_lfanew;
+        if ( (size_t)ntoff + sizeof(IMAGE_NT_HEADERS32) > fsz )
+            return false;
+        const IMAGE_NT_HEADERS32 *nt32 = (const IMAGE_NT_HEADERS32 *)(base + ntoff);
+        if ( nt32->Signature != IMAGE_NT_SIGNATURE )
+            return false;
+
+        uint16_t nsec    = nt32->FileHeader.NumberOfSections;
+        uint16_t optsz   = nt32->FileHeader.SizeOfOptionalHeader;
+        out.sizeOfHeaders = (nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+                          ? ((const IMAGE_NT_HEADERS64 *)(base + ntoff))->OptionalHeader.SizeOfHeaders
+                          : nt32->OptionalHeader.SizeOfHeaders;
+
+        size_t secOff = (size_t)ntoff + 4 + sizeof(IMAGE_FILE_HEADER) + optsz;
+        if ( secOff + (size_t)nsec * sizeof(IMAGE_SECTION_HEADER) > fsz )
+            return false;
+
+        const IMAGE_SECTION_HEADER *secs = (const IMAGE_SECTION_HEADER *)(base + secOff);
+        out.sections.reserve(nsec);
+        for ( uint16_t i = 0; i < nsec; i++ )
+        {
+            ModuleImage::Section s{};
+            s.va      = secs[i].VirtualAddress;
+            s.vsize   = secs[i].Misc.VirtualSize != 0 ? secs[i].Misc.VirtualSize : secs[i].SizeOfRawData;
+            s.raw     = secs[i].PointerToRawData;
+            s.rawsize = secs[i].SizeOfRawData;
+            out.sections.push_back(s);
+        }
+        out.ok = true;
+        return true;
+    }
+
+    //-----------------------------------------------------------------------
+    size_t read_module_image_rva(const ModuleImage &img, uint32_t rva, void *buf, size_t size)
+    {
+        if ( !img.ok || size == 0 )
+            return 0;
+
+        // The PE headers are mapped 1:1 from file offset 0.
+        if ( rva < img.sizeOfHeaders )
+        {
+            size_t avail = img.sizeOfHeaders - rva;
+            if ( (size_t)rva >= img.file.size() )
+                return 0;
+            size_t fileAvail = img.file.size() - rva;
+            size_t run = size < avail ? size : avail;
+            if ( run > fileAvail )
+                run = fileAvail;
+            memcpy(buf, img.file.data() + rva, run);
+            return run;
+        }
+
+        // Otherwise locate the section whose virtual range contains rva.
+        for ( const ModuleImage::Section &s : img.sections )
+        {
+            if ( rva < s.va || rva >= s.va + s.vsize )
+                continue;
+            uint32_t inSec = rva - s.va;
+            if ( inSec >= s.rawsize )
+                return 0;                       // zero-fill tail (.bss): leave it 0
+            uint32_t fileOff = s.raw + inSec;
+            if ( (size_t)fileOff >= img.file.size() )
+                return 0;
+            size_t avail     = s.rawsize - inSec;            // contiguous raw bytes
+            size_t fileAvail = img.file.size() - fileOff;
+            size_t run = size < avail ? size : avail;
+            if ( run > fileAvail )
+                run = fileAvail;
+            memcpy(buf, img.file.data() + fileOff, run);
+            return run;
+        }
+        return 0;
+    }
 }

@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include "event_queue.h"
+#include "symbols.h"
 
 namespace idattd
 {
@@ -118,6 +119,19 @@ namespace idattd
         bool  is_target_module(const TTD::Replay::Module &m) const;
         void  emit_module_load(const TTD::Replay::Module &m);
         void  resolve_loaded_modules();   // resolve exports for every loaded module
+        // Find the on-disk image of the module containing 'ea' (loading + caching it
+        // on first use). Returns nullptr if 'ea' is in no module or the file is
+        // unavailable; on success 'base_out' is the module's runtime base so the
+        // caller can form rva = ea - base. Used to serve never-recorded bytes.
+        const ModuleImage *image_for(ea_t ea, ea_t &base_out);
+        // Reconstruct the real bytes of [lo,hi) from the trace's recorded WRITES.
+        // The position-based memory query returns zero-fill for non-module memory
+        // that was written earlier (e.g. an unpacker decompressing a beacon) but not
+        // executed at the current position. We replay forward to the current
+        // position with a Write watchpoint over [lo,hi), capturing the latest written
+        // value of each byte (this is how WinDbg shows those bytes). Cached; served
+        // by on_read_memory. Returns true if any byte was recovered.
+        bool  reconstruct_region(ea_t lo, ea_t hi);
         // Cheap, replay-free disassembly of the function at 'pc'. Prefers the
         // module's .pdata bounds (whole function at once); falls back to linear
         // forward layout. Runs on every stop; must not walk the trace.
@@ -138,6 +152,14 @@ namespace idattd
         // the lowest executed address contiguous (by instruction) with pc, so a
         // recursive-descent add_func() there lays out the prologue above pc too.
         ea_t  find_dynamic_start(ea_t pc);
+        // Recover the TRUE head of the function the current position is executing
+        // in (for dynamic code) from the trace's call/return structure: replay
+        // FORWARD over a look-back window tracking a per-thread call-frame stack;
+        // the top frame when we reach the current position is the call that
+        // entered this frame, so its target is the function head. Returns BADADDR
+        // when no enclosing call was captured (thread entry, jmp-based shellcode,
+        // or the call predates the window) so the caller can fall back.
+        ea_t  find_dynamic_function_entry(ea_t pc);
 
     private:
         Plugin           *m_plugin = nullptr;
@@ -148,6 +170,15 @@ namespace idattd
 
         TTD::Replay::UniqueCursor       m_symCursor; // scratch cursor for symbol reads
         TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
+        // Dedicated cursor for serving IDA's memory reads. It is ONLY ever
+        // SetPosition'd (never used to execute/replay), because a cursor left "in
+        // execution" answers memory queries with the thread-local policy regardless
+        // of the requested policy -- which made non-executed bytes (the rest of a
+        // shellcode function) read back as zeros. A position-only cursor honors the
+        // aggressive policies, matching what WinDbg/Binja show.
+        TTD::Replay::UniqueCursor       m_memCursor;
+        TTD::Replay::Position           m_memPos{};       // position m_memCursor is parked at
+        bool                            m_memPosValid = false;
         ea_t                            m_winLo = BADADDR; // last laid-out window range
         ea_t                            m_winHi = 0;
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
@@ -157,6 +188,20 @@ namespace idattd
         // Per-module function bounds from the PE exception table (.pdata), keyed
         // by module base; each vector is sorted by start address.
         std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
+        // Per-module on-disk image cache, keyed by module base, for filling memory
+        // bytes TTD never recorded (image-backed never-executed code). An entry with
+        // ok==false means we already tried and the file was missing/not a PE.
+        std::map<ea_t, ModuleImage> m_moduleImages;
+        // Bytes reconstructed from recorded WRITES, for non-module memory the
+        // position query only zero-fills (unpacked/JIT code never executed at the
+        // current position). Served by on_read_memory.
+        struct ReconRegion
+        {
+            ea_t                 lo = 0, hi = 0;
+            std::vector<uint8_t> data;     // hi-lo bytes
+            std::vector<bool>    known;    // which bytes were recovered
+        };
+        std::vector<ReconRegion> m_reconRegions;
         // Functions WE defined in dynamic (non-module) code, keyed by start_ea ->
         // byte-hash at definition time. Used to detect self-modifying / reused
         // regions (incl. time-travel to a position where the bytes differ) and

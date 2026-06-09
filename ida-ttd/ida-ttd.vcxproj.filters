@@ -32,6 +32,18 @@
     <ClInclude Include="plugin.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="symbols.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="callconv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="tracer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="icons.hh">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="dllmain.cpp">
@@ -50,6 +62,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="plugin.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="symbols.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="callconv.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="tracer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

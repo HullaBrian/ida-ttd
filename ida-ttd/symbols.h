@@ -31,4 +31,30 @@ namespace idattd
     // .pdata is often never touched, so reading it from the trace can come up empty.
     size_t parse_pdata_functions_from_file(const char *path, ea_t base, bool is64,
                                            std::vector<std::pair<ea_t, ea_t>> &out);
+
+    // A module's on-disk PE image, cached for serving never-recorded bytes. TTD
+    // only records memory that was accessed at runtime; for image-backed pages the
+    // never-executed code (the other side of a branch, a cold epilogue) is in the
+    // trace at no position. WinDbg fills those gaps from the module file, and so do
+    // we. Recorded memory always takes precedence (it reflects self-modification);
+    // the image only fills holes.
+    struct ModuleImage
+    {
+        struct Section { uint32_t va, vsize, raw, rawsize; };
+        std::vector<uint8_t> file;        // whole file contents
+        std::vector<Section> sections;
+        uint32_t             sizeOfHeaders = 0;
+        bool                 ok = false;  // false once we've tried and failed
+    };
+
+    // Read the module file at 'path' into 'out' and parse its section map. Returns
+    // out.ok. Safe to call on a non-PE / missing file (returns false, out.ok=false).
+    bool load_module_image(const char *path, ModuleImage &out);
+
+    // Copy up to 'size' bytes that the image has for run starting at relative
+    // virtual address 'rva' into 'buf'. Returns the count copied, which is a single
+    // contiguous run (bounded by the containing section's raw data, or the headers).
+    // Returns 0 when 'rva' isn't backed by file bytes (e.g. a .bss/zero-fill tail),
+    // so the caller can leave those bytes zero — matching the image.
+    size_t read_module_image_rva(const ModuleImage &img, uint32_t rva, void *buf, size_t size);
 }
