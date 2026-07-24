@@ -138,6 +138,14 @@ namespace idattd
         // recursion); also stops on any user breakpoint. Returns 0=reached addr,
         // 1=user breakpoint, 2=trace boundary.
         int   run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid);
+        // Install a temporary 1-byte Execute watchpoint at 'addr' for a step/run
+        // operation, filling 'wp'. TTD keys watchpoints by (address, size, mask,
+        // thread), so an identical user breakpoint is the SAME watchpoint: adding
+        // and then removing ours would delete theirs. Returns true only when we
+        // actually created one — i.e. when the caller owns its removal.
+        bool  add_temp_exec_watchpoint(ea_t addr, TTD::Replay::MemoryWatchpointData &wp);
+        // Counterpart to add_temp_exec_watchpoint: removes 'wp' only if we own it.
+        void  drop_temp_exec_watchpoint(const TTD::Replay::MemoryWatchpointData &wp, bool owned);
         void  navigate_to(const TTD::Replay::Position &p);
         // Record a stop (breakpoint when !is_step, single-step otherwise) at the
         // cursor's current PC, and queue code creation there so runtime-revealed
@@ -192,6 +200,19 @@ namespace idattd
         // or the call predates the window) so the caller can fall back.
         ea_t  find_dynamic_function_entry(ea_t pc);
 
+        // Sorted [base,end) table of the engine's modules, rebuilt only when the
+        // engine's module count changes. The naive form of this — a linear scan of
+        // GetModuleList() — was being run once per applied symbol name (~14000 of
+        // them when a PDB loads) from the idb_event::renamed handler.
+        struct ModuleSpan
+        {
+            ea_t base = 0, end = 0;
+            bool operator<(const ModuleSpan &o) const { return base < o.base; }
+        };
+        const std::vector<ModuleSpan> &module_spans() const;
+        // Index into module_spans() of the module containing 'ea', or SIZE_MAX.
+        size_t module_index_at(ea_t ea) const;
+
     private:
         Plugin           *m_plugin = nullptr;
         IdaErrorReporting m_err;
@@ -210,10 +231,19 @@ namespace idattd
         TTD::Replay::UniqueCursor       m_memCursor;
         TTD::Replay::Position           m_memPos{};       // position m_memCursor is parked at
         bool                            m_memPosValid = false;
+        // Scratch "which bytes did we resolve" mask, reused across on_read_memory
+        // calls. That function is on the hottest path in the plugin (every
+        // disassembly line, register deref and stack row), so it must not heap
+        // allocate per call; assign() reuses the existing capacity.
+        std::vector<uint8_t>            m_readFilled;
         ea_t                            m_winLo = BADADDR; // last laid-out window range
         ea_t                            m_winHi = 0;
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
+        // Cache backing module_spans(); mutable so the const lookups above can
+        // refresh it lazily. m_spanCount is the module count it was built from.
+        mutable std::vector<ModuleSpan> m_moduleSpans;
+        mutable size_t                  m_spanCount = (size_t)-1;
         std::set<ea_t>                  m_resolvedBases; // modules whose exports we've named
         std::set<ea_t>                  m_pdbBases;      // modules whose PDB we've requested
         // Per-module function bounds from the PE exception table (.pdata), keyed
@@ -252,6 +282,10 @@ namespace idattd
         ea_t         m_runToCursorAddr = BADADDR;
         resume_mode_t m_resumeMode = RESMOD_NONE;
         int          m_activeBpts = 0;
+        // Watchpoints registered on behalf of USER breakpoints. Temporary
+        // step/run watchpoints check this so their cleanup can never remove a
+        // user breakpoint that happens to sit at the same address.
+        std::set<TTD::Replay::MemoryWatchpointData> m_userWatchpoints;
         // Pending "edge of trace" notice (shown from on_suspended): 0 none,
         // 1 start of trace, 2 end of trace.
         enum { BOUNDARY_NONE = 0, BOUNDARY_START, BOUNDARY_END };

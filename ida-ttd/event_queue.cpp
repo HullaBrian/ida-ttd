@@ -17,12 +17,15 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    debug_event_t EventQueue::pop()
+    bool EventQueue::try_pop(debug_event_t *out)
     {
         std::lock_guard<std::mutex> guard(m_mutex);
-        debug_event_t ev = m_events.front();
+        if ( m_events.empty() )
+            return false;
+        if ( out != nullptr )
+            *out = m_events.front();
         m_events.pop_front();
-        return ev;
+        return true;
     }
 
     //-----------------------------------------------------------------------

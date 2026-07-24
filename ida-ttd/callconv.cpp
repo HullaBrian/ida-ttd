@@ -15,15 +15,24 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    size_t stack_arg_offset(const tinfo_t &func_tinfo, size_t n, size_t first_stack_arg)
+    // 'slot' is the stack slot granularity: 8 on x64, 4 on x86. Passing 8 for
+    // 32-bit code (as this used to do unconditionally) double-counts every
+    // argument, so everything from the second stack argument onward was read
+    // from the wrong address on x86 traces.
+    size_t stack_arg_offset(const tinfo_t &func_tinfo, size_t n, size_t first_stack_arg,
+                            size_t slot)
     {
-        size_t off = 0;
+        size_t off  = 0;
+        size_t mask = slot - 1;
         for ( size_t i = first_stack_arg; i < n; i++ )
         {
             tinfo_t arg = func_tinfo.get_nth_arg((int)i);
             size_t sz = arg.get_size();
-            // Stack slots are pointer-sized minimum.
-            off += sz == BADSIZE ? 0 : ((sz + 7) & ~size_t(7));
+            if ( sz == BADSIZE )
+                continue;
+            if ( sz < slot )
+                sz = slot;                       // stack slots are pointer-sized minimum
+            off += (sz + mask) & ~mask;
         }
         return off;
     }
@@ -50,7 +59,7 @@ namespace idattd
                 return regs[n];
             }
             // 0x20 bytes of shadow space precede the first stack argument.
-            size_t off = 0x20 + stack_arg_offset(tinfo, n, 4);
+            size_t off = 0x20 + stack_arg_offset(tinfo, n, 4, 8);
             uint64_t v = 0;
             read_guest(cursor, c.Rsp + off, &v, sizeof(v));
             return v;
@@ -68,7 +77,7 @@ namespace idattd
             first_stack_arg = 2;
         }
         // cdecl / stdcall / thiscall: args on the stack, no return address yet.
-        size_t off = stack_arg_offset(tinfo, n, first_stack_arg);
+        size_t off = stack_arg_offset(tinfo, n, first_stack_arg, 4);
         uint32_t v = 0;
         read_guest(cursor, (uint64_t)c.Esp + off, &v, sizeof(v));
         return v;
@@ -100,15 +109,31 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    // Both string readers pull the buffer in chunks rather than one character at
+    // a time: at 260 characters, the per-character form cost 260 engine queries
+    // for every string argument of every traced call.
+    static const int kMaxStrChars = 260;
+
     qstring read_string_at(ICursorView *cursor, uint64_t addr)
     {
         qstring out;
-        for ( int i = 0; i < 260; i++ )
+        char    chunk[64];
+        int     done = 0;
+        while ( done < kMaxStrChars )
         {
-            char c = 0;
-            if ( read_guest(cursor, addr + i, &c, 1) != 1 || c == 0 )
+            size_t want = (size_t)(kMaxStrChars - done);
+            if ( want > sizeof(chunk) )
+                want = sizeof(chunk);
+            size_t got = read_guest(cursor, addr + done, chunk, want);
+            if ( got == 0 )
                 break;
-            cat_char(&out, (unsigned char)c);
+            for ( size_t i = 0; i < got; i++ )
+            {
+                if ( chunk[i] == '\0' )
+                    return out;
+                cat_char(&out, (unsigned char)chunk[i]);
+            }
+            done += (int)got;
         }
         return out;
     }
@@ -117,12 +142,24 @@ namespace idattd
     qstring read_wstring_at(ICursorView *cursor, uint64_t addr)
     {
         qstring out;
-        for ( int i = 0; i < 260; i++ )
+        wchar_t chunk[64];
+        int     done = 0;
+        while ( done < kMaxStrChars )
         {
-            wchar_t c = 0;
-            if ( read_guest(cursor, addr + i * 2, &c, 2) != 2 || c == 0 )
+            size_t want = (size_t)(kMaxStrChars - done) * sizeof(wchar_t);
+            if ( want > sizeof(chunk) )
+                want = sizeof(chunk);
+            size_t got = read_guest(cursor, addr + (uint64_t)done * sizeof(wchar_t), chunk, want);
+            size_t nch = got / sizeof(wchar_t);
+            if ( nch == 0 )
                 break;
-            cat_char(&out, c);
+            for ( size_t i = 0; i < nch; i++ )
+            {
+                if ( chunk[i] == L'\0' )
+                    return out;
+                cat_char(&out, chunk[i]);
+            }
+            done += (int)nch;
         }
         return out;
     }

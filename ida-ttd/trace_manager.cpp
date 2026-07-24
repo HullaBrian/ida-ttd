@@ -164,6 +164,10 @@ namespace idattd
         m_memCursor.reset();
         m_memPosValid = false;
         m_engine.reset();
+        m_activeBpts = 0;
+        m_userWatchpoints.clear();
+        m_moduleSpans.clear();
+        m_spanCount = (size_t)-1;
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
@@ -206,6 +210,13 @@ namespace idattd
         m_runToCursorAddr    = BADADDR;
         m_pendingBoundary    = BOUNDARY_NONE;
         m_activeBpts         = 0;
+        m_userWatchpoints.clear();
+        // The engine's module list is fixed for the lifetime of a trace, so the
+        // span cache is normally built once. Invalidate it explicitly here: two
+        // different traces could otherwise have the same module COUNT and the
+        // count-based check alone would silently reuse the previous trace's bases.
+        m_moduleSpans.clear();
+        m_spanCount = (size_t)-1;
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
@@ -385,13 +396,12 @@ namespace idattd
     //-----------------------------------------------------------------------
     ssize_t TraceManager::on_get_debug_event(gdecode_t *code, debug_event_t *event, int /*timeout_ms*/)
     {
-        if ( m_events.empty() )
+        if ( !m_events.try_pop(event) )
         {
             *code = GDE_NO_EVENT;
             return DRC_OK;
         }
-        *event = m_events.pop();
-        *code  = m_events.empty() ? GDE_ONE_EVENT : GDE_MANY_EVENTS;
+        *code = m_events.empty() ? GDE_ONE_EVENT : GDE_MANY_EVENTS;
         return DRC_OK;
     }
 
@@ -488,29 +498,29 @@ namespace idattd
         if ( !m_engine )
             return nullptr;
 
-        // Which loaded module (if any) contains 'ea'?
-        ea_t   base = BADADDR;
-        std::string path;
-        size_t n = m_engine->GetModuleCount();
-        const Module *list = m_engine->GetModuleList();
-        for ( size_t i = 0; i < n; i++ )
-        {
-            ea_t b = (ea_t)(uint64_t)list[i].Address;
-            ea_t e = b + (ea_t)list[i].Size;
-            if ( ea >= b && ea < e )
-            {
-                base = b;
-                path = to_utf8(list[i].pName, list[i].NameLength);
-                break;
-            }
-        }
-        if ( base == BADADDR )
+        // Which loaded module (if any) contains 'ea'? (Binary search — this runs
+        // once per gap of every memory read.)
+        size_t mi = module_index_at(ea);
+        if ( mi == (size_t)-1 )
             return nullptr;
+        ea_t base = module_spans()[mi].base;
 
         base_out = base;
         auto it = m_moduleImages.find(base);
         if ( it == m_moduleImages.end() )
         {
+            // Only resolve the path on a cache miss (it costs a UTF-8 conversion).
+            std::string path;
+            size_t n = m_engine->GetModuleCount();
+            const Module *list = m_engine->GetModuleList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                if ( (ea_t)(uint64_t)list[i].Address == base )
+                {
+                    path = to_utf8(list[i].pName, list[i].NameLength);
+                    break;
+                }
+            }
             ModuleImage img;
             load_module_image(path.c_str(), img);   // img.ok==false on failure
             msg("[ida-ttd] image fallback for %s @ 0x%llX: %s\n",
@@ -577,7 +587,8 @@ namespace idattd
         };
 
         uint8_t *out = (uint8_t *)buffer;
-        std::vector<bool> filled(size, false);
+        m_readFilled.assign(size, 0);            // reuses capacity; no per-call allocation
+        uint8_t *filled = m_readFilled.data();
         size_t resolved_end = 0;     // one past the last byte we resolved (either source)
 
         // ---- Pass 1: recorded memory ----
@@ -597,7 +608,7 @@ namespace idattd
             {
                 size_t run = mb.Memory.Size;
                 for ( size_t i = 0; i < run; i++ )
-                    filled[off + i] = true;
+                    filled[off + i] = 1;
                 off         += run;
                 resolved_end = off;
             }
@@ -625,7 +636,7 @@ namespace idattd
                     continue;
                 size_t oi = (size_t)(a - ea);
                 out[oi]    = r.data[ri];
-                filled[oi] = true;
+                filled[oi] = 1;
                 if ( oi + 1 > resolved_end )
                     resolved_end = oi + 1;
             }
@@ -664,7 +675,7 @@ namespace idattd
                     continue;
                 }
                 for ( size_t i = 0; i < run; i++ )
-                    filled[o + g + i] = true;
+                    filled[o + g + i] = 1;
                 if ( o + g + run > resolved_end )
                     resolved_end = o + g + run;
                 g += run;
@@ -746,10 +757,22 @@ namespace idattd
             wp.Address    = GuestAddress{ (uint64_t)bpts[i].ea };
             wp.Size       = sz;
             wp.AccessMask = mask;
+            // Report the truth: if the engine refuses the watchpoint the
+            // breakpoint will never fire, and claiming BPT_OK would leave IDA
+            // showing an active breakpoint that silently does nothing.
             if ( m_cursor->AddMemoryWatchpoint(wp) )
+            {
                 m_activeBpts++;
-            bpts[i].code = BPT_OK;
-            (*nbpts)++;
+                m_userWatchpoints.insert(wp);
+                bpts[i].code = BPT_OK;
+                (*nbpts)++;
+            }
+            else
+            {
+                bpts[i].code = BPT_BAD_ADDR;
+                msg("[ida-ttd] could not set a TTD watchpoint for the breakpoint at 0x%llX.\n",
+                    (uint64_t)bpts[i].ea);
+            }
         }
 
         for ( int i = 0; i < ndel; i++ )
@@ -765,6 +788,7 @@ namespace idattd
             wp.AccessMask = mask;
             if ( m_cursor->RemoveMemoryWatchpoint(wp) && m_activeBpts > 0 )
                 m_activeBpts--;
+            m_userWatchpoints.erase(wp);
             b.code = BPT_OK;
             (*nbpts)++;
         }
@@ -804,14 +828,33 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    bool TraceManager::add_temp_exec_watchpoint(ea_t addr, MemoryWatchpointData &wp)
+    {
+        wp = MemoryWatchpointData{};
+        wp.Address    = GuestAddress{ (uint64_t)addr };
+        wp.Size       = 1;
+        wp.AccessMask = DataAccessMask::Execute;
+        // An identical user breakpoint IS this watchpoint as far as the engine is
+        // concerned. Leave it alone: the replay already stops there, and removing
+        // "ours" afterwards would silently delete the user's breakpoint.
+        if ( m_userWatchpoints.find(wp) != m_userWatchpoints.end() )
+            return false;
+        return m_cursor->AddMemoryWatchpoint(wp);
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::drop_temp_exec_watchpoint(const MemoryWatchpointData &wp, bool owned)
+    {
+        if ( owned )
+            m_cursor->RemoveMemoryWatchpoint(wp);
+    }
+
+    //-----------------------------------------------------------------------
     // Run forward to 'addr' on a specific thread/frame, honoring breakpoints.
     int TraceManager::run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid)
     {
         MemoryWatchpointData wp{};
-        wp.Address    = GuestAddress{ (uint64_t)addr };
-        wp.Size       = 1;
-        wp.AccessMask = DataAccessMask::Execute;
-        m_cursor->AddMemoryWatchpoint(wp);
+        bool owned = add_temp_exec_watchpoint(addr, wp);
 
         // The callback is shared by ALL watchpoints on the cursor: accept the
         // step-target only on the right thread/frame, but always stop on any
@@ -829,7 +872,7 @@ namespace idattd
 
         ICursorView::ReplayResult r = m_cursor->ReplayForward();
 
-        m_cursor->RemoveMemoryWatchpoint(wp);
+        drop_temp_exec_watchpoint(wp, owned);
         m_cursor->SetMemoryWatchpointCallback(nullptr, 0);
         m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
 
@@ -850,15 +893,12 @@ namespace idattd
         auto mods_before    = snapshot_modules();
 
         MemoryWatchpointData wp{};
-        wp.Address    = GuestAddress{ (uint64_t)addr };
-        wp.Size       = 1;
-        wp.AccessMask = DataAccessMask::Execute;
-        m_cursor->AddMemoryWatchpoint(wp);
+        bool owned = add_temp_exec_watchpoint(addr, wp);
         m_cursor->SetEventMask(EventMask::MemoryWatchpoint);
 
         ICursorView::ReplayResult r = m_cursor->ReplayBackward();
 
-        m_cursor->RemoveMemoryWatchpoint(wp);
+        drop_temp_exec_watchpoint(wp, owned);
         m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
 
         auto threads_after = snapshot_threads();
@@ -882,15 +922,12 @@ namespace idattd
             m_cursor->ReplayForward(Position::Max, StepCount{ 1 });
 
         MemoryWatchpointData wp{};
-        wp.Address    = GuestAddress{ (uint64_t)addr };
-        wp.Size       = 1;
-        wp.AccessMask = DataAccessMask::Execute;
-        m_cursor->AddMemoryWatchpoint(wp);
+        bool owned = add_temp_exec_watchpoint(addr, wp);
         m_cursor->SetEventMask(EventMask::MemoryWatchpoint);
 
         ICursorView::ReplayResult r = m_cursor->ReplayForward();
 
-        m_cursor->RemoveMemoryWatchpoint(wp);
+        drop_temp_exec_watchpoint(wp, owned);
         m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
 
         auto threads_after = snapshot_threads();
@@ -925,8 +962,28 @@ namespace idattd
         uint32_t utid     = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
         bool hit_bpt = false;
 
+        // Both of these can run for a long time: stepping over a call that never
+        // returns (exception, longjmp, ExitThread) replays to the END of the
+        // trace, and step-out repeats that until the frame unwinds. Without this
+        // IDA simply appears hung with no way out.
+        //
+        // The box is safe to raise even for a fast step-over: without NODELAY /
+        // HIDECANCEL, IDA only materialises the dialog after its grace threshold,
+        // so ordinary quick steps never show anything. Keeping the Cancel button
+        // (i.e. NOT passing HIDECANCEL) is the whole point here.
+        show_wait_box("%s (Cancel to stop)...", step_out ? "Stepping out" : "Stepping over");
+        const int CAP = 100000;                 // backstop against a pathological frame
+        int iters = 0;
         for ( ;; )
         {
+            if ( user_cancelled() )
+                break;
+            if ( ++iters > CAP )
+            {
+                msg("[ida-ttd] step out: giving up after %d iterations without unwinding the frame.\n", CAP);
+                break;
+            }
+
             ea_t  pc = program_counter();
             insn_t insn;
             int len = decode_insn(&insn, pc);
@@ -953,6 +1010,7 @@ namespace idattd
             if ( (uint64_t)m_cursor->GetStackPointer() > start_sp )
                 break;                                  // step-out: frame has returned
         }
+        hide_wait_box();
 
         auto threads_after = snapshot_threads();
         auto mods_after    = snapshot_modules();
@@ -978,11 +1036,18 @@ namespace idattd
         Position prev = m_cursor->GetPosition();
 
         show_wait_box("Stepping out backwards (Cancel to stop)...");
-        const int CAP = 5000000;
+        // Each iteration is a BACKWARD single-step, which can re-seek a keyframe
+        // and take seconds. So poll for cancellation on EVERY iteration (the poll
+        // is free next to the step), not every 1024 — otherwise Cancel is
+        // unreachable for minutes. The cap is a backstop, not a working limit:
+        // at these per-step costs anything beyond this is never going to finish.
+        const int CAP = 200000;
         for ( int i = 0; i < CAP; i++ )
         {
-            if ( (i & 0x3FF) == 0 && user_cancelled() )
+            if ( user_cancelled() )
                 break;
+            if ( (i & 0xFF) == 0 && i != 0 )
+                replace_wait_box("Stepping out backwards (Cancel to stop)...\n%d steps, depth %d", i, depth);
 
             ICursorView::ReplayResult r = m_cursor->ReplayBackward(Position::Min, StepCount{ 1 });
             if ( r.StopReason == EventType::MemoryWatchpoint ) { hit_bpt = true; break; }
@@ -2002,10 +2067,16 @@ namespace idattd
         // can't be found, it would otherwise pop an error or file-locate dialog
         // for every module. With 'batch' set those are turned into log lines, and
         // we report the miss to the output window ourselves.
-        bool old_batch = batch;
-        batch = true;
+        // Restore via a scope guard: 'batch' is a global that changes how IDA
+        // reports every subsequent error, so an early return or a throw out of
+        // the plugin must not leave it stuck on.
+        struct BatchGuard
+        {
+            bool saved;
+            BatchGuard() : saved(batch) { batch = true; }
+            ~BatchGuard() { batch = saved; }
+        } batch_guard;
         bool ran = load_and_run_plugin("pdb", PDB_CC_USER_WITH_DATA);
-        batch = old_batch;
 
         // The plugin writes its success flag back into the same netnode slot.
         if ( !ran || pdbnode.altval(PDB_DLLBASE_NODE_IDX) == 0 )
@@ -2070,17 +2141,10 @@ namespace idattd
             return false;
 
         // Which module is PC in?
-        ea_t modbase = BADADDR;
-        size_t n = m_engine->GetModuleCount();
-        const Module *list = m_engine->GetModuleList();
-        for ( size_t i = 0; i < n; i++ )
-        {
-            ea_t b = (ea_t)(uint64_t)list[i].Address;
-            ea_t e = b + (ea_t)list[i].Size;
-            if ( pc >= b && pc < e ) { modbase = b; break; }
-        }
-        if ( modbase == BADADDR )
+        size_t mi = module_index_at(pc);
+        if ( mi == (size_t)-1 )
             return false;
+        ea_t modbase = module_spans()[mi].base;
 
         auto it = m_funcRanges.find(modbase);
         if ( it == m_funcRanges.end() )
@@ -2102,21 +2166,61 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    const std::vector<TraceManager::ModuleSpan> &TraceManager::module_spans() const
+    {
+        size_t n = m_engine ? m_engine->GetModuleCount() : 0;
+        if ( n != m_spanCount )
+        {
+            m_moduleSpans.clear();
+            if ( m_engine )
+            {
+                const Module *list = m_engine->GetModuleList();
+                m_moduleSpans.reserve(n);
+                for ( size_t i = 0; i < n; i++ )
+                {
+                    ModuleSpan s;
+                    s.base = (ea_t)(uint64_t)list[i].Address;
+                    s.end  = s.base + (ea_t)list[i].Size;
+                    m_moduleSpans.push_back(s);
+                }
+                std::sort(m_moduleSpans.begin(), m_moduleSpans.end());
+            }
+            m_spanCount = n;
+        }
+        return m_moduleSpans;
+    }
+
+    //-----------------------------------------------------------------------
+    size_t TraceManager::module_index_at(ea_t ea) const
+    {
+        const std::vector<ModuleSpan> &v = module_spans();
+        ModuleSpan probe;
+        probe.base = ea;
+        // Last module whose base <= ea, then check ea falls inside it.
+        auto it = std::upper_bound(v.begin(), v.end(), probe);
+        if ( it == v.begin() )
+            return (size_t)-1;
+        --it;
+        if ( ea >= it->base && ea < it->end )
+            return (size_t)(it - v.begin());
+        return (size_t)-1;
+    }
+
+    //-----------------------------------------------------------------------
     bool TraceManager::is_library_address(ea_t ea) const
     {
         if ( !m_engine )
             return false;
-        size_t n = m_engine->GetModuleCount();
-        const Module *list = m_engine->GetModuleList();
-        ea_t mainBase = n > 0 ? (ea_t)(uint64_t)list[0].Address : BADADDR;
-        for ( size_t i = 0; i < n; i++ )
-        {
-            ea_t b = (ea_t)(uint64_t)list[i].Address;
-            ea_t e = b + (ea_t)list[i].Size;
-            if ( ea >= b && ea < e )
-                return b != mainBase;   // inside a module, and not the analyzed binary
-        }
-        return false;
+        size_t idx = module_index_at(ea);
+        if ( idx == (size_t)-1 )
+            return false;
+        // Module 0 in the engine's list is the analyzed binary; everything else is
+        // library/system code. (module_spans() is sorted by base, so compare the
+        // base rather than the index.)
+        ea_t mainBase = m_engine->GetModuleCount() > 0
+                      ? (ea_t)(uint64_t)m_engine->GetModuleList()[0].Address
+                      : BADADDR;
+        return module_spans()[idx].base != mainBase;
     }
 
     //-----------------------------------------------------------------------
@@ -2156,11 +2260,16 @@ namespace idattd
         if ( !m_engine )
             return out;
 
+        // NB: the pThreadInfo / pModule back-pointers are checked before use —
+        // resolve_symbols() already guards pModule, so a null is possible here too
+        // and would otherwise crash the Timeline.
         {
             size_t n = m_engine->GetThreadCreatedEventCount();
             const ThreadCreatedEvent *list = m_engine->GetThreadCreatedEventList();
             for ( size_t i = 0; i < n; i++ )
             {
+                if ( list[i].pThreadInfo == nullptr )
+                    continue;
                 qstring nm;
                 nm.sprnt("Thread 0x%X created", (uint32_t)list[i].pThreadInfo->Id);
                 out.push_back({ std::string(nm.c_str()), list[i].Position });
@@ -2171,6 +2280,8 @@ namespace idattd
             const ThreadTerminatedEvent *list = m_engine->GetThreadTerminatedEventList();
             for ( size_t i = 0; i < n; i++ )
             {
+                if ( list[i].pThreadInfo == nullptr )
+                    continue;
                 qstring nm;
                 nm.sprnt("Thread 0x%X exited", (uint32_t)list[i].pThreadInfo->Id);
                 out.push_back({ std::string(nm.c_str()), list[i].Position });
@@ -2181,6 +2292,8 @@ namespace idattd
             const ModuleLoadedEvent *list = m_engine->GetModuleLoadedEventList();
             for ( size_t i = 0; i < n; i++ )
             {
+                if ( list[i].pModule == nullptr )
+                    continue;
                 std::string nm = "Load " + base_name(to_utf8(list[i].pModule->pName, list[i].pModule->NameLength));
                 out.push_back({ nm, list[i].Position });
             }
@@ -2190,6 +2303,8 @@ namespace idattd
             const ModuleUnloadedEvent *list = m_engine->GetModuleUnloadedEventList();
             for ( size_t i = 0; i < n; i++ )
             {
+                if ( list[i].pModule == nullptr )
+                    continue;
                 std::string nm = "Unload " + base_name(to_utf8(list[i].pModule->pName, list[i].pModule->NameLength));
                 out.push_back({ nm, list[i].Position });
             }

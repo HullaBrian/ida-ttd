@@ -11,7 +11,10 @@ namespace idattd
     public:
         void push(const debug_event_t &ev);
         bool empty();
-        debug_event_t pop();
+        // Atomically pop the next event. Returns false (leaving *out untouched)
+        // when the queue is empty. Prefer this over empty()+pop(): the two-call
+        // form is a check-then-act race, and popping an empty queue is UB.
+        bool try_pop(debug_event_t *out);
 
         // Convenience builders matching the IDA event taxonomy.
         void add_process_start(pid_t pid, thid_t tid, const std::string &module,

@@ -49,6 +49,13 @@ namespace idattd
         unhook_event_listener(HT_UI,  &m_uiEvents);
         unhook_event_listener(HT_DBG, &m_dbgEvents);
         unhook_event_listener(HT_IDD, this);
+        // init() pointed IDA's global 'dbg' at m_debugger, which is a member of
+        // this object. Leaving it set here would leave the kernel holding a
+        // pointer into freed memory (every listener that guarded on it is already
+        // unhooked, so nothing else would catch the dereference).
+        if ( ::dbg == &m_debugger )
+            ::dbg = nullptr;
+        delete_toolbar(TTD_TOOLBAR);
         unregister_actions();
         for ( int ic : { m_icoContinue, m_icoRevContinue, m_icoStepInto,
                          m_icoStepOver, m_icoStepOut, m_icoStepBack,

@@ -357,6 +357,11 @@ namespace idattd
             }
         };
 
+        // Phase 1 is a single blocking ReplayForward inside the engine, so there is
+        // no main-thread moment in which a Cancel could be observed — HIDECANCEL is
+        // the honest choice here. (Polling user_cancelled() from on_call_ret is NOT
+        // an option: TTD dispatches that callback from its own threads, and calling
+        // into IDA's UI from there deadlocks it.)
         show_wait_box("HIDECANCEL\nTracing function calls across the whole trace...");
         sweep->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
                             | ReplayFlags::ReplaySegmentsSequentially);
@@ -364,16 +369,31 @@ namespace idattd
         sweep->SetPosition(Position::Min);
         sweep->ReplayForward();
         sweep.reset();
+        hide_wait_box();
 
-        // Phase 2: resolve arguments / return values at each recorded position.
-        replace_wait_box("Resolving %d call(s)...", (int)recs.size());
+        // Phase 2 IS ours and runs on the main thread, so it gets real progress
+        // and a working Cancel — a sweep with thousands of hits used to sit behind
+        // a single static message with no way to bail out.
         UniqueCursor cur = m_mgr->make_cursor();
         std::vector<FunctionInvocation> built;
         built.reserve(recs.size());
+        bool cancelled = false;
+        show_wait_box("Resolving %d call(s)... (Cancel to stop)", (int)recs.size());
         if ( cur )
         {
+            size_t done = 0;
             for ( const Rec &rec : recs )
             {
+                if ( user_cancelled() )
+                {
+                    cancelled = true;
+                    break;
+                }
+                if ( (done & 0x3F) == 0 )
+                    replace_wait_box("Resolving call %d of %d... (Cancel to stop)",
+                                     (int)done + 1, (int)recs.size());
+                done++;
+
                 cur->SetPosition(rec.callPos);
                 FunctionInvocation ev;
                 ev.func_ea = rec.disp;
@@ -394,6 +414,7 @@ namespace idattd
         std::sort(built.begin(), built.end(),
                   [](const FunctionInvocation &a, const FunctionInvocation &b) { return a.pos < b.pos; });
 
+        const size_t nbuilt = built.size();   // read before the move below
         {
             std::lock_guard<std::mutex> g(m_events_mtx);
             m_events = std::move(built);
@@ -401,6 +422,10 @@ namespace idattd
         hide_wait_box();
 
         refresh_chooser("Tracing events");
-        msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)recs.size());
+        if ( cancelled )
+            msg("[ida-ttd] tracer: cancelled - showing %d of %d recorded call(s).\n",
+                (int)nbuilt, (int)recs.size());
+        else
+            msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)recs.size());
     }
 }

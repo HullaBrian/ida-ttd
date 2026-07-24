@@ -91,18 +91,48 @@ namespace idattd
           || exp.AddressOfFunctions == 0 )
             return 0;
 
+        // Pull the three parallel arrays in ONE query each instead of three
+        // queries per export. ntdll alone exports ~2400 names, and this runs for
+        // every module in the trace, so the per-entry form cost tens of thousands
+        // of engine round-trips at trace-load time.
+        // The counts come from the PE header, i.e. untrusted input: clamp them
+        // before sizing any buffer.
+        static const uint32_t kMaxExports = 1u << 20;
+        uint32_t nNames = exp.NumberOfNames < kMaxExports ? exp.NumberOfNames : kMaxExports;
+        uint32_t nFuncs = exp.NumberOfFunctions < kMaxExports ? exp.NumberOfFunctions : kMaxExports;
+        if ( nNames == 0 || nFuncs == 0 )
+            return 0;
+
+        std::vector<uint32_t> nameRvas(nNames);
+        std::vector<uint16_t> ordinals(nNames);
+        std::vector<uint32_t> funcRvas(nFuncs);
+
+        MemoryBuffer mbN = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + exp.AddressOfNames },
+            BufferView{ nameRvas.data(), (size_t)nNames * sizeof(uint32_t) });
+        MemoryBuffer mbO = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + exp.AddressOfNameOrdinals },
+            BufferView{ ordinals.data(), (size_t)nNames * sizeof(uint16_t) });
+        MemoryBuffer mbF = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + exp.AddressOfFunctions },
+            BufferView{ funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t) });
+
+        // Each array may come back short (TTD only records accessed memory); use
+        // whatever prefix actually resolved.
+        size_t gotNames = mbN.Memory.Size / sizeof(uint32_t);
+        size_t gotOrds  = mbO.Memory.Size / sizeof(uint16_t);
+        size_t gotFuncs = mbF.Memory.Size / sizeof(uint32_t);
+        size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
+
         size_t named = 0;
-        for ( uint32_t i = 0; i < exp.NumberOfNames; i++ )
+        for ( size_t i = 0; i < usable; i++ )
         {
-            uint32_t nameRva = 0;
-            uint16_t ordinal = 0;
-            if ( !read_val(cursor, b + exp.AddressOfNames + i * sizeof(uint32_t), &nameRva)
-              || !read_val(cursor, b + exp.AddressOfNameOrdinals + i * sizeof(uint16_t), &ordinal) )
+            uint32_t nameRva = nameRvas[i];
+            uint16_t ordinal = ordinals[i];
+            if ( (size_t)ordinal >= gotFuncs )
                 continue;
 
-            uint32_t funcRva = 0;
-            if ( !read_val(cursor, b + exp.AddressOfFunctions + (uint32_t)ordinal * sizeof(uint32_t), &funcRva) )
-                continue;
+            uint32_t funcRva = funcRvas[ordinal];
             if ( funcRva == 0 )
                 continue;
 
@@ -149,9 +179,14 @@ namespace idattd
 
         // RUNTIME_FUNCTION = { uint32 BeginRva; uint32 EndRva; uint32 UnwindRva; }.
         struct RtFunc { uint32_t Begin, End, Unwind; };
+        // 'size' is an attacker-controllable header field (we analyse malware);
+        // cap it so a corrupt directory can't ask for a multi-gigabyte buffer.
+        static const size_t kMaxFuncs = 1u << 22;   // 4M functions ≈ 48 MB
         size_t maxEntries = size / sizeof(RtFunc);
         if ( maxEntries == 0 )
             return 0;
+        if ( maxEntries > kMaxFuncs )
+            maxEntries = kMaxFuncs;
 
         std::vector<RtFunc> buf(maxEntries);
         MemoryBuffer mb = cursor->QueryMemoryBuffer(
@@ -226,7 +261,21 @@ namespace idattd
             return 0;
 
         struct RtFunc { uint32_t Begin, End, Unwind; };
+        // As above: 'size' is untrusted header data. Bound it by both a hard cap
+        // and what the file could actually contain.
+        static const size_t kMaxFuncs = 1u << 22;
         size_t count = size / sizeof(RtFunc);
+        if ( count == 0 )
+            return 0;
+        f.seekg(0, std::ios::end);
+        uint64_t fileLen = (uint64_t)f.tellg();
+        if ( fileOff >= fileLen )
+            return 0;
+        size_t avail = (size_t)((fileLen - fileOff) / sizeof(RtFunc));
+        if ( count > avail )
+            count = avail;
+        if ( count > kMaxFuncs )
+            count = kMaxFuncs;
         if ( count == 0 )
             return 0;
 

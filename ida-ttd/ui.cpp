@@ -349,7 +349,10 @@ namespace idattd
             {
                 memcpy(p, text, n);
                 GlobalUnlock(h);
-                SetClipboardData(CF_TEXT, h);
+                // The clipboard only takes ownership of the block when
+                // SetClipboardData SUCCEEDS; on failure it is still ours to free.
+                if ( SetClipboardData(CF_TEXT, h) == nullptr )
+                    GlobalFree(h);
             }
             else
             {
