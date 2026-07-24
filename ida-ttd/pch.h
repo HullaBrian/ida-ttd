@@ -67,6 +67,9 @@
 #include <vector>
 #include <deque>
 #include <mutex>
+#include <atomic>
+#include <thread>
+#include <chrono>
 #include <set>
 #include <string>
 #include <optional>

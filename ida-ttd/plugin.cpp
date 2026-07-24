@@ -40,6 +40,11 @@ namespace idattd
     //-----------------------------------------------------------------------
     Plugin::~Plugin()
     {
+        if ( m_refocusTimer != nullptr )
+        {
+            unregister_timer(m_refocusTimer);
+            m_refocusTimer = nullptr;
+        }
         unhook_event_listener(HT_IDB, &m_idbEvents);
         unhook_event_listener(HT_UI,  &m_uiEvents);
         unhook_event_listener(HT_DBG, &m_dbgEvents);
@@ -89,6 +94,8 @@ namespace idattd
         // Wire handler back-pointers.
         m_runBack.mgr     = &m_mgr;
         m_stepOutBack.mgr = &m_mgr;
+        m_runToCurBack.mgr = &m_mgr;
+        m_runToCurFwd.mgr = &m_mgr;
         m_timeline.mgr    = &m_mgr;
         m_posLabel.mgr    = &m_mgr;
         m_goto.mgr        = &m_mgr;
@@ -106,6 +113,12 @@ namespace idattd
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
             actions::STEP_OUT_BACK, "Step out backwards", &m_stepOutBack, this,
             nullptr, "Step out backwards: run backward out of the current function to the call that entered it", m_icoStepOutBack));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::RUN_TO_CUR_BACK, "Run to cursor backwards", &m_runToCurBack, this,
+            nullptr, "Run to cursor backwards: run backward until execution reaches the cursor address", m_icoRunToCurBack));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::RUN_TO_CUR_FWD, "Run to cursor", &m_runToCurFwd, this,
+            nullptr, "Run to cursor: run forward until execution reaches the cursor address", m_icoRunToCur));
         // Live trace-position readout (text-only toolbar button; click copies).
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
             actions::POS_LABEL, "TTD position", &m_posLabel, this,
@@ -147,6 +160,8 @@ namespace idattd
         attach_action_to_menu("TTD/Go to position",             actions::GOTO_POS,    SETMENU_APP);
         attach_action_to_menu("TTD/Continue backwards",         actions::RUN_BACK,    SETMENU_APP);
         attach_action_to_menu("TTD/Step out backwards",         actions::STEP_OUT_BACK, SETMENU_APP);
+        attach_action_to_menu("TTD/Run to cursor",              actions::RUN_TO_CUR_FWD, SETMENU_APP);
+        attach_action_to_menu("TTD/Run to cursor backwards",    actions::RUN_TO_CUR_BACK, SETMENU_APP);
 
         // Build the toolbar immediately so the TTD buttons are always present.
         // (The native debug-movement actions register lazily, so show_actions runs
@@ -158,7 +173,7 @@ namespace idattd
     void Plugin::unregister_actions()
     {
         const char *names[] = {
-            actions::RUN_BACK, actions::STEP_OUT_BACK, actions::POS_LABEL, actions::TRACE_FUNC,
+            actions::RUN_BACK, actions::STEP_OUT_BACK, actions::RUN_TO_CUR_BACK, actions::RUN_TO_CUR_FWD, actions::POS_LABEL, actions::TRACE_FUNC,
             actions::TRACE_PAT, actions::ANALYZE_FUNC, actions::OPEN_EVENTS, actions::OPEN_TRACED,
             actions::RUN_TRACE, actions::TIMELINE, actions::GOTO_POS,
         };
@@ -180,8 +195,8 @@ namespace idattd
         update_action_icon("ThreadRunUntilReturn",      m_icoStepOut);
         update_action_icon("ThreadStepIntoBackwards",   m_icoStepIntoBack);
         update_action_icon("ThreadStepOverBackwards",   m_icoStepBack);
-        update_action_icon("ThreadRunToCursor",         m_icoRunToCur);
-        update_action_icon("ThreadRunToCursorBackwards", m_icoRunToCurBack);
+        // (Run to cursor forward/backward are our own custom actions; their icons
+        // are set at registration, so they aren't reskinned here.)
     }
 
     //-----------------------------------------------------------------------
@@ -201,13 +216,13 @@ namespace idattd
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepInto");         // Step into
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOver");         // Step over
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunUntilReturn");   // Run until return
-        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunToCursor");      // Run to cursor
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_TO_CUR_FWD);  // Run to cursor (custom)
         // --- backward ---
         attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_BACK);        // Continue backwards
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepIntoBackwards");
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOverBackwards");
         attach_action_to_toolbar(TTD_TOOLBAR, actions::STEP_OUT_BACK);   // Step out backwards
-        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunToCursorBackwards");
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_TO_CUR_BACK); // Run to cursor backwards (custom)
         // --- TTD extras ---
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TIMELINE);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::GOTO_POS);
@@ -242,6 +257,65 @@ namespace idattd
         update_action_label(actions::POS_LABEL, label.c_str());
     }
 
+    //-----------------------------------------------------------------------
+    // Remember which code view the user is in. The preference only changes on a
+    // genuine user focus change; while m_ignoreWidgetChanges is set (the re-focus
+    // window around a debugger stop) the debugger's forced switch to disassembly is
+    // recorded but does NOT flip the preference.
+    void Plugin::track_widget(TWidget *cur)
+    {
+        if ( cur == nullptr )
+            return;
+        int t = get_widget_type(cur);
+        if ( t == BWN_PSEUDOCODE )
+        {
+            m_pseudoWidget = cur;
+            if ( !m_ignoreWidgetChanges )
+                m_userPrefersDecomp = true;
+        }
+        else if ( t == BWN_DISASM )
+        {
+            if ( !m_ignoreWidgetChanges )
+                m_userPrefersDecomp = false;
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    void Plugin::widget_closing(TWidget *w)
+    {
+        if ( w == m_pseudoWidget )
+            m_pseudoWidget = nullptr;
+    }
+
+    //-----------------------------------------------------------------------
+    int idaapi Plugin::refocus_cb(void *ud)
+    {
+        static_cast<Plugin *>(ud)->do_refocus();
+        return -1;  // one-shot: unregister
+    }
+
+    void Plugin::do_refocus()
+    {
+        m_refocusTimer = nullptr;
+        if ( m_pseudoWidget != nullptr && m_userPrefersDecomp )
+            activate_widget(m_pseudoWidget, true);
+        m_ignoreWidgetChanges = false;
+    }
+
+    //-----------------------------------------------------------------------
+    // Called from the stop handler. If the user was in the decompiler, schedule a
+    // deferred re-focus: IDA brings the disassembly to the front as part of its own
+    // post-stop handling, so we must re-assert the decompiler AFTER that, from a
+    // short timer (the callback runs on the UI thread once IDA has settled).
+    void Plugin::keep_decompiler_focused()
+    {
+        if ( !m_userPrefersDecomp || m_pseudoWidget == nullptr )
+            return;
+        m_ignoreWidgetChanges = true;          // ignore IDA's forced disasm switch
+        if ( m_refocusTimer == nullptr )
+            m_refocusTimer = register_timer(10, refocus_cb, this);
+    }
+
     //=======================================================================
     // HT_DBG: resolve export symbols when a module's segment becomes available.
     //=======================================================================
@@ -273,9 +347,12 @@ namespace idattd
                 // disassemble around RIP, and refresh the toolbar readout.
                 p->manager().on_suspended();
                 p->update_position_label();
-                // on_suspended() invalidates debugger memory, which makes IDA
-                // rebuild the debug toolbars and reset our action icons — reapply.
+                // IDA can rebuild the debug toolbars across a stop and reset our
+                // action icons — reapply them (cheap, belt-and-suspenders).
                 p->reskin_actions();
+                // IDA forces the disassembly view to the front on each stop; if the
+                // user was in the decompiler, re-assert it afterward.
+                p->keep_decompiler_focused();
                 // Exports were just (re)named; refresh the call stack so frames
                 // show names rather than raw VAs.
                 refresh_call_stack();
@@ -294,14 +371,46 @@ namespace idattd
         if ( p == nullptr )
             return 0;
 
-        // Only augment menus while our debugger backend is the active one.
-        if ( code == ui_finish_populating_widget_popup && ::dbg == &p->debugger() )
+        switch ( code )
         {
-            TWidget    *widget = va_arg(va, TWidget *);
-            TPopupMenu *popup  = va_arg(va, TPopupMenu *);
-            // (action_activation_ctx_t* ctx follows; not needed here)
-            if ( widget != nullptr && get_widget_type(widget) == BWN_DISASM )
-                attach_action_to_popup(widget, popup, actions::TRACE_FUNC, "TTD/");
+            case ui_finish_populating_widget_popup:
+            {
+                // Only augment menus while our debugger backend is the active one.
+                if ( ::dbg != &p->debugger() )
+                    break;
+                TWidget    *widget = va_arg(va, TWidget *);
+                TPopupMenu *popup  = va_arg(va, TPopupMenu *);
+                // (action_activation_ctx_t* ctx follows; not needed here)
+                if ( widget == nullptr )
+                    break;
+                int wt = get_widget_type(widget);
+                if ( wt == BWN_DISASM || wt == BWN_PSEUDOCODE )
+                {
+                    // Time-travel to the address under the cursor (works in both
+                    // the disassembly and the decompiler).
+                    attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_FWD, "TTD/");
+                    attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_BACK, "TTD/");
+                }
+                if ( wt == BWN_DISASM )
+                    attach_action_to_popup(widget, popup, actions::TRACE_FUNC, "TTD/");
+                break;
+            }
+            case ui_current_widget_changed:
+            {
+                // Track which code view the user is in so we can keep the decompiler
+                // focused across debugger stops.
+                TWidget *cur = va_arg(va, TWidget *);
+                p->track_widget(cur);
+                break;
+            }
+            case ui_widget_invisible:
+            {
+                TWidget *w = va_arg(va, TWidget *);
+                p->widget_closing(w);
+                break;
+            }
+            default:
+                break;
         }
         return 0;
     }
@@ -310,12 +419,31 @@ namespace idattd
     // HT_IDB: names changed (e.g. a PDB download finished and IDA applied
     // symbols) — refresh the call stack so frames pick up the new names.
     //=======================================================================
-    ssize_t idaapi IdbEventListener::on_event(ssize_t code, va_list)
+    ssize_t idaapi IdbEventListener::on_event(ssize_t code, va_list va)
     {
         if ( p == nullptr || !p->manager().is_active() )
             return 0;
         if ( code == idb_event::renamed )
+        {
+            ea_t        ea       = va_arg(va, ea_t);
+            const char *new_name = va_arg(va, const char *);
+            // Debugger views — the call-stack window in particular — resolve
+            // <name>+offset through the DEBUG-NAME list, NOT plain IDB names. Our
+            // exports (set_name) and the PDB plugin's symbols only populate IDB
+            // names, so the call stack showed raw addresses. Mirror every applied
+            // name into the debug-name list so frames render as <name>+offset.
+            if ( new_name != nullptr && new_name[0] != '\0' )
+                set_debug_name(ea, new_name);
+            // As PDB/export symbols name functions in system modules, mark those
+            // functions FUNC_LIB so library code is grouped/de-emphasized (the PDB
+            // plugin defines them but does not flag them as library).
+            if ( get_func_start(ea) == ea && (get_func_flags(ea) & FUNC_LIB) == 0
+              && p->manager().is_library_address(ea) )
+            {
+                set_func_flag(ea, FUNC_LIB, true);
+            }
             refresh_call_stack();   // just flags for refresh; rename storms coalesce
+        }
         return 0;
     }
 

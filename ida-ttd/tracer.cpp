@@ -154,8 +154,8 @@ namespace idattd
     {
         if ( func_ea == BADADDR )
             return;
-        func_t *f = get_func(func_ea);
-        ea_t key = f != nullptr ? f->start_ea : func_ea;
+        ea_t fstart = get_func_start(func_ea);
+        ea_t key = fstart != BADADDR ? fstart : func_ea;
         if ( is_traced(key) )
             return;
         {
@@ -252,22 +252,23 @@ namespace idattd
     std::vector<ea_t> FunctionTracer::resolve_targets(ea_t func_ea) const
     {
         std::set<ea_t> out;
-        func_t *f = get_func(func_ea);
-        ea_t start = f != nullptr ? f->start_ea : func_ea;
+        func_entry_info_t fi;
+        bool has_func = get_func_entry_info(&fi, func_ea);
+        ea_t start = has_func ? fi.start_ea : func_ea;
         out.insert(start);
 
         // Case 1: an import thunk (jmp cs:Foo) -> follow it and read its live
         // IAT slot to get the real runtime callee VA.
-        if ( f != nullptr && (f->flags & FUNC_THUNK) != 0 )
+        if ( has_func && (fi.get_flags() & FUNC_THUNK) != 0 )
         {
             ea_t ptr = BADADDR;
-            ea_t tgt = calc_thunk_func_target(f, &ptr);
+            ea_t tgt = calc_thunk_function_target(&fi, &ptr);
             if ( tgt != BADADDR )
                 out.insert(tgt);
             add_live_ptr(ptr, m_is64, out);
         }
 
-        // Case 2: the user clicked the import data slot itself (no func_t, or a
+        // Case 2: the user clicked the import data slot itself (no function, or a
         // data item). Read the live pointer there = runtime callee VA. Only do
         // this for data so we don't misread real code bytes as a pointer.
         if ( !is_code(get_flags(start)) )

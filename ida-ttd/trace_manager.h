@@ -56,6 +56,17 @@ namespace idattd
         void                       request_single_step(bool forward);
         void                       request_run(bool forward);
         void                       request_step_out_backward();
+        // Run the trace BACKWARD until execution reaches 'addr' (or a user
+        // breakpoint, or the start of the trace) — our own "run to cursor
+        // backwards". IDA greys out its native ThreadRunToCursorBackwards for this
+        // backend, so we drive it ourselves like Continue/Step-out backwards.
+        void                       request_run_to_cursor_backward(ea_t addr);
+        // Run the trace FORWARD until execution reaches 'addr' (or a user
+        // breakpoint, or the end of the trace) — our own "run to cursor". IDA's
+        // native ThreadRunToCursor intermittently fails on this read-only backend
+        // (it tries to plant a real/source breakpoint), so we drive it ourselves
+        // with a temporary Execute watchpoint, like the backward variant.
+        void                       request_run_to_cursor_forward(ea_t addr);
         TTD::Replay::Position              current_position() const;
         std::vector<NamedPosition> collect_positions() const;
 
@@ -83,6 +94,11 @@ namespace idattd
         // any newly-seen module and disassemble a run of code around RIP.
         void                       on_suspended();
 
+        // True if 'ea' is inside a loaded module OTHER than the analyzed binary
+        // (module 0) — i.e. library/system code. Used to mark library functions
+        // FUNC_LIB as their PDB/export names are applied.
+        bool                       is_library_address(ea_t ea) const;
+
         // Explicit, user-triggered deep analysis: walk the trace backward from the
         // current position to find the enclosing function's entry and define the
         // whole function. Expensive (per-step backward replay), so it runs behind
@@ -103,6 +119,21 @@ namespace idattd
         // that entered this frame), honoring user breakpoints. Shows a cancellable
         // wait box because it single-steps backward.
         TTD::Replay::EventType navigate_out_backward();
+        // Run backward to 'addr' (a temporary Execute watchpoint + ReplayBackward),
+        // stopping at the first earlier execution of 'addr' or any user breakpoint.
+        // One ReplayBackward call (the engine seeks to the hit), so it is cheap —
+        // unlike a backward single-step loop.
+        TTD::Replay::EventType navigate_backward_to(ea_t addr);
+        // Run forward to 'addr' (a temporary Execute watchpoint + ReplayForward),
+        // stopping at the next execution of 'addr' or any user breakpoint. If the
+        // cursor is already sitting on 'addr', a single step is taken first so we
+        // advance to the NEXT occurrence rather than matching the current one.
+        TTD::Replay::EventType navigate_forward_to(ea_t addr);
+        // After a navigation that stopped on its own (not at a user breakpoint),
+        // flag a pending "start/end of the trace" notice if the cursor came to rest
+        // on the trace's first/last position. Shown (once) from on_suspended, where
+        // a modal popup is safe — not from inside the resume handler.
+        void  flag_boundary(TTD::Replay::EventType sr, bool forward);
         // Run forward to 'addr' on thread 'utid' with SP >= min_sp (skips deeper
         // recursion); also stops on any user breakpoint. Returns 0=reached addr,
         // 1=user breakpoint, 2=trace boundary.
@@ -216,8 +247,15 @@ namespace idattd
         bool         m_runOnce = false;
         bool         m_runForward = true;
         bool         m_stepOutBackward = false;
+        bool         m_runToCursorBackward = false;
+        bool         m_runToCursorForward = false;
+        ea_t         m_runToCursorAddr = BADADDR;
         resume_mode_t m_resumeMode = RESMOD_NONE;
         int          m_activeBpts = 0;
+        // Pending "edge of trace" notice (shown from on_suspended): 0 none,
+        // 1 start of trace, 2 end of trace.
+        enum { BOUNDARY_NONE = 0, BOUNDARY_START, BOUNDARY_END };
+        int          m_pendingBoundary = BOUNDARY_NONE;
 
         pid_t         m_pid = 1;
         TTD::Replay::Position m_nextPosition;

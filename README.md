@@ -7,7 +7,7 @@ step **forwards and backwards**, inspect registers and memory, set breakpoints
 functions disassembled and named automatically (including runtime-only shellcode),
 and run trace-wide queries — all from the standard IDA debugger UI.
 
-Built against the official IDA SDK (9.3) and the official Microsoft TTD Replay
+Built against the official IDA SDK (9.4) and the official Microsoft TTD Replay
 SDK (`Microsoft.TimeTravelDebugging.Apis`).
 
 ---
@@ -99,9 +99,11 @@ views show the bytes at the new position, not the previous one.
 Requirements:
 
 - Visual Studio 2022+ with the C++ desktop workload (toolset v143/v145).
-- The IDA SDK 9.3, expected at `ida-sdk/src` (already in this repo). The project
-  reads it via the `IdaSdkDir` property (`$(SolutionDir)ida-sdk\src`), using
-  `ida-sdk/src/include` for headers and `ida-sdk/src/lib/x64_win_vc_64` for `ida.lib`.
+- The IDA SDK 9.4, expected at `ida-sdk/src` (already in this repo). The project
+  reads it via the `IdaSdkDir` property (`$(RepoRoot)ida-sdk\src`, where `RepoRoot`
+  is derived from the project file's own location), using `ida-sdk/src/include` for
+  headers and `ida-sdk/src/lib/x64_win_64` for `ida.lib`. Note the 9.4 lib directory
+  naming — 9.3 and earlier used `x64_win_vc_64`.
 - The TTD Replay NuGet package, restored into `packages/` (already present:
   `packages/Microsoft.TimeTravelDebugging.Apis.0.9.5`).
 
@@ -116,7 +118,13 @@ Steps:
 2. If NuGet packages are not restored, run **Restore NuGet Packages** /
    `nuget restore`.
 3. Output is `build\Release\ida-ttd.dll` (the project's `OutDir` is
-   `$(SolutionDir)build\$(Configuration)\`).
+   `$(RepoRoot)build\$(Configuration)\`).
+
+Both `Release|x64` and `Debug|x64` build. `Debug` is an *unoptimised* build, not a
+debug-CRT build: it defines `NDEBUG` and links the **release** CRT (`/MD`), because
+that is the CRT IDA itself uses. Defining `_DEBUG` here would pull in debug-CRT-only
+symbols (`_CrtDbgReport`, `_calloc_dbg`, `msvcprtd.lib`) that the release CRT does
+not export, and the link fails with `LNK2001`/`LNK1120`.
 
 The project is x64-only because IDA 9.x is a 64-bit application. The TTD SDK
 `.props` file (imported by the project) wires up the SDK include path and the
@@ -129,7 +137,7 @@ x64 `TTDReplay.lib` import-library path; the project links `ida.lib` and
 ## Installation
 
 1. Copy `build\Release\ida-ttd.dll` into your IDA `plugins\` directory
-   (e.g. `C:\Program Files\IDA Professional 9.3\plugins\`).
+   (e.g. `C:\Program Files\IDA Professional 9.4\plugins\`).
 2. Obtain the Microsoft TTD **runtime** DLLs — `TTDReplay.dll` and
    `TTDReplayCPU.dll`. These are **not** in the NuGet package; get them from a
    WinDbg / WinDbg Preview installation (under `...\amd64\ttd\`) or via the TTD

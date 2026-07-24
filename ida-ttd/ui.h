@@ -23,7 +23,7 @@ namespace idattd
         std::vector<TraceManager::NamedPosition> m_positions;
     };
 
-    // List of functions selected for call tracing. Insert opens choose_func;
+    // List of functions selected for call tracing. Insert opens choose_func_ea;
     // delete removes a trace.
     class TracedFunctionsChooser : public chooser_t
     {
@@ -117,6 +117,27 @@ namespace idattd
         { return AST_ENABLE_ALWAYS; }
     };
 
+    // IDA greys out its native ThreadRunToCursorBackwards for this backend, so we
+    // provide our own: run backward until execution reaches the cursor address.
+    struct RunToCursorBackHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    // IDA's native ThreadRunToCursor intermittently fails on this read-only
+    // backend (it tries to plant a real/source breakpoint), so we provide our
+    // own forward run-to-cursor that drives the cursor with a temp watchpoint.
+    struct RunToCursorFwdHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
     struct GotoPositionHandler : public action_handler_t
     {
         TraceManager *mgr = nullptr;
@@ -197,6 +218,8 @@ namespace idattd
     {
         constexpr const char *RUN_BACK     = "idattd:run_back";
         constexpr const char *STEP_OUT_BACK = "idattd:step_out_back";
+        constexpr const char *RUN_TO_CUR_BACK = "idattd:run_to_cursor_back";
+        constexpr const char *RUN_TO_CUR_FWD = "idattd:run_to_cursor_fwd";
         constexpr const char *POS_LABEL    = "idattd:pos_label";
         constexpr const char *TIMELINE     = "idattd:timeline";
         constexpr const char *GOTO_POS     = "idattd:goto_position";

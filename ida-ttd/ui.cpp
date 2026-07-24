@@ -11,9 +11,17 @@ namespace idattd
     {
         qstring name;
         get_func_name(&name, ea);
+        // The call target often has no DEFINED function (it lives in a module we
+        // haven't laid out), but it usually has a name (an export or a PDB symbol).
+        // Fall back to that, then to the bare address, so the Function column is
+        // never blank.
+        if ( name.empty() )
+            get_name(&name, ea);
         qstring dem;
-        if ( demangle_name(&dem, name.c_str(), 0) > 0 && !dem.empty() )
+        if ( !name.empty() && demangle_name(&dem, name.c_str(), 0) > 0 && !dem.empty() )
             return dem;
+        if ( name.empty() )
+            name.sprnt("0x%llX", (uint64_t)ea);
         return name;
     }
 
@@ -99,10 +107,10 @@ namespace idattd
 
     chooser_t::cbret_t idaapi TracedFunctionsChooser::ins(ssize_t /*n*/)
     {
-        func_t *f = choose_func("Choose a function to trace", get_screen_ea());
-        if ( f == nullptr || m_tracer == nullptr )
+        ea_t fea = choose_func_ea("Choose a function to trace", get_screen_ea());
+        if ( fea == BADADDR || m_tracer == nullptr )
             return cbret_t();
-        m_tracer->add_func(f->start_ea);
+        m_tracer->add_func(fea);
         return ALL_CHANGED;
     }
 
@@ -284,6 +292,28 @@ namespace idattd
         return 1;
     }
 
+    int idaapi RunToCursorBackHandler::activate(action_activation_ctx_t *ctx)
+    {
+        if ( mgr == nullptr )
+            return 1;
+        // The address under the cursor (works from disasm or pseudocode); fall back
+        // to the screen ea if the context didn't carry one.
+        ea_t ea = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
+        mgr->request_run_to_cursor_backward(ea);
+        return 1;
+    }
+
+    int idaapi RunToCursorFwdHandler::activate(action_activation_ctx_t *ctx)
+    {
+        if ( mgr == nullptr )
+            return 1;
+        // The address under the cursor (works from disasm or pseudocode); fall back
+        // to the screen ea if the context didn't carry one.
+        ea_t ea = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
+        mgr->request_run_to_cursor_forward(ea);
+        return 1;
+    }
+
     int idaapi OpenTimelineHandler::activate(action_activation_ctx_t *)
     {
         if ( mgr == nullptr || !mgr->is_active() )
@@ -367,8 +397,8 @@ namespace idattd
             return 1;
         }
         ea_t ea = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
-        func_t *f = get_func(ea);
-        ea_t target = f != nullptr ? f->start_ea : ea;
+        ea_t fstart = get_func_start(ea);
+        ea_t target = fstart != BADADDR ? fstart : ea;
 
         // This is a focused "calls to THIS function" query: replace any prior
         // traced set so results aren't polluted by earlier picks. (Use the

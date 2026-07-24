@@ -55,10 +55,19 @@ namespace idattd
         void reskin_actions();  // (re)apply the codicon icons to the movement actions
         void update_position_label();   // refresh the live "Seq:Steps" toolbar readout
 
+        // --- keep the decompiler focused across stops (HT_UI driven) ----------
+        // IDA forces the disassembly view to the front on every debugger stop. If
+        // the user was viewing the decompiler, we re-assert it after the stop.
+        void track_widget(TWidget *cur);      // remember the user's active code view
+        void widget_closing(TWidget *w);      // drop a closed widget pointer
+        void keep_decompiler_focused();       // schedule a re-focus after a stop (if wanted)
+
     private:
         void register_actions();
         void unregister_actions();
         void load_icons();
+        void do_refocus();                    // timer body: re-activate the decompiler
+        static int idaapi refocus_cb(void *ud);
 
         debugger_t     m_debugger = {};
         TraceManager   m_mgr;
@@ -71,6 +80,8 @@ namespace idattd
         // TTD-specific navigation (most stepping is IDA's native actions).
         RunBackHandler      m_runBack;   // IDA has no native "continue backwards"
         StepOutBackHandler  m_stepOutBack; // ...nor "step out backwards"
+        RunToCursorBackHandler m_runToCurBack; // ...and its native run-to-cursor-back greys out
+        RunToCursorFwdHandler m_runToCurFwd; // ...and its native run-to-cursor fails intermittently
         OpenTimelineHandler m_timeline;
         PositionCopyHandler m_posLabel;  // toolbar timestamp; click copies position
         GotoPositionHandler m_goto;
@@ -98,5 +109,13 @@ namespace idattd
         int  m_icoTimeline    = -1;
         int  m_icoGoto        = -1;
         int  m_icoFuncSearch  = -1;
+
+        // Decompiler-focus tracking. m_userPrefersDecomp is sticky: it only flips on
+        // a USER focus change (not the debugger's forced disasm switch, which we
+        // ignore while m_ignoreWidgetChanges is set during the re-focus window).
+        TWidget *m_pseudoWidget   = nullptr;  // last-seen Pseudocode widget
+        bool     m_userPrefersDecomp = false; // user was last in the decompiler
+        bool     m_ignoreWidgetChanges = false; // freeze preference during a stop
+        qtimer_t m_refocusTimer   = nullptr;  // one-shot deferred re-focus
     };
 }

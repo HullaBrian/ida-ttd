@@ -61,12 +61,21 @@ namespace idattd
     //=======================================================================
     // Index build progress
     //=======================================================================
+    // Percentage published by the TTD indexing threads, consumed by the main
+    // thread's wait-box loop in on_start_process(). See index_progress().
+    static std::atomic<uint32_t> g_indexPct{ 0 };
+
+    // TTD invokes this from its own indexing WORKER THREADS. It must therefore not
+    // touch IDA at all: calling replace_wait_box() here deadlocked IDA outright
+    // (process alive at 0% CPU, permanently unresponsive, no window repaint) on the
+    // first load of any trace with no prebuilt .idx. Publish the percentage and
+    // return; the main thread renders it.
     static void __stdcall index_progress(void const * /*ctx*/, IndexBuildProgressType const *d) noexcept
     {
         if ( d != nullptr && d->KeyframeCount > 0 )
         {
-            int pct = (int)((uint64_t)d->KeyframesProcessed * 100 / d->KeyframeCount);
-            replace_wait_box("Building TTD index... %d%%", pct);
+            uint32_t pct = (uint32_t)((uint64_t)d->KeyframesProcessed * 100 / d->KeyframeCount);
+            g_indexPct.store(pct, std::memory_order_relaxed);
         }
     }
 
@@ -192,6 +201,10 @@ namespace idattd
         m_forwardSingleStep  = false;
         m_runOnce            = false;
         m_stepOutBackward    = false;
+        m_runToCursorBackward = false;
+        m_runToCursorForward = false;
+        m_runToCursorAddr    = BADADDR;
+        m_pendingBoundary    = BOUNDARY_NONE;
         m_activeBpts         = 0;
         m_resolvedBases.clear();
         m_pdbBases.clear();
@@ -263,9 +276,47 @@ namespace idattd
         // memory reads are severely limited.
         if ( m_engine->GetIndexStatus() != IndexStatus::IndexFileLoaded )
         {
-            show_wait_box("Building TTD index...");
-            m_engine->BuildIndex(index_progress, nullptr, IndexBuildFlags::None);
+            // BuildIndex is fully synchronous and can run for minutes, so it must NOT
+            // run on the main thread: doing so blocks IDA's message loop for the whole
+            // build (no repaint, no progress). Run it on a worker and let the MAIN
+            // thread own the wait box, polling the percentage published by
+            // index_progress(). This is also what keeps the progress callback off IDA's
+            // UI (see index_progress) — the previous arrangement deadlocked IDA.
+            //
+            // The build cannot be interrupted: IndexBuildProgressCallback returns void
+            // and BuildIndex exposes no cancellation flag, so the box is HIDECANCEL
+            // rather than offering a Cancel that could not do anything.
+            g_indexPct.store(0, std::memory_order_relaxed);
+            std::atomic<bool> done{ false };
+            IndexStatus       st = IndexStatus::IndexFileNotPresent;
+            IReplayEngine    *eng = m_engine.get();
+
+            std::thread worker([eng, &done, &st]()
+            {
+                st = eng->BuildIndex(index_progress, nullptr, IndexBuildFlags::None);
+                done.store(true, std::memory_order_release);
+            });
+
+            show_wait_box("HIDECANCEL\nBuilding TTD index...");
+            uint32_t shown = 101;                    // force the first repaint
+            while ( !done.load(std::memory_order_acquire) )
+            {
+                uint32_t pct = g_indexPct.load(std::memory_order_relaxed);
+                if ( pct != shown )
+                {
+                    replace_wait_box("HIDECANCEL\nBuilding TTD index... %u%%", pct);
+                    shown = pct;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            worker.join();
             hide_wait_box();
+
+            // Note: IndexFileUnloadable here is NORMAL and does not mean memory reads
+            // will fail — the engine builds and uses an in-memory index, while
+            // GetIndexStatus()/this result describe the on-disk .idx file only.
+            if ( st != IndexStatus::IndexFileLoaded )
+                msg("[ida-ttd] TTD index build finished with status %d (in-memory index still usable).\n", (int)st);
         }
 
         m_cursor = UniqueCursor{ m_engine->NewCursor() };
@@ -622,14 +673,23 @@ namespace idattd
         }
 
         *nbytes = resolved_end;
-        return DRC_OK;
+        // Nothing at this address is recorded, reconstructed, or image-backed: it
+        // is unmapped/unknown memory. Report a read FAILURE rather than a silent
+        // zero-fill — otherwise IDA treats the whole address space (advertised as
+        // one big segment) as readable and the register/stack views dereference a
+        // garbage pointer into 0, then dereference that 0, ad infinitum.
+        return resolved_end == 0 ? DRC_FAILED : DRC_OK;
     }
 
     //-----------------------------------------------------------------------
     ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
     {
         memory_info_t mi;
-        mi.start_ea = 0;
+        // Start above the Windows null page (the low 64 KiB is always reserved /
+        // unmapped). Excluding it stops IDA from treating small integers (0, 1, ...)
+        // as valid TTD pointers and recursively dereferencing them in the
+        // register/stack views.
+        mi.start_ea = 0x10000;
         mi.end_ea   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
         mi.name     = "TTD";
         mi.bitness  = m_is64 ? 2 : 1;
@@ -777,6 +837,79 @@ namespace idattd
             return 2; // hit the trace boundary
         ea_t pc = program_counter();
         return pc == addr ? 0 : 1; // 0 = landed at target, 1 = user breakpoint
+    }
+
+    //-----------------------------------------------------------------------
+    // Run backward to 'addr': set a temporary Execute watchpoint there and replay
+    // backward. The engine seeks straight to the previous execution of 'addr' (one
+    // ReplayBackward — cheap, NOT a backward single-step loop), stopping there or
+    // at any user breakpoint hit on the way, or at the start of the trace.
+    EventType TraceManager::navigate_backward_to(ea_t addr)
+    {
+        auto threads_before = snapshot_threads();
+        auto mods_before    = snapshot_modules();
+
+        MemoryWatchpointData wp{};
+        wp.Address    = GuestAddress{ (uint64_t)addr };
+        wp.Size       = 1;
+        wp.AccessMask = DataAccessMask::Execute;
+        m_cursor->AddMemoryWatchpoint(wp);
+        m_cursor->SetEventMask(EventMask::MemoryWatchpoint);
+
+        ICursorView::ReplayResult r = m_cursor->ReplayBackward();
+
+        m_cursor->RemoveMemoryWatchpoint(wp);
+        m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
+
+        auto threads_after = snapshot_threads();
+        auto mods_after    = snapshot_modules();
+        apply_differences(threads_before, threads_after, mods_before, mods_after);
+        return r.StopReason;
+    }
+
+    //-----------------------------------------------------------------------
+    // Run forward to 'addr': set a temporary Execute watchpoint there and replay
+    // forward. The engine seeks straight to the next execution of 'addr' (one
+    // ReplayForward — cheap), stopping there, at any user breakpoint hit on the
+    // way, or at the end of the trace. If the cursor is already on 'addr', step
+    // once first so we advance to the NEXT occurrence instead of matching here.
+    EventType TraceManager::navigate_forward_to(ea_t addr)
+    {
+        auto threads_before = snapshot_threads();
+        auto mods_before    = snapshot_modules();
+
+        if ( program_counter() == addr )
+            m_cursor->ReplayForward(Position::Max, StepCount{ 1 });
+
+        MemoryWatchpointData wp{};
+        wp.Address    = GuestAddress{ (uint64_t)addr };
+        wp.Size       = 1;
+        wp.AccessMask = DataAccessMask::Execute;
+        m_cursor->AddMemoryWatchpoint(wp);
+        m_cursor->SetEventMask(EventMask::MemoryWatchpoint);
+
+        ICursorView::ReplayResult r = m_cursor->ReplayForward();
+
+        m_cursor->RemoveMemoryWatchpoint(wp);
+        m_cursor->SetEventMask(m_activeBpts > 0 ? EventMask::MemoryWatchpoint : EventMask::None);
+
+        auto threads_after = snapshot_threads();
+        auto mods_after    = snapshot_modules();
+        apply_differences(threads_before, threads_after, mods_before, mods_after);
+        return r.StopReason;
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::flag_boundary(EventType sr, bool forward)
+    {
+        // A breakpoint stop is not a trace edge.
+        if ( sr == EventType::MemoryWatchpoint || !m_engine || !m_cursor )
+            return;
+        Position p = m_cursor->GetPosition();
+        if ( forward && !(p < m_engine->GetLastPosition()) )
+            m_pendingBoundary = BOUNDARY_END;
+        else if ( !forward && !(m_engine->GetFirstPosition() < p) )
+            m_pendingBoundary = BOUNDARY_START;
     }
 
     //-----------------------------------------------------------------------
@@ -941,23 +1074,24 @@ namespace idattd
     // user-triggered "Analyze whole function" can still recover the rest.)
     void TraceManager::analyze_current_function(ea_t pc)
     {
-        segment_t *seg = getseg(pc);
-        if ( seg == nullptr )
+        segment_info_t seg;
+        if ( !get_segment_info(&seg, pc) )
             return;
 
-        if ( func_t *f = get_func(pc) )
+        func_entry_info_t cur_fi;
+        if ( get_func_entry_info(&cur_fi, pc) )
         {
             // Already defined. For functions WE built in dynamic memory, detect a
             // rewrite (self-modifying / reused region, or time-travel to a position
             // where the same address holds different code) by hashing the bytes and
             // comparing to definition time. If unchanged (or not ours), keep it.
-            auto it = m_dynFuncBytes.find(f->start_ea);
+            auto it = m_dynFuncBytes.find(cur_fi.start_ea);
             if ( it == m_dynFuncBytes.end() )
                 return;
-            uint64_t h = hash_mem(f->start_ea, 64);
+            uint64_t h = hash_mem(cur_fi.start_ea, 64);
             if ( h == 0 || h == it->second )
                 return;
-            ea_t fs = f->start_ea, fe = f->end_ea;
+            ea_t fs = cur_fi.start_ea, fe = cur_fi.end_ea;
             del_func(fs);
             del_items(fs, DELIT_EXPAND, (asize_t)(fe - fs));
             m_dynFuncBytes.erase(it);
@@ -965,7 +1099,7 @@ namespace idattd
         }
 
         ea_t fstart, fend;
-        if ( function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg->end_ea )
+        if ( function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg.end_ea )
         {
             // Module function with authoritative .pdata bounds: disassemble the
             // whole range. Embedded data (jump tables) can't decode — skip a byte.
@@ -982,6 +1116,21 @@ namespace idattd
                 ip += len > 0 ? len : 1;
             }
             add_func(fstart, fend);
+            // Library (non-target) module code: mark it FUNC_LIB so it renders as
+            // <name>+offset and is de-emphasized. The analyzed binary (module 0) is
+            // the user's own code, so leave its functions normal.
+            bool main_mod = false;
+            if ( m_engine && m_engine->GetModuleCount() > 0 )
+            {
+                const Module &m0 = m_engine->GetModuleList()[0];
+                ea_t b = (ea_t)(uint64_t)m0.Address;
+                main_mod = pc >= b && pc < b + (ea_t)m0.Size;
+            }
+            if ( !main_mod && get_func_start(fstart) == fstart
+              && (get_func_flags(fstart) & FUNC_LIB) == 0 )
+            {
+                set_func_flag(fstart, FUNC_LIB, true);
+            }
             return;
         }
 
@@ -998,7 +1147,7 @@ namespace idattd
         // frame was entered by a jmp/thread-start rather than a call, or the
         // entering call predates the look-back window.
         ea_t start = find_dynamic_function_entry(pc);
-        if ( start == BADADDR || start > pc || getseg(start) != seg )
+        if ( start == BADADDR || start > pc || get_segment_ea(start) != seg.start_ea )
             start = find_dynamic_start(pc);
 
         // The position-based memory query returns zero-fill for this region's
@@ -1009,8 +1158,8 @@ namespace idattd
         // IDA's cache for the range so the upcoming create_insn reads the real bytes.
         ea_t rlo = start;
         ea_t rhi = (pc > start ? pc : start) + 0x2000;
-        if ( getseg(rhi - 1) != seg )
-            rhi = seg->end_ea;
+        if ( get_segment_ea(rhi - 1) != seg.start_ea )
+            rhi = seg.end_ea;
         if ( reconstruct_region(rlo, rhi) )
             invalidate_dbgmem_contents(rlo, rhi - rlo);
 
@@ -1019,10 +1168,23 @@ namespace idattd
         ea_t aend = (pc > start ? pc : start) + 0x2000;
         plan_and_wait(start, aend);         // force the descent synchronously, bounded
 
-        if ( func_t *nf = get_func(pc) )
-            m_dynFuncBytes[nf->start_ea] = hash_mem(nf->start_ea, 64);
+        ea_t nfs = get_func_start(pc);
+        if ( nfs != BADADDR )
+        {
+            m_dynFuncBytes[nfs] = hash_mem(nfs, 64);
+            // Give dynamic (non-module) code its OWN debug name. Debugger views
+            // resolve names via the global "nearest debug name <= address" rule, so
+            // without an entry here a far-below module symbol (kernel32/ntdll/the exe)
+            // bleeds onto shellcode/JIT as "<unrelated>+huge_offset". A local name
+            // breaks that bleed for this function's range.
+            qstring nm;
+            if ( get_func_name(&nm, nfs) > 0 && !nm.empty() )
+                set_debug_name(nfs, nm.c_str());
+        }
         else
+        {
             lay_out_window(pc);             // PC reachable only via an indirect edge
+        }
     }
 
     //-----------------------------------------------------------------------
@@ -1229,9 +1391,9 @@ namespace idattd
             return;
         }
         ea_t pc = program_counter();
-        if ( getseg(pc) == nullptr )
+        if ( get_segment_ea(pc) == BADADDR )
             return;
-        if ( get_func(pc) != nullptr )
+        if ( get_func_start(pc) != BADADDR )
         {
             info("0x%llX is already inside a defined function.", (uint64_t)pc);
             return;
@@ -1345,17 +1507,28 @@ namespace idattd
         // thread-local-only bytes (executed instructions present, never-executed
         // code shown as 0). invalidate_dbgmem_contents() is the SDK-sanctioned
         // "process stopped, re-read memory" call: it flushes AND refreshes, so the
-        // listing re-reads via on_read_memory (now GloballyAggressive) and the
-        // previously-zero bytes appear. The screen refresh rebuilds IDA's debug
-        // toolbars, which is why the dbg_suspend_process handler calls
-        // reskin_actions() right after us -- the TTD toolbar is rebuilt every stop
-        // now, so this no longer drops it.
+        // listing re-reads via on_read_memory (now GloballyAggressive + write
+        // reconstruction) and the previously-zero bytes appear.
+        //
+        // NOTE: this refresh (like IDA's own post-stop handling) brings the
+        // disassembly view to the front. Keeping the user in the decompiler is
+        // handled separately by Plugin::keep_decompiler_focused() (a deferred
+        // re-activation after the stop), not by weakening this memory refresh.
         invalidate_dbgmem_contents(BADADDR, 0);
 
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.
         resolve_loaded_modules();
         analyze_current_function(program_counter());
+
+        // If the last navigation came to rest on the very first/last position of
+        // the trace, tell the user. Done here (after the stop is fully processed)
+        // rather than inside on_resume, where a modal popup would be unsafe.
+        if ( m_pendingBoundary == BOUNDARY_START )
+            info("Reached the start of the trace.");
+        else if ( m_pendingBoundary == BOUNDARY_END )
+            info("Reached the end of the trace.");
+        m_pendingBoundary = BOUNDARY_NONE;
     }
 
     //-----------------------------------------------------------------------
@@ -1434,7 +1607,8 @@ namespace idattd
 
         if ( m_backwardSingleStep )
         {
-            navigate_steps(false, StepCount{ 1 });
+            EventType sr = navigate_steps(false, StepCount{ 1 });
+            flag_boundary(sr, false);
             emit_stop(false);
             m_backwardSingleStep = false;
             m_resumeMode = RESMOD_NONE;
@@ -1443,7 +1617,8 @@ namespace idattd
 
         if ( m_forwardSingleStep )
         {
-            navigate_steps(true, StepCount{ 1 });
+            EventType sr = navigate_steps(true, StepCount{ 1 });
+            flag_boundary(sr, true);
             emit_stop(false);
             m_forwardSingleStep = false;
             m_resumeMode = RESMOD_NONE;
@@ -1452,7 +1627,8 @@ namespace idattd
 
         if ( m_runOnce )
         {
-            navigate_steps(m_runForward, StepCount::Max);
+            EventType sr = navigate_steps(m_runForward, StepCount::Max);
+            flag_boundary(sr, m_runForward);
             emit_stop(false);
             m_runOnce = false;
             m_resumeMode = RESMOD_NONE;
@@ -1461,9 +1637,32 @@ namespace idattd
 
         if ( m_stepOutBackward )
         {
-            navigate_out_backward();
+            EventType sr = navigate_out_backward();
+            flag_boundary(sr, false);
             emit_stop(false);
             m_stepOutBackward = false;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
+        if ( m_runToCursorBackward )
+        {
+            EventType sr = navigate_backward_to(m_runToCursorAddr);
+            flag_boundary(sr, false);
+            emit_stop(false);
+            m_runToCursorBackward = false;
+            m_runToCursorAddr = BADADDR;
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+
+        if ( m_runToCursorForward )
+        {
+            EventType sr = navigate_forward_to(m_runToCursorAddr);
+            flag_boundary(sr, true);
+            emit_stop(false);
+            m_runToCursorForward = false;
+            m_runToCursorAddr = BADADDR;
             m_resumeMode = RESMOD_NONE;
             return DRC_OK;
         }
@@ -1473,12 +1672,14 @@ namespace idattd
             case RESMOD_INTO:
             {
                 EventType sr = navigate_steps(true, StepCount{ 1 });
+                flag_boundary(sr, true);
                 emit_stop(sr != EventType::MemoryWatchpoint);
                 break;
             }
             case RESMOD_BACKINTO:
             {
                 EventType sr = navigate_steps(false, StepCount{ 1 });
+                flag_boundary(sr, false);
                 emit_stop(sr != EventType::MemoryWatchpoint);
                 break;
             }
@@ -1486,6 +1687,7 @@ namespace idattd
             {
                 EventType sr = m_isForward ? navigate_over(false)
                                            : navigate_steps(false, StepCount{ 1 });
+                flag_boundary(sr, m_isForward);
                 emit_stop(sr != EventType::MemoryWatchpoint);
                 break;
             }
@@ -1493,6 +1695,7 @@ namespace idattd
             {
                 EventType sr = m_isForward ? navigate_over(true)
                                            : navigate_steps(false, StepCount{ 1 });
+                flag_boundary(sr, m_isForward);
                 emit_stop(sr != EventType::MemoryWatchpoint);
                 break;
             }
@@ -1501,7 +1704,8 @@ namespace idattd
             {
                 // Run/continue in the currently selected direction until a
                 // watchpoint hits or the trace boundary is reached.
-                navigate_steps(m_isForward, StepCount::Max);
+                EventType sr = navigate_steps(m_isForward, StepCount::Max);
+                flag_boundary(sr, m_isForward);
                 emit_stop(false);
                 break;
             }
@@ -1587,6 +1791,38 @@ namespace idattd
             return;
         }
         m_stepOutBackward = true;
+        request_continue_process();
+        run_requests();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::request_run_to_cursor_backward(ea_t addr)
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+        if ( addr == BADADDR )
+            return;
+        m_runToCursorBackward = true;
+        m_runToCursorAddr     = addr;
+        request_continue_process();
+        run_requests();
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::request_run_to_cursor_forward(ea_t addr)
+    {
+        if ( !m_cursor )
+        {
+            warning("Time travel is only available while replaying a trace.");
+            return;
+        }
+        if ( addr == BADADDR )
+            return;
+        m_runToCursorForward = true;
+        m_runToCursorAddr    = addr;
         request_continue_process();
         run_requests();
     }
@@ -1701,8 +1937,8 @@ namespace idattd
                     continue;
             }
 
-            func_t *f = get_func(ea);
-            ea_t key = f != nullptr ? f->start_ea : ea;
+            ea_t fstart = get_func_start(ea);
+            ea_t key = fstart != BADADDR ? fstart : ea;
             if ( seen.insert(key).second )
                 out.push_back(key);
         }
@@ -1714,6 +1950,16 @@ namespace idattd
     {
         if ( base == BADADDR || !m_engine )
             return;
+
+        // Never fetch a PDB for the analyzed binary itself (module 0). IDA already
+        // owns that file's database (its own symbols/analysis); asking the pdb
+        // plugin only triggers a redundant — and possibly slow/networked —
+        // symbol-server lookup for the very file the user is analyzing. We match by
+        // BASE (authoritative) so a name mismatch can't let it slip through.
+        if ( m_engine->GetModuleCount() > 0
+          && (ea_t)(uint64_t)m_engine->GetModuleList()[0].Address == base )
+            return;
+
         if ( !m_pdbBases.insert(base).second )
             return;     // already requested for this module
 
@@ -1731,6 +1977,13 @@ namespace idattd
             }
         }
         if ( path.empty() )
+            return;
+
+        // Never fetch a PDB for the input file itself: IDA already owns that
+        // module's database (its own symbols/analysis), and asking the PDB plugin
+        // for it only triggers a redundant symbol-server lookup for the binary the
+        // user is analyzing.
+        if ( _stricmp(base_name(path).c_str(), m_targetName.c_str()) == 0 )
             return;
 
         // Drive the PDB plugin with PDB_CC_USER_WITH_DATA (3): it reads the load
@@ -1844,6 +2097,24 @@ namespace idattd
             start = up->first;
             end   = up->second;
             return true;
+        }
+        return false;
+    }
+
+    //-----------------------------------------------------------------------
+    bool TraceManager::is_library_address(ea_t ea) const
+    {
+        if ( !m_engine )
+            return false;
+        size_t n = m_engine->GetModuleCount();
+        const Module *list = m_engine->GetModuleList();
+        ea_t mainBase = n > 0 ? (ea_t)(uint64_t)list[0].Address : BADADDR;
+        for ( size_t i = 0; i < n; i++ )
+        {
+            ea_t b = (ea_t)(uint64_t)list[i].Address;
+            ea_t e = b + (ea_t)list[i].Size;
+            if ( ea >= b && ea < e )
+                return b != mainBase;   // inside a module, and not the analyzed binary
         }
         return false;
     }

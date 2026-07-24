@@ -49,19 +49,32 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
     <TargetName>ida-ttd</TargetName>
-    <IdaSdkDir>$(SolutionDir)ida-sdk\src</IdaSdkDir>
+    <!-- Repo root, resolved from this project file rather than $(SolutionDir):
+         MSBuild only defines SolutionDir when a solution drives the build, so
+         building ida-ttd.vcxproj directly would otherwise point these at the
+         project directory instead of the repo root. -->
+    <RepoRoot>$(MSBuildThisFileDirectory)..\</RepoRoot>
+    <IdaSdkDir>$(RepoRoot)ida-sdk\src</IdaSdkDir>
+    <!-- Pinned for the same reason: the default IntDir varies depending on
+         whether the solution or the project drives the build. -->
+    <IntDir>$(MSBuildThisFileDirectory)$(Platform)\$(Configuration)\</IntDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
-    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <OutDir>$(RepoRoot)build\$(Configuration)\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <OutDir>$(SolutionDir)build\$(Configuration)\</OutDir>
+    <OutDir>$(RepoRoot)build\$(Configuration)\</OutDir>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
-      <PreprocessorDefinitions>_DEBUG;__NT__;__EA64__;__X64__;_CRT_SECURE_NO_WARNINGS;_SILENCE_ALL_CXX20_DEPRECATION_WARNINGS;WIN32;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- NDEBUG, not _DEBUG: this config keeps the RELEASE CRT (see RuntimeLibrary
+           below) because that is what IDA itself uses. _DEBUG would make the MSVC
+           headers reference debug-CRT-only symbols (_CrtDbgReport, _calloc_dbg,
+           msvcprtd.lib) that the release CRT does not export -> LNK2001/LNK1120.
+           This is an unoptimised build with full debug info, not a debug-CRT build. -->
+      <PreprocessorDefinitions>NDEBUG;__NT__;__EA64__;__X64__;_CRT_SECURE_NO_WARNINGS;_SILENCE_ALL_CXX20_DEPRECATION_WARNINGS;WIN32;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -73,7 +86,7 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
-      <AdditionalLibraryDirectories>$(IdaSdkDir)\lib\x64_win_vc_64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(IdaSdkDir)\lib\x64_win_64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>ida.lib;TTDReplay.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
@@ -96,7 +109,7 @@
       <EnableUAC>false</EnableUAC>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalLibraryDirectories>$(IdaSdkDir)\lib\x64_win_vc_64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(IdaSdkDir)\lib\x64_win_64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>ida.lib;TTDReplay.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
