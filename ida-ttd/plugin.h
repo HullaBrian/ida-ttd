@@ -50,9 +50,14 @@ namespace idattd
         TraceManager   &manager()  { return m_mgr; }
         FunctionTracer &tracer()   { return m_tracer; }
 
-        void show_actions();    // build the TTD toolbar + override icons (session start)
-        void hide_actions();    // tear the TTD toolbar down (session end)
+        // The TTD commands only exist while a trace is loaded: show_actions()
+        // registers them (shortcuts included) and builds the toolbar,
+        // hide_actions() tears the toolbar down and unregisters them again, so
+        // no TTD shortcut or button is live without an active trace.
+        void show_actions();    // register actions + build the TTD toolbar (session start)
+        void hide_actions();    // tear the TTD toolbar down + unregister actions (session end)
         void reskin_actions();  // (re)apply the codicon icons to the movement actions
+        bool actions_visible() const { return m_actionsRegistered; }
         void update_position_label();   // refresh the live "Seq:Steps" toolbar readout
 
         // --- keep the decompiler focused across stops (HT_UI driven) ----------
@@ -65,6 +70,7 @@ namespace idattd
     private:
         void register_actions();
         void unregister_actions();
+        void restore_native_icons();          // give IDA's movement actions their own icons back
         void load_icons();
         void do_refocus();                    // timer body: re-activate the decompiler
         static int idaapi refocus_cb(void *ud);
@@ -109,6 +115,18 @@ namespace idattd
         int  m_icoTimeline    = -1;
         int  m_icoGoto        = -1;
         int  m_icoFuncSearch  = -1;
+
+        // True while our actions are registered (i.e. a trace is loaded). Guards
+        // show_actions()/hide_actions() so registration is never doubled up.
+        bool m_actionsRegistered = false;
+
+        // IDA's own icons for the native movement actions we re-skin, captured
+        // the first time each action is seen (they register lazily) and restored
+        // when the trace is unloaded — the override is global, so leaving it in
+        // place would re-skin IDA's toolbar for every other debugger too.
+        // Parallel to NATIVE_MOVEMENT_ACTIONS in plugin.cpp.
+        int  m_nativeSaved[6]   = { -1, -1, -1, -1, -1, -1 };
+        bool m_nativeSavedOk[6] = { false, false, false, false, false, false };
 
         // Decompiler-focus tracking. m_userPrefersDecomp is sticky: it only flips on
         // a USER focus change (not the debugger's forced disasm switch, which we

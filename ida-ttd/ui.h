@@ -88,9 +88,12 @@ namespace idattd
     // ---- TTD-specific action handlers --------------------------------------
     // Most stepping is provided by IDA's native debugger actions (attached to
     // our toolbar). IDA has no native "continue backwards", so we add one.
-    // All TTD actions are only meaningful while a trace is being replayed, so
-    // they enable/disable (and thus grey out on the toolbar/menu) with the
-    // session. is_active() is true exactly when a cursor over a trace exists.
+    // All TTD actions are only meaningful while a trace is being replayed, so the
+    // plugin REGISTERS them when a trace is loaded and unregisters them when it is
+    // unloaded (Plugin::show_actions/hide_actions) — outside a session neither the
+    // shortcuts nor the toolbar buttons exist at all. While they do exist a trace
+    // is by definition active, hence AST_ENABLE_ALWAYS; the handlers still check
+    // is_active() (true exactly when a cursor over a trace exists) before acting.
     struct RunBackHandler : public action_handler_t
     {
         TraceManager *mgr = nullptr;

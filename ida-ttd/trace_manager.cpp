@@ -143,8 +143,9 @@ namespace idattd
     //-----------------------------------------------------------------------
     ssize_t TraceManager::on_init()
     {
-        if ( m_plugin != nullptr )
-            m_plugin->show_actions();
+        // Nothing to show yet: the backend has merely been selected. The TTD
+        // actions/toolbar appear in on_start_process, once a trace is really
+        // loaded.
         return DRC_OK;
     }
 

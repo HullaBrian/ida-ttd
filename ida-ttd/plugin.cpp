@@ -9,6 +9,37 @@ namespace idattd
 {
     static const char *TTD_TOOLBAR = "TTDToolBar";
 
+    // IDA's native debug-movement actions that we re-skin with codicon glyphs
+    // while a trace is loaded. Order must match Plugin::m_nativeSaved and the
+    // icon table in reskin_actions().
+    static const char *const NATIVE_MOVEMENT_ACTIONS[] =
+    {
+        "ProcessStart",             // Continue
+        "ThreadStepInto",
+        "ThreadStepOver",
+        "ThreadRunUntilReturn",     // Step out
+        "ThreadStepIntoBackwards",
+        "ThreadStepOverBackwards",
+    };
+
+    // Menu paths our actions are attached to, so they can be detached again when
+    // the trace is unloaded.
+    static const struct { const char *path; const char *action; } TTD_MENU_ITEMS[] =
+    {
+        { "TTD/Find all calls to function",    actions::TRACE_FUNC      },
+        { "TTD/Find calls by name or pattern", actions::TRACE_PAT       },
+        { "TTD/Analyze whole function",        actions::ANALYZE_FUNC    },
+        { "TTD/Trace events",                  actions::OPEN_EVENTS     },
+        { "TTD/Traced functions",              actions::OPEN_TRACED     },
+        { "TTD/Re-run trace",                  actions::RUN_TRACE       },
+        { "TTD/Timeline",                      actions::TIMELINE        },
+        { "TTD/Go to position",                actions::GOTO_POS        },
+        { "TTD/Continue backwards",            actions::RUN_BACK        },
+        { "TTD/Step out backwards",            actions::STEP_OUT_BACK   },
+        { "TTD/Run to cursor",                 actions::RUN_TO_CUR_FWD  },
+        { "TTD/Run to cursor backwards",       actions::RUN_TO_CUR_BACK },
+    };
+
     //-----------------------------------------------------------------------
     // Flag the call stack + stack views for refresh. We build the widget mask by
     // hand instead of via IWID_*/builtin_widget_mask_from_id, whose uint128 <<
@@ -30,7 +61,11 @@ namespace idattd
         m_uiEvents.p  = this;
         m_idbEvents.p = this;
 
-        register_actions();
+        // Icons are loaded once for the lifetime of the plugin (they are freed in
+        // the destructor); the ACTIONS themselves are only registered while a
+        // trace is loaded, so the TTD shortcuts and toolbar do not exist until
+        // then — see show_actions()/hide_actions().
+        load_icons();
         hook_event_listener(HT_IDD, this);
         hook_event_listener(HT_DBG, &m_dbgEvents);
         hook_event_listener(HT_UI,  &m_uiEvents);
@@ -55,8 +90,7 @@ namespace idattd
         // unhooked, so nothing else would catch the dereference).
         if ( ::dbg == &m_debugger )
             ::dbg = nullptr;
-        delete_toolbar(TTD_TOOLBAR);
-        unregister_actions();
+        hide_actions();     // toolbar + actions, if a session was still open
         for ( int ic : { m_icoContinue, m_icoRevContinue, m_icoStepInto,
                          m_icoStepOver, m_icoStepOut, m_icoStepBack,
                          m_icoStepIntoBack, m_icoStepOutBack,
@@ -94,9 +128,13 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    // Register every TTD action (and therefore every TTD shortcut). Called from
+    // show_actions() when a trace becomes active; the matching unregister happens
+    // in hide_actions() when the trace is unloaded.
     void Plugin::register_actions()
     {
-        load_icons();
+        if ( m_actionsRegistered )
+            return;
 
         // Wire handler back-pointers.
         m_runBack.mgr     = &m_mgr;
@@ -157,28 +195,25 @@ namespace idattd
             "Ctrl+Shift+G", "Go to position: jump to a Sequence:Steps trace position", m_icoGoto));
 
         // Top-level TTD menu (extras + a mirror of the movement commands).
-        attach_action_to_menu("TTD/Find all calls to function", actions::TRACE_FUNC,  SETMENU_APP);
-        attach_action_to_menu("TTD/Find calls by name or pattern", actions::TRACE_PAT, SETMENU_APP);
-        attach_action_to_menu("TTD/Analyze whole function",     actions::ANALYZE_FUNC, SETMENU_APP);
-        attach_action_to_menu("TTD/Trace events",               actions::OPEN_EVENTS, SETMENU_APP);
-        attach_action_to_menu("TTD/Traced functions",           actions::OPEN_TRACED, SETMENU_APP);
-        attach_action_to_menu("TTD/Re-run trace",               actions::RUN_TRACE,   SETMENU_APP);
-        attach_action_to_menu("TTD/Timeline",                   actions::TIMELINE,    SETMENU_APP);
-        attach_action_to_menu("TTD/Go to position",             actions::GOTO_POS,    SETMENU_APP);
-        attach_action_to_menu("TTD/Continue backwards",         actions::RUN_BACK,    SETMENU_APP);
-        attach_action_to_menu("TTD/Step out backwards",         actions::STEP_OUT_BACK, SETMENU_APP);
-        attach_action_to_menu("TTD/Run to cursor",              actions::RUN_TO_CUR_FWD, SETMENU_APP);
-        attach_action_to_menu("TTD/Run to cursor backwards",    actions::RUN_TO_CUR_BACK, SETMENU_APP);
+        for ( const auto &mi : TTD_MENU_ITEMS )
+            attach_action_to_menu(mi.path, mi.action, SETMENU_APP);
 
-        // Build the toolbar immediately so the TTD buttons are always present.
-        // (The native debug-movement actions register lazily, so show_actions runs
-        // again on session start to pick those up.)
-        show_actions();
+        m_actionsRegistered = true;
     }
 
     //-----------------------------------------------------------------------
+    // Drop every TTD action, which also kills their shortcuts and removes them
+    // from the menu/toolbars: nothing TTD-specific responds outside a session.
     void Plugin::unregister_actions()
     {
+        if ( !m_actionsRegistered )
+            return;
+
+        // Detach from the TTD menu first so the menu entries go away with the
+        // actions (unregistering alone leaves the menu structure behind).
+        for ( const auto &mi : TTD_MENU_ITEMS )
+            detach_action_from_menu(mi.path, mi.action);
+
         const char *names[] = {
             actions::RUN_BACK, actions::STEP_OUT_BACK, actions::RUN_TO_CUR_BACK, actions::RUN_TO_CUR_FWD, actions::POS_LABEL, actions::TRACE_FUNC,
             actions::TRACE_PAT, actions::ANALYZE_FUNC, actions::OPEN_EVENTS, actions::OPEN_TRACED,
@@ -186,6 +221,8 @@ namespace idattd
         };
         for ( const char *n : names )
             unregister_action(n);
+
+        m_actionsRegistered = false;
     }
 
     //-----------------------------------------------------------------------
@@ -194,25 +231,58 @@ namespace idattd
     // not exist at the first show) and ALSO resets their icons whenever it rebuilds
     // the debugger toolbars (e.g. after a memory-cache invalidation on a TTD jump),
     // so this must be reapplied repeatedly — at session start AND on every stop.
+    // Does nothing without an active trace: the override is global, so IDA's other
+    // debuggers must keep their own icons.
     void Plugin::reskin_actions()
     {
-        update_action_icon("ProcessStart",              m_icoContinue);
-        update_action_icon("ThreadStepInto",            m_icoStepInto);
-        update_action_icon("ThreadStepOver",            m_icoStepOver);
-        update_action_icon("ThreadRunUntilReturn",      m_icoStepOut);
-        update_action_icon("ThreadStepIntoBackwards",   m_icoStepIntoBack);
-        update_action_icon("ThreadStepOverBackwards",   m_icoStepBack);
+        if ( !m_actionsRegistered )
+            return;
+
+        const int ours[] = {
+            m_icoContinue, m_icoStepInto, m_icoStepOver,
+            m_icoStepOut, m_icoStepIntoBack, m_icoStepBack,
+        };
+        CASSERT(qnumber(ours) == qnumber(NATIVE_MOVEMENT_ACTIONS));
+
+        for ( size_t i = 0; i < qnumber(ours); i++ )
+        {
+            const char *name = NATIVE_MOVEMENT_ACTIONS[i];
+            // Remember IDA's own icon the first time we actually find the action.
+            // It cannot be captured in one shot: several of these are registered
+            // lazily, and once we have overridden one, querying it again would
+            // just return OUR icon.
+            if ( !m_nativeSavedOk[i] && get_action_icon(name, &m_nativeSaved[i]) )
+                m_nativeSavedOk[i] = true;
+            update_action_icon(name, ours[i]);
+        }
         // (Run to cursor forward/backward are our own custom actions; their icons
         // are set at registration, so they aren't reskinned here.)
     }
 
     //-----------------------------------------------------------------------
-    // (Re)build the TTD toolbar. Always rebuilds from scratch (delete + create) so
-    // it survives debugger-desktop resets and never gets stuck hidden. Called at
-    // plugin load and again on session start (when the native debug-movement
-    // actions exist, so they attach too).
+    // Put IDA's original icons back on the native movement actions.
+    void Plugin::restore_native_icons()
+    {
+        for ( size_t i = 0; i < qnumber(NATIVE_MOVEMENT_ACTIONS); i++ )
+        {
+            if ( !m_nativeSavedOk[i] )
+                continue;
+            update_action_icon(NATIVE_MOVEMENT_ACTIONS[i], m_nativeSaved[i]);
+            m_nativeSavedOk[i] = false;
+            m_nativeSaved[i]   = -1;
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    // Register the TTD actions (if they are not already) and (re)build the TTD
+    // toolbar. Always rebuilds the toolbar from scratch (delete + create) so it
+    // survives debugger-desktop resets and never gets stuck hidden. Called when a
+    // trace is loaded and again on process start (the native debug-movement
+    // actions register lazily, so the later call is what attaches them).
     void Plugin::show_actions()
     {
+        register_actions();
+
         delete_toolbar(TTD_TOOLBAR);
         create_toolbar(TTD_TOOLBAR, "TTD");
         // Live position readout, then all forward buttons, then all backward
@@ -241,16 +311,23 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    // The toolbar is persistent now (always shown), so this is a no-op; kept as a
-    // hook the TraceManager calls on session teardown.
+    // The trace is gone: drop the toolbar, hand IDA's movement icons back, and
+    // unregister every TTD action so its shortcut stops responding. Safe to call
+    // more than once (both the process-exit notification and ev_term_debugger go
+    // through here).
     void Plugin::hide_actions()
     {
+        delete_toolbar(TTD_TOOLBAR);
+        restore_native_icons();
+        unregister_actions();
     }
 
     //-----------------------------------------------------------------------
     // Refresh the text on the toolbar's position button from the live cursor.
     void Plugin::update_position_label()
     {
+        if ( !m_actionsRegistered )
+            return;             // no session: the readout action does not exist
         qstring label;
         if ( m_mgr.is_active() )
         {
@@ -364,6 +441,13 @@ namespace idattd
                 // show names rather than raw VAs.
                 refresh_call_stack();
                 break;
+            case dbg_process_exit:
+                // The trace session is over (the user terminated it). Drop the
+                // toolbar and unregister the TTD actions right away rather than
+                // waiting for ev_term_debugger, which only fires when the
+                // debugger backend itself is unloaded.
+                p->hide_actions();
+                break;
             default:
                 break;
         }
@@ -382,8 +466,10 @@ namespace idattd
         {
             case ui_finish_populating_widget_popup:
             {
-                // Only augment menus while our debugger backend is the active one.
-                if ( ::dbg != &p->debugger() )
+                // Only augment menus while our debugger backend is the active one
+                // AND a trace is loaded (outside a session the actions do not
+                // even exist).
+                if ( ::dbg != &p->debugger() || !p->actions_visible() )
                     break;
                 TWidget    *widget = va_arg(va, TWidget *);
                 TPopupMenu *popup  = va_arg(va, TPopupMenu *);
