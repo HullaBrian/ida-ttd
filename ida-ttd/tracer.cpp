@@ -72,6 +72,31 @@ namespace idattd
             if ( !named )
                 value.sprnt("0x%llX", raw);
         }
+        else if ( arg.is_floating() )
+        {
+            // 'raw' holds the argument's BITS (XMMn on x64, or the stack slot).
+            // Reinterpret them rather than printing them as an integer. Anything
+            // that is not a plain float/double (long double, an unknown size)
+            // falls back to hex rather than being decoded as one.
+            size_t sz = arg.get_size();
+            if ( sz == 4 )
+            {
+                float    fv;
+                uint32_t bits = (uint32_t)raw;
+                memcpy(&fv, &bits, sizeof(fv));
+                value.sprnt("%g", (double)fv);
+            }
+            else if ( sz == 8 )
+            {
+                double dv;
+                memcpy(&dv, &raw, sizeof(dv));
+                value.sprnt("%g", dv);
+            }
+            else
+            {
+                value.sprnt("0x%llX", raw);
+            }
+        }
         else if ( arg.is_int() || arg.is_bool() )
         {
             value.sprnt("%lld", (long long)raw);
@@ -319,6 +344,15 @@ namespace idattd
         std::vector<Rec> recs;
         std::map<uint32_t, std::vector<size_t>> inflight; // per-thread call stack
 
+        // Hard cap on recorded calls. Two reasons, both real:
+        //  - A broad pattern over a long trace (say '*Alloc') produces tens of
+        //    millions of hits and the vector simply eats all available memory.
+        //  - The engine's callback signature is noexcept, so a bad_alloc raised
+        //    inside it does not unwind -- it calls std::terminate and takes IDA
+        //    down with no message. Never allocate unboundedly in here.
+        static const size_t kMaxRecords = 2000000;
+        bool truncated = false;
+
         auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
                                IThreadView const *t) noexcept
         {
@@ -329,14 +363,29 @@ namespace idattd
                 auto it = tgt2disp.find((ea_t)(uint64_t)instr);
                 if ( it != tgt2disp.end() )
                 {
+                    if ( recs.size() >= kMaxRecords )
+                    {
+                        truncated = true;
+                        return;
+                    }
                     Rec r{};
                     r.disp    = it->second;
                     r.tid     = utid;
                     r.callPos = t->GetPosition();
                     r.retAddr = (uint64_t)fall_through;
                     r.hasRet  = false;
-                    inflight[utid].push_back(recs.size());
-                    recs.push_back(r);
+                    // Belt and braces: we are inside a noexcept callback, so an
+                    // allocation failure here would terminate the process rather
+                    // than surface as an error. Swallow it and stop recording.
+                    try
+                    {
+                        inflight[utid].push_back(recs.size());
+                        recs.push_back(r);
+                    }
+                    catch ( ... )
+                    {
+                        truncated = true;
+                    }
                 }
             }
             else
@@ -357,19 +406,77 @@ namespace idattd
             }
         };
 
-        // Phase 1 is a single blocking ReplayForward inside the engine, so there is
-        // no main-thread moment in which a Cancel could be observed — HIDECANCEL is
-        // the honest choice here. (Polling user_cancelled() from on_call_ret is NOT
-        // an option: TTD dispatches that callback from its own threads, and calling
-        // into IDA's UI from there deadlocks it.)
-        show_wait_box("HIDECANCEL\nTracing function calls across the whole trace...");
+        // Phase 1 replays the whole trace inside the engine. Running it on the main
+        // thread froze IDA solid for its entire duration (no repaint, no progress),
+        // which is the same problem the index build had -- so it gets the same
+        // treatment: the replay runs on a worker while the MAIN thread owns the wait
+        // box and renders the percentage the worker publishes.
+        //
+        // Neither callback may touch IDA. on_call_ret is dispatched by the engine
+        // and the progress callback runs on the worker (the SDK documents it as
+        // firing on whichever thread called ReplayForward), so both only ever
+        // publish to plain memory. ReplaySegmentsSequentially is what keeps
+        // on_call_ret single-threaded; without it the engine replays segments in
+        // parallel and 'recs' would be written from several threads at once.
+        //
+        // The replay still cannot be interrupted (nothing in the API stops one from
+        // outside a watchpoint callback), so the box stays HIDECANCEL.
+        const uint64_t lastSeq = (uint64_t)m_mgr->last_position().Sequence;
+        std::atomic<uint32_t> pct{ 0 };
+        std::atomic<bool>     done{ false };
+
+        auto on_progress = [&pct, lastSeq](Position const &p) noexcept
+        {
+            if ( lastSeq > 0 )
+            {
+                uint64_t seq = (uint64_t)p.Sequence;
+                uint64_t v   = seq >= lastSeq ? 100 : (seq * 100 / lastSeq);
+                pct.store((uint32_t)v, std::memory_order_relaxed);
+            }
+        };
+
         sweep->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
                             | ReplayFlags::ReplaySegmentsSequentially);
         sweep->SetCallReturnCallback(on_call_ret);
+        sweep->SetReplayProgressCallback(on_progress);
         sweep->SetPosition(Position::Min);
-        sweep->ReplayForward();
+
+        {
+            ICursorView *raw = sweep.get();
+            std::thread worker([raw, &done]()
+            {
+                // 'done' MUST be set on every exit path: the main thread spins on
+                // it and would otherwise wait forever with the UI locked behind a
+                // wait box that has no Cancel.
+                try { raw->ReplayForward(); } catch ( ... ) {}
+                done.store(true, std::memory_order_release);
+            });
+
+            show_wait_box("HIDECANCEL\nTracing function calls across the whole trace...");
+            uint32_t shown = 101;                  // force the first repaint
+            while ( !done.load(std::memory_order_acquire) )
+            {
+                uint32_t now = pct.load(std::memory_order_relaxed);
+                if ( now != shown )
+                {
+                    replace_wait_box("HIDECANCEL\nTracing function calls across the "
+                                     "whole trace... %u%%", now);
+                    shown = now;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+            worker.join();
+            hide_wait_box();
+        }
+
+        // Detach both callbacks before the lambdas they point at go out of scope.
+        sweep->SetCallReturnCallback(nullptr, 0);
+        sweep->SetReplayProgressCallback(nullptr, 0);
         sweep.reset();
-        hide_wait_box();
+
+        if ( truncated )
+            msg("[ida-ttd] tracer: hit the %d-call recording limit; results are "
+                "truncated. Narrow the pattern to see the rest.\n", (int)kMaxRecords);
 
         // Phase 2 IS ours and runs on the main thread, so it gets real progress
         // and a working Cancel — a sweep with thousands of hits used to sit behind
@@ -421,7 +528,11 @@ namespace idattd
         }
         hide_wait_box();
 
-        refresh_chooser("Tracing events");
+        // (No refresh_chooser here: there is no widget titled "Tracing events" --
+        // the events choosers are titled "TTD calls: <fn> [n]" -- so the call this
+        // replaced never matched anything. It would be wrong even if it did: each
+        // events tab deliberately holds a snapshot frozen when it was opened, so a
+        // later sweep must not rewrite what an existing tab is showing.)
         if ( cancelled )
             msg("[ida-ttd] tracer: cancelled - showing %d of %d recorded call(s).\n",
                 (int)nbuilt, (int)recs.size());

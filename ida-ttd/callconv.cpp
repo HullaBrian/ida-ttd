@@ -6,12 +6,58 @@ using namespace TTD::Replay;
 namespace idattd
 {
     //-----------------------------------------------------------------------
+    // Fill buf[0..size) from guest [addr, addr+size), zero-filling anything the
+    // recording cannot supply, and return how many bytes are real counting from
+    // the START of the range (so a caller reading one value can test == size,
+    // and a string reader can scan exactly that far).
+    //
+    // The single unqualified QueryMemoryBuffer this replaces lost bytes two ways.
+    // It named no policy, so the cursor's default answered rather than the
+    // GloballyAggressive-then-InFragmentAggressive pair on_read_memory has always
+    // used; and it stopped at the first unrecorded byte, so every recorded byte
+    // past a hole was dropped. Neither is what a caller reading an argument out
+    // of guest memory wants.
     size_t read_guest(ICursorView *cursor, uint64_t addr, void *buf, size_t size)
     {
-        if ( cursor == nullptr )
+        if ( cursor == nullptr || buf == nullptr || size == 0 )
             return 0;
-        MemoryBuffer mb = cursor->QueryMemoryBuffer(GuestAddress{ addr }, BufferView{ buf, size });
-        return mb.Memory.Size;
+
+        static const QueryMemoryPolicy kPolicies[] = {
+            QueryMemoryPolicy::GloballyAggressive,   // cheap; zero-fills mapped memory
+            QueryMemoryPolicy::InFragmentAggressive, // look across the whole fragment
+        };
+
+        uint8_t *out = (uint8_t *)buf;
+        memset(out, 0, size);
+
+        size_t off        = 0;   // next byte of the range to resolve
+        size_t contiguous = 0;   // real bytes counted from the start, no holes
+        bool   unbroken   = true;
+        while ( off < size )
+        {
+            MemoryBuffer mb{};
+            for ( QueryMemoryPolicy p : kPolicies )
+            {
+                mb = cursor->QueryMemoryBuffer(GuestAddress{ addr + off },
+                                               BufferView{ out + off, size - off }, p);
+                if ( mb.Memory.Size > 0 )
+                    break;
+            }
+            if ( mb.Memory.Size == 0 )
+            {
+                unbroken = false;    // hole: keep the zero and step over it
+                off++;
+                continue;
+            }
+
+            size_t run = mb.Memory.Size;
+            if ( run > size - off )
+                run = size - off;
+            off += run;
+            if ( unbroken )
+                contiguous = off;
+        }
+        return contiguous;
     }
 
     //-----------------------------------------------------------------------
@@ -55,6 +101,17 @@ namespace idattd
             const AMD64_CONTEXT &c = ctx.Amd64Context;
             if ( n < 4 )
             {
+                // The MS x64 ABI assigns argument slots POSITIONALLY across two
+                // parallel register files: slot n is RCX/RDX/R8/R9 for integers and
+                // pointers, but XMM0-3 for float and double. Reading a float
+                // argument out of the integer register (as this did unconditionally)
+                // yields whatever the caller happened to leave there.
+                tinfo_t arg = tinfo.get_nth_arg((int)n);
+                if ( arg.is_floating() )
+                {
+                    const M128BIT xmm[4] = { c.Xmm0, c.Xmm1, c.Xmm2, c.Xmm3 };
+                    return xmm[n].Low;
+                }
                 const uint64_t regs[4] = { c.Rcx, c.Rdx, c.R8, c.R9 };
                 return regs[n];
             }
@@ -76,10 +133,24 @@ namespace idattd
             }
             first_stack_arg = 2;
         }
-        // cdecl / stdcall / thiscall: args on the stack, no return address yet.
+        else if ( cc == CM_CC_THISCALL )
+        {
+            // 'this' travels in ECX and the rest go on the stack. Treating this
+            // like cdecl (as before) shifted EVERY argument by one slot, so the
+            // first stack argument was read from the second one's address.
+            if ( n == 0 )
+                return c.Ecx;
+            first_stack_arg = 1;
+        }
+        // cdecl / stdcall: args on the stack, no return address pushed yet.
         size_t off = stack_arg_offset(tinfo, n, first_stack_arg, 4);
-        uint32_t v = 0;
-        read_guest(cursor, (uint64_t)c.Esp + off, &v, sizeof(v));
+        // Read the argument at its own width, not always 4 bytes: a 64-bit
+        // parameter (int64, double, a LARGE_INTEGER by value) occupies two stack
+        // slots, and truncating to the low dword silently halved every one of them.
+        tinfo_t arg = tinfo.get_nth_arg((int)n);
+        size_t  sz  = arg.get_size();
+        uint64_t v = 0;
+        read_guest(cursor, (uint64_t)c.Esp + off, &v, sz == 8 ? 8 : 4);
         return v;
     }
 

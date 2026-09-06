@@ -109,6 +109,12 @@ namespace idattd
         // DBG_FLAG_TTD this makes IDA render its native debugger toolbar/menu
         // buttons (step into/over/out, run, and their backward variants) using
         // IDA's own icons -- no custom toolbar needed.
+        //
+        // BACKINTO is the ONLY backward resume mode the SDK defines (idd.hpp:
+        // RESMOD_BACKINTO is the last entry before RESMOD_MAX). Backward step-over
+        // and step-out are not separate modes: IDA signals the direction through
+        // ev_set_backwards and then sends the ordinary RESMOD_OVER / RESMOD_OUT,
+        // which TraceManager::on_resume dispatches on its stored direction.
         dbg.resume_modes = DBG_RESMOD_STEP_INTO
                          | DBG_RESMOD_STEP_OVER
                          | DBG_RESMOD_STEP_OUT

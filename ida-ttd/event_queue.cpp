@@ -29,6 +29,13 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    void EventQueue::clear()
+    {
+        std::lock_guard<std::mutex> guard(m_mutex);
+        m_events.clear();
+    }
+
+    //-----------------------------------------------------------------------
     void EventQueue::add_process_start(pid_t pid, thid_t tid, const std::string &module,
                                        ea_t base, ea_t rebase_to, asize_t size)
     {
@@ -81,10 +88,13 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    void EventQueue::add_lib_load(const std::string &module, ea_t base, ea_t rebase_to, asize_t size)
+    void EventQueue::add_lib_load(pid_t pid, thid_t tid, const std::string &module,
+                                  ea_t base, ea_t rebase_to, asize_t size)
     {
         debug_event_t ev;
-        ev.ea = base;
+        ev.pid = pid;
+        ev.tid = tid;
+        ev.ea  = base;
         ev.handled = true;
         modinfo_t &mi = ev.set_modinfo(LIB_LOADED);
         mi.name      = module.c_str();
@@ -95,10 +105,12 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    void EventQueue::add_lib_unload(const std::string &module, ea_t base)
+    void EventQueue::add_lib_unload(pid_t pid, thid_t tid, const std::string &module, ea_t base)
     {
         debug_event_t ev;
-        ev.ea = base;
+        ev.pid = pid;
+        ev.tid = tid;
+        ev.ea  = base;
         ev.handled = true;
         ev.set_info(LIB_UNLOADED) = module.c_str();
         push(ev);

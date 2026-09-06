@@ -3,6 +3,8 @@
 #include "pch.h"
 #include "trace_manager.h"
 #include "tracer.h"
+#include "bookmarks.h"
+#include "memsearch.h"
 
 namespace idattd
 {
@@ -83,6 +85,50 @@ namespace idattd
     private:
         TraceManager                    *m_mgr;
         std::vector<FunctionInvocation>  m_events;  // frozen snapshot
+    };
+
+    // Saved trace positions, kept in the IDB. Enter time-travels to the row,
+    // Ins bookmarks the current position, Del removes, and the edit key reopens
+    // the name/comment form. The store is the single copy: this chooser holds a
+    // pointer to it rather than a snapshot, so several open windows agree.
+    class BookmarkChooser : public chooser_t
+    {
+    public:
+        BookmarkChooser(TraceManager *mgr, BookmarkStore *store);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;   // pure navigation, no side effects
+        cbret_t idaapi enter(size_t n) override;
+        cbret_t idaapi ins(ssize_t n) override;
+        cbret_t idaapi del(size_t n) override;
+        cbret_t idaapi edit(size_t n) override;
+
+    private:
+        TraceManager  *m_mgr;
+        BookmarkStore *m_store;
+    };
+
+    // Results of a memory access search: one row per recorded touch of the
+    // watched range. Holds its own snapshot so several searches can sit open
+    // side by side, each frozen as it was run. Enter time-travels to the
+    // access; the address column follows the instruction that made it.
+    class MemAccessChooser : public chooser_t
+    {
+    public:
+        MemAccessChooser(TraceManager *mgr, ea_t lo, ea_t hi,
+                         std::vector<MemAccess> &&hits);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+        cbret_t idaapi del(size_t n) override;
+
+    private:
+        TraceManager           *m_mgr;
+        std::vector<MemAccess>  m_hits;   // frozen snapshot
+        qstring                 m_title;  // owned: chooser_base_t keeps the pointer
     };
 
     // ---- TTD-specific action handlers --------------------------------------
@@ -216,9 +262,84 @@ namespace idattd
         { return AST_ENABLE_ALWAYS; }
     };
 
+    // Bookmark the current trace position (prompts for a name and a comment).
+    struct AddBookmarkHandler : public action_handler_t
+    {
+        TraceManager  *mgr   = nullptr;
+        BookmarkStore *store = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    struct OpenBookmarksHandler : public action_handler_t
+    {
+        TraceManager  *mgr   = nullptr;
+        BookmarkStore *store = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    // Sweep the recording and colour the instructions that actually executed.
+    struct CoverageHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    struct ClearCoverageHandler : public action_handler_t
+    {
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    // Checkable: highlight each function as you stop in it, without asking.
+    struct AutoCoverageHandler : public action_handler_t
+    {
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
+    // Find every read, write or execute of an address over the whole trace.
+    struct MemSearchHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    // Record where every indirect call actually went, as comments and xrefs.
+    struct IndirectCallsHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    struct ClearIndirectCallsHandler : public action_handler_t
+    {
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
     // Action identifiers (used for registration + menu/popup attach).
     namespace actions
     {
+        constexpr const char *ADD_BOOKMARK  = "idattd:add_bookmark";
+        constexpr const char *BOOKMARKS     = "idattd:bookmarks";
+        constexpr const char *COVERAGE      = "idattd:coverage";
+        constexpr const char *COVERAGE_CLR  = "idattd:coverage_clear";
+        constexpr const char *COVERAGE_AUTO = "idattd:coverage_auto";
+        constexpr const char *MEM_SEARCH    = "idattd:mem_search";
+        constexpr const char *INDIRECT      = "idattd:indirect_calls";
+        constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";
         constexpr const char *RUN_BACK     = "idattd:run_back";
         constexpr const char *STEP_OUT_BACK = "idattd:step_out_back";
         constexpr const char *RUN_TO_CUR_BACK = "idattd:run_to_cursor_back";

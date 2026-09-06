@@ -22,22 +22,42 @@ namespace idattd
         "ThreadStepOverBackwards",
     };
 
-    // Menu paths our actions are attached to, so they can be detached again when
-    // the trace is unloaded.
-    static const struct { const char *path; const char *action; } TTD_MENU_ITEMS[] =
+    // The top-level TTD menu, alongside File / Edit / Jump / ...
+    //
+    // It has to be CREATED. attach_action_to_menu() resolves its path against
+    // menus that already exist and uses it purely to position the new item, so
+    // attaching to "TTD/..." without create_menu() first silently did nothing --
+    // which is why there was no TTD menu before.
+    // Name and label are both "TTD" on purpose: menu paths are resolved by menu
+    // NAME, so keeping the two identical means "TTD/" refers to this menu however
+    // the path is interpreted. (The toolbar is a separate namespace, "TTDToolBar".)
+    static const char *TTD_MENU      = "TTD";
+    static const char *TTD_MENU_PATH = "TTD/";      // path items attach under
+
+    // Items in menu order, grouped: navigation, bookmarks, movement, call
+    // tracing, coverage. 'sep' starts a new group with a separator above it.
+    static const struct { const char *action; bool sep; } TTD_MENU_ITEMS[] =
     {
-        { "TTD/Find all calls to function",    actions::TRACE_FUNC      },
-        { "TTD/Find calls by name or pattern", actions::TRACE_PAT       },
-        { "TTD/Analyze whole function",        actions::ANALYZE_FUNC    },
-        { "TTD/Trace events",                  actions::OPEN_EVENTS     },
-        { "TTD/Traced functions",              actions::OPEN_TRACED     },
-        { "TTD/Re-run trace",                  actions::RUN_TRACE       },
-        { "TTD/Timeline",                      actions::TIMELINE        },
-        { "TTD/Go to position",                actions::GOTO_POS        },
-        { "TTD/Continue backwards",            actions::RUN_BACK        },
-        { "TTD/Step out backwards",            actions::STEP_OUT_BACK   },
-        { "TTD/Run to cursor",                 actions::RUN_TO_CUR_FWD  },
-        { "TTD/Run to cursor backwards",       actions::RUN_TO_CUR_BACK },
+        { actions::TIMELINE,        false },
+        { actions::GOTO_POS,        false },
+        { actions::ADD_BOOKMARK,    true  },
+        { actions::BOOKMARKS,       false },
+        { actions::RUN_BACK,        true  },
+        { actions::STEP_OUT_BACK,   false },
+        { actions::RUN_TO_CUR_FWD,  false },
+        { actions::RUN_TO_CUR_BACK, false },
+        { actions::ANALYZE_FUNC,    true  },
+        { actions::TRACE_FUNC,      false },
+        { actions::TRACE_PAT,       false },
+        { actions::OPEN_EVENTS,     false },
+        { actions::OPEN_TRACED,     false },
+        { actions::RUN_TRACE,       false },
+        { actions::COVERAGE,        true  },
+        { actions::COVERAGE_CLR,    false },
+        { actions::COVERAGE_AUTO,   false },
+        { actions::MEM_SEARCH,      true  },
+        { actions::INDIRECT,        false },
+        { actions::INDIRECT_CLR,    false },
     };
 
     //-----------------------------------------------------------------------
@@ -66,6 +86,10 @@ namespace idattd
         // trace is loaded, so the TTD shortcuts and toolbar do not exist until
         // then — see show_actions()/hide_actions().
         load_icons();
+        // Pseudocode coverage highlighting, if this install has a decompiler.
+        // Everything about it is optional: without Hex-Rays the plugin behaves
+        // exactly as it did before.
+        m_haveDecompiler = init_decompiler();
         hook_event_listener(HT_IDD, this);
         hook_event_listener(HT_DBG, &m_dbgEvents);
         hook_event_listener(HT_UI,  &m_uiEvents);
@@ -80,6 +104,12 @@ namespace idattd
             unregister_timer(m_refocusTimer);
             m_refocusTimer = nullptr;
         }
+        if ( m_autoCoverTimer != nullptr )
+        {
+            unregister_timer(m_autoCoverTimer);
+            m_autoCoverTimer = nullptr;
+        }
+        term_decompiler();
         unhook_event_listener(HT_IDB, &m_idbEvents);
         unhook_event_listener(HT_UI,  &m_uiEvents);
         unhook_event_listener(HT_DBG, &m_dbgEvents);
@@ -152,6 +182,12 @@ namespace idattd
         m_openEvents.mgr = &m_mgr;  m_openEvents.tracer = &m_tracer;
         m_runTrace.mgr   = &m_mgr;  m_runTrace.tracer   = &m_tracer;
 
+        m_addBookmark.mgr   = &m_mgr;  m_addBookmark.store   = &m_bookmarks;
+        m_bookmarksView.mgr = &m_mgr;  m_bookmarksView.store = &m_bookmarks;
+        m_coverage.mgr      = &m_mgr;
+        m_memSearch.mgr     = &m_mgr;
+        m_indirect.mgr      = &m_mgr;
+
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
             actions::RUN_BACK, "Continue backwards", &m_runBack, this,
             nullptr, "Continue backwards: run backward to the previous breakpoint or the start of the trace", m_icoRevContinue));
@@ -169,34 +205,83 @@ namespace idattd
             actions::POS_LABEL, "TTD position", &m_posLabel, this,
             nullptr, "Current TTD position (Sequence:Steps) — click to copy it to the clipboard", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::ANALYZE_FUNC, "TTD: Analyze whole function", &m_analyzeFunc, this,
+            actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, this,
             "Ctrl+Shift+A", "Analyze whole function: walk the trace backward to find the enclosing "
             "function's entry and define it (runs behind a cancellable wait box)", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::TRACE_FUNC, "TTD: Find all calls to this function", &m_traceFunc, this,
+            actions::TRACE_FUNC, "Find all calls to this function", &m_traceFunc, this,
             "Ctrl+Shift+C", "Find all calls to this function: sweep the whole trace and list every call with its arguments and return value", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::TRACE_PAT, "TTD: Find calls by name/pattern...", &m_tracePat, this,
+            actions::TRACE_PAT, "Find calls by name/pattern...", &m_tracePat, this,
             "Ctrl+Shift+F", "Find calls by name/pattern: trace every function matching a wildcard like 'kernel32!Virtual*' in one sweep", m_icoFuncSearch));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::OPEN_EVENTS, "TTD: Trace events...", &m_openEvents, this,
+            actions::OPEN_EVENTS, "Trace events...", &m_openEvents, this,
             nullptr, "Trace events: open the recorded calls (arguments and return values)", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::OPEN_TRACED, "TTD: Traced functions...", &m_openTraced, this,
+            actions::OPEN_TRACED, "Traced functions...", &m_openTraced, this,
             nullptr, "Traced functions: manage the list of functions selected for call tracing", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::RUN_TRACE, "TTD: Re-run trace", &m_runTrace, this,
+            actions::RUN_TRACE, "Re-run trace", &m_runTrace, this,
             nullptr, "Re-run trace: re-sweep the trace for all currently traced functions", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::TIMELINE, "TTD: Timeline...", &m_timeline, this,
+            actions::TIMELINE, "Timeline...", &m_timeline, this,
             "Ctrl+Shift+T", "Timeline: open the TTD trace timeline of notable positions", m_icoTimeline));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
-            actions::GOTO_POS, "TTD: Go to position...", &m_goto, this,
+            actions::GOTO_POS, "Go to position...", &m_goto, this,
             "Ctrl+Shift+G", "Go to position: jump to a Sequence:Steps trace position", m_icoGoto));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, this,
+            "Ctrl+Shift+B", "Bookmark this position: save the current trace position, "
+            "with a name and a note, in the database", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::BOOKMARKS, "Bookmarks...", &m_bookmarksView, this,
+            nullptr, "Bookmarks: the saved trace positions for this database", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::COVERAGE, "Highlight executed code...", &m_coverage, this,
+            nullptr, "Highlight executed code: replay the recording and colour every "
+            "instruction in the chosen scope that actually ran", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, this,
+            nullptr, "Clear execution highlight: remove the coverage colour from the "
+            "whole database", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, this,
+            nullptr, "Highlight functions automatically: measure and colour each "
+            "function the first time you stop in it", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, this,
+            "Ctrl+Shift+M", "Find memory accesses: every read, write or execute of "
+            "an address anywhere in the recording", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::INDIRECT, "Resolve indirect calls...", &m_indirect, this,
+            nullptr, "Resolve indirect calls: record where each one actually went, "
+            "as a comment and a cross-reference", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, this,
+            nullptr, "Clear resolved indirect calls: remove the comments and "
+            "cross-references a previous run added", -1));
+        // Checkable menu entry, ticked from the database's own setting.
+        update_action_checkable(actions::COVERAGE_AUTO, true);
+        update_action_checked(actions::COVERAGE_AUTO, coverage_auto_enabled());
 
-        // Top-level TTD menu (extras + a mirror of the movement commands).
+        // Top-level TTD menu, created before anything is attached to it.
+        //
+        // The third argument is deliberately absent. create_menu() first tries to
+        // resolve it as the NAME of a menu already in the menu bar and, failing
+        // that, as a path to a menu ITEM -- so passing "Debugger" did not place
+        // TTD next to the Debugger menu, it nested TTD inside it, and "TTD/" then
+        // no longer resolved at the top level so every item went nowhere. With no
+        // position given, IDA appends the menu to the menu bar, which is where it
+        // belongs.
+        create_menu(TTD_MENU, "TTD");
+        int attached = 0;
         for ( const auto &mi : TTD_MENU_ITEMS )
-            attach_action_to_menu(mi.path, mi.action, SETMENU_APP);
+            if ( attach_action_to_menu(TTD_MENU_PATH, mi.action,
+                                       SETMENU_APP | (mi.sep ? SETMENU_ENSURE_SEP : 0)) )
+                attached++;
+        if ( attached != qnumber(TTD_MENU_ITEMS) )
+            msg("[ida-ttd] only %d of %d TTD menu entries could be attached.\n",
+                attached, (int)qnumber(TTD_MENU_ITEMS));
 
         m_actionsRegistered = true;
     }
@@ -209,19 +294,27 @@ namespace idattd
         if ( !m_actionsRegistered )
             return;
 
-        // Detach from the TTD menu first so the menu entries go away with the
-        // actions (unregistering alone leaves the menu structure behind).
-        for ( const auto &mi : TTD_MENU_ITEMS )
-            detach_action_from_menu(mi.path, mi.action);
+        // Drop the whole menu rather than detaching item by item: unregistering
+        // the actions alone would leave an empty TTD menu behind in the menu bar.
+        delete_menu(TTD_MENU);
 
         const char *names[] = {
             actions::RUN_BACK, actions::STEP_OUT_BACK, actions::RUN_TO_CUR_BACK, actions::RUN_TO_CUR_FWD, actions::POS_LABEL, actions::TRACE_FUNC,
             actions::TRACE_PAT, actions::ANALYZE_FUNC, actions::OPEN_EVENTS, actions::OPEN_TRACED,
             actions::RUN_TRACE, actions::TIMELINE, actions::GOTO_POS,
+            actions::ADD_BOOKMARK, actions::BOOKMARKS,
+            actions::COVERAGE, actions::COVERAGE_CLR, actions::COVERAGE_AUTO,
+            actions::MEM_SEARCH, actions::INDIRECT, actions::INDIRECT_CLR,
         };
         for ( const char *n : names )
             unregister_action(n);
 
+        // The next session may be over a different database, so neither the
+        // cached bookmark list nor the "user cancelled this sweep" set may
+        // carry across.
+        m_bookmarks.invalidate();
+        m_autoCoverDeclined.clear();
+        m_autoCoverFunc = BADADDR;
         m_actionsRegistered = false;
     }
 
@@ -282,6 +375,8 @@ namespace idattd
     void Plugin::show_actions()
     {
         register_actions();
+        try_hook_decompiler();
+        suspend_source_debugging();
 
         delete_toolbar(TTD_TOOLBAR);
         create_toolbar(TTD_TOOLBAR, "TTD");
@@ -305,6 +400,8 @@ namespace idattd
         attach_action_to_toolbar(TTD_TOOLBAR, actions::GOTO_POS);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TRACE_PAT);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::OPEN_EVENTS);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::ADD_BOOKMARK);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::BOOKMARKS);
 
         reskin_actions();
         update_position_label();
@@ -317,6 +414,11 @@ namespace idattd
     // through here).
     void Plugin::hide_actions()
     {
+        // Before anything else: a pseudocode view of code the recording
+        // allocated at runtime cannot survive the session, and IDA would
+        // save it in the desktop and restore it broken.
+        close_volatile_pseudocode_views();
+        restore_source_debugging();
         delete_toolbar(TTD_TOOLBAR);
         restore_native_icons();
         unregister_actions();
@@ -387,6 +489,107 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    void Plugin::try_hook_decompiler()
+    {
+        if ( !m_haveDecompiler )
+            m_haveDecompiler = init_decompiler();
+    }
+
+    //-----------------------------------------------------------------------
+    // Source-info providers are registered by name and there is no API to
+    // enumerate them, so the ones that carry line information for native code
+    // are named here. A name that is not registered simply yields nullptr.
+    static const char *const SRCINFO_PROVIDERS[] = { "PDB", "pdb", "DWARF", "dwarf" };
+
+    void Plugin::suspend_source_debugging()
+    {
+        for ( const char *n : SRCINFO_PROVIDERS )
+        {
+            srcinfo_provider_t *sp = get_srcinfo_provider(n);
+            // Only ever turn OFF something that is currently on, and remember
+            // exactly what we turned off: a provider the user had already
+            // disabled must not come back enabled when the session ends.
+            if ( sp == nullptr || !sp->is_enabled() )
+                continue;
+            sp->enable_provider(false);
+            m_srcProvidersOff.push_back(n);
+            msg("[ida-ttd] source-level debugging via '%s' is off for this session: "
+                "it offers to map source paths recorded on the machine that made "
+                "the trace. It is restored when the trace closes.\n", n);
+        }
+    }
+
+    //-----------------------------------------------------------------------
+    void Plugin::restore_source_debugging()
+    {
+        for ( const char *n : m_srcProvidersOff )
+        {
+            srcinfo_provider_t *sp = get_srcinfo_provider(n);
+            if ( sp != nullptr )
+                sp->enable_provider(true);
+        }
+        m_srcProvidersOff.clear();
+    }
+
+    //-----------------------------------------------------------------------
+    int idaapi Plugin::autocover_cb(void *ud)
+    {
+        static_cast<Plugin *>(ud)->do_auto_coverage();
+        return -1;  // one-shot: unregister
+    }
+
+    //-----------------------------------------------------------------------
+    // Decide, on a stop, whether the function we are now in should be measured.
+    // The work itself is deferred: a sweep pumps the UI behind a wait box, and
+    // starting that from inside a debugger notification risks the user driving
+    // the debugger again while we are still in it.
+    void Plugin::schedule_auto_coverage()
+    {
+        m_autoCoverFunc = BADADDR;
+        if ( !m_actionsRegistered || !m_mgr.is_active() || !coverage_auto_enabled() )
+            return;
+        ea_t pc = m_mgr.current_pc_ea();
+        if ( pc == BADADDR )
+            return;
+        func_entry_info_t fi;
+        if ( !get_func_entry_info(&fi, pc) )
+            return;                                  // no function to measure yet
+        if ( coverage_function_done(fi.start_ea)
+          || m_autoCoverDeclined.find(fi.start_ea) != m_autoCoverDeclined.end() )
+            return;                                  // measured, or the user said no
+        m_autoCoverFunc = fi.start_ea;
+        if ( m_autoCoverTimer == nullptr )
+            m_autoCoverTimer = register_timer(10, autocover_cb, this);
+    }
+
+    //-----------------------------------------------------------------------
+    void Plugin::do_auto_coverage()
+    {
+        m_autoCoverTimer = nullptr;
+        ea_t start = m_autoCoverFunc;
+        m_autoCoverFunc = BADADDR;
+        if ( start == BADADDR || !m_mgr.is_active() )
+            return;
+        // Re-read the bounds: the deferred hop gave analysis a chance to change
+        // them, and a stale end would measure the wrong span.
+        func_entry_info_t fi;
+        if ( !get_func_entry_info(&fi, start) || fi.start_ea != start )
+            return;
+        if ( coverage_function_done(start) )
+            return;
+        if ( !cover_function(&m_mgr, fi.start_ea, fi.end_ea) )
+        {
+            // Cancelled, or it could not run. Do not ask again this session --
+            // otherwise the next single step inside the same function re-offers
+            // the sweep the user just stopped.
+            m_autoCoverDeclined.insert(start);
+            return;
+        }
+        refresh_idaview_anyway();
+        refresh_pseudocode_views();
+    }
+
+    //-----------------------------------------------------------------------
     // Called from the stop handler. If the user was in the decompiler, schedule a
     // deferred re-focus: IDA brings the disassembly to the front as part of its own
     // post-stop handling, so we must re-assert the decompiler AFTER that, from a
@@ -430,7 +633,14 @@ namespace idattd
                 // valid for the new position: name newly-revealed module exports,
                 // disassemble around RIP, and refresh the toolbar readout.
                 p->manager().on_suspended();
+                // Last chance to pick the decompiler up, for installs where
+                // it loads after everything above has already run.
+                p->try_hook_decompiler();
                 p->update_position_label();
+                // Measure the function we landed in, if it has not been measured
+                // before and the user has left that switched on. Queued, not run
+                // here — see schedule_auto_coverage().
+                p->schedule_auto_coverage();
                 // IDA can rebuild the debug toolbars across a stop and reset our
                 // action icons — reapply them (cheap, belt-and-suspenders).
                 p->reskin_actions();
@@ -483,11 +693,21 @@ namespace idattd
                     // the disassembly and the decompiler).
                     attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_FWD, "TTD/");
                     attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_BACK, "TTD/");
+                    attach_action_to_popup(widget, popup, actions::ADD_BOOKMARK, "TTD/");
                 }
                 if ( wt == BWN_DISASM )
+                {
                     attach_action_to_popup(widget, popup, actions::TRACE_FUNC, "TTD/");
+                    attach_action_to_popup(widget, popup, actions::COVERAGE, "TTD/");
+                    attach_action_to_popup(widget, popup, actions::MEM_SEARCH, "TTD/");
+                }
                 break;
             }
+            case ui_ready_to_run:
+                // Everything is loaded by now, decompiler included. This is the
+                // point the SDK documents for plugins that need the finished UI.
+                p->try_hook_decompiler();
+                break;
             case ui_current_widget_changed:
             {
                 // Track which code view the user is in so we can keep the decompiler

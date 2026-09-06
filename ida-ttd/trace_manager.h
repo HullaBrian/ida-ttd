@@ -68,6 +68,20 @@ namespace idattd
         // with a temporary Execute watchpoint, like the backward variant.
         void                       request_run_to_cursor_forward(ea_t addr);
         TTD::Replay::Position              current_position() const;
+        // The instruction the cursor is standing on. Bookmarks record this so the
+        // list can show where each mark is without seeking to every row.
+        ea_t                       current_pc_ea() const;
+        // Loaded module containing 'ea', as [lo, hi). False when 'ea' belongs to
+        // no module (dynamically allocated code).
+        bool                       module_range_at(ea_t ea, ea_t &lo, ea_t &hi) const;
+        // Name of the module containing 'ea', without directory or extension
+        // ("kernel32"), or empty when 'ea' is in no module.
+        qstring                    module_name_at(ea_t ea) const;
+        // Every loaded module as [lo, hi), sorted by base.
+        std::vector<std::pair<ea_t, ea_t>> module_ranges() const;
+        // Last position of the loaded trace (Position::Invalid with no trace).
+        // Used to turn a replay progress position into a percentage.
+        TTD::Replay::Position              last_position() const;
         std::vector<NamedPosition> collect_positions() const;
 
         // Create a fresh cursor over the loaded trace (empty if no trace). Used
@@ -115,10 +129,31 @@ namespace idattd
         // user breakpoints. Returns EventType::MemoryWatchpoint if a breakpoint
         // was hit during the run, otherwise a normal-stop reason.
         TTD::Replay::EventType navigate_over(bool step_out);
+        // Backward step-over: one backward step, and if that landed us inside a
+        // callee that had just returned (deeper frame on the same thread), rewind
+        // on out to the call that entered it. IDA has no RESMOD_BACKOVER -- it
+        // sends ev_set_backwards plus RESMOD_OVER -- and that path previously took
+        // a plain backward step, i.e. it stepped INTO the returning callee.
+        TTD::Replay::EventType navigate_over_backward();
         // Run backward until the current function is exited (we reach the call
-        // that entered this frame), honoring user breakpoints. Shows a cancellable
-        // wait box because it single-steps backward.
+        // that entered this frame), honoring user breakpoints.
         TTD::Replay::EventType navigate_out_backward();
+        // Position of the CALL that entered the frame the cursor is currently in.
+        //
+        // Found by replaying FORWARD from a look-back start up to the playhead
+        // while tracking a per-thread frame stack, which is one bulk engine call
+        // per attempt. The obvious implementation -- single-step backward counting
+        // call/ret depth -- is what this replaces: every backward step re-seeks a
+        // keyframe, so stepping out of a frame entered a few thousand instructions
+        // ago took minutes and pegged the "depth N" counter climbing forever.
+        //
+        // The look-back widens across sequences until the entering call is
+        // captured; 'cancelled' distinguishes "the user gave up" from "the call is
+        // further back than we are willing to search".
+        bool  find_frame_entry_position(TTD::Replay::Position &out, bool &cancelled);
+        // Seek the main cursor BACKWARD to 'p' in one engine call, with user
+        // breakpoints still armed so anything in between still stops us.
+        TTD::Replay::EventType rewind_to(const TTD::Replay::Position &p);
         // Run backward to 'addr' (a temporary Execute watchpoint + ReplayBackward),
         // stopping at the first earlier execution of 'addr' or any user breakpoint.
         // One ReplayBackward call (the engine seeks to the hit), so it is cheap —
@@ -133,7 +168,18 @@ namespace idattd
         // flag a pending "start/end of the trace" notice if the cursor came to rest
         // on the trace's first/last position. Shown (once) from on_suspended, where
         // a modal popup is safe — not from inside the resume handler.
-        void  flag_boundary(TTD::Replay::EventType sr, bool forward);
+        void  settle_after_navigation(TTD::Replay::EventType sr, bool forward);
+        // Pull the cursor back inside [GetFirstPosition(), GetLastPosition()].
+        //
+        // A forward run to the end does NOT leave the cursor on the last recorded
+        // instruction -- it leaves it past the end, at the Position::Max sentinel
+        // the replay was limited by. Every subsequent operation then works from a
+        // position that does not exist in the trace: a single backward step ran to
+        // the very beginning instead of moving one instruction, and the frame
+        // search subtracted its look-back window from a sequence number far beyond
+        // the trace, so every window landed past the end and found nothing.
+        // Clamping after each navigation keeps the playhead on a real position.
+        void  clamp_to_trace();
         // Run forward to 'addr' on thread 'utid' with SP >= min_sp (skips deeper
         // recursion); also stops on any user breakpoint. Returns 0=reached addr,
         // 1=user breakpoint, 2=trace boundary.
@@ -163,6 +209,14 @@ namespace idattd
         // unavailable; on success 'base_out' is the module's runtime base so the
         // caller can form rva = ea - base. Used to serve never-recorded bytes.
         const ModuleImage *image_for(ea_t ea, ea_t &base_out);
+        // The engine's Module record for the module based at 'base', or nullptr.
+        // (Several call sites used to open-code this linear scan.)
+        const TTD::Replay::Module *module_at(ea_t base) const;
+        // Lazily create the scratch analysis cursor. It MUST replay segments
+        // sequentially: the default is parallel multi-segment replay, which
+        // dispatches callbacks from several threads at once, and the call/return
+        // callback in find_dynamic_function_entry mutates an unsynchronized map.
+        TTD::Replay::ICursorView *ana_cursor();
         // Reconstruct the real bytes of [lo,hi) from the trace's recorded WRITES.
         // The position-based memory query returns zero-fill for non-module memory
         // that was written earlier (e.g. an unpacker decompressing a beacon) but not
@@ -175,6 +229,31 @@ namespace idattd
         // module's .pdata bounds (whole function at once); falls back to linear
         // forward layout. Runs on every stop; must not walk the trace.
         void  analyze_current_function(ea_t pc);
+        // Grow a function IDA defined too short to the end its module's
+        // exception table gives it. IDA's static analysis stops where it loses
+        // the flow (a noreturn call, an opaque tail jump), and the rest of the
+        // function then renders as a JUMPOUT to somewhere outside it. Only ever
+        // grows, only into space no other function claims, once per function.
+        void  extend_to_pdata_bounds(ea_t pc, const func_entry_info_t &fi);
+        // Define every function DIRECTLY called from [lo,hi) -- one level deep, no
+        // recursion into their callees. Without this, call targets stay undefined
+        // and render as "call unk_<addr>": we run with AF_PROC/AF_PROCPTR switched
+        // off (see on_start_process), which is exactly the auto-analysis rule that
+        // would otherwise create a function at a call target. Doing it ourselves,
+        // one level at a time, gives named callees without the runaway cascade
+        // that made those flags unusable here.
+        void  define_callees(ea_t lo, ea_t hi);
+        // Define a single function at 'ea', preferring the authoritative .pdata
+        // bounds of its module and marking library code FUNC_LIB. No-op when 'ea'
+        // is already the start of a function.
+        void  define_function_at(ea_t ea);
+        // Resolve the address a call instruction transfers to: the operand itself
+        // for a direct call, or the pointer STORED at the slot for an indirect
+        // call through memory (an import thunk's IAT entry). The latter only works
+        // because we are replaying: the IAT holds its real, resolved value at the
+        // current position. BADADDR when the target cannot be determined
+        // statically (call through a register).
+        ea_t  call_target_of(const insn_t &insn, ea_t &slot_out);
         // Look up the [start,end) of the function containing 'pc' from the cached
         // .pdata ranges of its module. Returns false if unknown (x86, no .pdata).
         bool  function_range_at(ea_t pc, ea_t &start, ea_t &end) const;
@@ -236,8 +315,19 @@ namespace idattd
         // disassembly line, register deref and stack row), so it must not heap
         // allocate per call; assign() reuses the existing capacity.
         std::vector<uint8_t>            m_readFilled;
+        // Scratch destination for the ThreadLocal probe that tells a recorded
+        // run of zeros apart from the engine's "mapped, here is zero" answer.
+        // Only used for all-zero runs, and reused for the same reason as above.
+        std::vector<uint8_t>            m_readProbe;
         ea_t                            m_winLo = BADADDR; // last laid-out window range
         ea_t                            m_winHi = 0;
+        // Start of the function whose callees we last defined. Stepping inside one
+        // function re-enters analyze_current_function on every stop, and there is
+        // nothing new to find until the function itself changes.
+        ea_t                            m_calleeScanFunc = BADADDR;
+        // Functions already considered for .pdata extension, so the check is
+        // paid once rather than on every stop inside the same function.
+        std::set<ea_t>                  m_pdataExtended;
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
         // Cache backing module_spans(); mutable so the const lookups above can
@@ -290,6 +380,10 @@ namespace idattd
         // 1 start of trace, 2 end of trace.
         enum { BOUNDARY_NONE = 0, BOUNDARY_START, BOUNDARY_END };
         int          m_pendingBoundary = BOUNDARY_NONE;
+        // Free-form notice queued from inside a navigation and shown from
+        // on_suspended, for the same reason as m_pendingBoundary: a modal popup
+        // raised while handling ev_resume is not safe.
+        qstring      m_pendingNotice;
 
         pid_t         m_pid = 1;
         TTD::Replay::Position m_nextPosition;

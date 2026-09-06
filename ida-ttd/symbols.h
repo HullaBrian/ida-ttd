@@ -29,7 +29,12 @@ namespace idattd
     // runtime addresses for the module loaded at 'base'). This is the reliable
     // source: TTD only records memory that was accessed at runtime, and a module's
     // .pdata is often never touched, so reading it from the trace can come up empty.
+    // 'want_timestamp' / 'want_checksum' come from the trace's Module record: when
+    // either is non-zero the file's own NT headers must match it, otherwise the
+    // file is a different build of the module and its function bounds would be
+    // wrong. Pass 0 for both to skip the check.
     size_t parse_pdata_functions_from_file(const char *path, ea_t base, bool is64,
+                                           uint32_t want_timestamp, uint32_t want_checksum,
                                            std::vector<std::pair<ea_t, ea_t>> &out);
 
     // A module's on-disk PE image, cached for serving never-recorded bytes. TTD
@@ -44,6 +49,13 @@ namespace idattd
         std::vector<uint8_t> file;        // whole file contents
         std::vector<Section> sections;
         uint32_t             sizeOfHeaders = 0;
+        // Identity of the file we actually opened, from its NT headers. The trace
+        // records the same two values for each module, so the caller can refuse a
+        // file that is a different build of the same DLL -- the path came off the
+        // RECORDING machine and may resolve to something else entirely here.
+        uint32_t             timestamp = 0;   // FileHeader.TimeDateStamp
+        uint32_t             checksum  = 0;   // OptionalHeader.CheckSum
+        uint32_t             sizeOfImage = 0; // OptionalHeader.SizeOfImage
         bool                 ok = false;  // false once we've tried and failed
     };
 

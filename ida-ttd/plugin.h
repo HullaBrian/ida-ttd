@@ -4,6 +4,8 @@
 #include "trace_manager.h"
 #include "tracer.h"
 #include "ui.h"
+#include "coverage.h"
+#include "decompiler.h"
 
 namespace idattd
 {
@@ -67,6 +69,25 @@ namespace idattd
         void widget_closing(TWidget *w);      // drop a closed widget pointer
         void keep_decompiler_focused();       // schedule a re-focus after a stop (if wanted)
 
+        // Queue a coverage sweep of the function we just stopped in, if that is
+        // switched on and the function has not been measured before. Deferred to
+        // a timer rather than run here: a sweep pumps the UI behind a wait box,
+        // and doing that from inside a debugger notification invites reentrancy.
+        void schedule_auto_coverage();
+
+        // Install the decompiler hook if it is not installed yet. Cheap and
+        // idempotent, and called from several points because Hex-Rays is a
+        // plugin too and may not have loaded when we first ask for it.
+        void try_hook_decompiler();
+
+        // Source-path prompts. IDA offers to map a source file whenever it
+        // finds line information for the address we stopped at; replaying
+        // someone else's build, that source is not on this machine and the
+        // dialog is pure noise. The provider supplying the line info is
+        // switched off for the session and switched back on when it ends.
+        void suspend_source_debugging();
+        void restore_source_debugging();
+
     private:
         void register_actions();
         void unregister_actions();
@@ -74,10 +95,16 @@ namespace idattd
         void load_icons();
         void do_refocus();                    // timer body: re-activate the decompiler
         static int idaapi refocus_cb(void *ud);
+        void do_auto_coverage();              // timer body: sweep the current function
+        static int idaapi autocover_cb(void *ud);
 
         debugger_t     m_debugger = {};
         TraceManager   m_mgr;
         FunctionTracer m_tracer;
+        // Bookmarks belong to the DATABASE, not the trace, so this outlives any
+        // one session; it is invalidated at session end because the next one may
+        // be a different database.
+        BookmarkStore  m_bookmarks;
 
         DbgEventListener m_dbgEvents;
         UiEventListener  m_uiEvents;
@@ -98,6 +125,16 @@ namespace idattd
         OpenTracedHandler   m_openTraced;
         OpenEventsHandler   m_openEvents;
         RunTraceHandler     m_runTrace;
+        // Bookmarks + execution coverage
+        AddBookmarkHandler   m_addBookmark;
+        OpenBookmarksHandler m_bookmarksView;
+        CoverageHandler      m_coverage;
+        ClearCoverageHandler m_coverageClear;
+        AutoCoverageHandler  m_coverageAuto;
+        // Memory access search + indirect call annotation
+        MemSearchHandler          m_memSearch;
+        IndirectCallsHandler      m_indirect;
+        ClearIndirectCallsHandler m_indirectClear;
 
         // Custom codicon debug-movement icons (SVG). Forward/back continue plus
         // the native step actions whose icons we override.
@@ -135,5 +172,17 @@ namespace idattd
         bool     m_userPrefersDecomp = false; // user was last in the decompiler
         bool     m_ignoreWidgetChanges = false; // freeze preference during a stop
         qtimer_t m_refocusTimer   = nullptr;  // one-shot deferred re-focus
+
+        // Automatic per-function coverage. Functions the user cancelled out of
+        // are remembered for the session only, so a sweep they stopped is not
+        // offered again on the very next step -- but reopening the trace retries.
+        qtimer_t        m_autoCoverTimer = nullptr;
+        ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
+        std::set<ea_t>  m_autoCoverDeclined;
+        bool            m_haveDecompiler = false;
+        // Source-info providers WE turned off, so only those are turned back
+        // on: one the user had already disabled must stay that way. The
+        // entries are string literals, so storing the pointers is safe.
+        std::vector<const char *> m_srcProvidersOff;
     };
 }

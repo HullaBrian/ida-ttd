@@ -207,6 +207,7 @@ namespace idattd
 
     //-----------------------------------------------------------------------
     size_t parse_pdata_functions_from_file(const char *path, ea_t base, bool is64,
+                                           uint32_t want_timestamp, uint32_t want_checksum,
                                            std::vector<std::pair<ea_t, ea_t>> &out)
     {
         out.clear();
@@ -227,6 +228,13 @@ namespace idattd
         f.read((char *)&nt, sizeof(nt));
         if ( !f || nt.Signature != IMAGE_NT_SIGNATURE
           || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC )
+            return 0;
+
+        // Same build as the one in the trace? The path came off the recording
+        // machine; a local file at that path with different headers is a different
+        // build, and its function bounds would be silently wrong.
+        if ( (want_timestamp != 0 && nt.FileHeader.TimeDateStamp != want_timestamp)
+          || (want_checksum  != 0 && nt.OptionalHeader.CheckSum  != want_checksum) )
             return 0;
 
         const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
@@ -334,9 +342,25 @@ namespace idattd
 
         uint16_t nsec    = nt32->FileHeader.NumberOfSections;
         uint16_t optsz   = nt32->FileHeader.SizeOfOptionalHeader;
-        out.sizeOfHeaders = (nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
-                          ? ((const IMAGE_NT_HEADERS64 *)(base + ntoff))->OptionalHeader.SizeOfHeaders
-                          : nt32->OptionalHeader.SizeOfHeaders;
+        out.timestamp    = nt32->FileHeader.TimeDateStamp;
+        if ( nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
+        {
+            // IMAGE_NT_HEADERS64 is LARGER than the ...32 form we bounds-checked
+            // above, so re-check before reading through the wider view. (A
+            // truncated PE32+ file would otherwise be read past its end.)
+            if ( (size_t)ntoff + sizeof(IMAGE_NT_HEADERS64) > fsz )
+                return false;
+            const IMAGE_NT_HEADERS64 *nt64 = (const IMAGE_NT_HEADERS64 *)(base + ntoff);
+            out.sizeOfHeaders = nt64->OptionalHeader.SizeOfHeaders;
+            out.checksum      = nt64->OptionalHeader.CheckSum;
+            out.sizeOfImage   = nt64->OptionalHeader.SizeOfImage;
+        }
+        else
+        {
+            out.sizeOfHeaders = nt32->OptionalHeader.SizeOfHeaders;
+            out.checksum      = nt32->OptionalHeader.CheckSum;
+            out.sizeOfImage   = nt32->OptionalHeader.SizeOfImage;
+        }
 
         size_t secOff = (size_t)ntoff + 4 + sizeof(IMAGE_FILE_HEADER) + optsz;
         if ( secOff + (size_t)nsec * sizeof(IMAGE_SECTION_HEADER) > fsz )

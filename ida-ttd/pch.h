@@ -41,6 +41,8 @@
 #include <segment.hpp>
 #include <name.hpp>
 #include <bytes.hpp>
+#include <nalt.hpp>
+#include <offset.hpp>
 #include <netnode.hpp>
 #include <funcs.hpp>
 #include <typeinf.hpp>

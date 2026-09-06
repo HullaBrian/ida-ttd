@@ -122,6 +122,11 @@
     <ClInclude Include="callconv.h" />
     <ClInclude Include="tracer.h" />
     <ClInclude Include="ui.h" />
+    <ClInclude Include="bookmarks.h" />
+    <ClInclude Include="coverage.h" />
+    <ClInclude Include="decompiler.h" />
+    <ClInclude Include="memsearch.h" />
+    <ClInclude Include="callsites.h" />
     <ClInclude Include="icons.hh" />
     <ClInclude Include="plugin.h" />
   </ItemGroup>
@@ -134,6 +139,11 @@
     <ClCompile Include="callconv.cpp" />
     <ClCompile Include="tracer.cpp" />
     <ClCompile Include="ui.cpp" />
+    <ClCompile Include="bookmarks.cpp" />
+    <ClCompile Include="coverage.cpp" />
+    <ClCompile Include="decompiler.cpp" />
+    <ClCompile Include="memsearch.cpp" />
+    <ClCompile Include="callsites.cpp" />
     <ClCompile Include="plugin.cpp" />
   </ItemGroup>
   <ItemGroup>
