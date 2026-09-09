@@ -5,18 +5,14 @@ using namespace TTD::Replay;
 
 namespace idattd
 {
-    //-----------------------------------------------------------------------
     // Fill buf[0..size) from guest [addr, addr+size), zero-filling anything the
     // recording cannot supply, and return how many bytes are real counting from
-    // the START of the range (so a caller reading one value can test == size,
+    // the start of the range (so a caller reading one value can test == size,
     // and a string reader can scan exactly that far).
     //
-    // The single unqualified QueryMemoryBuffer this replaces lost bytes two ways.
-    // It named no policy, so the cursor's default answered rather than the
-    // GloballyAggressive-then-InFragmentAggressive pair on_read_memory has always
-    // used; and it stopped at the first unrecorded byte, so every recorded byte
-    // past a hole was dropped. Neither is what a caller reading an argument out
-    // of guest memory wants.
+    // Names its policies explicitly and steps over holes: QueryMemoryBuffer stops
+    // at the first unrecorded byte, so a single call would drop every recorded
+    // byte past one.
     size_t read_guest(ICursorView *cursor, uint64_t addr, void *buf, size_t size)
     {
         if ( cursor == nullptr || buf == nullptr || size == 0 )
@@ -60,11 +56,7 @@ namespace idattd
         return contiguous;
     }
 
-    //-----------------------------------------------------------------------
-    // 'slot' is the stack slot granularity: 8 on x64, 4 on x86. Passing 8 for
-    // 32-bit code (as this used to do unconditionally) double-counts every
-    // argument, so everything from the second stack argument onward was read
-    // from the wrong address on x86 traces.
+    // 'slot' is the stack slot granularity: 8 on x64, 4 on x86.
     size_t stack_arg_offset(const tinfo_t &func_tinfo, size_t n, size_t first_stack_arg,
                             size_t slot)
     {
@@ -83,7 +75,6 @@ namespace idattd
         return off;
     }
 
-    //-----------------------------------------------------------------------
     // We sample at the call instruction *before* it executes, so the return
     // address has not been pushed yet: register args live in their registers and
     // stack args sit at SP + shadow space (+ preceding stack args).
@@ -101,7 +92,7 @@ namespace idattd
             const AMD64_CONTEXT &c = ctx.Amd64Context;
             if ( n < 4 )
             {
-                // The MS x64 ABI assigns argument slots POSITIONALLY across two
+                // The MS x64 ABI assigns argument slots positionally across two
                 // parallel register files: slot n is RCX/RDX/R8/R9 for integers and
                 // pointers, but XMM0-3 for float and double. Reading a float
                 // argument out of the integer register (as this did unconditionally)
@@ -135,9 +126,8 @@ namespace idattd
         }
         else if ( cc == CM_CC_THISCALL )
         {
-            // 'this' travels in ECX and the rest go on the stack. Treating this
-            // like cdecl (as before) shifted EVERY argument by one slot, so the
-            // first stack argument was read from the second one's address.
+            // 'this' travels in ECX; the remaining arguments start at stack
+            // slot 0.
             if ( n == 0 )
                 return c.Ecx;
             first_stack_arg = 1;
@@ -154,7 +144,6 @@ namespace idattd
         return v;
     }
 
-    //-----------------------------------------------------------------------
     uint64_t get_return_value(ICursorView *cursor, bool is64)
     {
         CROSS_PLATFORM_CONTEXT ctx = cursor->GetCrossPlatformContext();
@@ -162,7 +151,6 @@ namespace idattd
                     : (uint64_t)ctx.X86Nt5Context.Eax;
     }
 
-    //-----------------------------------------------------------------------
     static void cat_char(qstring *out, wchar_t c)
     {
         switch ( c )
@@ -179,7 +167,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     // Both string readers pull the buffer in chunks rather than one character at
     // a time: at 260 characters, the per-character form cost 260 engine queries
     // for every string argument of every traced call.
@@ -209,7 +196,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     qstring read_wstring_at(ICursorView *cursor, uint64_t addr)
     {
         qstring out;

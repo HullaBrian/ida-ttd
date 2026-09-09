@@ -7,7 +7,6 @@ using namespace TTD::Replay;
 
 namespace idattd
 {
-    //-----------------------------------------------------------------------
     // Raw integer-register argument when no prototype is available.
     static uint64_t raw_int_arg(ICursorView *cur, size_t n, bool is64)
     {
@@ -24,7 +23,6 @@ namespace idattd
         return v;
     }
 
-    //-----------------------------------------------------------------------
     static qstring render_pointer(ICursorView *cur, const tinfo_t &ptr_t, uint64_t ptr)
     {
         tinfo_t pointed = ptr_t.get_ptrarr_object();
@@ -50,7 +48,6 @@ namespace idattd
         return value;
     }
 
-    //-----------------------------------------------------------------------
     // Render a single argument value (no type prefix) from the integer fetched
     // at the call site.
     static qstring render_value(ICursorView *cur, const tinfo_t &arg, uint64_t raw)
@@ -108,7 +105,6 @@ namespace idattd
         return value;
     }
 
-    //-----------------------------------------------------------------------
     // Produce one "name=value" string per *actual* argument of the function's
     // signature (so the count matches the prototype). Falls back to four raw
     // register/stack args when there is no prototype.
@@ -138,7 +134,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     static qstring render_return(ICursorView *cur, ea_t func_ea, bool is64)
     {
         uint64_t rv = get_return_value(cur, is64);
@@ -167,14 +162,12 @@ namespace idattd
         return value;
     }
 
-    //=======================================================================
     void FunctionTracer::reset()
     {
         { std::lock_guard<std::mutex> g(m_traces_mtx); m_traces.clear(); }
         clear_events();
     }
 
-    //-----------------------------------------------------------------------
     void FunctionTracer::add_func(ea_t func_ea)
     {
         if ( func_ea == BADADDR )
@@ -190,7 +183,6 @@ namespace idattd
         refresh_chooser("Traced functions");
     }
 
-    //-----------------------------------------------------------------------
     void FunctionTracer::remove_trace(size_t n)
     {
         std::lock_guard<std::mutex> g(m_traces_mtx);
@@ -198,7 +190,6 @@ namespace idattd
             m_traces.erase(m_traces.begin() + n);
     }
 
-    //-----------------------------------------------------------------------
     bool FunctionTracer::is_traced(ea_t func_ea)
     {
         std::lock_guard<std::mutex> g(m_traces_mtx);
@@ -208,35 +199,30 @@ namespace idattd
         return false;
     }
 
-    //-----------------------------------------------------------------------
     size_t FunctionTracer::count_traced()
     {
         std::lock_guard<std::mutex> g(m_traces_mtx);
         return m_traces.size();
     }
 
-    //-----------------------------------------------------------------------
     ea_t FunctionTracer::traced_at(size_t n)
     {
         std::lock_guard<std::mutex> g(m_traces_mtx);
         return n < m_traces.size() ? m_traces[n] : BADADDR;
     }
 
-    //-----------------------------------------------------------------------
     size_t FunctionTracer::count_events()
     {
         std::lock_guard<std::mutex> g(m_events_mtx);
         return m_events.size();
     }
 
-    //-----------------------------------------------------------------------
     FunctionInvocation FunctionTracer::event_at(size_t n)
     {
         std::lock_guard<std::mutex> g(m_events_mtx);
         return n < m_events.size() ? m_events[n] : FunctionInvocation{};
     }
 
-    //-----------------------------------------------------------------------
     void FunctionTracer::remove_event(size_t n)
     {
         std::lock_guard<std::mutex> g(m_events_mtx);
@@ -244,21 +230,18 @@ namespace idattd
             m_events.erase(m_events.begin() + n);
     }
 
-    //-----------------------------------------------------------------------
     void FunctionTracer::clear_events()
     {
         std::lock_guard<std::mutex> g(m_events_mtx);
         m_events.clear();
     }
 
-    //-----------------------------------------------------------------------
     std::vector<FunctionInvocation> FunctionTracer::snapshot_events()
     {
         std::lock_guard<std::mutex> g(m_events_mtx);
         return m_events;
     }
 
-    //-----------------------------------------------------------------------
     // Resolve a picked function address to the real runtime callee address(es).
     // Calls reach an imported function either directly (target == real VA) or
     // through a thunk (target == thunk addr, which jmps via the IAT). We collect
@@ -302,7 +285,6 @@ namespace idattd
         return std::vector<ea_t>(out.begin(), out.end());
     }
 
-    //-----------------------------------------------------------------------
     void FunctionTracer::run_sweep()
     {
         if ( m_mgr == nullptr )
@@ -344,12 +326,9 @@ namespace idattd
         std::vector<Rec> recs;
         std::map<uint32_t, std::vector<size_t>> inflight; // per-thread call stack
 
-        // Hard cap on recorded calls. Two reasons, both real:
-        //  - A broad pattern over a long trace (say '*Alloc') produces tens of
-        //    millions of hits and the vector simply eats all available memory.
-        //  - The engine's callback signature is noexcept, so a bad_alloc raised
-        //    inside it does not unwind -- it calls std::terminate and takes IDA
-        //    down with no message. Never allocate unboundedly in here.
+        // Cap the recording. A broad pattern over a long trace produces tens of
+        // millions of hits, and an unbounded vector grown inside the engine's
+        // noexcept callback turns bad_alloc into std::terminate.
         static const size_t kMaxRecords = 2000000;
         bool truncated = false;
 
@@ -406,21 +385,13 @@ namespace idattd
             }
         };
 
-        // Phase 1 replays the whole trace inside the engine. Running it on the main
-        // thread froze IDA solid for its entire duration (no repaint, no progress),
-        // which is the same problem the index build had -- so it gets the same
-        // treatment: the replay runs on a worker while the MAIN thread owns the wait
-        // box and renders the percentage the worker publishes.
-        //
-        // Neither callback may touch IDA. on_call_ret is dispatched by the engine
-        // and the progress callback runs on the worker (the SDK documents it as
-        // firing on whichever thread called ReplayForward), so both only ever
-        // publish to plain memory. ReplaySegmentsSequentially is what keeps
-        // on_call_ret single-threaded; without it the engine replays segments in
-        // parallel and 'recs' would be written from several threads at once.
-        //
-        // The replay still cannot be interrupted (nothing in the API stops one from
-        // outside a watchpoint callback), so the box stays HIDECANCEL.
+        // Phase 1 replays the whole trace on a worker while the main thread owns
+        // the wait box and renders the percentage the worker publishes. Neither
+        // callback may touch IDA: on_call_ret is dispatched by the engine and
+        // on_progress runs on whichever thread called ReplayForward, so both only
+        // write plain memory. ReplaySegmentsSequentially keeps on_call_ret
+        // single-threaded; without it segments replay in parallel and 'recs'
+        // would be written from several threads at once.
         const uint64_t lastSeq = (uint64_t)m_mgr->last_position().Sequence;
         std::atomic<uint32_t> pct{ 0 };
         std::atomic<bool>     done{ false };
@@ -441,27 +412,35 @@ namespace idattd
         sweep->SetReplayProgressCallback(on_progress);
         sweep->SetPosition(Position::Min);
 
+        bool stopped = false;
         {
             ICursorView *raw = sweep.get();
             std::thread worker([raw, &done]()
             {
-                // 'done' MUST be set on every exit path: the main thread spins on
-                // it and would otherwise wait forever with the UI locked behind a
-                // wait box that has no Cancel.
                 try { raw->ReplayForward(); } catch ( ... ) {}
                 done.store(true, std::memory_order_release);
             });
 
-            show_wait_box("HIDECANCEL\nTracing function calls across the whole trace...");
-            uint32_t shown = 101;                  // force the first repaint
+            show_wait_box("Tracing function calls across the whole trace "
+                          "(Cancel to stop)...");
+            uint32_t shown = 101;   // out of range, so the first poll repaints
             while ( !done.load(std::memory_order_acquire) )
             {
-                uint32_t now = pct.load(std::memory_order_relaxed);
-                if ( now != shown )
+                if ( !stopped && user_cancelled() )
                 {
-                    replace_wait_box("HIDECANCEL\nTracing function calls across the "
-                                     "whole trace... %u%%", now);
-                    shown = now;
+                    stopped = true;
+                    replace_wait_box("HIDECANCEL\nFinishing the current segment...");
+                    raw->InterruptReplay();
+                }
+                if ( !stopped )
+                {
+                    uint32_t now = pct.load(std::memory_order_relaxed);
+                    if ( now != shown )
+                    {
+                        replace_wait_box("Tracing function calls across the whole "
+                                         "trace (Cancel to stop)... %u%%", now);
+                        shown = now;
+                    }
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
@@ -469,7 +448,6 @@ namespace idattd
             hide_wait_box();
         }
 
-        // Detach both callbacks before the lambdas they point at go out of scope.
         sweep->SetCallReturnCallback(nullptr, 0);
         sweep->SetReplayProgressCallback(nullptr, 0);
         sweep.reset();
@@ -478,17 +456,16 @@ namespace idattd
             msg("[ida-ttd] tracer: hit the %d-call recording limit; results are "
                 "truncated. Narrow the pattern to see the rest.\n", (int)kMaxRecords);
 
-        // Phase 2 IS ours and runs on the main thread, so it gets real progress
-        // and a working Cancel -- a sweep with thousands of hits used to sit behind
-        // a single static message with no way to bail out.
+        // Phase 2 runs on the main thread, so it has real progress and a
+        // working Cancel.
         UniqueCursor cur = m_mgr->make_cursor();
         std::vector<FunctionInvocation> built;
         built.reserve(recs.size());
-        bool cancelled = false;
+        bool cancelled = stopped;
         show_wait_box("Resolving %d call(s)... (Cancel to stop)", (int)recs.size());
         if ( cur )
         {
-            size_t done = 0;
+            size_t resolved = 0;
             for ( const Rec &rec : recs )
             {
                 if ( user_cancelled() )
@@ -496,10 +473,10 @@ namespace idattd
                     cancelled = true;
                     break;
                 }
-                if ( (done & 0x3F) == 0 )
+                if ( (resolved & 0x3F) == 0 )
                     replace_wait_box("Resolving call %d of %d... (Cancel to stop)",
-                                     (int)done + 1, (int)recs.size());
-                done++;
+                                     (int)resolved + 1, (int)recs.size());
+                resolved++;
 
                 cur->SetPosition(rec.callPos);
                 FunctionInvocation ev;
@@ -528,11 +505,8 @@ namespace idattd
         }
         hide_wait_box();
 
-        // (No refresh_chooser here: there is no widget titled "Tracing events" --
-        // the events choosers are titled "TTD calls: <fn> [n]" -- so the call this
-        // replaced never matched anything. It would be wrong even if it did: each
-        // events tab deliberately holds a snapshot frozen when it was opened, so a
-        // later sweep must not rewrite what an existing tab is showing.)
+        // Open events tabs are not refreshed: each holds a snapshot frozen when it
+        // was opened, and a later sweep must not rewrite it.
         if ( cancelled )
             msg("[ida-ttd] tracer: cancelled - showing %d of %d recorded call(s).\n",
                 (int)nbuilt, (int)recs.size());

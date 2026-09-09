@@ -12,7 +12,6 @@ namespace idattd
     // is the shape of bug that takes the whole process down.
     static const size_t kMaxHits = 200000;
 
-    //-----------------------------------------------------------------------
     const char *access_name(uint8_t kind)
     {
         switch ( kind )
@@ -24,7 +23,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     // The engine reports more access types than the three a reader thinks in.
     // CodeFetch is an execute; Overwrite is a write. The rest describe how the
     // recording stored a value rather than what the program did, so they are not
@@ -42,7 +40,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     bool search_memory(TraceManager *mgr, ea_t lo, ea_t hi, uint8_t mask,
                        std::vector<MemAccess> *out, bool *truncated, bool *cancelled)
     {
@@ -122,7 +119,7 @@ namespace idattd
 
         // Sequential replay is load-bearing: the engine's default dispatches this
         // callback from several threads at once and 'hits' is not synchronized.
-        // Segment filtering is deliberately left ON (no
+        // Segment filtering is deliberately left on (no
         // ReplayAllSegmentsWithoutFiltering) -- a watchpoint is a maskable event,
         // so the engine can skip the parts of the recording that never touch the
         // range, which is what makes a narrow search fast.
@@ -151,21 +148,18 @@ namespace idattd
             ICursorView *raw = cur.get();
             std::thread worker([raw, &done]()
             {
-                // 'done' MUST be set on every exit path: the main thread spins on
+                // 'done' must be set on every exit path: the main thread spins on
                 // it and would otherwise wait forever behind a wait box.
                 try { raw->ReplayForward(); } catch ( ... ) {}
                 done.store(true, std::memory_order_release);
             });
 
             show_wait_box("Searching the recording for accesses (Cancel to stop)...");
-            uint32_t shown = 101;              // force the first repaint
+            uint32_t shown = 101;
             while ( !done.load(std::memory_order_acquire) )
             {
                 if ( !stopped && user_cancelled() )
                 {
-                    // InterruptReplay is documented as callable from any thread
-                    // during a replay; it finishes the current segment and
-                    // returns early. Only ask once.
                     stopped = true;
                     replace_wait_box("HIDECANCEL\nFinishing the current segment...");
                     raw->InterruptReplay();
@@ -186,7 +180,6 @@ namespace idattd
             hide_wait_box();
         }
 
-        // Detach both callbacks before the lambdas they point at go out of scope.
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         cur->SetReplayProgressCallback(nullptr, 0);
         cur.reset();
@@ -207,7 +200,7 @@ namespace idattd
         // Overwrite, and for Execute and CodeFetch, because a recording may
         // describe the same event under either name -- and when it uses both,
         // the two collapse to the same row here. Same position, same address,
-        // same size, same kind, same thread IS the same event.
+        // same size, same kind, same thread is the same event.
         hits.erase(std::unique(hits.begin(), hits.end(),
                                [&key](const MemAccess &a, const MemAccess &b)
                                { return key(a) == key(b); }),

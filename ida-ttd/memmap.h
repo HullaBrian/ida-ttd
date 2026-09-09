@@ -7,22 +7,14 @@ namespace idattd
     class TraceManager;
 
     // The recording's memory map, reconstructed from the syscalls that built it.
+    // The TTD Replay SDK reports no page protections and no region list, so the
+    // only source is the calls themselves.
     //
-    // The TTD Replay SDK has no notion of a memory region: it can tell you which
-    // modules were loaded and it can hand you bytes at an address, but there is
-    // no page-protection field anywhere in it and no way to ask what is mapped.
-    // The only way to know that a buffer was allocated read/write/execute is to
-    // watch the call that made it so.
-    //
-    // What is kept here is a TIMELINE, not a snapshot: every allocation, every
-    // protection change, every free, in the order they happened. That matters
-    // because the interesting recordings are exactly the ones where an address
-    // means different things at different times -- a buffer allocated RW, filled
-    // in, flipped to RX and jumped into, then freed and reallocated for something
-    // else. A snapshot cannot describe that; folding the timeline up to a
-    // position can.
+    // Held as a timeline rather than a snapshot: every allocation, protection
+    // change and free in the order they happened. Folding it up to a position
+    // gives the map as it stood then, which is what an address that meant
+    // different things at different times needs.
 
-    //-----------------------------------------------------------------------
     // What one recorded change did.
     enum : uint8_t
     {
@@ -47,7 +39,6 @@ namespace idattd
     qstring protection_text(uint32_t protect);   // "RWX", "R--", "R-X (guard)", ...
     uchar   protection_perm(uint32_t protect);   // SEGPERM_* mask
 
-    //-----------------------------------------------------------------------
     struct RegionChange
     {
         TTD::Replay::Position pos;               // where the syscall returned
@@ -63,16 +54,10 @@ namespace idattd
         // recording that has both).
         ea_t     api = BADADDR;
         // The call chain that led here, innermost first. chain[0] is the
-        // instruction that called the syscall; the rest are the frames further
-        // out, but only where the chain CROSSES INTO ANOTHER MODULE.
-        //
-        // The immediate caller of a memory syscall is almost always an unnamed
-        // internal helper of the DLL the stub lives in, which tells you nothing
-        // about who wanted the memory. Keeping every frame instead would not
-        // help: a heap allocation can be twenty frames deep in ntdll before it
-        // reaches the caller that asked for memory, so a fixed number of
-        // innermost frames never leaves ntdll at all. One frame per module
-        // boundary is short and always reaches the interesting end.
+        // instruction that called the syscall; after that, one frame per module
+        // boundary the chain crosses. A heap allocation can be twenty frames
+        // deep inside ntdll, so a fixed count of innermost frames would never
+        // reach the code that wanted the memory.
         static const size_t MAX_CHAIN = 8;
         ea_t     chain[MAX_CHAIN] = { 0 };
         uint8_t  chain_n = 0;
@@ -92,7 +77,6 @@ namespace idattd
         bool     in_module = false;
     };
 
-    //-----------------------------------------------------------------------
     // One region as it stands at some position.
     struct Region
     {
@@ -103,7 +87,6 @@ namespace idattd
         ea_t     end() const { return (ea_t)(base + size); }
     };
 
-    //-----------------------------------------------------------------------
     class MemoryMap
     {
     public:
@@ -117,10 +100,8 @@ namespace idattd
         // non-overlapping region list. An invalid position folds the whole
         // timeline.
         //
-        // Called on every debugger stop, so it does not refold from the start
-        // each time: the folded state is kept, and moving FORWARD only applies
-        // the changes actually crossed. Moving backward has to rebuild, which is
-        // the same asymmetry the trace itself has.
+        // Called on every stop, so the folded state is kept: moving forward
+        // applies only the changes crossed. Moving backward rebuilds.
         void state_at(const TTD::Replay::Position &pos, std::vector<Region> &out) const;
 
         // ---- persistence in the database ----------------------------------
@@ -147,17 +128,20 @@ namespace idattd
         mutable bool                   m_liveValid = false;
     };
 
-    //-----------------------------------------------------------------------
     // Replay the whole recording and record every allocation, protection change
     // and free it made.
     //
     // Watches ntdll's NtAllocateVirtualMemory, NtProtectVirtualMemory,
     // NtFreeVirtualMemory, NtMapViewOfSection and NtUnmapViewOfSection -- in
-    // EVERY ntdll the trace loaded, because a WoW64 recording has two with
+    // every ntdll the trace loaded, because a WoW64 recording has two with
     // different calling conventions.
     //
     // Shows a cancellable progress box; safe to call from a UI action. Returns
     // false when there is no trace or nothing could be watched.
+    //
+    // Modifies the database: applies export names, and loads the PDB, for every
+    // module the recorded call chains pass through, so the listing can name the
+    // callers.
     bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled);
 
     // Identity of the loaded trace, for the persistence check above.

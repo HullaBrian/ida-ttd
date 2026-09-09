@@ -2,7 +2,6 @@
 
 namespace idattd
 {
-    //-----------------------------------------------------------------------
     // Register class names. The order/index is irrelevant; the mask in each
     // register_info_t::register_class_mask is what associates a register to a
     // class. The default_regclasses mask below selects which classes IDA prints
@@ -14,8 +13,7 @@ namespace idattd
         nullptr
     };
 
-    //-----------------------------------------------------------------------
-    // x86 (32-bit) register table. The order MUST match fill_regvals().
+    // x86 (32-bit) register table. The order must match fill_regvals().
     static register_info_t g_x86_regs[] =
     {
         { "EAX", REGISTER_ADDRESS,                REGCLASS_GENERAL, dt_dword, nullptr, 0 },
@@ -36,8 +34,7 @@ namespace idattd
         { "GS",  0,                               REGCLASS_SEGMENT, dt_word,  nullptr, 0 },
     };
 
-    //-----------------------------------------------------------------------
-    // x64 register table. The order MUST match fill_regvals().
+    // x64 register table. The order must match fill_regvals().
     static register_info_t g_x64_regs[] =
     {
         { "RAX", REGISTER_ADDRESS,                REGCLASS_GENERAL, dt_qword, nullptr, 0 },
@@ -66,25 +63,23 @@ namespace idattd
         { "GS",  0,                               REGCLASS_SEGMENT, dt_word,  nullptr, 0 },
     };
 
-    //-----------------------------------------------------------------------
     int register_count(bool is64)
     {
         return is64 ? qnumber(g_x64_regs) : qnumber(g_x86_regs);
     }
 
-    //-----------------------------------------------------------------------
     void configure_debugger(debugger_t &dbg, bool is64)
     {
         dbg.version   = IDD_INTERFACE_VERSION;
         dbg.name      = "ttd";
-        // NB: do NOT reuse DEBUGGER_ID_TRACE_REPLAYER (12) -- IDA's built-in
+        // NB: do not reuse DEBUGGER_ID_TRACE_REPLAYER (12) -- IDA's built-in
         // replay_user.dll already claims it and IDA rejects duplicate IDs.
         // Use a private value outside the known DEBUGGER_ID_ range.
         dbg.id        = 0x100;
         dbg.processor = "metapc";
 
         // FAKE_MEMORY would make IDA read from the idb only; we provide real
-        // (recorded) memory, so we do NOT set it. SAFE: we only replay, never
+        // (recorded) memory, so we do not set it. SAFE: we only replay, never
         // run code. TTD: enables backwards execution. We deliberately do not
         // set DEBTHREAD so that all callbacks run on the main thread, keeping
         // UI/chooser calls safe.
@@ -110,7 +105,7 @@ namespace idattd
         // buttons (step into/over/out, run, and their backward variants) using
         // IDA's own icons -- no custom toolbar needed.
         //
-        // BACKINTO is the ONLY backward resume mode the SDK defines (idd.hpp:
+        // BACKINTO is the only backward resume mode the SDK defines (idd.hpp:
         // RESMOD_BACKINTO is the last entry before RESMOD_MAX). Backward step-over
         // and step-out are not separate modes: IDA signals the direction through
         // ev_set_backwards and then sends the ordinary RESMOD_OVER / RESMOD_OUT,
@@ -121,7 +116,6 @@ namespace idattd
                          | DBG_RESMOD_STEP_BACKINTO;
     }
 
-    //-----------------------------------------------------------------------
     void fill_regvals(const CROSS_PLATFORM_CONTEXT &ctx, bool is64, regval_t *values)
     {
         if ( is64 )

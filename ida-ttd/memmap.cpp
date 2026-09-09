@@ -12,7 +12,7 @@ namespace idattd
     // Page protections
     //=======================================================================
     // PAGE_* values, spelled out rather than taken from <windows.h>, so that what
-    // is decoded here is the RECORDING's ABI and not this build's headers.
+    // is decoded here is the recording's ABI and not this build's headers.
     enum : uint32_t
     {
         P_NOACCESS           = 0x001,
@@ -29,7 +29,6 @@ namespace idattd
         P_ACCESS_MASK        = 0x0FF,
     };
 
-    //-----------------------------------------------------------------------
     uchar protection_perm(uint32_t protect)
     {
         uint32_t a = protect & P_ACCESS_MASK;
@@ -46,7 +45,6 @@ namespace idattd
         return p;
     }
 
-    //-----------------------------------------------------------------------
     qstring protection_text(uint32_t protect)
     {
         uchar p = protection_perm(protect);
@@ -61,7 +59,6 @@ namespace idattd
         return s;
     }
 
-    //-----------------------------------------------------------------------
     const char *change_name(uint8_t kind)
     {
         switch ( kind )
@@ -122,10 +119,9 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     static void apply_change(LiveMap &live, const RegionChange &c)
     {
-        // A call that targeted another process changed THAT process's map, not
+        // A call that targeted another process changed that process's map, not
         // this one. It stays in the listing, where seeing it is the point.
         if ( c.other_process || c.base == BADADDR )
             return;
@@ -228,14 +224,13 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void MemoryMap::state_at(const Position &pos, std::vector<Region> &out) const
     {
         out.clear();
 
         // Replaying forward from where the cache already stands is the common
         // case by far -- stepping crosses a handful of changes, if any. Only a
-        // jump BACKWARD has to start over, because a change cannot be undone
+        // jump backward has to start over, because a change cannot be undone
         // without knowing what it displaced.
         // An invalid position on either side means "the whole timeline", which
         // sorts after every real one -- so it can be reached from anywhere, and
@@ -263,7 +258,6 @@ namespace idattd
             out.push_back(kv.second);
     }
 
-    //-----------------------------------------------------------------------
     void MemoryMap::set_changes(std::vector<RegionChange> v)
     {
         m_changes = std::move(v);
@@ -275,7 +269,6 @@ namespace idattd
                          { return a.pos < b.pos; });
     }
 
-    //-----------------------------------------------------------------------
     void MemoryMap::clear()
     {
         m_changes.clear();
@@ -291,7 +284,7 @@ namespace idattd
     static const uchar MM_TAG     = 'M';
     static const uint32_t MM_MAGIC   = 0x50414D54;   // 'TMAP'
     // 6: the chain keeps module boundaries rather than the innermost frames.
-    // 5 added the called export. 4 added the call chain, 3 the call position. 2 made RegionChange::pc the CALLER and
+    // 5 added the called export. 4 added the call chain, 3 the call position. 2 made RegionChange::pc the caller and
     // established the stack-argument offset from the stack rather than assuming
     // it, so a map written by an older build can hold a wrong Protect value.
     // Rebuild rather than show it.
@@ -328,7 +321,6 @@ namespace idattd
         };
     }
 
-    //-----------------------------------------------------------------------
     void MemoryMap::save(uint64_t fingerprint) const
     {
         netnode nn(MM_NODE, 0, true);
@@ -343,6 +335,12 @@ namespace idattd
         w.u32(MM_VERSION);
         w.u64(fingerprint);
         size_t n = m_changes.size() < MM_MAX_ITEMS ? m_changes.size() : MM_MAX_ITEMS;
+        if ( n < m_changes.size() )
+        {
+            msg("[ida-ttd] memory map: storing %d of %d change(s); the rest will "
+                "not survive reopening the database.\n",
+                (int)n, (int)m_changes.size());
+        }
         w.u64((uint64_t)n);
         for ( size_t i = 0; i < n; i++ )
         {
@@ -368,7 +366,6 @@ namespace idattd
         nn.setblob(w.b.data(), w.b.size(), 0, MM_TAG);
     }
 
-    //-----------------------------------------------------------------------
     bool MemoryMap::load(uint64_t fingerprint)
     {
         clear();
@@ -386,7 +383,7 @@ namespace idattd
         r.n = sz;
 
         bool ok = r.u32() == MM_MAGIC && r.u32() == MM_VERSION;
-        // A map built from a DIFFERENT recording would show addresses and
+        // A map built from a different recording would show addresses and
         // positions that mean nothing here. Refuse it rather than mislead.
         if ( ok && r.u64() != fingerprint )
             ok = false;
@@ -435,14 +432,12 @@ namespace idattd
 
         if ( !ok )
             return false;
-        m_changes = std::move(v);
-        m_live.clear();
-        m_liveIdx   = 0;
-        m_liveValid = false;
+        // Through set_changes so the sort and the cache reset cannot diverge:
+        // state_at() walks m_changes assuming it is ordered by position.
+        set_changes(std::move(v));
         return true;
     }
 
-    //-----------------------------------------------------------------------
     void MemoryMap::erase()
     {
         netnode nn(MM_NODE);
@@ -450,7 +445,6 @@ namespace idattd
             nn.delblob(0, MM_TAG);
     }
 
-    //-----------------------------------------------------------------------
     bool MemoryMap::stored()
     {
         netnode nn(MM_NODE);
@@ -498,9 +492,9 @@ namespace idattd
         // NtUnmapViewOfSection   (HANDLE Process, PVOID Base)
         //
         // 'deferred' marks the two whose out-params the kernel fills in. A free's
-        // are written by the CALLER before the call, so they are in the recording
+        // are written by the caller before the call, so they are in the recording
         // and need none of the recovery machinery below. Note that Map's process
-        // handle is its SECOND argument, not its first.
+        // handle is its second argument, not its first.
         static const WatchDesc kWatches[] =
         {
             { "NtAllocateVirtualMemory", RC_ALLOC,      6, 0, 1,  3,  5, true,  true  },
@@ -513,7 +507,7 @@ namespace idattd
         static const uint64_t PAGE = 0x1000;
 
         // These syscalls round the caller's request to pages before writing it
-        // back, so a value that is not page-granular PROVABLY did not come from
+        // back, so a value that is not page-granular provably did not come from
         // the kernel. That is the acceptance test -- not "is it non-zero".
         //
         // It matters because an aggressive memory query cannot tell the kernel's
@@ -529,7 +523,7 @@ namespace idattd
         }
 
         // A pseudo-handle of -1 is NtCurrentProcess. Anything else names another
-        // process, and the call changed THAT map rather than ours.
+        // process, and the call changed that map rather than ours.
         static bool is_current_process(uint64_t h, bool is64)
         {
             uint64_t self = is64 ? 0xFFFFFFFFFFFFFFFFull : 0xFFFFFFFFull;
@@ -620,7 +614,6 @@ namespace idattd
         static const size_t kMaxDepth = 256;
     }
 
-    //-----------------------------------------------------------------------
     template <typename V>
     static bool read_ptr(V const *v, uint64_t addr, uint32_t width, uint64_t *out) noexcept
     {
@@ -633,7 +626,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     // Read a watched call's arguments from inside the call/return callback.
     //
     // The stack pointer comes from the engine rather than from RSP/ESP in the
@@ -692,7 +684,6 @@ namespace idattd
             out[4 + i] = slots[i];
     }
 
-    //-----------------------------------------------------------------------
     static bool read_ptr_policy(ICursorView const *c, uint64_t addr, uint32_t width,
                                 QueryMemoryPolicy pol, uint64_t *out)
     {
@@ -705,7 +696,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     // Last resort for one out-param: replay this thread forward a bounded number
     // of steps with a Read watchpoint on the slot, and take the value the guest
     // reads back. That read is the only recorded event the kernel's write ever
@@ -756,7 +746,6 @@ namespace idattd
         return got;
     }
 
-    //-----------------------------------------------------------------------
     bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled)
     {
         if ( out != nullptr )
@@ -845,7 +834,7 @@ namespace idattd
 
         // Every call in the recording, per thread, so a watched call can be
         // given the chain that led to it. The map lookup is cached because this
-        // runs on EVERY call in the trace and threads execute in bursts.
+        // runs on every call in the trace and threads execute in bursts.
         std::map<uint32_t, std::vector<ShadowFrame>> shadow;
         uint32_t                    lastTid   = 0xFFFFFFFF;
         std::vector<ShadowFrame>   *lastStack = nullptr;
@@ -877,7 +866,7 @@ namespace idattd
             {
                 // A wrapper reuses one stack local for every call it makes, so an
                 // older request watching this slot would happily pick up a newer
-                // call's value. Retire it: a missing region is a gap, a WRONG one
+                // call's value. Retire it: a missing region is a gap, a wrong one
                 // displaces a real region silently.
                 auto it = st.byThread.find(tid);
                 if ( it != st.byThread.end() )
@@ -945,7 +934,7 @@ namespace idattd
                     ea_t tgt = (ea_t)(uint64_t)instr;
 
                     // Whichever instruction the position sits on, this lands in
-                    // the CALLER: the program counter when it is not the callee
+                    // the caller: the program counter when it is not the callee
                     // itself, otherwise the address the call returns to, which is
                     // the instruction after the call site.
                     ea_t pc   = (ea_t)(uint64_t)t->GetProgramCounter();
@@ -1103,7 +1092,7 @@ namespace idattd
                 else if ( read_ptr(t, rec.pSize, width, &rec.size) )
                     rec.sizeOk = !call.d->deferred || page_granular(rec.size);
 
-                // A free's out-params were written by the CALLER before the call,
+                // A free's out-params were written by the caller before the call,
                 // so what we just read is in the recording and is the answer.
                 // Only the kernel-written ones need chasing.
                 st.recs.push_back(rec);
@@ -1153,7 +1142,7 @@ namespace idattd
             ICursorView *raw = sweep.get();
             std::thread worker([raw, &done]()
             {
-                // 'done' MUST be set on every exit path: the main thread spins on
+                // 'done' must be set on every exit path: the main thread spins on
                 // it and would otherwise wait forever behind a wait box.
                 try { raw->ReplayForward(); } catch ( ... ) {}
                 done.store(true, std::memory_order_release);
@@ -1185,7 +1174,6 @@ namespace idattd
             hide_wait_box();
         }
 
-        // Detach both callbacks before the lambdas they point at go out of scope.
         sweep->SetCallReturnCallback(nullptr, 0);
         sweep->SetReplayProgressCallback(nullptr, 0);
         sweep.reset();
@@ -1369,7 +1357,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     ea_t chain_origin(TraceManager *mgr, const RegionChange &c)
     {
         if ( mgr == nullptr || c.chain_n == 0 )
@@ -1406,7 +1393,6 @@ namespace idattd
         return c.chain[c.chain_n - 1];
     }
 
-    //-----------------------------------------------------------------------
     uint64_t trace_fingerprint(TraceManager *mgr)
     {
         return mgr != nullptr ? mgr->trace_fingerprint() : 0;

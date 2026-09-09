@@ -16,7 +16,7 @@ namespace idattd
     {
         qstring name;
         get_func_name(&name, ea);
-        // The call target often has no DEFINED function (it lives in a module we
+        // The call target often has no defined function (it lives in a module we
         // haven't laid out), but it usually has a name (an export or a PDB symbol).
         // Fall back to that, then to the bare address, so the Function column is
         // never blank.
@@ -36,12 +36,6 @@ namespace idattd
     static const int   g_pos_widths[] = { 16, 48 };
     static const char *g_pos_header[] = { "Position", "Event" };
 
-    // NB: these choosers are heap-allocated and handed to choose(), so they must
-    // NOT set CH_KEEP. CH_KEEP means "the chooser's lifetime is NOT tied to the
-    // widget" -- IDA then never deletes it (kernwin.hpp: the instance "will be
-    // delete()d unless CH_KEEP is specified"). It is for static/global or
-    // stack-allocated choosers. Setting it here leaked the object, and with it the
-    // whole frozen event snapshot, every time one of these windows was opened.
     PositionChooser::PositionChooser(TraceManager *mgr)
         : chooser_t(0, qnumber(g_pos_widths), g_pos_widths, g_pos_header, "TTD Timeline"),
           m_mgr(mgr)
@@ -66,11 +60,6 @@ namespace idattd
         cols->at(1) = e.name.c_str();
     }
 
-    // Double-click / Enter: queue navigation to the selected position. We must
-    // NOT resume the debugger synchronously from inside a chooser callback, and
-    // we must never do it from get_ea() (IDA calls get_ea while rendering rows,
-    // which would resume the debugger once per visible row). Hence: defer with
-    // request_continue_process() + run_requests().
     chooser_t::cbret_t idaapi PositionChooser::enter(size_t n)
     {
         if ( m_mgr != nullptr && m_mgr->is_active() && n < m_positions.size() )
@@ -332,7 +321,6 @@ namespace idattd
             warning("The TTD timeline is only available while replaying a trace.");
             return 1;
         }
-        // No CH_KEEP: IDA deletes the chooser when its widget closes.
         PositionChooser *ch = new PositionChooser(mgr);
         ch->choose();
         return 1;
@@ -361,7 +349,7 @@ namespace idattd
                 memcpy(p, text, n);
                 GlobalUnlock(h);
                 // The clipboard only takes ownership of the block when
-                // SetClipboardData SUCCEEDS; on failure it is still ours to free.
+                // SetClipboardData succeeds; on failure it is still ours to free.
                 if ( SetClipboardData(CF_TEXT, h) == nullptr )
                     GlobalFree(h);
             }
@@ -487,7 +475,6 @@ namespace idattd
         return 1;
     }
 
-    //-----------------------------------------------------------------------
     int idaapi AttachTraceHandler::activate(action_activation_ctx_t *)
     {
         if ( p != nullptr )
@@ -504,7 +491,6 @@ namespace idattd
         return AST_ENABLE_ALWAYS;
     }
 
-    //-----------------------------------------------------------------------
     int idaapi RunTraceHandler::activate(action_activation_ctx_t *)
     {
         if ( mgr == nullptr || !mgr->is_active() )
@@ -611,8 +597,6 @@ namespace idattd
         return b != nullptr ? b->ea : BADADDR;
     }
 
-    // Deferred resume only, for the same reason as the timeline: we must not
-    // drive the debugger synchronously from inside a chooser callback.
     chooser_t::cbret_t idaapi BookmarkChooser::enter(size_t n)
     {
         const Bookmark *b = m_store != nullptr ? m_store->at(n) : nullptr;
@@ -671,7 +655,6 @@ namespace idattd
 
     int idaapi OpenBookmarksHandler::activate(action_activation_ctx_t *)
     {
-        // No CH_KEEP: IDA deletes the chooser when its widget closes.
         BookmarkChooser *ch = new BookmarkChooser(mgr, store);
         ch->choose();
         return 1;
@@ -863,8 +846,6 @@ namespace idattd
         return n < m_hits.size() ? m_hits[n].pc : BADADDR;
     }
 
-    // Deferred resume only, as everywhere else: never drive the debugger
-    // synchronously from inside a chooser callback.
     chooser_t::cbret_t idaapi MemAccessChooser::enter(size_t n)
     {
         if ( m_mgr != nullptr && m_mgr->is_active() && n < m_hits.size() )
@@ -933,7 +914,7 @@ namespace idattd
         }
 
         // 2. The exception table of the address's module knows exactly where its
-        //    function starts, symbols or not. Anything named BEFORE that start
+        //    function starts, symbols or not. Anything named before that start
         //    belongs to a different function and must not be borrowed -- that is
         //    the whole bug: an allocation inside an unnamed internal helper was
         //    being reported against whichever export happened to precede it.
@@ -1073,8 +1054,6 @@ namespace idattd
         return origin != BADADDR ? origin : m_rows[n].pc;
     }
 
-    // Deferred resume only, as everywhere else: never drive the debugger
-    // synchronously from inside a chooser callback.
     chooser_t::cbret_t idaapi MemoryMapChooser::enter(size_t n)
     {
         if ( m_mgr != nullptr && m_mgr->is_active() && n < m_rows.size() )
@@ -1148,7 +1127,6 @@ namespace idattd
         return 1;
     }
 
-    //-----------------------------------------------------------------------
     int idaapi ClearMemoryMapHandler::activate(action_activation_ctx_t *)
     {
         MemoryMap::erase();
@@ -1214,7 +1192,6 @@ namespace idattd
             return 1;
         }
 
-        // No CH_KEEP: IDA deletes the chooser when its widget closes.
         MemAccessChooser *ch = new MemAccessChooser(mgr, addr, addr + (ea_t)len,
                                                     std::move(hits));
         ch->choose();

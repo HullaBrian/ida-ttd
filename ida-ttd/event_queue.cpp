@@ -2,21 +2,18 @@
 
 namespace idattd
 {
-    //-----------------------------------------------------------------------
     void EventQueue::push(const debug_event_t &ev)
     {
         std::lock_guard<std::mutex> guard(m_mutex);
         m_events.push_back(ev);
     }
 
-    //-----------------------------------------------------------------------
     bool EventQueue::empty()
     {
         std::lock_guard<std::mutex> guard(m_mutex);
         return m_events.empty();
     }
 
-    //-----------------------------------------------------------------------
     bool EventQueue::try_pop(debug_event_t *out)
     {
         std::lock_guard<std::mutex> guard(m_mutex);
@@ -28,14 +25,12 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::clear()
     {
         std::lock_guard<std::mutex> guard(m_mutex);
         m_events.clear();
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_process_start(pid_t pid, thid_t tid, const std::string &module,
                                        ea_t base, ea_t rebase_to, asize_t size)
     {
@@ -52,7 +47,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_process_exit(pid_t pid)
     {
         debug_event_t ev;
@@ -63,7 +57,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_thread_start(pid_t pid, thid_t tid)
     {
         debug_event_t ev;
@@ -75,7 +68,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_thread_exit(pid_t pid, thid_t tid)
     {
         debug_event_t ev;
@@ -87,7 +79,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_lib_load(pid_t pid, thid_t tid, const std::string &module,
                                   ea_t base, ea_t rebase_to, asize_t size)
     {
@@ -104,7 +95,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_lib_unload(pid_t pid, thid_t tid, const std::string &module, ea_t base)
     {
         debug_event_t ev;
@@ -116,7 +106,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_step(pid_t pid, thid_t tid, ea_t ea)
     {
         debug_event_t ev;
@@ -128,7 +117,6 @@ namespace idattd
         push(ev);
     }
 
-    //-----------------------------------------------------------------------
     void EventQueue::add_breakpoint(pid_t pid, thid_t tid, ea_t ea)
     {
         debug_event_t ev;

@@ -7,7 +7,7 @@
 // section bytes, at the position where the loader mapped it -- and laid down as
 // ordinary IDA segments at the address it really occupied.
 //
-// This is a SEPARATE binary from the plugin: IDA finds loaders by looking for an
+// This is a separate binary from the plugin: IDA finds loaders by looking for an
 // exported LDSC in DLLs under loaders/, and plugins by looking for PLUGIN under
 // plugins/. One file cannot sit in both places without being loaded twice, with
 // two copies of every global fighting over the debugger pointer.
@@ -35,7 +35,6 @@ using namespace TTD;
 using namespace TTD::Replay;
 using namespace idattd;
 
-//---------------------------------------------------------------------------
 // The path accept_file was shown, kept as a fallback for load_file.
 //
 // accept_file is given the file name; load_file is not. The database's input
@@ -44,7 +43,6 @@ using namespace idattd;
 // load_file for the one the user picked, so the last value stashed here is ours.
 static qstring g_accepted_path;
 
-//---------------------------------------------------------------------------
 static int idaapi accept_file(
         qstring *fileformatname,
         qstring *processor,
@@ -72,7 +70,6 @@ static int idaapi accept_file(
     return 1 | ACCEPT_FIRST;
 }
 
-//---------------------------------------------------------------------------
 // Where the .run actually is. INF_INPUT_FILE_PATH is set before load_file runs;
 // the stashed name covers the case where it is not (an archive member name, for
 // instance, which names a file that does not exist).
@@ -84,7 +81,6 @@ static qstring trace_file_path()
     return g_accepted_path;
 }
 
-//---------------------------------------------------------------------------
 // Permissions and class for one PE section, from its characteristics.
 static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const char **sclass)
 {
@@ -108,7 +104,6 @@ static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const c
         *sclass = CLASS_DATA;
 }
 
-//---------------------------------------------------------------------------
 // Copy [lo, hi) out of the recording into the database.
 //
 // Two things make this more than a loop around QueryMemoryBuffer.
@@ -118,15 +113,11 @@ static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const c
 // -- it does not skip holes -- so a hole is stepped over a page at a time rather
 // than ending the copy.
 //
-// More importantly, a non-zero result does NOT mean the bytes are real. For a
-// page the engine knows is mapped but has no recorded value for, every
-// aggressive policy returns the full length filled with ZEROS rather than an
-// error or a short read. Writing those into the database produces exactly what
-// the first version of this produced: segments at the right addresses, full of
-// nothing, and an entry point that disassembles to nothing. ThreadLocal is the
-// only policy that is honest about it -- it returns nothing at all for memory
-// that was not genuinely recorded -- so an all-zero page is confirmed against it
-// before being kept.
+// A non-zero result also does not mean the bytes are real. For a page the engine
+// knows is mapped but has no recorded value for, every aggressive policy returns
+// the requested length filled with zeros rather than an error or a short read.
+// ThreadLocal returns nothing at all for memory that was not genuinely recorded,
+// so an all-zero page is confirmed against it before being kept.
 static size_t fill_from_trace(ICursorView *cur, ea_t lo, ea_t hi)
 {
     static const size_t PAGE = 0x1000;
@@ -170,7 +161,6 @@ static size_t fill_from_trace(ICursorView *cur, ea_t lo, ea_t hi)
     return total;
 }
 
-//---------------------------------------------------------------------------
 // Does the recording actually have this address's bytes at the cursor's
 // position? Used to choose where to read the image from, so the same
 // zero-fill-looks-like-success trap that fill_from_trace guards against does not
@@ -187,8 +177,7 @@ static bool image_readable_here(ICursorView *cur, ea_t ea)
     return false;
 }
 
-//---------------------------------------------------------------------------
-// The module the recording is OF.
+// The module the recording is of.
 //
 // The plugin's convention is element 0 of the engine's module list, but the SDK
 // documents no ordering and the whole database hangs off this choice, so prefer
@@ -220,7 +209,6 @@ static const Module *pick_main_module(IReplayEngine *engine, Position *load_pos)
     return engine->GetModuleCount() > 0 ? &engine->GetModuleList()[0] : nullptr;
 }
 
-//---------------------------------------------------------------------------
 // loader_failure() does not return -- it longjmps -- so no destructor between
 // here and IDA's handler runs. That matters for the replay engine in
 // particular: leaking it keeps the .run file open for the rest of the session,
@@ -245,7 +233,6 @@ AS_PRINTF(1, 2) static void fail(const char *format, ...)
     loader_failure("%s", m.c_str());
 }
 
-//---------------------------------------------------------------------------
 void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatname)
 {
     // The processor module owns the segment defaults, so it has to be chosen
@@ -322,8 +309,8 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     GuestPeInfo pe;
     bool havePe = read_guest_pe_info(cur.get(), mainBase, &pe);
 
-    // Bitness comes from the optional header magic. It must NOT come from the
-    // engine's SystemInfo: that describes the RECORDING MACHINE, so a 32-bit
+    // Bitness comes from the optional header magic. It must not come from the
+    // engine's SystemInfo: that describes the recording machine, so a 32-bit
     // program recorded on an x64 box would report itself as 64-bit and every
     // register read afterwards would use the wrong register table.
     bool is64 = havePe ? pe.is64 : ((uint64_t)main->Address > 0xFFFFFFFFull);
@@ -336,7 +323,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     // Where to read the image from.
     //
     // The natural answer is the position at which the loader mapped it, and that
-    // is the right static baseline. But TTD records memory as it is ACCESSED,
+    // is the right static baseline. But TTD records memory as it is accessed,
     // and at the instant a module appears nothing in it has been touched, so the
     // engine may have nothing to attribute there. When the entry point reads
     // back as nothing, take the end of the recording instead, by which point
@@ -516,7 +503,6 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     g_engine = nullptr;
 }
 
-//---------------------------------------------------------------------------
 // Nothing in this database was relocated: the bytes came from recorded memory
 // at the address they really occupied, so there are no fixups to patch when a
 // segment moves. Saying so explicitly beats a null, which IDA has to treat as
@@ -526,7 +512,6 @@ static int idaapi move_segm(ea_t, ea_t, asize_t, const char *)
     return 1;
 }
 
-//---------------------------------------------------------------------------
 loader_t LDSC =
 {
     IDP_INTERFACE_VERSION,

@@ -18,7 +18,6 @@ namespace idattd
     static const size_t kMaxTargetsPerSite = 16;
     static const size_t kMaxSites          = 20000;
 
-    //-----------------------------------------------------------------------
     // Is this a call whose target is not written in the instruction? Direct
     // calls already have a cross-reference and need nothing from a recording.
     static bool is_indirect_call(const insn_t &insn)
@@ -29,7 +28,6 @@ namespace idattd
         return op.type != o_near && op.type != o_far;
     }
 
-    //-----------------------------------------------------------------------
     // "kernel32!VirtualAllocStub (0x7FF610DB1389)". The address is always there:
     // a name can be missing, stale or shared, and the address is what you paste
     // into a goto box. The module prefix is what tells two same-named exports
@@ -57,7 +55,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     static void remember(ea_t site, const std::vector<ea_t> &targets)
     {
         netnode nn(CS_NODE, 0, true);
@@ -71,7 +68,6 @@ namespace idattd
         nn.setblob(raw.data(), raw.size() * sizeof(uint64_t), (nodeidx_t)site, CS_TGTS_TAG);
     }
 
-    //-----------------------------------------------------------------------
     bool annotate_indirect_calls(TraceManager *mgr,
                                  const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                  CallSiteResult *out)
@@ -127,8 +123,8 @@ namespace idattd
         {
             if ( (uint64_t)fall_through == 0 )
                 return;                         // a return, not a call
-            // The callback fires ON the call instruction, so the thread's program
-            // counter is the call SITE and the first argument is where it went.
+            // The callback fires on the call instruction, so the thread's program
+            // counter is the call site and the first argument is where it went.
             ea_t site = (ea_t)(uint64_t)t->GetProgramCounter();
             if ( !in_scope(site) )
                 return;
@@ -185,14 +181,14 @@ namespace idattd
             ICursorView *raw = cur.get();
             std::thread worker([raw, &done]()
             {
-                // 'done' MUST be set on every exit path: the main thread spins on
+                // 'done' must be set on every exit path: the main thread spins on
                 // it and would otherwise wait forever behind a wait box.
                 try { raw->ReplayForward(); } catch ( ... ) {}
                 done.store(true, std::memory_order_release);
             });
 
             show_wait_box("Watching where indirect calls go (Cancel to stop)...");
-            uint32_t shown = 101;              // force the first repaint
+            uint32_t shown = 101;
             while ( !done.load(std::memory_order_acquire) )
             {
                 if ( !stopped && user_cancelled() )
@@ -227,9 +223,9 @@ namespace idattd
         {
             ea_t site = kv.first;
             insn_t insn;
-            // Only annotate what is actually an indirect call HERE. A direct call
-            // already says where it goes, and an address that is no longer code
-            // is not a call site any more.
+            // Only annotate an address that is still an indirect call: a direct
+            // call already names its target, and an address IDA no longer has
+            // code at is not a call site.
             if ( decode_insn(&insn, site) <= 0 || !is_indirect_call(insn) )
                 continue;
 
@@ -237,7 +233,7 @@ namespace idattd
             if ( targets.empty() )
                 continue;
 
-            // decode_insn() will happily decode bytes that are not a DEFINED
+            // decode_insn() will happily decode bytes that are not a defined
             // instruction, and a cross-reference from an address with no item at
             // it is rejected outright ("bad call add_cref: no defined item at
             // 'from'"). Define the instruction first, and if the address still
@@ -285,7 +281,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     size_t clear_indirect_call_annotations()
     {
         netnode nn(CS_NODE);
@@ -299,7 +294,7 @@ namespace idattd
             nodeidx_t next = nn.altnext(i, CS_SITE_TAG);
             ea_t site = (ea_t)i;
 
-            // Only the cross-references WE added come off; anything else at this
+            // Only the cross-references we added come off; anything else at this
             // site was not ours to remove.
             bytevec_t blob;
             if ( nn.getblob(&blob, i, CS_TGTS_TAG) > 0 )

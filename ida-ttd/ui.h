@@ -9,6 +9,16 @@
 
 namespace idattd
 {
+    // Two rules hold for every chooser below.
+    //
+    // None sets CH_KEEP. They are heap-allocated and handed to choose(), and
+    // CH_KEEP means the instance is not tied to its widget, so IDA would never
+    // delete it. It is for static or stack-allocated choosers.
+    //
+    // enter() queues navigation with request_continue_process() rather than
+    // resuming the debugger directly, and get_ea() never navigates at all: IDA
+    // calls get_ea while rendering rows, which would resume once per visible row.
+
     // A non-modal "Timeline" chooser listing notable trace positions
     // (thread create/exit, module load/unload, exceptions). Double-clicking a
     // row moves the cursor to that position.
@@ -49,7 +59,7 @@ namespace idattd
     // column per parameter (named after it) when a single function is traced,
     // otherwise a single "Arguments" column, then Return. Also owns the
     // (unique) chooser title. Must be a base of TraceEventsChooser and listed
-    // BEFORE chooser_t, so its arrays/title stay alive for the chooser's
+    // before chooser_t, so its arrays/title stay alive for the chooser's
     // lifetime (chooser_base_t keeps the pointers, it does not copy them).
     struct EventColumns
     {
@@ -155,7 +165,7 @@ namespace idattd
     // Most stepping is provided by IDA's native debugger actions (attached to
     // our toolbar). IDA has no native "continue backwards", so we add one.
     // All TTD actions are only meaningful while a trace is being replayed, so the
-    // plugin REGISTERS them when a trace is loaded and unregisters them when it is
+    // plugin registers them when a trace is loaded and unregisters them when it is
     // unloaded (Plugin::show_actions/hide_actions) -- outside a session neither the
     // shortcuts nor the toolbar buttons exist at all. While they do exist a trace
     // is by definition active, hence AST_ENABLE_ALWAYS; the handlers still check
@@ -324,7 +334,7 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
-    // Find every read, write or execute of an address over the whole trace.
+    // Build the memory-region timeline and open it as a listing.
     struct MemoryMapHandler : public action_handler_t
     {
         TraceManager *mgr = nullptr;
@@ -341,6 +351,7 @@ namespace idattd
         { return AST_ENABLE_ALWAYS; }
     };
 
+    // Find every read, write or execute of an address over the whole trace.
     struct MemSearchHandler : public action_handler_t
     {
         TraceManager *mgr = nullptr;
@@ -365,7 +376,6 @@ namespace idattd
         { return AST_ENABLE_ALWAYS; }
     };
 
-    // Action identifiers (used for registration + menu/popup attach).
     // Start the replay for a database that was created from a .run file. This
     // is the one TTD action that exists while no trace is loaded, so it lives on
     // the Debugger menu rather than the TTD menu (which the plugin only builds
@@ -377,6 +387,7 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
+    // Action identifiers, used for registration and for menu and popup attach.
     namespace actions
     {
         constexpr const char *ADD_BOOKMARK  = "idattd:add_bookmark";

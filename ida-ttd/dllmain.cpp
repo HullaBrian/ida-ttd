@@ -3,7 +3,7 @@
 
 // Our own module handle, kept so the plugin can work out the file name IDA
 // knows it by. That is not a cosmetic question: load_debugger() selects a
-// debugger by the FILE NAME of the plugin that provides it, not by
+// debugger by the file name of the plugin that provides it, not by
 // debugger_t::name, so switching to ourselves programmatically needs it. The
 // SDK's own win32 debugger shows this -- it calls load_debugger("win32_stub")
 // while its debugger_t::name is "win32".

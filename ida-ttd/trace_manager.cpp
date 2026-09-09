@@ -33,7 +33,7 @@ namespace idattd
     // Startup failure reporting
     //=======================================================================
     // Report a start_process failure through errbuf (IDA shows that to the user)
-    // AND the output window, then hand back the drc code to return. Returning a
+    // and the output window, then hand back the drc code to return. Returning a
     // bare DRC_* with an untouched errbuf leaves IDA to print a generic "cannot
     // start process" while the actual reason is buried in the log.
     AS_PRINTF(3, 4) static ssize_t start_failed(qstring *errbuf, ssize_t drc,
@@ -58,20 +58,17 @@ namespace idattd
         m_nextPosition = Position::Min;
     }
 
-    //-----------------------------------------------------------------------
     thid_t TraceManager::current_tid() const
     {
         const ThreadInfo &ti = m_cursor->GetThreadInfo();
         return (thid_t)(uint32_t)ti.Id;
     }
 
-    //-----------------------------------------------------------------------
     ea_t TraceManager::program_counter() const
     {
         return (ea_t)(uint64_t)m_cursor->GetProgramCounter();
     }
 
-    //-----------------------------------------------------------------------
     std::map<uint32_t, thid_t> TraceManager::snapshot_threads() const
     {
         std::map<uint32_t, thid_t> result;
@@ -82,7 +79,6 @@ namespace idattd
         return result;
     }
 
-    //-----------------------------------------------------------------------
     std::set<const Module *> TraceManager::snapshot_modules() const
     {
         std::set<const Module *> result;
@@ -93,7 +89,6 @@ namespace idattd
         return result;
     }
 
-    //-----------------------------------------------------------------------
     bool TraceManager::is_target_module(const Module &m) const
     {
         if ( m_targetName.empty() )
@@ -102,7 +97,6 @@ namespace idattd
         return _stricmp(bn.c_str(), m_targetName.c_str()) == 0;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::emit_module_load(const Module &m)
     {
         std::string name = to_utf8(m.pName, m.NameLength);
@@ -111,7 +105,6 @@ namespace idattd
         m_events.add_lib_load(m_pid, current_tid(), name, base, rebase, (asize_t)m.Size);
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_init()
     {
         // Nothing to show yet: the backend has merely been selected. The TTD
@@ -120,7 +113,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_term()
     {
         if ( m_plugin != nullptr )
@@ -138,31 +130,58 @@ namespace idattd
             inf_set_af(m_savedAf);   // restore the analysis flags we changed
             m_afSaved = false;
         }
+        reset_session_state();
+        m_engine.reset();
+        return DRC_OK;
+    }
+
+    void TraceManager::reset_session_state()
+    {
         m_cursor.reset();
         m_symCursor.reset();
         m_anaCursor.reset();
         m_memCursor.reset();
         m_memPosValid = false;
-        m_engine.reset();
+
+        m_events.clear();
         m_activeBpts = 0;
         m_userWatchpoints.clear();
+
         m_moduleSpans.clear();
-        m_spanCount = (size_t)-1;
+        m_spanCount  = (size_t)-1;
+        m_spanEngine = nullptr;
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
         m_moduleImages.clear();
         m_reconRegions.clear();
         m_dynFuncBytes.clear();
+        m_pdataExtended.clear();
+
         m_memmap.clear();
         m_lastLayout.qclear();
         m_haveLayout = false;
         m_foldLayout.qclear();
         m_foldValid  = false;
-        return DRC_OK;
+
+        m_winLo          = BADADDR;
+        m_winHi          = 0;
+        m_calleeScanFunc = BADADDR;
+
+        m_isForward           = true;
+        m_resumeMode          = RESMOD_NONE;
+        m_hasNextPosition     = false;
+        m_backwardSingleStep  = false;
+        m_forwardSingleStep   = false;
+        m_runOnce             = false;
+        m_stepOutBackward     = false;
+        m_runToCursorBackward = false;
+        m_runToCursorForward  = false;
+        m_runToCursorAddr     = BADADDR;
+        m_pendingBoundary     = BOUNDARY_NONE;
+        m_pendingNotice.clear();
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_get_processes(procinfo_vec_t *procs)
     {
         process_info_t info;
@@ -172,7 +191,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_get_debapp_attrs(debapp_attrs_t *attrs)
     {
         attrs->addrsize = m_is64 ? 8 : 4;
@@ -180,44 +198,16 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_start_process(const char *path, const char *input_path, qstring *errbuf)
     {
-        m_isForward          = true;
-        m_resumeMode         = RESMOD_NONE;
-        m_hasNextPosition    = false;
-        m_backwardSingleStep = false;
-        m_forwardSingleStep  = false;
-        m_runOnce            = false;
-        m_stepOutBackward    = false;
-        m_runToCursorBackward = false;
-        m_runToCursorForward = false;
-        m_runToCursorAddr    = BADADDR;
-        m_pendingBoundary    = BOUNDARY_NONE;
-        m_pendingNotice.clear();
-        m_activeBpts         = 0;
-        m_userWatchpoints.clear();
-        // A previous session can leave events queued (it is torn down without
-        // draining them); they name modules and threads of the OLD trace.
-        m_events.clear();
-        // The engine's module list is fixed for the lifetime of a trace, so the
-        // span cache is normally built once. Invalidate it explicitly here: two
-        // different traces could otherwise have the same module COUNT and the
-        // count-based check alone would silently reuse the previous trace's bases.
-        m_moduleSpans.clear();
-        m_spanCount = (size_t)-1;
-        m_resolvedBases.clear();
-        m_pdbBases.clear();
-        m_funcRanges.clear();
-        m_dynFuncBytes.clear();
-        m_winLo              = BADADDR;
-        m_winHi              = 0;
-        m_calleeScanFunc     = BADADDR;
-        m_is64               = inf_is_64bit();
+        // A session can be torn down without its events being drained, and the
+        // caches below describe the previous recording's addresses.
+        reset_session_state();
+        m_is64 = inf_is_64bit();
 
         // Stop the analysis cascade: each on-stop add_func() traces the current
         // function, and AF_PROC ("create functions if call is present") would make
-        // IDA recursively create+analyze EVERY callee (stack frames, vars, FLIRT),
+        // IDA recursively create+analyze every callee (stack frames, vars, FLIRT),
         // fanning out across whole modules and making navigation crawl. We define
         // the function the user is actually looking at explicitly, so disable the
         // auto-create-from-calls features for the session (restored in on_term).
@@ -227,7 +217,7 @@ namespace idattd
             m_afSaved = true;
         }
         inf_set_af(m_savedAf & ~(uint32)(AF_PROC | AF_PROCPTR));
-        // Which module the database is OF, so a load of it can trigger a
+        // Which module the database is of, so a load of it can trigger a
         // rebase. A database created by the .run loader states this outright;
         // otherwise it is the name of the file IDA thinks it opened.
         {
@@ -306,14 +296,9 @@ namespace idattd
         // is what WinDbg/Binja effectively show) so far fewer bytes come back 0.
         m_cursor->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
 
-        // A memory map costs a full replay, so one saved against THIS recording
+        // A memory map costs a full replay, so one saved against this recording
         // is reused rather than rebuilt. A map saved against a different trace
         // fails the fingerprint check and is ignored.
-        m_memmap.clear();
-        m_lastLayout.qclear();
-        m_haveLayout = false;
-        m_foldLayout.qclear();
-        m_foldValid  = false;
         if ( m_memmap.load(trace_fingerprint()) )
             msg("[ida-ttd] loaded a saved memory map: %d recorded change(s).\n",
                 (int)m_memmap.size());
@@ -365,7 +350,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_get_debug_event(gdecode_t *code, debug_event_t *event, int /*timeout_ms*/)
     {
         if ( !m_events.try_pop(event) )
@@ -377,13 +361,12 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     bool TraceManager::reconstruct_region(ea_t lo, ea_t hi)
     {
         if ( !m_engine || !m_cursor || hi <= lo )
             return false;
 
-        // HARD CAP on the window. The callers derive 'hi' from segment bounds, and
+        // hard CAP on the window. The callers derive 'hi' from segment bounds, and
         // our own memory map advertises one segment spanning the entire user address
         // space -- so a bad bound arrives here as a request to allocate terabytes,
         // which throws bad_alloc out of a plugin that does not catch it and takes
@@ -473,7 +456,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     // The engine's Module record for the module based at 'base'.
     const Module *TraceManager::module_at(ea_t base) const
     {
@@ -487,7 +469,6 @@ namespace idattd
         return nullptr;
     }
 
-    //-----------------------------------------------------------------------
     ICursorView *TraceManager::ana_cursor()
     {
         if ( !m_engine )
@@ -497,8 +478,8 @@ namespace idattd
             m_anaCursor = UniqueCursor{ m_engine->NewCursor() };
             if ( m_anaCursor )
             {
-                // MUST be sequential. The engine's DEFAULT is to replay several
-                // segments in PARALLEL and dispatch callbacks from all of those
+                // must be sequential. The engine's default is to replay several
+                // segments in parallel and dispatch callbacks from all of those
                 // threads at once; find_dynamic_function_entry's call/return
                 // callback mutates an unsynchronized std::map, so the default
                 // would corrupt the heap. Sequential replay keeps the callback
@@ -506,7 +487,7 @@ namespace idattd
                 //
                 // ReplayAllSegmentsWithoutFiltering matches the whole-trace sweep
                 // in tracer.cpp. Every user of this cursor wants a call/return
-                // callback, which is NOT a maskable event, so the segment filter
+                // callback, which is not a maskable event, so the segment filter
                 // has nothing to work with and costs ~2% either way; setting it
                 // removes any question of a bounded replay skipping ahead through
                 // the index and dispatching no callbacks at all.
@@ -517,7 +498,6 @@ namespace idattd
         return m_anaCursor.get();
     }
 
-    //-----------------------------------------------------------------------
     const ModuleImage *TraceManager::image_for(ea_t ea, ea_t &base_out)
     {
         if ( !m_engine )
@@ -542,7 +522,7 @@ namespace idattd
             load_module_image(path.c_str(), img);   // img.ok==false on failure
 
             // The path was recorded on the machine that made the trace. The file
-            // sitting at that path on THIS machine may be a different build of the
+            // sitting at that path on this machine may be a different build of the
             // same DLL (a different patch level of ntdll is the common case), and
             // its bytes would then be served as ground truth for disassembly with
             // nothing to indicate they are wrong. The trace records the image's
@@ -566,7 +546,6 @@ namespace idattd
         return it->second.ok ? &it->second : nullptr;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
     {
         *nbytes = 0;
@@ -600,10 +579,10 @@ namespace idattd
             }
         }
 
-        // QueryMemoryBuffer only ever returns the SINGLE contiguous run that begins
+        // QueryMemoryBuffer only ever returns the single contiguous run that begins
         // exactly at the queried address. If that address is a "hole" (a byte TTD
         // didn't record at this position) it returns Size==0 -- and a naive single
-        // call then loses every KNOWN byte further into the buffer. So fill the whole
+        // call then loses every known byte further into the buffer. So fill the whole
         // range in two passes:
         //
         //   Pass 1 (authoritative): walk the range querying TTD's recorded memory,
@@ -611,7 +590,7 @@ namespace idattd
         //   the true position-in-time state, including self-modified code.
         //
         //   Pass 2 (image fallback): for bytes TTD never recorded, copy from the
-        //   module's on-disk image. TTD only records ACCESSED memory; image-backed
+        //   module's on-disk image. TTD only records accessed memory; image-backed
         //   code that was never executed on this run (the other side of a branch, a
         //   cold epilogue, the terminating ret) is in the trace at no position, yet
         //   it is right there in the file -- this is exactly what WinDbg shows. Image
@@ -654,7 +633,7 @@ namespace idattd
             {
                 size_t run = mb.Memory.Size;
 
-                // A non-zero Size does NOT mean these bytes are real. For memory
+                // A non-zero Size does not mean these bytes are real. For memory
                 // the engine knows is mapped but has no value to attribute at the
                 // current position -- a byte last written in an EARLIER fragment
                 // is the common case -- the aggressive policies answer "here is
@@ -725,7 +704,7 @@ namespace idattd
         size_t o = 0;
         while ( o < size )
         {
-            // Placeholder zeros are NOT a filled byte here: the whole point is to
+            // Placeholder zeros are not a filled byte here: the whole point is to
             // give the image a chance to supply what the engine could not.
             if ( filled[o] == FILL_REAL )
             {
@@ -788,7 +767,6 @@ namespace idattd
         return resolved_end == 0 ? DRC_FAILED : DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     // Build the memory layout IDA should see at the cursor's current position.
     //
     // With no reconstructed map this is what it has always been: one flat
@@ -982,7 +960,6 @@ namespace idattd
         m_foldValid  = true;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
     {
         meminfo_vec_t layout;
@@ -999,7 +976,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::refresh_memory_layout()
     {
         // The layout is no longer a constant even without a memory map: it
@@ -1016,7 +992,6 @@ namespace idattd
         invalidate_dbgmem_config();
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_read_registers(thid_t tid, int /*clsmask*/, regval_t *values)
     {
         if ( !m_cursor )
@@ -1027,7 +1002,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_rebase_if_required_to(ea_t new_base)
     {
         // A database the .run loader created already has the main image at its
@@ -1041,7 +1015,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     static DataAccessMask access_mask_from_bpt(bpttype_t type)
     {
         switch ( type )
@@ -1054,7 +1027,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel)
     {
         *nbpts = 0;
@@ -1111,21 +1083,18 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_set_backwards(bool backwards)
     {
         m_isForward = !backwards;
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_set_resume_mode(thid_t /*tid*/, resume_mode_t resmod)
     {
         m_resumeMode = resmod;
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     EventType TraceManager::navigate_steps(bool forward, StepCount steps)
     {
         auto threads_before = snapshot_threads();
@@ -1143,10 +1112,10 @@ namespace idattd
             ? m_cursor->ReplayForward(Position::Max, steps)
             : m_cursor->ReplayBackward(Position::Min, steps);
 
-        // Catch a bounded backward step that ran away to the start of the trace
-        // rather than moving by 'steps'. Report it instead of silently teleporting
-        // the user: it means the cursor began somewhere the engine could not step
-        // from, and the position is the evidence needed to chase it.
+        // A bounded backward step that lands on the trace's first position moved
+        // to the start instead of stepping, which means the cursor began somewhere
+        // the engine could not step from. Say so rather than silently teleporting
+        // the user.
         if ( !forward && steps != StepCount::Max )
         {
             const Position after = m_cursor->GetPosition();
@@ -1154,7 +1123,7 @@ namespace idattd
             if ( first.IsValid() && after <= first && before.Sequence != first.Sequence )
             {
                 msg("[ida-ttd] backward step from %llX:%llX landed at the start of "
-                    "the trace (%llX:%llX) instead of stepping. Please report this.\n",
+                    "the trace (%llX:%llX) instead of stepping.\n",
                     (uint64_t)before.Sequence, (uint64_t)before.Steps,
                     (uint64_t)after.Sequence, (uint64_t)after.Steps);
             }
@@ -1166,14 +1135,13 @@ namespace idattd
         return r.StopReason;
     }
 
-    //-----------------------------------------------------------------------
     bool TraceManager::add_temp_exec_watchpoint(ea_t addr, MemoryWatchpointData &wp)
     {
         wp = MemoryWatchpointData{};
         wp.Address    = GuestAddress{ (uint64_t)addr };
         wp.Size       = 1;
         wp.AccessMask = DataAccessMask::Execute;
-        // An identical user breakpoint IS this watchpoint as far as the engine is
+        // An identical user breakpoint is this watchpoint as far as the engine is
         // concerned. Leave it alone: the replay already stops there, and removing
         // "ours" afterwards would silently delete the user's breakpoint.
         if ( m_userWatchpoints.find(wp) != m_userWatchpoints.end() )
@@ -1181,21 +1149,19 @@ namespace idattd
         return m_cursor->AddMemoryWatchpoint(wp);
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::drop_temp_exec_watchpoint(const MemoryWatchpointData &wp, bool owned)
     {
         if ( owned )
             m_cursor->RemoveMemoryWatchpoint(wp);
     }
 
-    //-----------------------------------------------------------------------
     // Run forward to 'addr' on a specific thread/frame, honoring breakpoints.
     int TraceManager::run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid)
     {
         MemoryWatchpointData wp{};
         bool owned = add_temp_exec_watchpoint(addr, wp);
 
-        // The callback is shared by ALL watchpoints on the cursor: accept the
+        // The callback is shared by all watchpoints on the cursor: accept the
         // step-target only on the right thread/frame, but always stop on any
         // other (user) breakpoint.
         auto stop_cb = [addr, min_sp, utid](ICursorView::MemoryWatchpointResult const &w,
@@ -1221,10 +1187,9 @@ namespace idattd
         return pc == addr ? 0 : 1; // 0 = landed at target, 1 = user breakpoint
     }
 
-    //-----------------------------------------------------------------------
     // Run backward to 'addr': set a temporary Execute watchpoint there and replay
     // backward. The engine seeks straight to the previous execution of 'addr' (one
-    // ReplayBackward -- cheap, NOT a backward single-step loop), stopping there or
+    // ReplayBackward -- cheap, not a backward single-step loop), stopping there or
     // at any user breakpoint hit on the way, or at the start of the trace.
     EventType TraceManager::navigate_backward_to(ea_t addr)
     {
@@ -1246,12 +1211,11 @@ namespace idattd
         return r.StopReason;
     }
 
-    //-----------------------------------------------------------------------
     // Run forward to 'addr': set a temporary Execute watchpoint there and replay
     // forward. The engine seeks straight to the next execution of 'addr' (one
     // ReplayForward -- cheap), stopping there, at any user breakpoint hit on the
     // way, or at the end of the trace. If the cursor is already on 'addr', step
-    // once first so we advance to the NEXT occurrence instead of matching here.
+    // once first so we advance to the next occurrence instead of matching here.
     EventType TraceManager::navigate_forward_to(ea_t addr)
     {
         auto threads_before = snapshot_threads();
@@ -1275,7 +1239,6 @@ namespace idattd
         return r.StopReason;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::clamp_to_trace()
     {
         if ( !m_engine || !m_cursor )
@@ -1291,7 +1254,6 @@ namespace idattd
             m_cursor->SetPosition(first);
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::settle_after_navigation(EventType sr, bool forward)
     {
         if ( !m_engine || !m_cursor )
@@ -1314,7 +1276,6 @@ namespace idattd
             m_pendingBoundary = BOUNDARY_START;
     }
 
-    //-----------------------------------------------------------------------
     // Forward step-over / step-out implemented on the main cursor: step-over a
     // call by running to the return site; step-out by repeating until the frame
     // is unwound. Single instructions are stepped directly.
@@ -1335,7 +1296,7 @@ namespace idattd
         // The box is safe to raise even for a fast step-over: without NODELAY /
         // HIDECANCEL, IDA only materialises the dialog after its grace threshold,
         // so ordinary quick steps never show anything. Keeping the Cancel button
-        // (i.e. NOT passing HIDECANCEL) is the whole point here.
+        // (i.e. not passing HIDECANCEL) is the whole point here.
         show_wait_box("%s (Cancel to stop)...", step_out ? "Stepping out" : "Stepping over");
         const int CAP = 100000;                 // backstop against a pathological frame
         int iters = 0;
@@ -1384,13 +1345,12 @@ namespace idattd
         return hit_bpt ? EventType::MemoryWatchpoint : EventType::Position;
     }
 
-    //-----------------------------------------------------------------------
     // Backward step-out: find the CALL instruction that entered the frame we are
     // standing in, so the caller can seek straight to it in one engine hop.
     //
     // We never single-step backward to do this -- that re-seeks a keyframe per
     // step and takes minutes. Instead we seek to a position before the playhead
-    // and replay FORWARD to it, tracking a per-thread stack of open calls; the
+    // and replay forward to it, tracking a per-thread stack of open calls; the
     // top of our thread's stack at the playhead is the call we want. The window
     // widens until it captures that call.
     bool TraceManager::find_frame_entry_position(Position &out, bool &cancelled)
@@ -1404,7 +1364,7 @@ namespace idattd
         const uint32_t    tid = (uint32_t)ti.UniqueId;
         const Position    last = m_engine->GetLastPosition();
 
-        // Floor for the search. ActiveTime is the span in which THIS thread
+        // Floor for the search. ActiveTime is the span in which this thread
         // actually executed instructions, so nothing it did can lie before
         // ActiveTime.Min: a window that reaches it without finding an open call
         // means the thread genuinely is in its outermost frame, and that is a
@@ -1422,7 +1382,7 @@ namespace idattd
             cur = last;
         // The thread-accurate ceiling. GetLastPosition() is the end of the whole
         // recording and can belong to some other thread, so a cursor clamped to it
-        // may sit past the point where THIS thread last ran -- and a window ending
+        // may sit past the point where this thread last ran -- and a window ending
         // there contains none of its instructions, so no call of its own to find.
         if ( ti.ActiveTime.Max.IsValid() && cur > ti.ActiveTime.Max )
             cur = ti.ActiveTime.Max;
@@ -1432,7 +1392,7 @@ namespace idattd
         // Per-thread stack of open CALL positions. A CALL pushes, a RET pops; when
         // the replay reaches the playhead the top of our thread's stack is the call
         // that entered the frame we are standing in. ReplayForward(cur) stops AT
-        // the playhead without executing it, so a cursor sitting ON a call does not
+        // the playhead without executing it, so a cursor sitting on a call does not
         // push that call -- which is what we want.
         // A RET with nothing on the stack is a frame that was already open when the
         // window began; ignoring it is what makes a PARTIAL window still give the
@@ -1474,7 +1434,7 @@ namespace idattd
         };
 
         // Look-back schedule: a slice of the current sequence, then the whole of
-        // it, then progressively more whole sequences. Each attempt is ONE
+        // it, then progressively more whole sequences. Each attempt is one
         // SetPosition plus one bulk forward replay. Deliberately capped: a frame
         // entered near the start of a long recording would otherwise mean
         // replaying the entire trace, and it is better to say so than to hang.
@@ -1566,13 +1526,12 @@ namespace idattd
         return found;
     }
 
-    //-----------------------------------------------------------------------
     EventType TraceManager::rewind_to(const Position &p)
     {
         auto threads_before = snapshot_threads();
         auto mods_before    = snapshot_modules();
 
-        // ONE engine call rather than a step loop. User breakpoints stay armed,
+        // one engine call rather than a step loop. User breakpoints stay armed,
         // so anything hit between here and 'p' still stops us there instead.
         ICursorView::ReplayResult r = m_cursor->ReplayBackward(p);
         bool hit_bpt = r.StopReason == EventType::MemoryWatchpoint;
@@ -1584,7 +1543,6 @@ namespace idattd
         return hit_bpt ? EventType::MemoryWatchpoint : EventType::Position;
     }
 
-    //-----------------------------------------------------------------------
     EventType TraceManager::navigate_out_backward()
     {
         Position entry;
@@ -1601,7 +1559,6 @@ namespace idattd
         return rewind_to(entry);
     }
 
-    //-----------------------------------------------------------------------
     // Backward step-over. One backward step; if that landed us on the tail of a
     // callee that had just returned (same thread, deeper frame), rewind on out of
     // it so we come to rest on the CALL that entered it -- the backward mirror of
@@ -1609,8 +1566,6 @@ namespace idattd
     //
     // IDA has no RESMOD_BACKOVER: "step over backwards" arrives as ev_set_backwards
     // followed by the ordinary RESMOD_OVER, so on_resume picks this on direction.
-    // That path used to take a plain backward single step, which stepped INTO the
-    // callee that had just returned rather than over it.
     EventType TraceManager::navigate_over_backward()
     {
         auto threads_before = snapshot_threads();
@@ -1625,7 +1580,7 @@ namespace idattd
         // Did that step take us into a callee, or just to the previous instruction
         // of this frame? Only the former needs stepping over.
         //
-        // A lower stack pointer alone is NOT the test: stepping backward over a
+        // A lower stack pointer alone is not the test: stepping backward over a
         // 'pop' also lands on a lower SP while staying in the same frame. What
         // identifies a returning callee is landing on its RET -- at which point the
         // return address is still stacked, so SP is below where we started. Require
@@ -1658,7 +1613,6 @@ namespace idattd
         return hit_bpt ? EventType::MemoryWatchpoint : EventType::Position;
     }
 
-    //-----------------------------------------------------------------------
     // Define an instruction at the exact address 'ea'. Addresses passed here come
     // from the trace (real executed PCs), so they are true instruction
     // boundaries; clear any stale/garbage item overlapping ea first so we never
@@ -1672,7 +1626,6 @@ namespace idattd
         create_insn(ea);
     }
 
-    //-----------------------------------------------------------------------
     // FNV-1a hash of up to 'n' bytes at 'ea' (read through the debugger memory,
     // i.e. the live bytes at the current position). Returns 0 on a short read so a
     // failed read never looks like a byte change.
@@ -1692,21 +1645,6 @@ namespace idattd
         return h;
     }
 
-    //-----------------------------------------------------------------------
-    // Lay out the function around PC. Runs on every stop, so it must be CHEAP --
-    // no trace replay.
-    //
-    // Primary path (x64, WinDbg-style): the module's .pdata exception table gives
-    // the EXACT [start,end) of the enclosing function (recovered offline in
-    // resolve_symbols). We disassemble the whole range at once, so the code BEFORE
-    // PC is already laid out -- stepping backward no longer reveals one instruction
-    // at a time. The bounds are authoritative, so there's no mis-alignment or
-    // "RIP not code" prompt.
-    //
-    // Fallback (x86, or a module with no .pdata): linear forward layout from PC.
-    // PC is RIP -- a real boundary -- so a straight-line decode is exact; we stop at
-    // the first return. (Lines above PC only appear as you reach them; the deep,
-    // user-triggered "Analyze whole function" can still recover the rest.)
     ea_t TraceManager::call_target_of(const insn_t &insn, ea_t &slot_out)
     {
         slot_out = BADADDR;
@@ -1739,7 +1677,6 @@ namespace idattd
         return BADADDR;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::define_function_at(ea_t ea)
     {
         if ( ea == BADADDR || ea == 0 )
@@ -1772,7 +1709,7 @@ namespace idattd
         {
             // No .pdata (x86, dynamic code, or an address that is not a recorded
             // function head). Seed one instruction and let IDA's recursive descent
-            // find the extent. AF_PROC is off, so this does NOT cascade into the
+            // find the extent. AF_PROC is off, so this does not cascade into the
             // callee's own callees -- which is the whole point of doing it here.
             force_insn(ea);
             add_func(ea);
@@ -1786,7 +1723,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::define_callees(ea_t lo, ea_t hi)
     {
         if ( lo == BADADDR || hi <= lo )
@@ -1850,7 +1786,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     // Grow an already-defined function to the end its module's exception table
     // gives it. Only ever GROWS, and only into address space nothing else claims:
     // a shorter definition is IDA having lost the flow, but a longer one may be
@@ -1866,7 +1801,7 @@ namespace idattd
             return;                          // x86, or no .pdata for this module
         m_pdataExtended.insert(fi.start_ea);
 
-        // The .pdata entry must describe THIS function's own chunk. When it starts
+        // The .pdata entry must describe this function's own chunk. When it starts
         // elsewhere we are inside a tail chunk, and joining chunks is a different
         // decision than extending one.
         if ( ps != fi.start_ea || pe <= fi.end_ea )
@@ -1904,7 +1839,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::analyze_current_function(ea_t pc)
     {
         segment_info_t seg;
@@ -1922,7 +1856,7 @@ namespace idattd
             // for anything but the not-yet-defined case, so reconcile here.
             extend_to_pdata_bounds(pc, cur_fi);
 
-            // For functions WE built in dynamic memory, detect a
+            // For functions we built in dynamic memory, detect a
             // rewrite (self-modifying / reused region, or time-travel to a position
             // where the same address holds different code) by hashing the bytes and
             // comparing to definition time. If unchanged (or not ours), keep it.
@@ -1989,12 +1923,12 @@ namespace idattd
 
         // ---- runtime-allocated code (no module / no .pdata): shellcode, unpacked
         // code, JIT. Mirror Binary Ninja's debugger: define a function and let
-        // IDA's recursive descent disassemble the WHOLE thing (forward branches +
+        // IDA's recursive descent disassemble the whole thing (forward branches +
         // not-taken branches), seeded at the function head so the prologue and all
         // the body above PC are laid out too (so backward stepping reveals code
         // that's already there instead of one instruction at a time). ----
         //
-        // Prefer the TRUE head recovered from the trace's call/return structure
+        // Prefer the true head recovered from the trace's call/return structure
         // (the call that entered this frame). Fall back to the executed-address
         // contiguity heuristic when no enclosing call was captured -- e.g. the
         // frame was entered by a jmp/thread-start rather than a call, or the
@@ -2005,17 +1939,14 @@ namespace idattd
 
         // The position-based memory query returns zero-fill for this region's
         // never-executed bytes (it's unpacked/JIT code, not a module). Rebuild the
-        // real bytes from the trace's recorded writes so the WHOLE function (not just
+        // real bytes from the trace's recorded writes so the whole function (not just
         // the executed path) disassembles -- this is what WinDbg shows. Bounded to a
         // window from the head; served thereafter by on_read_memory. Then invalidate
         // IDA's cache for the range so the upcoming create_insn reads the real bytes.
         ea_t rlo = start;
         ea_t rhi = (pc > start ? pc : start) + 0x2000;
-        // Keep the window inside the segment. This used to ASSIGN seg.end_ea when
-        // the end fell outside it, which is backwards: for dynamic code the
-        // enclosing segment is the synthetic whole-address-space range from
-        // on_get_memory_info, so the "clamp" widened the window to ~128 TB and
-        // reconstruct_region tried to allocate it.
+        // Clamp to the enclosing segment, never widen to it: for dynamic code that
+        // segment is the synthetic range covering all of user space.
         if ( rhi > seg.end_ea )
             rhi = seg.end_ea;
         if ( rhi > rlo && reconstruct_region(rlo, rhi) )
@@ -2054,7 +1985,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::collect_window_pcs(ea_t pc, std::set<ea_t> &pcs)
     {
         pcs.clear();
@@ -2070,7 +2000,7 @@ namespace idattd
         Position cur = m_cursor->GetPosition();
         uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
 
-        // Seek a little before the current position, then replay FORWARD (cheap --
+        // Seek a little before the current position, then replay forward (cheap --
         // no per-step keyframe re-seek like going backward).
         Position start = cur;
         start.Steps = (StepCount)((uint64_t)cur.Steps > BEFORE ? (uint64_t)cur.Steps - BEFORE : 0);
@@ -2095,7 +2025,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     ea_t TraceManager::find_dynamic_start(ea_t pc)
     {
         std::set<ea_t> pcs;
@@ -2123,9 +2052,8 @@ namespace idattd
         return lo;
     }
 
-    //-----------------------------------------------------------------------
     // Recover the head of the current frame's function from the trace itself.
-    // We replay FORWARD from a position a little before the playhead up to the
+    // We replay forward from a position a little before the playhead up to the
     // playhead, watching the call/return structure via the engine's CallReturn
     // callback (the same primitive the tracer uses): a CALL pushes (callee,
     // return-addr) onto a per-thread frame stack, a RET pops it. When we reach
@@ -2135,10 +2063,11 @@ namespace idattd
     // .pdata bounds used for module code.
     //
     // The look-back is widened until that entering CALL is captured. Each attempt
-    // is ONE SetPosition + forward replay, which is cheap; we deliberately never
+    // is one SetPosition + forward replay, which is cheap; we deliberately never
     // single-step backward (that re-seeks a keyframe per step and freezes the UI).
     ea_t TraceManager::find_dynamic_function_entry(ea_t pc)
     {
+        // The head comes from the cursor's own position, not from 'pc'.
         qnotused(pc);
         if ( !m_engine || !m_cursor )
             return BADADDR;
@@ -2196,7 +2125,6 @@ namespace idattd
         return entry;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::lay_out_window(ea_t pc)
     {
         if ( !m_engine || !m_cursor )
@@ -2249,7 +2177,6 @@ namespace idattd
         m_winHi = ip > *pcs.rbegin() ? ip : *pcs.rbegin();
     }
 
-    //-----------------------------------------------------------------------
     // Deep, on-demand analysis: reconstruct the current thread's call structure by
     // walking the trace backward (stepping over nested calls via a call-depth
     // counter) to find the enclosing function's entry, then define it. This is the
@@ -2361,31 +2288,25 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::on_suspended()
     {
         if ( !m_cursor )
             return;
 
         // Time travel breaks IDA's "process memory only changes going forward"
-        // assumption: the SAME address can hold different bytes at different
+        // assumption: the same address can hold different bytes at different
         // positions (e.g. a buffer that's zero before it's unpacked). After a jump
         // IDA keeps the previous position's cached bytes for everything it doesn't
         // re-read.
         //
-        // invalidate_dbg_state(DBGINV_MEMORY) only marks the cache dirty; it does
-        // NOT force the listing to re-read, so IDA kept rendering the bytes it first
-        // cached -- which, for code revealed before the index was usable, were the
-        // thread-local-only bytes (executed instructions present, never-executed
-        // code shown as 0). invalidate_dbgmem_contents() is the SDK-sanctioned
-        // "process stopped, re-read memory" call: it flushes AND refreshes, so the
-        // listing re-reads via on_read_memory (now GloballyAggressive + write
-        // reconstruction) and the previously-zero bytes appear.
+        // invalidate_dbgmem_contents() flushes and refreshes, so the listing
+        // re-reads through on_read_memory. invalidate_dbg_state(DBGINV_MEMORY)
+        // only marks the cache dirty and would leave the first bytes IDA cached
+        // on screen.
         //
-        // NOTE: this refresh (like IDA's own post-stop handling) brings the
-        // disassembly view to the front. Keeping the user in the decompiler is
-        // handled separately by Plugin::keep_decompiler_focused() (a deferred
-        // re-activation after the stop), not by weakening this memory refresh.
+        // Like IDA's own post-stop handling, this brings the disassembly view to
+        // the front. Plugin::keep_decompiler_focused() puts the user back in the
+        // decompiler afterwards.
         invalidate_dbgmem_contents(BADADDR, 0);
 
         // Time travel can move us across an allocation, a protection change or a
@@ -2414,7 +2335,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::resolve_loaded_modules()
     {
         if ( !m_cursor )
@@ -2438,7 +2358,6 @@ namespace idattd
             m_events.add_breakpoint(m_pid, current_tid(), pc);
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::navigate_to(const Position &p)
     {
         auto threads_before = snapshot_threads();
@@ -2452,7 +2371,6 @@ namespace idattd
         apply_differences(threads_before, threads_after, mods_before, mods_after);
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::apply_differences(const std::map<uint32_t, thid_t> &threads_before,
                                          const std::map<uint32_t, thid_t> &threads_after,
                                          const std::set<const Module *> &mods_before,
@@ -2476,7 +2394,6 @@ namespace idattd
                 emit_module_load(*m);
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_resume(debug_event_t *event)
     {
         // Only act when continuing from a stop (breakpoint or single step).
@@ -2573,7 +2490,7 @@ namespace idattd
             case RESMOD_OVER:
             {
                 // In backward mode this is a real backward step-over, not a plain
-                // backward single step (which is what it used to degrade to).
+                // backward single step.
                 EventType sr = m_isForward ? navigate_over(false)
                                            : navigate_over_backward();
                 settle_after_navigation(sr, m_isForward);
@@ -2600,13 +2517,11 @@ namespace idattd
             }
             default:
             {
-                // An UNHANDLED resume mode: source-level stepping (RESMOD_SRC*),
-                // RESMOD_USER, RESMOD_HANDLE, or anything IDA adds later. We do not
-                // advertise those in dbg.resume_modes so they should not arrive,
-                // but this branch used to be merged with RESMOD_NONE, which meant
-                // any mode we did not implement silently became "replay to the end
-                // of the trace". Take a single step instead: a wrong small move
-                // beats losing the user's position in the recording entirely.
+                // A resume mode this backend does not implement: source-level
+                // stepping, RESMOD_USER, RESMOD_HANDLE, or anything IDA adds
+                // later. None is advertised in dbg.resume_modes, so none should
+                // arrive. Step once rather than falling through to RESMOD_NONE,
+                // which would replay to the end of the trace.
                 msg("[ida-ttd] unsupported resume mode %d; stepping once instead.\n",
                     (int)m_resumeMode);
                 EventType sr = navigate_steps(m_isForward, StepCount{ 1 });
@@ -2620,7 +2535,6 @@ namespace idattd
         return DRC_OK;
     }
 
-    //-----------------------------------------------------------------------
     ssize_t TraceManager::on_exit_process()
     {
         m_events.add_process_exit(m_pid);
@@ -2636,7 +2550,6 @@ namespace idattd
         m_hasNextPosition = true;
     }
 
-    //-----------------------------------------------------------------------
     Position TraceManager::current_position() const
     {
         if ( !m_cursor )
@@ -2644,13 +2557,11 @@ namespace idattd
         return m_cursor->GetPosition();
     }
 
-    //-----------------------------------------------------------------------
     Position TraceManager::last_position() const
     {
         return m_engine ? m_engine->GetLastPosition() : Position::Invalid;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::request_backward_step()
     {
         if ( !m_cursor )
@@ -2663,7 +2574,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::request_single_step(bool forward)
     {
         if ( !m_cursor )
@@ -2679,7 +2589,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::request_run(bool forward)
     {
         if ( !m_cursor )
@@ -2693,7 +2602,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::request_step_out_backward()
     {
         if ( !m_cursor )
@@ -2706,7 +2614,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::request_run_to_cursor_backward(ea_t addr)
     {
         if ( !m_cursor )
@@ -2722,7 +2629,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::request_run_to_cursor_forward(ea_t addr)
     {
         if ( !m_cursor )
@@ -2738,7 +2644,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     TTD::Replay::UniqueCursor TraceManager::make_cursor()
     {
         if ( !m_engine )
@@ -2746,7 +2651,6 @@ namespace idattd
         return TTD::Replay::UniqueCursor{ m_engine->NewCursor() };
     }
 
-    //-----------------------------------------------------------------------
     // Case-insensitive shell wildcard match ('*' = any run, '?' = one char).
     static bool wildcard_match(const char *pat, const char *str)
     {
@@ -2781,7 +2685,6 @@ namespace idattd
         return *p == '\0';
     }
 
-    //-----------------------------------------------------------------------
     std::vector<ea_t> TraceManager::resolve_function_pattern(const char *pattern) const
     {
         std::vector<ea_t> out;
@@ -2856,7 +2759,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::load_module_pdb(ea_t base)
     {
         if ( base == BADADDR || !m_engine )
@@ -2866,7 +2768,7 @@ namespace idattd
         // owns that file's database (its own symbols/analysis); asking the pdb
         // plugin only triggers a redundant -- and possibly slow/networked --
         // symbol-server lookup for the very file the user is analyzing. We match by
-        // BASE (authoritative) so a name mismatch can't let it slip through.
+        // base (authoritative) so a name mismatch can't let it slip through.
         if ( m_engine->GetModuleCount() > 0
           && (ea_t)(uint64_t)m_engine->GetModuleList()[0].Address == base )
             return;
@@ -2921,7 +2823,6 @@ namespace idattd
                 base_name(path).c_str());
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::resolve_symbols(ea_t base, bool is64)
     {
         if ( !m_engine || base == BADADDR )
@@ -2979,7 +2880,6 @@ namespace idattd
             base_name(modpath).c_str(), (uint64_t)base, (unsigned)named, (unsigned)nfunc);
     }
 
-    //-----------------------------------------------------------------------
     bool TraceManager::function_range_at(ea_t pc, ea_t &start, ea_t &end) const
     {
         if ( !m_engine )
@@ -3010,11 +2910,10 @@ namespace idattd
         return false;
     }
 
-    //-----------------------------------------------------------------------
     const std::vector<TraceManager::ModuleSpan> &TraceManager::module_spans() const
     {
         size_t n = m_engine ? m_engine->GetModuleCount() : 0;
-        if ( n != m_spanCount )
+        if ( n != m_spanCount || m_engine.get() != m_spanEngine )
         {
             m_moduleSpans.clear();
             if ( m_engine )
@@ -3030,18 +2929,17 @@ namespace idattd
                 }
                 std::sort(m_moduleSpans.begin(), m_moduleSpans.end());
             }
-            m_spanCount = n;
+            m_spanCount  = n;
+            m_spanEngine = m_engine.get();
         }
         return m_moduleSpans;
     }
 
-    //-----------------------------------------------------------------------
     ea_t TraceManager::current_pc_ea() const
     {
         return m_cursor ? program_counter() : BADADDR;
     }
 
-    //-----------------------------------------------------------------------
     bool TraceManager::module_range_at(ea_t ea, ea_t &lo, ea_t &hi) const
     {
         size_t idx = module_index_at(ea);
@@ -3052,7 +2950,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     qstring TraceManager::module_name_at(ea_t ea) const
     {
         qstring out;
@@ -3077,7 +2974,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     qstring TraceManager::module_ident_at(ea_t ea) const
     {
         qstring out;
@@ -3103,7 +2999,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     std::vector<std::pair<ea_t, ea_t>> TraceManager::module_ranges() const
     {
         std::vector<std::pair<ea_t, ea_t>> out;
@@ -3112,7 +3007,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     std::vector<TraceManager::ModuleLoad> TraceManager::module_loads() const
     {
         std::vector<ModuleLoad> out;
@@ -3137,7 +3031,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     uint64_t TraceManager::trace_fingerprint() const
     {
         if ( !m_engine )
@@ -3155,7 +3048,6 @@ namespace idattd
         return v;
     }
 
-    //-----------------------------------------------------------------------
     size_t TraceManager::module_index_at(ea_t ea) const
     {
         const std::vector<ModuleSpan> &v = module_spans();
@@ -3171,7 +3063,6 @@ namespace idattd
         return (size_t)-1;
     }
 
-    //-----------------------------------------------------------------------
     bool TraceManager::is_library_address(ea_t ea) const
     {
         if ( !m_engine )
@@ -3188,7 +3079,6 @@ namespace idattd
         return module_spans()[idx].base != mainBase;
     }
 
-    //-----------------------------------------------------------------------
     void TraceManager::goto_position()
     {
         if ( !m_cursor )
@@ -3218,7 +3108,6 @@ namespace idattd
         run_requests();
     }
 
-    //-----------------------------------------------------------------------
     std::vector<TraceManager::NamedPosition> TraceManager::collect_positions() const
     {
         std::vector<NamedPosition> out;

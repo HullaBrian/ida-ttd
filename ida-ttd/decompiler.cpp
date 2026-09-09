@@ -17,18 +17,17 @@ namespace idattd
     static bool g_hooked           = false;
     static bool g_reported_missing = false;
 
-    //-----------------------------------------------------------------------
     // Every address a pseudocode line was decompiled from.
     //
     // Generated pseudocode carries invisible COLOR_ADDR tags holding ctree
-    // ANCHORS: an index into cfunc_t::treeitems, each of which knows its own
+    // anchors: an index into cfunc_t::treeitems, each of which knows its own
     // address. That is the mechanism hxe_func_printed documents, and it is what
     // this reads. The obvious alternative, get_line_item(), answers about one
-    // COLUMN of the line -- and column zero, where the first attempt at this
+    // column of the line -- and column zero, where the first attempt at this
     // asked, is indentation, which belongs to no item. Every line came back with
     // nothing and not a single one was ever painted.
     //
-    // ALL of them, not just the first. One line is many ctree items: the
+    // all of them, not just the first. One line is many ctree items: the
     // statement, the variable assigned, the call, each argument -- and they come
     // from different instructions. Taking the first one to have an address is why
     // "v11 = v7(...)" showed no note for its call: the first anchor on that line
@@ -93,7 +92,6 @@ namespace idattd
     // text twice does not append it twice.
     static const char TTD_CMT_MARK[] = "// TTD: ";
 
-    //-----------------------------------------------------------------------
     // Show the annotation an indirect call site carries on its pseudocode line.
     //
     // The decompiler does not surface a repeatable comment on an arbitrary
@@ -110,7 +108,7 @@ namespace idattd
         qstring joined;
         for ( ea_t ea : eas )
         {
-            // A call whose arguments print one per line puts the SAME call
+            // A call whose arguments print one per line puts the same call
             // instruction on every one of those lines, so the note would repeat
             // down the whole call. It belongs on the first line that mentions
             // the call and nowhere else.
@@ -161,7 +159,6 @@ namespace idattd
         sl.line.append(SCOLOR_AUTOCMT);
     }
 
-    //-----------------------------------------------------------------------
     // Paint one function's pseudocode from the colours already in the database.
     //
     // Each ctree item knows the address it was decompiled from, so a line is
@@ -182,7 +179,7 @@ namespace idattd
         {
             simpleline_t &sl = cf->sv[i];
 
-            // Only ever repaint OUR colour. Clearing it first means a line that
+            // Only ever repaint our colour. Clearing it first means a line that
             // stops being covered (the sweep was cleared, the shade changed)
             // loses the highlight instead of keeping a stale one, and a colour
             // something else set is left alone.
@@ -210,7 +207,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     static ssize_t idaapi hx_callback(void *, hexrays_event_t ev, va_list va)
     {
         switch ( ev )
@@ -226,7 +222,6 @@ namespace idattd
         return 0;
     }
 
-    //-----------------------------------------------------------------------
     // Safe and cheap to call repeatedly, and it is called repeatedly on purpose.
     // Hex-Rays is itself a plugin: asking for it while our own plugmod is being
     // constructed can be too early, init_hexrays_plugin() then says there is no
@@ -239,7 +234,7 @@ namespace idattd
             return true;
         if ( !init_hexrays_plugin() )
         {
-            // Say so ONCE. Silence here is indistinguishable from the painting
+            // Say so once. Silence here is indistinguishable from the painting
             // being broken, which is exactly the confusion to avoid.
             if ( !g_reported_missing )
             {
@@ -255,7 +250,6 @@ namespace idattd
         return g_hooked;
     }
 
-    //-----------------------------------------------------------------------
     void term_decompiler()
     {
         if ( g_hooked )
@@ -265,7 +259,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void refresh_pseudocode_views()
     {
         if ( !g_hooked )
@@ -296,7 +289,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void close_volatile_pseudocode_views()
     {
         if ( !g_hooked )
@@ -313,7 +305,7 @@ namespace idattd
             if ( vu == nullptr || vu->cfunc == nullptr )
                 continue;
 
-            // Keep anything backed by a segment that came from the FILE. The
+            // Keep anything backed by a segment that came from the file. The
             // test is written this way on purpose so it gives the same answer
             // whether the debugger segments have been torn down yet or not: an
             // ephemeral segment and a vanished one are both "will not survive",

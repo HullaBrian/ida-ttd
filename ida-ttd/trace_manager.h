@@ -51,12 +51,12 @@ namespace idattd
         void                       request_single_step(bool forward);
         void                       request_run(bool forward);
         void                       request_step_out_backward();
-        // Run the trace BACKWARD until execution reaches 'addr' (or a user
+        // Run the trace backward until execution reaches 'addr' (or a user
         // breakpoint, or the start of the trace) -- our own "run to cursor
         // backwards". IDA greys out its native ThreadRunToCursorBackwards for this
         // backend, so we drive it ourselves like Continue/Step-out backwards.
         void                       request_run_to_cursor_backward(ea_t addr);
-        // Run the trace FORWARD until execution reaches 'addr' (or a user
+        // Run the trace forward until execution reaches 'addr' (or a user
         // breakpoint, or the end of the trace) -- our own "run to cursor". IDA's
         // native ThreadRunToCursor intermittently fails on this read-only backend
         // (it tries to plant a real/source breakpoint), so we drive it ourselves
@@ -158,6 +158,11 @@ namespace idattd
         void                       analyze_whole_function();
 
     private:
+        // Drop everything that belongs to one trace: cursors, caches, queued
+        // events and pending navigation. Called when a session ends and again
+        // when one starts, so a second trace cannot inherit the first's
+        // reconstructed bytes or module tables.
+        void   reset_session_state();
         // Compose the memory layout IDA should see at the current position
         // from the reconstructed map (see on_get_memory_info).
         void   build_memory_layout(meminfo_vec_t *out) const;
@@ -173,26 +178,24 @@ namespace idattd
         // Backward step-over: one backward step, and if that landed us inside a
         // callee that had just returned (deeper frame on the same thread), rewind
         // on out to the call that entered it. IDA has no RESMOD_BACKOVER -- it
-        // sends ev_set_backwards plus RESMOD_OVER -- and that path previously took
-        // a plain backward step, i.e. it stepped INTO the returning callee.
+        // sends ev_set_backwards plus RESMOD_OVER.
         TTD::Replay::EventType navigate_over_backward();
         // Run backward until the current function is exited (we reach the call
         // that entered this frame), honoring user breakpoints.
         TTD::Replay::EventType navigate_out_backward();
         // Position of the CALL that entered the frame the cursor is currently in.
         //
-        // Found by replaying FORWARD from a look-back start up to the playhead
+        // Found by replaying forward from a look-back start up to the playhead
         // while tracking a per-thread frame stack, which is one bulk engine call
-        // per attempt. The obvious implementation -- single-step backward counting
-        // call/ret depth -- is what this replaces: every backward step re-seeks a
-        // keyframe, so stepping out of a frame entered a few thousand instructions
-        // ago took minutes and pegged the "depth N" counter climbing forever.
+        // per attempt. Not a backward single-step loop counting call/ret depth:
+        // every backward step re-seeks a keyframe, which makes that approach
+        // O(n x keyframe distance).
         //
         // The look-back widens across sequences until the entering call is
         // captured; 'cancelled' distinguishes "the user gave up" from "the call is
         // further back than we are willing to search".
         bool  find_frame_entry_position(TTD::Replay::Position &out, bool &cancelled);
-        // Seek the main cursor BACKWARD to 'p' in one engine call, with user
+        // Seek the main cursor backward to 'p' in one engine call, with user
         // breakpoints still armed so anything in between still stops us.
         TTD::Replay::EventType rewind_to(const TTD::Replay::Position &p);
         // Run backward to 'addr' (a temporary Execute watchpoint + ReplayBackward),
@@ -203,7 +206,7 @@ namespace idattd
         // Run forward to 'addr' (a temporary Execute watchpoint + ReplayForward),
         // stopping at the next execution of 'addr' or any user breakpoint. If the
         // cursor is already sitting on 'addr', a single step is taken first so we
-        // advance to the NEXT occurrence rather than matching the current one.
+        // advance to the next occurrence rather than matching the current one.
         TTD::Replay::EventType navigate_forward_to(ea_t addr);
         // After a navigation that stopped on its own (not at a user breakpoint),
         // flag a pending "start/end of the trace" notice if the cursor came to rest
@@ -212,7 +215,7 @@ namespace idattd
         void  settle_after_navigation(TTD::Replay::EventType sr, bool forward);
         // Pull the cursor back inside [GetFirstPosition(), GetLastPosition()].
         //
-        // A forward run to the end does NOT leave the cursor on the last recorded
+        // A forward run to the end does not leave the cursor on the last recorded
         // instruction -- it leaves it past the end, at the Position::Max sentinel
         // the replay was limited by. Every subsequent operation then works from a
         // position that does not exist in the trace: a single backward step ran to
@@ -227,7 +230,7 @@ namespace idattd
         int   run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid);
         // Install a temporary 1-byte Execute watchpoint at 'addr' for a step/run
         // operation, filling 'wp'. TTD keys watchpoints by (address, size, mask,
-        // thread), so an identical user breakpoint is the SAME watchpoint: adding
+        // thread), so an identical user breakpoint is the same watchpoint: adding
         // and then removing ours would delete theirs. Returns true only when we
         // actually created one -- i.e. when the caller owns its removal.
         bool  add_temp_exec_watchpoint(ea_t addr, TTD::Replay::MemoryWatchpointData &wp);
@@ -251,14 +254,13 @@ namespace idattd
         // caller can form rva = ea - base. Used to serve never-recorded bytes.
         const ModuleImage *image_for(ea_t ea, ea_t &base_out);
         // The engine's Module record for the module based at 'base', or nullptr.
-        // (Several call sites used to open-code this linear scan.)
         const TTD::Replay::Module *module_at(ea_t base) const;
-        // Lazily create the scratch analysis cursor. It MUST replay segments
+        // Lazily create the scratch analysis cursor. It must replay segments
         // sequentially: the default is parallel multi-segment replay, which
         // dispatches callbacks from several threads at once, and the call/return
         // callback in find_dynamic_function_entry mutates an unsynchronized map.
         TTD::Replay::ICursorView *ana_cursor();
-        // Reconstruct the real bytes of [lo,hi) from the trace's recorded WRITES.
+        // Reconstruct the real bytes of [lo,hi) from the trace's recorded writes.
         // The position-based memory query returns zero-fill for non-module memory
         // that was written earlier (e.g. an unpacker decompressing a beacon) but not
         // executed at the current position. We replay forward to the current
@@ -297,7 +299,7 @@ namespace idattd
         ea_t  call_target_of(const insn_t &insn, ea_t &slot_out);
         // For runtime-allocated code with no module/.pdata (shellcode, unpacked):
         // seek a scratch cursor a little before the current position and replay
-        // FORWARD (cheap), laying out the real executed instructions around PC so
+        // forward (cheap), laying out the real executed instructions around PC so
         // a window of code is disassembled in both directions, not one at a time.
         void  lay_out_window(ea_t pc);
         // Forward-replay a window around the current position and collect the
@@ -308,9 +310,9 @@ namespace idattd
         // the lowest executed address contiguous (by instruction) with pc, so a
         // recursive-descent add_func() there lays out the prologue above pc too.
         ea_t  find_dynamic_start(ea_t pc);
-        // Recover the TRUE head of the function the current position is executing
+        // Recover the true head of the function the current position is executing
         // in (for dynamic code) from the trace's call/return structure: replay
-        // FORWARD over a look-back window tracking a per-thread call-frame stack;
+        // forward over a look-back window tracking a per-thread call-frame stack;
         // the top frame when we reach the current position is the call that
         // entered this frame, so its target is the function head. Returns BADADDR
         // when no enclosing call was captured (thread entry, jmp-based shellcode,
@@ -339,7 +341,7 @@ namespace idattd
 
         TTD::Replay::UniqueCursor       m_symCursor; // scratch cursor for symbol reads
         TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
-        // Dedicated cursor for serving IDA's memory reads. It is ONLY ever
+        // Dedicated cursor for serving IDA's memory reads. It is only ever
         // SetPosition'd (never used to execute/replay), because a cursor left "in
         // execution" answers memory queries with the thread-local policy regardless
         // of the requested policy -- which made non-executed bytes (the rest of a
@@ -372,6 +374,9 @@ namespace idattd
         // refresh it lazily. m_spanCount is the module count it was built from.
         mutable std::vector<ModuleSpan> m_moduleSpans;
         mutable size_t                  m_spanCount = (size_t)-1;
+        // The engine the cache was built from. Two traces can have the same
+        // module count, so the count alone cannot detect a stale cache.
+        mutable const void             *m_spanEngine = nullptr;
         std::set<ea_t>                  m_resolvedBases; // modules whose exports we've named
         std::set<ea_t>                  m_pdbBases;      // modules whose PDB we've requested
         // Per-module function bounds from the PE exception table (.pdata), keyed
@@ -381,7 +386,7 @@ namespace idattd
         // bytes TTD never recorded (image-backed never-executed code). An entry with
         // ok==false means we already tried and the file was missing/not a PE.
         std::map<ea_t, ModuleImage> m_moduleImages;
-        // Bytes reconstructed from recorded WRITES, for non-module memory the
+        // Bytes reconstructed from recorded writes, for non-module memory the
         // position query only zero-fills (unpacked/JIT code never executed at the
         // current position). Served by on_read_memory.
         struct ReconRegion
@@ -391,7 +396,7 @@ namespace idattd
             std::vector<bool>    known;    // which bytes were recovered
         };
         std::vector<ReconRegion> m_reconRegions;
-        // Functions WE defined in dynamic (non-module) code, keyed by start_ea ->
+        // Functions we defined in dynamic (non-module) code, keyed by start_ea ->
         // byte-hash at definition time. Used to detect self-modifying / reused
         // regions (incl. time-travel to a position where the bytes differ) and
         // re-disassemble them.
@@ -410,7 +415,7 @@ namespace idattd
         ea_t         m_runToCursorAddr = BADADDR;
         resume_mode_t m_resumeMode = RESMOD_NONE;
         int          m_activeBpts = 0;
-        // Watchpoints registered on behalf of USER breakpoints. Temporary
+        // Watchpoints registered on behalf of user breakpoints. Temporary
         // step/run watchpoints check this so their cleanup can never remove a
         // user breakpoint that happens to sit at the same address.
         std::set<TTD::Replay::MemoryWatchpointData> m_userWatchpoints;

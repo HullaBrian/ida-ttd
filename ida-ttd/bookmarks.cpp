@@ -5,7 +5,6 @@ using namespace TTD::Replay;
 
 namespace idattd
 {
-    //-----------------------------------------------------------------------
     // IDB storage. The "$ " prefix is the SDK's convention for a plugin-owned
     // netnode, so the name can never collide with a program byte name.
     static const char BM_NODE[]  = "$ ida-ttd bookmarks";
@@ -27,7 +26,6 @@ namespace idattd
     static const uint32_t BM_MAX_ITEMS = 100000;
     static const uint32_t BM_MAX_STR   = 4096;
 
-    //-----------------------------------------------------------------------
     static void put_u32(bytevec_t &b, uint32_t v)
     {
         for ( int i = 0; i < 4; i++ )
@@ -87,7 +85,6 @@ namespace idattd
         }
     };
 
-    //-----------------------------------------------------------------------
     void BookmarkStore::load()
     {
         m_loaded = true;
@@ -131,7 +128,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     void BookmarkStore::save() const
     {
         netnode nn(BM_NODE, 0, true);   // create on first save
@@ -164,7 +160,6 @@ namespace idattd
         nn.setblob(blob.begin(), blob.size(), BM_IDX, BM_TAG);
     }
 
-    //-----------------------------------------------------------------------
     size_t BookmarkStore::size()
     {
         if ( !m_loaded )
@@ -172,7 +167,6 @@ namespace idattd
         return m_items.size();
     }
 
-    //-----------------------------------------------------------------------
     const Bookmark *BookmarkStore::at(size_t i)
     {
         if ( !m_loaded )
@@ -180,7 +174,6 @@ namespace idattd
         return i < m_items.size() ? &m_items[i] : nullptr;
     }
 
-    //-----------------------------------------------------------------------
     size_t BookmarkStore::add(const Bookmark &b)
     {
         if ( !m_loaded )
@@ -196,7 +189,6 @@ namespace idattd
         return idx;
     }
 
-    //-----------------------------------------------------------------------
     void BookmarkStore::update(size_t i, const Bookmark &b)
     {
         if ( !m_loaded )
@@ -207,7 +199,6 @@ namespace idattd
         save();
     }
 
-    //-----------------------------------------------------------------------
     void BookmarkStore::remove(size_t i)
     {
         if ( !m_loaded )

@@ -31,7 +31,6 @@ namespace idattd
 
     static const nodeidx_t TL_VERSION = 1;
 
-    //-----------------------------------------------------------------------
     bool trace_link_present()
     {
         netnode nn(TL_NODE);
@@ -40,7 +39,6 @@ namespace idattd
         return nn.altval(N_VERSION, TL_NUM) == TL_VERSION;
     }
 
-    //-----------------------------------------------------------------------
     bool trace_link_read(TraceLink *out)
     {
         if ( out == nullptr )
@@ -66,7 +64,6 @@ namespace idattd
         return !out->trace_path.empty();
     }
 
-    //-----------------------------------------------------------------------
     void trace_link_write(const TraceLink &link)
     {
         netnode nn(TL_NODE, 0, true);   // create on first write
@@ -79,7 +76,6 @@ namespace idattd
         nn.altset(N_BITNESS, link.bitness == 32 ? 1 : link.bitness == 64 ? 2 : 0, TL_NUM);
     }
 
-    //-----------------------------------------------------------------------
     void trace_link_set_path(const char *path)
     {
         if ( path == nullptr )
@@ -88,7 +84,6 @@ namespace idattd
         nn.supset(S_TRACE_PATH, path, qstrlen(path) + 1, TL_STR);
     }
 
-    //-----------------------------------------------------------------------
     int trace_link_autostart()
     {
         netnode nn(TL_NODE);
@@ -97,7 +92,6 @@ namespace idattd
         return (int)nn.altval(N_AUTOSTART, TL_NUM);
     }
 
-    //-----------------------------------------------------------------------
     void trace_link_set_autostart(int v)
     {
         netnode nn(TL_NODE, 0, true);

@@ -7,16 +7,15 @@
 #include "coverage.h"
 #include "decompiler.h"
 
-// Base name of this DLL without its extension, from dllmain.cpp. Needed because
-// load_debugger() identifies a debugger by the plugin's FILE name.
+// Base name of this DLL without its extension, from dllmain.cpp.
 qstring plugin_module_name();
 
 namespace idattd
 {
     class Plugin;
 
-    // Listener for HT_DBG notifications (module load/process start) -- used to
-    // resolve export symbols once IDA has created the module's segment.
+    // HT_DBG notifications. Resolves export symbols once IDA has created a
+    // module's segment.
     struct DbgEventListener : public event_listener_t
     {
         Plugin *p = nullptr;
@@ -89,9 +88,9 @@ namespace idattd
         // replaying it, and put an action on the Debugger menu so a declined
         // offer is never a dead end. Called once the UI is up.
         void offer_trace_session();
-        // Wait for the freshly created database to finish its initial analysis,
-        // then offer. Starting a debugger session while the auto-analysis queue
-        // is still draining is what crashed IDA on the first version of this.
+        // Wait for the database's initial analysis to finish, then offer.
+        // Starting a session rebases the program and adds segments, neither of
+        // which is safe while the analysis queue is still draining.
         void schedule_trace_offer();
         void start_trace_session();     // the action body; no prompting
         // Make IDA's debugger machinery point at us and know where the trace is,
@@ -192,7 +191,7 @@ namespace idattd
         bool m_nativeSavedOk[6] = { false, false, false, false, false, false };
 
         // Decompiler-focus tracking. m_userPrefersDecomp is sticky: it only flips on
-        // a USER focus change (not the debugger's forced disasm switch, which we
+        // a user focus change (not the debugger's forced disasm switch, which we
         // ignore while m_ignoreWidgetChanges is set during the re-focus window).
         TWidget *m_pseudoWidget   = nullptr;  // last-seen Pseudocode widget
         bool     m_userPrefersDecomp = false; // user was last in the decompiler
@@ -207,7 +206,7 @@ namespace idattd
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;
         bool            m_haveDecompiler = false;
-        // Source-info providers WE turned off, so only those are turned back
+        // Source-info providers we turned off, so only those are turned back
         // on: one the user had already disabled must stay that way. The
         // entries are string literals, so storing the pointers is safe.
         std::vector<const char *> m_srcProvidersOff;

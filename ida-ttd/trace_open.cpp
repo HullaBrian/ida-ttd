@@ -5,9 +5,7 @@ using namespace TTD::Replay;
 
 namespace idattd
 {
-    //=======================================================================
     // String helpers
-    //=======================================================================
     std::string to_utf8(const wchar_t *w, size_t len)
     {
         if ( w == nullptr || len == 0 )
@@ -20,13 +18,11 @@ namespace idattd
         return s;
     }
 
-    //-----------------------------------------------------------------------
     std::string to_utf8(const wchar_t *w)
     {
         return to_utf8(w, w != nullptr ? wcslen(w) : 0);
     }
 
-    //-----------------------------------------------------------------------
     std::wstring to_wstring(const char *s)
     {
         if ( s == nullptr || *s == '\0' )
@@ -41,16 +37,13 @@ namespace idattd
         return w;
     }
 
-    //-----------------------------------------------------------------------
     std::string base_name(const std::string &path)
     {
         size_t p = path.find_last_of("\\/");
         return p == std::string::npos ? path : path.substr(p + 1);
     }
 
-    //=======================================================================
     // IdaErrorReporting
-    //=======================================================================
     void __fastcall IdaErrorReporting::VPrintError(char const *pFmt, va_list argList)
     {
         char buf[2048];
@@ -58,9 +51,7 @@ namespace idattd
         msg("[ida-ttd] TTD: %s\n", buf);
     }
 
-    //=======================================================================
     // Index building
-    //=======================================================================
     // Percentage published by the TTD indexing threads and rendered by the main
     // thread's wait-box loop in build_trace_index().
     static std::atomic<uint32_t> g_indexPct{ 0 };
@@ -79,7 +70,6 @@ namespace idattd
         }
     }
 
-    //-----------------------------------------------------------------------
     bool build_trace_index(IReplayEngine *engine)
     {
         if ( engine == nullptr )
@@ -93,7 +83,7 @@ namespace idattd
 
         std::thread worker([engine, &done, &st]()
         {
-            // 'done' MUST be set on every exit path: the main thread spins on it
+            // 'done' must be set on every exit path: the main thread spins on it
             // and would otherwise wait forever behind a wait box with no Cancel.
             try { st = engine->BuildIndex(index_progress, nullptr, IndexBuildFlags::None); }
             catch ( ... ) {}
@@ -115,7 +105,7 @@ namespace idattd
         worker.join();
         hide_wait_box();
 
-        // IndexFileUnloadable here is NORMAL and does not mean memory reads will
+        // IndexFileUnloadable here is normal and does not mean memory reads will
         // fail -- the engine builds and uses an in-memory index, while
         // GetIndexStatus()/this result describe the on-disk .idx file only.
         if ( st != IndexStatus::IndexFileLoaded )

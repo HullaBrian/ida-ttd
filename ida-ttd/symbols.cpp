@@ -5,7 +5,6 @@ using namespace TTD::Replay;
 
 namespace idattd
 {
-    //-----------------------------------------------------------------------
     // Read exactly 'size' bytes of guest memory; return false on a short read.
     static bool read_mem(ICursorView *c, uint64_t addr, void *buf, size_t size)
     {
@@ -19,7 +18,6 @@ namespace idattd
         return read_mem(c, addr, out, sizeof(T));
     }
 
-    //-----------------------------------------------------------------------
     // Read a NUL-terminated ASCII string from guest memory (bounded).
     static std::string read_cstr(ICursorView *c, uint64_t addr, size_t maxlen = 512)
     {
@@ -41,7 +39,6 @@ namespace idattd
         return s;
     }
 
-    //-----------------------------------------------------------------------
     // Locate a module's NT headers and say which flavour they are. Shared by
     // read_guest_pe_info and resolve_export_va so the DOS/NT walk is written once.
     static bool locate_nt_headers(ICursorView *c, uint64_t base, uint64_t *nt_addr_out,
@@ -74,7 +71,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     // The export data directory of a module whose NT header is at 'ntAddr', or
     // false when it has none.
     static bool read_export_dir(ICursorView *c, uint64_t ntAddr, bool is64,
@@ -101,7 +97,6 @@ namespace idattd
         return *rva_out != 0 && *size_out != 0;
     }
 
-    //-----------------------------------------------------------------------
     bool read_guest_pe_info(ICursorView *cursor, ea_t base, GuestPeInfo *out)
     {
         if ( cursor == nullptr || out == nullptr || base == BADADDR )
@@ -177,7 +172,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     ea_t resolve_export_va(ICursorView *cursor, ea_t base, bool is64, const char *name)
     {
         qnotused(is64);   // the image's own header is the authority; see below
@@ -247,7 +241,6 @@ namespace idattd
         return BADADDR;
     }
 
-    //-----------------------------------------------------------------------
     size_t apply_module_exports(ICursorView *cursor, ea_t base, bool is64)
     {
         if ( cursor == nullptr || base == BADADDR )
@@ -297,7 +290,7 @@ namespace idattd
           || exp.AddressOfFunctions == 0 )
             return 0;
 
-        // Pull the three parallel arrays in ONE query each instead of three
+        // Pull the three parallel arrays in one query each instead of three
         // queries per export. ntdll alone exports ~2400 names, and this runs for
         // every module in the trace, so the per-entry form cost tens of thousands
         // of engine round-trips at trace-load time.
@@ -358,12 +351,9 @@ namespace idattd
             // second and renames the address, and every call site in the
             // database then reads ZwAllocateVirtualMemory.
             //
-            // Whichever real name got there first keeps the address, with one
-            // exception: a Zw name is replaced by the Nt spelling of the same
-            // stub. That is not a preference, it is a repair -- databases named
-            // by an earlier build of this plugin are full of the Zw form, and
-            // without it they would keep it forever. A dummy sub_/loc_ name is
-            // always replaced.
+            // Whichever real name got there first keeps the address, except that
+            // a Zw name is replaced by the Nt spelling of the same stub. A dummy
+            // sub_/loc_ name is always replaced.
             if ( has_user_name(get_flags(va)) )
             {
                 qstring cur;
@@ -384,7 +374,6 @@ namespace idattd
         return named;
     }
 
-    //-----------------------------------------------------------------------
     size_t parse_pdata_functions(ICursorView *cursor, ea_t base, bool is64,
                                  std::vector<std::pair<ea_t, ea_t>> &out)
     {
@@ -436,7 +425,6 @@ namespace idattd
         return out.size();
     }
 
-    //-----------------------------------------------------------------------
     size_t parse_pdata_functions_from_file(const char *path, ea_t base, bool is64,
                                            uint32_t want_timestamp, uint32_t want_checksum,
                                            std::vector<std::pair<ea_t, ea_t>> &out)
@@ -536,7 +524,6 @@ namespace idattd
         return out.size();
     }
 
-    //-----------------------------------------------------------------------
     bool load_module_image(const char *path, ModuleImage &out)
     {
         out = ModuleImage{};
@@ -576,7 +563,7 @@ namespace idattd
         out.timestamp    = nt32->FileHeader.TimeDateStamp;
         if ( nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
         {
-            // IMAGE_NT_HEADERS64 is LARGER than the ...32 form we bounds-checked
+            // IMAGE_NT_HEADERS64 is larger than the ...32 form we bounds-checked
             // above, so re-check before reading through the wider view. (A
             // truncated PE32+ file would otherwise be read past its end.)
             if ( (size_t)ntoff + sizeof(IMAGE_NT_HEADERS64) > fsz )
@@ -612,7 +599,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     size_t read_module_image_rva(const ModuleImage &img, uint32_t rva, void *buf, size_t size)
     {
         if ( !img.ok || size == 0 )

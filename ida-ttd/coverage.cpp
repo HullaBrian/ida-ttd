@@ -21,11 +21,10 @@ namespace idattd
     // eighth of this, so the cap is really "do not quietly allocate 64 MiB".
     static const uint64_t kMaxCoverageBytes = 512ull << 20;
 
-    //-----------------------------------------------------------------------
     // Which colours has this database been painted with?
     //
     // Two things are stored, under separate tags on one netnode: the colour last
-    // chosen (so the form can offer it again), and the SET of every colour used
+    // chosen (so the form can offer it again), and the set of every colour used
     // (so clearing removes highlighting applied with a colour the user has since
     // changed away from). The set is keyed by the colour itself, which is what
     // makes it a set rather than a list that could grow duplicates.
@@ -35,12 +34,10 @@ namespace idattd
     static const uchar CV_AUTO_TAG = 'A';   // alt 0 -> 1 off, 2 on (0 = never set)
     static const uchar CV_FUNC_TAG = 'F';   // alt <function start> -> 1
 
-    // The pale green earlier builds painted unconditionally, before the colour
-    // became a choice. Always cleared too, so a database highlighted by one of
-    // those builds can still be cleaned up.
+    // Shade painted by builds that predate the configurable colour. Always
+    // cleared as well, so those databases can still be cleaned up.
     static const bgcolor_t CV_LEGACY_COLOR = 0xD5F2D5;
 
-    //-----------------------------------------------------------------------
     bgcolor_t coverage_color()
     {
         netnode nn(CV_NODE);
@@ -53,7 +50,6 @@ namespace idattd
         return COVERAGE_DEFAULT_COLOR;
     }
 
-    //-----------------------------------------------------------------------
     static void remember_color(bgcolor_t c)
     {
         if ( c == DEFCOLOR )
@@ -65,7 +61,6 @@ namespace idattd
         nn.altset((nodeidx_t)c, 1, CV_USED_TAG);
     }
 
-    //-----------------------------------------------------------------------
     std::set<bgcolor_t> coverage_colors()
     {
         std::set<bgcolor_t> out;
@@ -84,7 +79,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     bool coverage_auto_enabled()
     {
         netnode nn(CV_NODE);
@@ -94,7 +88,6 @@ namespace idattd
         return v != 1;                      // 0 = never set, 1 = off, 2 = on
     }
 
-    //-----------------------------------------------------------------------
     void set_coverage_auto_enabled(bool on)
     {
         netnode nn(CV_NODE, 0, true);
@@ -102,14 +95,12 @@ namespace idattd
             nn.altset(0, on ? 2 : 1, CV_AUTO_TAG);
     }
 
-    //-----------------------------------------------------------------------
     bool coverage_function_done(ea_t start)
     {
         netnode nn(CV_NODE);
         return nn != BADNODE && nn.altval((nodeidx_t)start, CV_FUNC_TAG) != 0;
     }
 
-    //-----------------------------------------------------------------------
     static void mark_function_done(ea_t start)
     {
         netnode nn(CV_NODE, 0, true);
@@ -117,7 +108,6 @@ namespace idattd
             nn.altset((nodeidx_t)start, 1, CV_FUNC_TAG);
     }
 
-    //-----------------------------------------------------------------------
     bool cover_function(TraceManager *mgr, ea_t start, ea_t end)
     {
         if ( start == BADADDR || start >= end )
@@ -132,7 +122,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     // Sort and merge [lo,hi) spans, dropping empty ones. Overlapping watchpoints
     // would double-report the same instruction and overlapping bins would make
     // the lookup below ambiguous, so this is not just tidiness.
@@ -156,7 +145,6 @@ namespace idattd
         return out;
     }
 
-    //-----------------------------------------------------------------------
     bool run_coverage(TraceManager *mgr,
                       const std::vector<std::pair<ea_t, ea_t>> &ranges,
                       bgcolor_t color,
@@ -258,7 +246,7 @@ namespace idattd
         // Sequential replay is load-bearing: the engine's default is to replay
         // several segments in parallel and dispatch this callback from all of
         // those threads, and a read-modify-write on a bitmap byte would then lose
-        // bits. Segment FILTERING is deliberately left on (no
+        // bits. Segment filtering is deliberately left on (no
         // ReplayAllSegmentsWithoutFiltering): a watchpoint is a maskable event, so
         // a narrow scope lets the engine skip the parts of the recording that
         // never touch it -- which is the whole reason to scope this at all.
@@ -280,20 +268,17 @@ namespace idattd
             ICursorView *raw = cur.get();
             std::thread worker([raw, &done]()
             {
-                // 'done' MUST be set on every exit path: the main thread spins on
+                // 'done' must be set on every exit path: the main thread spins on
                 // it and would otherwise wait forever behind a wait box.
                 try { raw->ReplayForward(); } catch ( ... ) {}
                 done.store(true, std::memory_order_release);
             });
 
             show_wait_box("Measuring execution coverage (Cancel to stop)...");
-            uint32_t shown     = 101;          // force the first repaint
+            uint32_t shown     = 101;
             bool     asked_out = false;
             while ( !done.load(std::memory_order_acquire) )
             {
-                // InterruptReplay is documented as safe to call from any thread
-                // while a replay is running; the replay finishes its current
-                // segment and returns early. Only ask once.
                 if ( !asked_out && user_cancelled() )
                 {
                     asked_out     = true;
@@ -317,15 +302,22 @@ namespace idattd
             hide_wait_box();
         }
 
-        // Detach both callbacks before the lambdas they point at go out of scope.
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         cur->SetReplayProgressCallback(nullptr, 0);
         cur.reset();
 
-        // Paint. Only instruction HEADS are coloured: an address in the middle of
-        // an instruction, or one IDA has no code at, has no line to colour, and
-        // forcing code there from a partial sweep would be a much bigger claim
-        // than "this ran".
+        // A cancelled sweep measured only part of the trace, and a partial result
+        // painted into the database is indistinguishable from a complete one.
+        if ( res.cancelled )
+        {
+            if ( out != nullptr )
+                *out = res;
+            return true;
+        }
+
+        // Only instruction heads are coloured: an address inside an instruction,
+        // or one IDA has no code at, has no line to colour, and forcing code
+        // there from a sweep would claim more than "this ran".
         show_wait_box("HIDECANCEL\nColouring executed instructions...");
         remember_color(color);
         for ( const Bin &b : bins )
@@ -355,7 +347,6 @@ namespace idattd
         return true;
     }
 
-    //-----------------------------------------------------------------------
     size_t clear_coverage()
     {
         // Every colour this database has ever been painted with, so changing the

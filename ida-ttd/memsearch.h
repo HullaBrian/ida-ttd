@@ -28,9 +28,9 @@ namespace idattd
 
     // Replay the recording and collect every access to [lo, hi) matching 'mask'.
     //
-    // This is the cheap kind of sweep: a watchpoint IS a maskable event, so the
-    // engine skips the stretches of the recording that cannot touch the range
-    // rather than replaying all of it. Runs behind a cancellable wait box.
+    // A watchpoint is a maskable event, so the engine skips the stretches that
+    // cannot touch the range instead of replaying all of it. Runs behind a
+    // cancellable wait box.
     //
     // Returns false when it could not run at all. 'truncated' means the record
     // cap was hit and the results are the first N; 'cancelled' means the user

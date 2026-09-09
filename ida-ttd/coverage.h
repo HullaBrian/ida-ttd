@@ -6,16 +6,9 @@ namespace idattd
 {
     class TraceManager;
 
-    // Background colour painted on instructions the recording actually executed.
-    //
-    // This cannot be a constant. IDA exposes no way to ask whether the current
-    // theme is light or dark, and any single shade that reads on one is close to
-    // invisible on the other -- so the shade is the user's to pick, remembered
-    // per database, and every colour a database has been painted with is recorded
-    // so that "clear" can still find work it did not do in this session.
-    //
-    // The default is a dark green, which suits IDA's default dark theme; on a
-    // light one, pick a pale shade the first time.
+    // Default background colour for executed instructions, suiting IDA's dark
+    // theme. The shade is configurable per database because IDA exposes no way
+    // to ask whether the current theme is light or dark.
     static const bgcolor_t COVERAGE_DEFAULT_COLOR = 0x2D5A2D;
 
     // The colour this database was last painted with (the default if never).

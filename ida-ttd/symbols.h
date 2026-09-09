@@ -52,7 +52,7 @@ namespace idattd
         // Identity of the file we actually opened, from its NT headers. The trace
         // records the same two values for each module, so the caller can refuse a
         // file that is a different build of the same DLL -- the path came off the
-        // RECORDING machine and may resolve to something else entirely here.
+        // recording machine and may resolve to something else entirely here.
         uint32_t             timestamp = 0;   // FileHeader.TimeDateStamp
         uint32_t             checksum  = 0;   // OptionalHeader.CheckSum
         uint32_t             sizeOfImage = 0; // OptionalHeader.SizeOfImage
@@ -91,8 +91,8 @@ namespace idattd
     // The cursor must be positioned where the module is loaded (its
     // ModuleLoadedEvent position is the reliable choice).
     //
-    // Bitness comes from the optional header magic. It deliberately does NOT come
-    // from the engine's SystemInfo: that reports the RECORDING MACHINE, so a
+    // Bitness comes from the optional header magic. It deliberately does not come
+    // from the engine's SystemInfo: that reports the recording machine, so a
     // 32-bit program recorded on an x64 box calls itself AMD64 there.
     bool read_guest_pe_info(TTD::Replay::ICursorView *cursor, ea_t base, GuestPeInfo *out);
 

@@ -21,10 +21,10 @@ namespace idattd
     // and a real code cross-reference to each one so the call stops being a dead
     // end in the graph and in the xref list.
     //
-    // A site that reached several targets keeps all of them -- that is the
-    // interesting case, not a problem to collapse -- and the comment says so.
+    // A site that reached several targets keeps all of them, and the comment
+    // says so.
     //
-    // 'ranges' limits which call SITES are annotated. It cannot make the sweep
+    // 'ranges' limits which call sites are annotated. It cannot make the sweep
     // cheaper: the call/return callback is not a maskable event, so the engine
     // has nothing to filter on and replays everything either way.
     bool annotate_indirect_calls(TraceManager *mgr,
