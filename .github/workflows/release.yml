@@ -1,0 +1,84 @@
+name: Build and release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore the TTD Replay SDK
+        run: nuget install ida-ttd\packages.config -OutputDirectory packages
+
+      - name: Confirm the SDK restored
+        shell: pwsh
+        run: |
+          $props = Get-ChildItem -Path packages -Recurse -Filter Microsoft.TimeTravelDebugging.Apis.props
+          if (-not $props) {
+            throw "The TTD Replay SDK did not restore. The project imports its .props conditionally, so the build would otherwise fail later with a missing header."
+          }
+
+      - name: Build
+        run: msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -t:Rebuild -m:1
+
+      - name: Check the version matches the tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $meta = Get-Content ida-plugin.json -Raw | ConvertFrom-Json
+          $tag = "$env:GITHUB_REF_NAME" -replace '^v', ''
+          if ($meta.plugin.version -ne $tag) {
+            throw "ida-plugin.json says version $($meta.plugin.version) but the tag is $tag. The repository index uses the metadata, so the two must agree."
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $stage = "dist\ida-ttd"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item ida-plugin.json $stage
+          Copy-Item build\Release\ida-ttd.dll $stage
+          Compress-Archive -Path "$stage\*" -DestinationPath dist\ida-ttd.zip -Force
+
+          # The trace loader is not part of the plugin package: IDA looks for
+          # loaders in a different directory and the packaging format has no way
+          # to install one. It ships as a separate asset.
+          Copy-Item build\Release\ttd-loader.dll dist\
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ida-ttd-windows-x86_64
+          path: |
+            dist/ida-ttd.zip
+            dist/ttd-loader.dll
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view $env:GITHUB_REF_NAME 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --generate-notes --title $env:GITHUB_REF_NAME
+          }
+          gh release upload $env:GITHUB_REF_NAME dist\ida-ttd.zip dist\ttd-loader.dll --clobber

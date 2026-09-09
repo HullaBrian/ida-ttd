@@ -23,13 +23,19 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <!-- Whatever Visual Studio is installed, unless overridden with
+         -p:PlatformToolset=... Pinning a toolset here would break the
+         build on any machine that has a different one. -->
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v145</PlatformToolset>
+    <!-- Whatever Visual Studio is installed, unless overridden with
+         -p:PlatformToolset=... Pinning a toolset here would break the
+         build on any machine that has a different one. -->
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
   </PropertyGroup>
@@ -119,6 +125,8 @@
     <ClInclude Include="registers.h" />
     <ClInclude Include="trace_manager.h" />
     <ClInclude Include="symbols.h" />
+    <ClInclude Include="trace_open.h" />
+    <ClInclude Include="trace_link.h" />
     <ClInclude Include="callconv.h" />
     <ClInclude Include="tracer.h" />
     <ClInclude Include="ui.h" />
@@ -126,6 +134,7 @@
     <ClInclude Include="coverage.h" />
     <ClInclude Include="decompiler.h" />
     <ClInclude Include="memsearch.h" />
+    <ClInclude Include="memmap.h" />
     <ClInclude Include="callsites.h" />
     <ClInclude Include="icons.hh" />
     <ClInclude Include="plugin.h" />
@@ -136,6 +145,8 @@
     <ClCompile Include="registers.cpp" />
     <ClCompile Include="trace_manager.cpp" />
     <ClCompile Include="symbols.cpp" />
+    <ClCompile Include="trace_open.cpp" />
+    <ClCompile Include="trace_link.cpp" />
     <ClCompile Include="callconv.cpp" />
     <ClCompile Include="tracer.cpp" />
     <ClCompile Include="ui.cpp" />
@@ -143,6 +154,7 @@
     <ClCompile Include="coverage.cpp" />
     <ClCompile Include="decompiler.cpp" />
     <ClCompile Include="memsearch.cpp" />
+    <ClCompile Include="memmap.cpp" />
     <ClCompile Include="callsites.cpp" />
     <ClCompile Include="plugin.cpp" />
   </ItemGroup>

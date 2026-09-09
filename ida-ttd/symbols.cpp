@@ -42,6 +42,212 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    // Locate a module's NT headers and say which flavour they are. Shared by
+    // read_guest_pe_info and resolve_export_va so the DOS/NT walk is written once.
+    static bool locate_nt_headers(ICursorView *c, uint64_t base, uint64_t *nt_addr_out,
+                                  bool *is64_out)
+    {
+        IMAGE_DOS_HEADER dos{};
+        if ( !read_val(c, base, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
+            return false;
+        // e_lfanew is attacker-controlled (we analyse malware): a wild value would
+        // send every read that follows somewhere unrelated.
+        if ( dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
+            return false;
+
+        uint64_t ntAddr = base + (uint32_t)dos.e_lfanew;
+        uint32_t sig = 0;
+        if ( !read_val(c, ntAddr, &sig) || sig != IMAGE_NT_SIGNATURE )
+            return false;
+
+        // The optional header magic sits after the signature and the file header,
+        // and it -- not the recording machine's architecture -- says whether this
+        // image is 32- or 64-bit.
+        uint16_t magic = 0;
+        if ( !read_val(c, ntAddr + 4 + sizeof(IMAGE_FILE_HEADER), &magic) )
+            return false;
+        if ( magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC && magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC )
+            return false;
+
+        *nt_addr_out = ntAddr;
+        *is64_out    = magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC;
+        return true;
+    }
+
+    //-----------------------------------------------------------------------
+    // The export data directory of a module whose NT header is at 'ntAddr', or
+    // false when it has none.
+    static bool read_export_dir(ICursorView *c, uint64_t ntAddr, bool is64,
+                                uint32_t *rva_out, uint32_t *size_out)
+    {
+        if ( is64 )
+        {
+            IMAGE_NT_HEADERS64 nt{};
+            if ( !read_val(c, ntAddr, &nt) )
+                return false;
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            *rva_out  = dd.VirtualAddress;
+            *size_out = dd.Size;
+        }
+        else
+        {
+            IMAGE_NT_HEADERS32 nt{};
+            if ( !read_val(c, ntAddr, &nt) )
+                return false;
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            *rva_out  = dd.VirtualAddress;
+            *size_out = dd.Size;
+        }
+        return *rva_out != 0 && *size_out != 0;
+    }
+
+    //-----------------------------------------------------------------------
+    bool read_guest_pe_info(ICursorView *cursor, ea_t base, GuestPeInfo *out)
+    {
+        if ( cursor == nullptr || out == nullptr || base == BADADDR )
+            return false;
+        *out = GuestPeInfo();
+
+        uint64_t b = (uint64_t)base;
+        uint64_t ntAddr = 0;
+        bool     is64   = false;
+        if ( !locate_nt_headers(cursor, b, &ntAddr, &is64) )
+            return false;
+
+        out->is64 = is64;
+
+        // The section table follows the optional header, whose SIZE the file
+        // header states -- it is not always sizeof(IMAGE_OPTIONAL_HEADER), and
+        // assuming so puts the table read a few bytes off on a hand-built image.
+        IMAGE_FILE_HEADER fh{};
+        if ( !read_val(cursor, ntAddr + 4, &fh) )
+            return false;
+        uint16_t nsections = fh.NumberOfSections;
+        uint64_t sectAddr  = ntAddr + 4 + sizeof(IMAGE_FILE_HEADER) + fh.SizeOfOptionalHeader;
+
+        if ( is64 )
+        {
+            IMAGE_NT_HEADERS64 nt{};
+            if ( !read_val(cursor, ntAddr, &nt) )
+                return false;
+            out->entry_rva       = nt.OptionalHeader.AddressOfEntryPoint;
+            out->size_of_image   = nt.OptionalHeader.SizeOfImage;
+            out->size_of_headers = nt.OptionalHeader.SizeOfHeaders;
+            out->preferred_base  = nt.OptionalHeader.ImageBase;
+        }
+        else
+        {
+            IMAGE_NT_HEADERS32 nt{};
+            if ( !read_val(cursor, ntAddr, &nt) )
+                return false;
+            out->entry_rva       = nt.OptionalHeader.AddressOfEntryPoint;
+            out->size_of_image   = nt.OptionalHeader.SizeOfImage;
+            out->size_of_headers = nt.OptionalHeader.SizeOfHeaders;
+            out->preferred_base  = nt.OptionalHeader.ImageBase;
+        }
+
+        // NumberOfSections is a 16-bit file field: 65535 would ask for a 2.5 MB
+        // read of a module that has three sections. The format caps a loadable
+        // image at 96.
+        static const uint16_t kMaxSections = 96;
+        if ( nsections > kMaxSections )
+            nsections = kMaxSections;
+        if ( nsections == 0 )
+            return true;    // valid headers; a sectionless image is merely odd
+
+        std::vector<IMAGE_SECTION_HEADER> hdrs(nsections);
+        MemoryBuffer mb = cursor->QueryMemoryBuffer(
+            GuestAddress{ sectAddr },
+            BufferView{ hdrs.data(), (size_t)nsections * sizeof(IMAGE_SECTION_HEADER) });
+        size_t got = mb.Memory.Size / sizeof(IMAGE_SECTION_HEADER);
+
+        out->sections.reserve(got);
+        for ( size_t i = 0; i < got; i++ )
+        {
+            const IMAGE_SECTION_HEADER &sh = hdrs[i];
+            GuestPeSection s;
+            memcpy(s.name, sh.Name, 8);
+            s.name[8]         = '\0';
+            s.va              = sh.VirtualAddress;
+            s.vsize           = sh.Misc.VirtualSize;
+            s.rawsize         = sh.SizeOfRawData;
+            s.characteristics = sh.Characteristics;
+            out->sections.push_back(s);
+        }
+        return true;
+    }
+
+    //-----------------------------------------------------------------------
+    ea_t resolve_export_va(ICursorView *cursor, ea_t base, bool is64, const char *name)
+    {
+        qnotused(is64);   // the image's own header is the authority; see below
+        if ( cursor == nullptr || base == BADADDR || name == nullptr || *name == '\0' )
+            return BADADDR;
+
+        uint64_t b = (uint64_t)base;
+        uint64_t ntAddr = 0;
+        // Trust the image over the caller: a WoW64 recording has a 32-bit and a
+        // 64-bit ntdll, and the caller cannot know which one this base is.
+        bool     hdr64  = false;
+        if ( !locate_nt_headers(cursor, b, &ntAddr, &hdr64) )
+            return BADADDR;
+
+        uint32_t exportRva = 0, exportSize = 0;
+        if ( !read_export_dir(cursor, ntAddr, hdr64, &exportRva, &exportSize) )
+            return BADADDR;
+
+        IMAGE_EXPORT_DIRECTORY exp{};
+        if ( !read_val(cursor, b + exportRva, &exp) )
+            return BADADDR;
+        if ( exp.NumberOfNames == 0 || exp.AddressOfNames == 0
+          || exp.AddressOfNameOrdinals == 0 || exp.AddressOfFunctions == 0 )
+            return BADADDR;
+
+        static const uint32_t kMaxExports = 1u << 20;
+        uint32_t nNames = exp.NumberOfNames < kMaxExports ? exp.NumberOfNames : kMaxExports;
+        uint32_t nFuncs = exp.NumberOfFunctions < kMaxExports ? exp.NumberOfFunctions : kMaxExports;
+        if ( nNames == 0 || nFuncs == 0 )
+            return BADADDR;
+
+        std::vector<uint32_t> nameRvas(nNames);
+        std::vector<uint16_t> ordinals(nNames);
+        std::vector<uint32_t> funcRvas(nFuncs);
+
+        MemoryBuffer mbN = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + exp.AddressOfNames },
+            BufferView{ nameRvas.data(), (size_t)nNames * sizeof(uint32_t) });
+        MemoryBuffer mbO = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + exp.AddressOfNameOrdinals },
+            BufferView{ ordinals.data(), (size_t)nNames * sizeof(uint16_t) });
+        MemoryBuffer mbF = cursor->QueryMemoryBuffer(
+            GuestAddress{ b + exp.AddressOfFunctions },
+            BufferView{ funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t) });
+
+        size_t gotNames = mbN.Memory.Size / sizeof(uint32_t);
+        size_t gotOrds  = mbO.Memory.Size / sizeof(uint16_t);
+        size_t gotFuncs = mbF.Memory.Size / sizeof(uint32_t);
+        size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
+
+        for ( size_t i = 0; i < usable; i++ )
+        {
+            uint16_t ordinal = ordinals[i];
+            if ( (size_t)ordinal >= gotFuncs )
+                continue;
+            uint32_t funcRva = funcRvas[ordinal];
+            if ( funcRva == 0 )
+                continue;
+            // A forwarder's "address" points back inside the export directory.
+            // Returning it would leave the caller watching a string.
+            if ( funcRva >= exportRva && funcRva < exportRva + exportSize )
+                continue;
+            if ( read_cstr(cursor, b + nameRvas[i]) != name )
+                continue;
+            return (ea_t)(b + funcRva);
+        }
+        return BADADDR;
+    }
+
+    //-----------------------------------------------------------------------
     size_t apply_module_exports(ICursorView *cursor, ea_t base, bool is64)
     {
         if ( cursor == nullptr || base == BADADDR )
@@ -146,6 +352,31 @@ namespace idattd
                 continue;
 
             ea_t va = (ea_t)(b + funcRva);
+            // Several exports routinely share one address: ntdll exports every
+            // syscall stub twice, as NtXxx and ZwXxx. The export name table is
+            // sorted alphabetically, so without care the Zw spelling arrives
+            // second and renames the address, and every call site in the
+            // database then reads ZwAllocateVirtualMemory.
+            //
+            // Whichever real name got there first keeps the address, with one
+            // exception: a Zw name is replaced by the Nt spelling of the same
+            // stub. That is not a preference, it is a repair -- databases named
+            // by an earlier build of this plugin are full of the Zw form, and
+            // without it they would keep it forever. A dummy sub_/loc_ name is
+            // always replaced.
+            if ( has_user_name(get_flags(va)) )
+            {
+                qstring cur;
+                if ( get_name(&cur, va) <= 0 )
+                    continue;
+                bool zw_to_nt = cur.length() == name.length()
+                             && cur.length() > 2
+                             && strncmp(cur.c_str(), "Zw", 2) == 0
+                             && name.compare(0, 2, "Nt") == 0
+                             && strcmp(cur.c_str() + 2, name.c_str() + 2) == 0;
+                if ( !zw_to_nt )
+                    continue;
+            }
             if ( set_name(va, name.c_str(), SN_NOWARN | SN_FORCE | SN_NOCHECK) )
                 named++;
         }
@@ -181,7 +412,7 @@ namespace idattd
         struct RtFunc { uint32_t Begin, End, Unwind; };
         // 'size' is an attacker-controllable header field (we analyse malware);
         // cap it so a corrupt directory can't ask for a multi-gigabyte buffer.
-        static const size_t kMaxFuncs = 1u << 22;   // 4M functions ≈ 48 MB
+        static const size_t kMaxFuncs = 1u << 22;   // 4M functions ~ 48 MB
         size_t maxEntries = size / sizeof(RtFunc);
         if ( maxEntries == 0 )
             return 0;

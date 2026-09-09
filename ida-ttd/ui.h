@@ -5,6 +5,7 @@
 #include "tracer.h"
 #include "bookmarks.h"
 #include "memsearch.h"
+#include "memmap.h"
 
 namespace idattd
 {
@@ -131,12 +132,31 @@ namespace idattd
         qstring                 m_title;  // owned: chooser_base_t keeps the pointer
     };
 
+    // The reconstructed memory map, as a timeline. One row per allocation,
+    // protection change or free the recording made, in the order they happened.
+    // Enter time-travels to the call that made the change.
+    class MemoryMapChooser : public chooser_t
+    {
+    public:
+        MemoryMapChooser(TraceManager *mgr, std::vector<RegionChange> &&rows);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+
+    private:
+        TraceManager             *m_mgr;
+        std::vector<RegionChange> m_rows;   // frozen snapshot
+        qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
     // ---- TTD-specific action handlers --------------------------------------
     // Most stepping is provided by IDA's native debugger actions (attached to
     // our toolbar). IDA has no native "continue backwards", so we add one.
     // All TTD actions are only meaningful while a trace is being replayed, so the
     // plugin REGISTERS them when a trace is loaded and unregisters them when it is
-    // unloaded (Plugin::show_actions/hide_actions) — outside a session neither the
+    // unloaded (Plugin::show_actions/hide_actions) -- outside a session neither the
     // shortcuts nor the toolbar buttons exist at all. While they do exist a trace
     // is by definition active, hence AST_ENABLE_ALWAYS; the handlers still check
     // is_active() (true exactly when a cursor over a trace exists) before acting.
@@ -305,6 +325,22 @@ namespace idattd
     };
 
     // Find every read, write or execute of an address over the whole trace.
+    struct MemoryMapHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    struct ClearMemoryMapHandler : public action_handler_t
+    {
+        TraceManager *mgr = nullptr;
+        int           idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
     struct MemSearchHandler : public action_handler_t
     {
         TraceManager *mgr = nullptr;
@@ -330,6 +366,17 @@ namespace idattd
     };
 
     // Action identifiers (used for registration + menu/popup attach).
+    // Start the replay for a database that was created from a .run file. This
+    // is the one TTD action that exists while no trace is loaded, so it lives on
+    // the Debugger menu rather than the TTD menu (which the plugin only builds
+    // once a session is running).
+    struct AttachTraceHandler : public action_handler_t
+    {
+        Plugin *p = nullptr;
+        int  idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     namespace actions
     {
         constexpr const char *ADD_BOOKMARK  = "idattd:add_bookmark";
@@ -338,6 +385,8 @@ namespace idattd
         constexpr const char *COVERAGE_CLR  = "idattd:coverage_clear";
         constexpr const char *COVERAGE_AUTO = "idattd:coverage_auto";
         constexpr const char *MEM_SEARCH    = "idattd:mem_search";
+        constexpr const char *MEM_MAP       = "idattd:memory_map";
+        constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
         constexpr const char *INDIRECT      = "idattd:indirect_calls";
         constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";
         constexpr const char *RUN_BACK     = "idattd:run_back";
@@ -353,5 +402,6 @@ namespace idattd
         constexpr const char *OPEN_TRACED  = "idattd:open_traced";
         constexpr const char *OPEN_EVENTS  = "idattd:open_events";
         constexpr const char *RUN_TRACE    = "idattd:run_trace";
+        constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
     }
 }

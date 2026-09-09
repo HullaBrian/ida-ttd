@@ -2,6 +2,8 @@
 #include "coverage.h"
 #include "decompiler.h"
 #include "callsites.h"
+#include "trace_link.h"
+#include "plugin.h"
 
 using namespace TTD;
 
@@ -485,6 +487,24 @@ namespace idattd
         return 1;
     }
 
+    //-----------------------------------------------------------------------
+    int idaapi AttachTraceHandler::activate(action_activation_ctx_t *)
+    {
+        if ( p != nullptr )
+            p->start_trace_session();
+        return 1;
+    }
+
+    action_state_t idaapi AttachTraceHandler::update(action_update_ctx_t *)
+    {
+        // Only offer it when there is a recording to attach to and nothing is
+        // running yet -- otherwise it would restart a live session.
+        if ( !trace_link_present() || get_process_state() != DSTATE_NOTASK )
+            return AST_DISABLE;
+        return AST_ENABLE_ALWAYS;
+    }
+
+    //-----------------------------------------------------------------------
     int idaapi RunTraceHandler::activate(action_activation_ctx_t *)
     {
         if ( mgr == nullptr || !mgr->is_active() )
@@ -861,6 +881,288 @@ namespace idattd
         if ( n < m_hits.size() )
             m_hits.erase(m_hits.begin() + n);
         return ALL_CHANGED;
+    }
+
+    //=======================================================================
+    // MemoryMapChooser
+    //=======================================================================
+    // "module!symbol+offset" for an address, as honestly as the database allows.
+    //
+    // The naive answer -- ask IDA for the nearest name -- is actively
+    // misleading in a system DLL. Only exports are named there unless a PDB was
+    // loaded, and the code that allocates memory is almost always an internal
+    // helper, so the nearest name below it can be an unrelated function tens of
+    // kilobytes away. That is how an allocation gets reported as coming from
+    // something like RtlNtStatusToDosErrorNoTeb.
+    //
+    // So the enclosing function is established first -- from IDA when it has
+    // defined one, otherwise from the module's exception table, which knows
+    // where every x64 function starts whether or not anything named it. A name
+    // is only used when it lies INSIDE that function. Failing all of it the
+    // address is given relative to the module, which says less but is never
+    // wrong.
+    static qstring describe_address(TraceManager *mgr, ea_t ea)
+    {
+        qstring out;
+        if ( ea == BADADDR )
+            return out;
+
+        qstring mod = mgr != nullptr ? mgr->module_name_at(ea) : qstring();
+        auto qualify = [&mod](const qstring &what)
+        {
+            qstring r;
+            if ( mod.empty() )
+                r = what;
+            else
+                r.sprnt("%s!%s", mod.c_str(), what.c_str());
+            return r;
+        };
+
+        // 1. Inside a function IDA has actually defined.
+        func_entry_info_t fi;
+        if ( get_func_entry_info(&fi, ea) )
+        {
+            qstring fn = func_display_name(fi.start_ea);
+            if ( !fn.empty() )
+            {
+                qstring what = fn;
+                if ( ea != fi.start_ea )
+                    what.cat_sprnt("+0x%llX", (uint64_t)(ea - fi.start_ea));
+                return qualify(what);
+            }
+        }
+
+        // 2. The exception table of the address's module knows exactly where its
+        //    function starts, symbols or not. Anything named BEFORE that start
+        //    belongs to a different function and must not be borrowed -- that is
+        //    the whole bug: an allocation inside an unnamed internal helper was
+        //    being reported against whichever export happened to precede it.
+        ea_t fnstart = BADADDR, fnend = BADADDR;
+        bool have_fn = mgr != nullptr && mgr->function_range_at(ea, fnstart, fnend);
+
+        // 3. The nearest name at or below the address. get_nlist_idx returns the
+        //    closest match, which can sit above the address, so step back until
+        //    it does not.
+        static const ea_t kMaxNameOffset = 0x1000;
+        size_t idx = get_nlist_idx(ea);
+        size_t n   = get_nlist_size();
+        while ( idx < n && get_nlist_ea(idx) > ea )
+        {
+            if ( idx == 0 )
+            {
+                idx = n;    // nothing at or below
+                break;
+            }
+            idx--;
+        }
+        if ( idx < n )
+        {
+            ea_t at = get_nlist_ea(idx);
+            const char *nm = get_nlist_name(idx);
+            bool usable = nm != nullptr && at <= ea;
+            // Inside the real function, or -- with no exception table to consult
+            // -- merely close enough to be plausible.
+            if ( usable )
+                usable = have_fn ? at >= fnstart : (ea - at <= kMaxNameOffset);
+            if ( usable )
+            {
+                qstring what = nm;
+                if ( ea != at )
+                    what.cat_sprnt("+0x%llX", (uint64_t)(ea - at));
+                return qualify(what);
+            }
+        }
+
+        // 4. No name inside the function, but we do know where it starts. Name it
+        //    the way IDA names an unnamed function, so the row agrees with the
+        //    disassembly the user lands in.
+        if ( have_fn )
+        {
+            qstring what;
+            what.sprnt("sub_%llX", (uint64_t)fnstart);
+            if ( ea != fnstart )
+                what.cat_sprnt("+0x%llX", (uint64_t)(ea - fnstart));
+            return qualify(what);
+        }
+
+        // 5. Relative to the module, which is unambiguous even with no symbols.
+        ea_t lo = 0, hi = 0;
+        if ( mgr != nullptr && mgr->module_range_at(ea, lo, hi) && !mod.empty() )
+        {
+            out.sprnt("%s+0x%llX", mod.c_str(), (uint64_t)(ea - lo));
+            return out;
+        }
+        out.sprnt("0x%llX", (uint64_t)ea);
+        return out;
+    }
+
+    static const int   g_mm_widths[] = { 16, 8, 11, 18, 20, 11, 32, 32 };
+    static const char *g_mm_header[] = { "Position", "Thread", "Change",
+                                         "Base", "Size", "Protection",
+                                         "Requested by", "API" };
+
+    MemoryMapChooser::MemoryMapChooser(TraceManager *mgr, std::vector<RegionChange> &&rows)
+        : chooser_t(0, qnumber(g_mm_widths), g_mm_widths, g_mm_header, nullptr),
+          m_mgr(mgr), m_rows(std::move(rows))
+    {
+        // The string is a member because chooser_base_t keeps the pointer it is
+        // given rather than copying it.
+        m_title.sprnt("TTD memory map [%d]", (int)m_rows.size());
+        title = m_title.c_str();
+    }
+
+    size_t idaapi MemoryMapChooser::get_count() const
+    {
+        return m_rows.size();
+    }
+
+    void idaapi MemoryMapChooser::get_row(qstrvec_t *cols, int * /*icon*/,
+                                          chooser_item_attrs_t * /*attrs*/, size_t n) const
+    {
+        if ( n >= m_rows.size() )
+            return;
+        const RegionChange &c = m_rows[n];
+        cols->at(0).sprnt("%llX:%llX", (uint64_t)c.pos.Sequence, (uint64_t)c.pos.Steps);
+        cols->at(1).sprnt("0x%X", c.tid);
+
+        qstring what = change_name(c.kind);
+        // Say when a call targeted another process. It is left out of this
+        // process's map, and seeing that it happened at all is the point.
+        if ( c.other_process )
+            what.append(" (other process)");
+        cols->at(2) = what;
+
+        cols->at(3).sprnt("0x%llX", (uint64_t)c.base);
+        if ( c.size == 0 )
+            cols->at(4) = "whole region";
+        else
+            cols->at(4).sprnt("0x%llX", c.size);
+        // The base and size are what an unrecoverable out-parameter costs us:
+        // the kernel's exact answer was not in the recording, so the caller's
+        // own request was rounded out to page boundaries instead. That is a
+        // floor on the real region, never an overstatement.
+        if ( !c.exact )
+            cols->at(4).append(" (at least)");
+
+        // A free's "protection" argument is really the free type, so decoding it
+        // as page permissions would be nonsense.
+        if ( c.kind == RC_FREE )
+            cols->at(5) = (c.protect & 0x8000) != 0 ? "release"
+                        : (c.protect & 0x4000) != 0 ? "decommit" : "";
+        else if ( c.kind == RC_UNMAPVIEW )
+            cols->at(5) = "";
+        else
+            cols->at(5) = protection_text(c.protect);
+
+        // Who wanted the memory, and what they ended up calling. The
+        // instruction that actually invoked the syscall sits in between and is
+        // nearly always an unnamed internal helper of the DLL the stub lives in,
+        // which is why it is not a column: double-click travels there, where the
+        // whole stack is live.
+        ea_t origin = chain_origin(m_mgr, c);
+        cols->at(6) = origin != BADADDR ? describe_address(m_mgr, origin) : qstring();
+        cols->at(7) = c.api != BADADDR ? describe_address(m_mgr, c.api) : qstring();
+    }
+
+    ea_t idaapi MemoryMapChooser::get_ea(size_t n) const
+    {
+        if ( n >= m_rows.size() )
+            return BADADDR;
+        // Follow what the row names: the code that asked for the memory.
+        ea_t origin = chain_origin(m_mgr, m_rows[n]);
+        return origin != BADADDR ? origin : m_rows[n].pc;
+    }
+
+    // Deferred resume only, as everywhere else: never drive the debugger
+    // synchronously from inside a chooser callback.
+    chooser_t::cbret_t idaapi MemoryMapChooser::enter(size_t n)
+    {
+        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_rows.size() )
+        {
+            // The call, not the return. Travelling to the return leaves you
+            // inside the syscall stub, which is never what the row is about and
+            // does not match the function the row names.
+            const RegionChange &c = m_rows[n];
+            m_mgr->set_next_position(c.call_pos.IsValid() ? c.call_pos : c.pos);
+            request_continue_process();
+            run_requests();
+        }
+        return cbret_t(n, NOTHING_CHANGED);
+    }
+
+    //=======================================================================
+    // Memory map
+    //=======================================================================
+    int idaapi MemoryMapHandler::activate(action_activation_ctx_t *)
+    {
+        if ( mgr == nullptr || !mgr->is_active() )
+        {
+            warning("The memory map is only available while replaying a trace.");
+            return 1;
+        }
+
+        MemoryMap &map = mgr->memmap();
+        if ( map.empty() )
+        {
+            // Building it replays the whole recording, so say so before starting
+            // rather than after.
+            if ( ask_yn(ASKBTN_YES,
+                        "Reconstructing the memory map replays the whole recording "
+                        "once, watching every call that allocates, protects or frees "
+                        "memory.\n\n"
+                        "That can take a while on a large trace. It is saved in the "
+                        "database afterwards, so this is paid once.\n\n"
+                        "Build it now?") != ASKBTN_YES )
+            {
+                return 1;
+            }
+
+            bool cancelled = false;
+            if ( !build_memory_map(mgr, &map, &cancelled) )
+                return 1;
+            if ( map.empty() )
+            {
+                info("The recording made no memory allocations, protection changes "
+                     "or frees that could be recovered.");
+                return 1;
+            }
+            if ( !cancelled )
+                map.save(mgr->trace_fingerprint());
+            else
+                msg("[ida-ttd] memory map: the sweep was cancelled, so the partial "
+                    "map is used for this session but not saved.\n");
+
+            // The regions in force at the current position are new information
+            // for IDA: it has been treating all of user space as one segment.
+            invalidate_dbgmem_config();
+            refresh_idaview_anyway();
+        }
+
+        std::vector<RegionChange> rows;
+        rows.reserve(map.size());
+        for ( size_t i = 0; i < map.size(); i++ )
+            rows.push_back(map.at(i));
+
+        MemoryMapChooser *ch = new MemoryMapChooser(mgr, std::move(rows));
+        ch->choose();
+        return 1;
+    }
+
+    //-----------------------------------------------------------------------
+    int idaapi ClearMemoryMapHandler::activate(action_activation_ctx_t *)
+    {
+        MemoryMap::erase();
+        if ( mgr != nullptr )
+        {
+            mgr->memmap().clear();
+            // Back to one flat range over user space, which is what the debugger
+            // reported before any of this existed.
+            invalidate_dbgmem_config();
+        }
+        msg("[ida-ttd] memory map cleared; the debugger is back to reporting user "
+            "space as a single range.\n");
+        refresh_idaview_anyway();
+        return 1;
     }
 
     //=======================================================================

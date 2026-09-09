@@ -35,6 +35,15 @@
     <ClInclude Include="symbols.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="memmap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="trace_open.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="trace_link.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="callconv.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -65,6 +74,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="symbols.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="memmap.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="trace_open.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="trace_link.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="callconv.cpp">

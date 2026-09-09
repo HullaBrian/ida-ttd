@@ -2,51 +2,16 @@
 #include "registers.h"
 #include "plugin.h"
 #include "symbols.h"
+#include "trace_link.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
 
 namespace idattd
 {
-    //=======================================================================
-    // String helpers
-    //=======================================================================
-    static std::string to_utf8(const wchar_t *w, size_t len)
-    {
-        if ( w == nullptr || len == 0 )
-            return std::string();
-        int n = WideCharToMultiByte(CP_UTF8, 0, w, (int)len, nullptr, 0, nullptr, nullptr);
-        if ( n <= 0 )
-            return std::string();
-        std::string s((size_t)n, '\0');
-        WideCharToMultiByte(CP_UTF8, 0, w, (int)len, s.data(), n, nullptr, nullptr);
-        return s;
-    }
-
-    static std::string to_utf8(const wchar_t *w)
-    {
-        return to_utf8(w, w != nullptr ? wcslen(w) : 0);
-    }
-
-    static std::wstring to_wstring(const char *s)
-    {
-        if ( s == nullptr || *s == '\0' )
-            return std::wstring();
-        int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-        if ( n <= 0 )
-            return std::wstring();
-        std::wstring w((size_t)n, L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), n);
-        if ( !w.empty() && w.back() == L'\0' )
-            w.pop_back();
-        return w;
-    }
-
-    static std::string base_name(const std::string &path)
-    {
-        size_t p = path.find_last_of("\\/");
-        return p == std::string::npos ? path : path.substr(p + 1);
-    }
+    // to_utf8 / to_wstring / base_name and the index builder live in
+    // trace_open.{h,cpp}: the .run loader is a separate binary that needs the
+    // same four things and cannot reach into TraceManager.
 
     // Is the on-disk file we loaded the same build as the module in the trace?
     //
@@ -62,16 +27,6 @@ namespace idattd
         if ( m.Checksum != 0 && img.checksum != 0 && img.checksum != m.Checksum )
             return false;
         return true;
-    }
-
-    //=======================================================================
-    // IdaErrorReporting
-    //=======================================================================
-    void __fastcall IdaErrorReporting::VPrintError(char const *pFmt, va_list argList)
-    {
-        char buf[2048];
-        qvsnprintf(buf, sizeof(buf), pFmt, argList);
-        msg("[ida-ttd] TTD: %s\n", buf);
     }
 
     //=======================================================================
@@ -93,27 +48,6 @@ namespace idattd
             *errbuf = m;
         msg("[ida-ttd] %s\n", m.c_str());
         return drc;
-    }
-
-    //=======================================================================
-    // Index build progress
-    //=======================================================================
-    // Percentage published by the TTD indexing threads, consumed by the main
-    // thread's wait-box loop in on_start_process(). See index_progress().
-    static std::atomic<uint32_t> g_indexPct{ 0 };
-
-    // TTD invokes this from its own indexing WORKER THREADS. It must therefore not
-    // touch IDA at all: calling replace_wait_box() here deadlocked IDA outright
-    // (process alive at 0% CPU, permanently unresponsive, no window repaint) on the
-    // first load of any trace with no prebuilt .idx. Publish the percentage and
-    // return; the main thread renders it.
-    static void __stdcall index_progress(void const * /*ctx*/, IndexBuildProgressType const *d) noexcept
-    {
-        if ( d != nullptr && d->KeyframeCount > 0 )
-        {
-            uint32_t pct = (uint32_t)((uint64_t)d->KeyframesProcessed * 100 / d->KeyframeCount);
-            g_indexPct.store(pct, std::memory_order_relaxed);
-        }
     }
 
     //=======================================================================
@@ -220,6 +154,11 @@ namespace idattd
         m_moduleImages.clear();
         m_reconRegions.clear();
         m_dynFuncBytes.clear();
+        m_memmap.clear();
+        m_lastLayout.qclear();
+        m_haveLayout = false;
+        m_foldLayout.qclear();
+        m_foldValid  = false;
         return DRC_OK;
     }
 
@@ -288,10 +227,19 @@ namespace idattd
             m_afSaved = true;
         }
         inf_set_af(m_savedAf & ~(uint32)(AF_PROC | AF_PROCPTR));
-        m_targetName         = base_name(input_path != nullptr ? input_path : "");
+        // Which module the database is OF, so a load of it can trigger a
+        // rebase. A database created by the .run loader states this outright;
+        // otherwise it is the name of the file IDA thinks it opened.
+        {
+            TraceLink link;
+            if ( trace_link_read(&link) && !link.module_name.empty() )
+                m_targetName = link.module_name.c_str();
+            else
+                m_targetName = base_name(input_path != nullptr ? input_path : "");
+        }
 
         // We load module PDBs ourselves, silently (see load_module_pdb), so turn
-        // OFF IDA's automatic debug-file loading — otherwise it pops a "load
+        // OFF IDA's automatic debug-file loading -- otherwise it pops a "load
         // symbols?" confirmation for every module. (set_debugger_options REPLACES
         // the option set and returns the old one, so clear just this bit.)
         uint dopts = set_debugger_options(0);
@@ -336,51 +284,10 @@ namespace idattd
         }
 
         // Build the memory index if it is not already present. Without it,
-        // memory reads are severely limited.
-        if ( m_engine->GetIndexStatus() != IndexStatus::IndexFileLoaded )
-        {
-            // BuildIndex is fully synchronous and can run for minutes, so it must NOT
-            // run on the main thread: doing so blocks IDA's message loop for the whole
-            // build (no repaint, no progress). Run it on a worker and let the MAIN
-            // thread own the wait box, polling the percentage published by
-            // index_progress(). This is also what keeps the progress callback off IDA's
-            // UI (see index_progress) — the previous arrangement deadlocked IDA.
-            //
-            // The build cannot be interrupted: IndexBuildProgressCallback returns void
-            // and BuildIndex exposes no cancellation flag, so the box is HIDECANCEL
-            // rather than offering a Cancel that could not do anything.
-            g_indexPct.store(0, std::memory_order_relaxed);
-            std::atomic<bool> done{ false };
-            IndexStatus       st = IndexStatus::IndexFileNotPresent;
-            IReplayEngine    *eng = m_engine.get();
-
-            std::thread worker([eng, &done, &st]()
-            {
-                st = eng->BuildIndex(index_progress, nullptr, IndexBuildFlags::None);
-                done.store(true, std::memory_order_release);
-            });
-
-            show_wait_box("HIDECANCEL\nBuilding TTD index...");
-            uint32_t shown = 101;                    // force the first repaint
-            while ( !done.load(std::memory_order_acquire) )
-            {
-                uint32_t pct = g_indexPct.load(std::memory_order_relaxed);
-                if ( pct != shown )
-                {
-                    replace_wait_box("HIDECANCEL\nBuilding TTD index... %u%%", pct);
-                    shown = pct;
-                }
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-            worker.join();
-            hide_wait_box();
-
-            // Note: IndexFileUnloadable here is NORMAL and does not mean memory reads
-            // will fail — the engine builds and uses an in-memory index, while
-            // GetIndexStatus()/this result describe the on-disk .idx file only.
-            if ( st != IndexStatus::IndexFileLoaded )
-                msg("[ida-ttd] TTD index build finished with status %d (in-memory index still usable).\n", (int)st);
-        }
+        // memory reads are severely limited. The .run loader may already have
+        // built it when the database was created, in which case this returns
+        // immediately.
+        build_trace_index(m_engine.get());
 
         m_cursor = UniqueCursor{ m_engine->NewCursor() };
         if ( !m_cursor )
@@ -398,6 +305,18 @@ namespace idattd
         // across the whole trace to reconstruct the value (lower confidence, but it
         // is what WinDbg/Binja effectively show) so far fewer bytes come back 0.
         m_cursor->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
+
+        // A memory map costs a full replay, so one saved against THIS recording
+        // is reused rather than rebuilt. A map saved against a different trace
+        // fails the fingerprint check and is ignored.
+        m_memmap.clear();
+        m_lastLayout.qclear();
+        m_haveLayout = false;
+        m_foldLayout.qclear();
+        m_foldValid  = false;
+        if ( m_memmap.load(trace_fingerprint()) )
+            msg("[ida-ttd] loaded a saved memory map: %d recorded change(s).\n",
+                (int)m_memmap.size());
 
         if ( m_plugin != nullptr )
             m_plugin->show_actions();
@@ -604,7 +523,7 @@ namespace idattd
         if ( !m_engine )
             return nullptr;
 
-        // Which loaded module (if any) contains 'ea'? (Binary search — this runs
+        // Which loaded module (if any) contains 'ea'? (Binary search -- this runs
         // once per gap of every memory read.)
         size_t mi = module_index_at(ea);
         if ( mi == (size_t)-1 )
@@ -863,27 +782,238 @@ namespace idattd
         *nbytes = resolved_end;
         // Nothing at this address is recorded, reconstructed, or image-backed: it
         // is unmapped/unknown memory. Report a read FAILURE rather than a silent
-        // zero-fill — otherwise IDA treats the whole address space (advertised as
+        // zero-fill -- otherwise IDA treats the whole address space (advertised as
         // one big segment) as readable and the register/stack views dereference a
         // garbage pointer into 0, then dereference that 0, ad infinitum.
         return resolved_end == 0 ? DRC_FAILED : DRC_OK;
     }
 
     //-----------------------------------------------------------------------
-    ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
+    // Build the memory layout IDA should see at the cursor's current position.
+    //
+    // With no reconstructed map this is what it has always been: one flat
+    // read/write/execute range over user space. With a map, the regions the
+    // recording actually created are reported individually, named and carrying
+    // their real protection, and everything between them keeps the flat range.
+    //
+    // The filler is not optional. Stacks, heaps, the PEB and the TEB are never
+    // created by a call we watch, so reporting only the discovered regions would
+    // make IDA stop reading them and break the stack and register views. What the
+    // map adds is names and honest permissions where we know them, never less
+    // reachability than before.
+    void TraceManager::build_memory_layout(meminfo_vec_t *out) const
     {
-        memory_info_t mi;
         // Start above the Windows null page (the low 64 KiB is always reserved /
         // unmapped). Excluding it stops IDA from treating small integers (0, 1, ...)
         // as valid TTD pointers and recursively dereferencing them in the
         // register/stack views.
-        mi.start_ea = 0x10000;
-        mi.end_ea   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
-        mi.name     = "TTD";
-        mi.bitness  = m_is64 ? 2 : 1;
-        mi.perm     = SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC;
-        ranges->push_back(mi);
+        const ea_t  LO   = 0x10000;
+        const ea_t  HI   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
+        const uchar BITS = m_is64 ? 2 : 1;
+
+        Position now = m_cursor ? m_cursor->GetPosition() : Position::Invalid;
+        if ( m_foldValid && now == m_foldPos )
+        {
+            *out = m_foldLayout;
+            return;
+        }
+
+        out->qclear();
+
+        // Named pieces of the address space, gathered before anything is
+        // emitted so they can be sorted and the gaps filled in one pass.
+        struct Named
+        {
+            ea_t    lo = 0, hi = 0;
+            qstring name;
+            qstring sclass;
+            uchar   perm = 0;
+            bool operator<(const Named &o) const { return lo < o.lo; }
+        };
+        std::vector<Named> named;
+
+        // ---- the regions the recording built ------------------------------
+        std::vector<Region> regs;
+        if ( !m_memmap.empty() && m_cursor )
+            m_memmap.state_at(now, regs);
+
+        for ( const Region &r : regs )
+        {
+            ea_t lo = r.base < LO ? LO : r.base;
+            ea_t hi = r.end() > HI ? HI : (ea_t)r.end();
+            if ( hi <= lo )
+                continue;
+            uchar perm = protection_perm(r.protect);
+            Named nm;
+            nm.lo   = lo;
+            nm.hi   = hi;
+            nm.perm = perm;
+            // Name it after the module it belongs to when it belongs to one --
+            // a mapped view of kernel32 reads far better as "kernel32_dll" than
+            // as "view_7FFA...". The address is kept as a suffix because one
+            // module can hold several regions with different protections once a
+            // VirtualProtect has split it.
+            qstring mod = module_ident_at(lo);
+            if ( !mod.empty() )
+                nm.name.sprnt("%s_%a", mod.c_str(), lo);
+            else
+                nm.name.sprnt("%s_%a",
+                              r.origin == RC_MAPVIEW ? "view"
+                            : r.origin == RC_PROTECT ? "prot" : "alloc", lo);
+            nm.sclass = (perm & SEGPERM_EXEC) != 0 ? "CODE" : "DATA";
+            named.push_back(nm);
+        }
+        std::sort(named.begin(), named.end());
+        size_t nregions = named.size();
+
+        // ---- the modules mapped at this position --------------------------
+        //
+        // Without these every module falls into the generic filler below, so a
+        // function in kernelbase reads as being in a segment called "TTD". The
+        // recording knows exactly where each module is; there is no reason to
+        // make the user guess.
+        //
+        // Read and execute, not read/write/execute: we do not track a module's
+        // per-section protections, and marking every module writable would bury
+        // the RWX allocations this whole feature exists to make visible.
+        if ( m_cursor )
+        {
+            size_t n = m_cursor->GetModuleCount();
+            const ModuleInstance *list = m_cursor->GetModuleList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                const Module *m = list[i].pModule;
+                if ( m == nullptr )
+                    continue;
+                ea_t mlo = (ea_t)(uint64_t)m->Address;
+                ea_t mhi = mlo + (ea_t)m->Size;
+                if ( mlo < LO ) mlo = LO;
+                if ( mhi > HI ) mhi = HI;
+                if ( mhi <= mlo )
+                    continue;
+
+                qstring ident = module_ident_at(mlo);
+                if ( ident.empty() )
+                    ident.sprnt("mod_%a", mlo);
+
+                // A discovered region is more specific than the module it sits
+                // in, so the module only claims what the regions leave.
+                ea_t cur = mlo;
+                for ( size_t k = 0; k < nregions && cur < mhi; k++ )
+                {
+                    const Named &r = named[k];
+                    if ( r.hi <= cur )
+                        continue;
+                    if ( r.lo >= mhi )
+                        break;
+                    if ( r.lo > cur )
+                    {
+                        Named nm;
+                        nm.lo     = cur;
+                        nm.hi     = r.lo;
+                        nm.name   = ident;
+                        nm.sclass = "CODE";
+                        nm.perm   = SEGPERM_READ | SEGPERM_EXEC;
+                        named.push_back(nm);
+                    }
+                    cur = r.hi > cur ? r.hi : cur;
+                }
+                if ( cur < mhi )
+                {
+                    Named nm;
+                    nm.lo     = cur;
+                    nm.hi     = mhi;
+                    nm.name   = ident;
+                    nm.sclass = "CODE";
+                    nm.perm   = SEGPERM_READ | SEGPERM_EXEC;
+                    named.push_back(nm);
+                }
+            }
+        }
+
+        std::sort(named.begin(), named.end());
+
+        // ---- emit, filling every gap --------------------------------------
+        //
+        // The filler is not optional. Stacks, heaps, the PEB and the TEB are
+        // never created by a call we watch and belong to no module, so reporting
+        // only what we can name would make IDA stop reading them and break the
+        // stack and register views. What the names add is description, never
+        // less reachability than before.
+        auto filler = [&](ea_t lo, ea_t hi)
+        {
+            if ( hi <= lo )
+                return;
+            memory_info_t mi;
+            mi.start_ea = lo;
+            mi.end_ea   = hi;
+            mi.name     = "TTD";
+            mi.bitness  = BITS;
+            mi.perm     = SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC;
+            out->push_back(mi);
+        };
+
+        ea_t cur = LO;
+        for ( const Named &nm : named )
+        {
+            // Two modules can overlap in a recording that reused an address;
+            // whatever was emitted first keeps the space.
+            if ( nm.hi <= cur )
+                continue;
+            ea_t lo = nm.lo < cur ? cur : nm.lo;
+            if ( lo >= nm.hi )
+                continue;
+            filler(cur, lo);
+
+            memory_info_t mi;
+            mi.start_ea = lo;
+            mi.end_ea   = nm.hi;
+            mi.name     = nm.name;
+            mi.sclass   = nm.sclass;
+            mi.bitness  = BITS;
+            mi.perm     = nm.perm;
+            out->push_back(mi);
+            cur = nm.hi;
+        }
+        filler(cur, HI);
+
+        m_foldLayout = *out;
+        m_foldPos    = now;
+        m_foldValid  = true;
+    }
+
+    //-----------------------------------------------------------------------
+    ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
+    {
+        meminfo_vec_t layout;
+        build_memory_layout(&layout);
+
+        // Rebuilding IDA's debugger segments is not cheap, and stepping inside
+        // one region changes nothing about the layout. Say so.
+        if ( m_haveLayout && layout == m_lastLayout )
+            return DRC_NOCHG;
+
+        m_lastLayout = layout;
+        m_haveLayout = true;
+        *ranges = layout;
         return DRC_OK;
+    }
+
+    //-----------------------------------------------------------------------
+    void TraceManager::refresh_memory_layout()
+    {
+        // The layout is no longer a constant even without a memory map: it
+        // names the modules mapped at the current position, and time travel can
+        // cross a module load or unload.
+        if ( !m_haveLayout )
+            return;
+        meminfo_vec_t now;
+        build_memory_layout(&now);
+        if ( now == m_lastLayout )
+            return;
+        // Documented as slow, which is exactly why it is behind the comparison
+        // rather than called on every stop.
+        invalidate_dbgmem_config();
     }
 
     //-----------------------------------------------------------------------
@@ -900,7 +1030,14 @@ namespace idattd
     //-----------------------------------------------------------------------
     ssize_t TraceManager::on_rebase_if_required_to(ea_t new_base)
     {
-        rebase_program(new_base - get_imagebase(), MSF_FIXONCE);
+        // A database the .run loader created already has the main image at its
+        // recorded base, so the delta is zero. rebase_program(0) is not free --
+        // it runs the whole segment-move machinery, shows its own progress box
+        // and dirties the database -- so say no rather than doing nothing slowly.
+        ea_t delta = new_base - get_imagebase();
+        if ( delta == 0 )
+            return DRC_OK;
+        rebase_program(delta, MSF_FIXONCE);
         return DRC_OK;
     }
 
@@ -1087,7 +1224,7 @@ namespace idattd
     //-----------------------------------------------------------------------
     // Run backward to 'addr': set a temporary Execute watchpoint there and replay
     // backward. The engine seeks straight to the previous execution of 'addr' (one
-    // ReplayBackward — cheap, NOT a backward single-step loop), stopping there or
+    // ReplayBackward -- cheap, NOT a backward single-step loop), stopping there or
     // at any user breakpoint hit on the way, or at the start of the trace.
     EventType TraceManager::navigate_backward_to(ea_t addr)
     {
@@ -1112,7 +1249,7 @@ namespace idattd
     //-----------------------------------------------------------------------
     // Run forward to 'addr': set a temporary Execute watchpoint there and replay
     // forward. The engine seeks straight to the next execution of 'addr' (one
-    // ReplayForward — cheap), stopping there, at any user breakpoint hit on the
+    // ReplayForward -- cheap), stopping there, at any user breakpoint hit on the
     // way, or at the end of the trace. If the cursor is already on 'addr', step
     // once first so we advance to the NEXT occurrence instead of matching here.
     EventType TraceManager::navigate_forward_to(ea_t addr)
@@ -1556,18 +1693,18 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
-    // Lay out the function around PC. Runs on every stop, so it must be CHEAP —
+    // Lay out the function around PC. Runs on every stop, so it must be CHEAP --
     // no trace replay.
     //
     // Primary path (x64, WinDbg-style): the module's .pdata exception table gives
     // the EXACT [start,end) of the enclosing function (recovered offline in
     // resolve_symbols). We disassemble the whole range at once, so the code BEFORE
-    // PC is already laid out — stepping backward no longer reveals one instruction
+    // PC is already laid out -- stepping backward no longer reveals one instruction
     // at a time. The bounds are authoritative, so there's no mis-alignment or
     // "RIP not code" prompt.
     //
     // Fallback (x86, or a module with no .pdata): linear forward layout from PC.
-    // PC is RIP — a real boundary — so a straight-line decode is exact; we stop at
+    // PC is RIP -- a real boundary -- so a straight-line decode is exact; we stop at
     // the first return. (Lines above PC only appear as you reach them; the deep,
     // user-triggered "Analyze whole function" can still recover the rest.)
     ea_t TraceManager::call_target_of(const insn_t &insn, ea_t &slot_out)
@@ -1817,7 +1954,7 @@ namespace idattd
         if ( function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg.end_ea )
         {
             // Module function with authoritative .pdata bounds: disassemble the
-            // whole range. Embedded data (jump tables) can't decode — skip a byte.
+            // whole range. Embedded data (jump tables) can't decode -- skip a byte.
             ea_t ip = fstart;
             for ( int guard = 0; ip < fend && guard < 0x20000; guard++ )
             {
@@ -1933,7 +2070,7 @@ namespace idattd
         Position cur = m_cursor->GetPosition();
         uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
 
-        // Seek a little before the current position, then replay FORWARD (cheap —
+        // Seek a little before the current position, then replay FORWARD (cheap --
         // no per-step keyframe re-seek like going backward).
         Position start = cur;
         start.Steps = (StepCount)((uint64_t)cur.Steps > BEFORE ? (uint64_t)cur.Steps - BEFORE : 0);
@@ -2250,6 +2387,11 @@ namespace idattd
         // handled separately by Plugin::keep_decompiler_focused() (a deferred
         // re-activation after the stop), not by weakening this memory refresh.
         invalidate_dbgmem_contents(BADADDR, 0);
+
+        // Time travel can move us across an allocation, a protection change or a
+        // free, so the regions in force here may not be the ones IDA was last
+        // given. This is a no-op unless a memory map has been built.
+        refresh_memory_layout();
 
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.
@@ -2722,7 +2864,7 @@ namespace idattd
 
         // Never fetch a PDB for the analyzed binary itself (module 0). IDA already
         // owns that file's database (its own symbols/analysis); asking the pdb
-        // plugin only triggers a redundant — and possibly slow/networked —
+        // plugin only triggers a redundant -- and possibly slow/networked --
         // symbol-server lookup for the very file the user is analyzing. We match by
         // BASE (authoritative) so a name mismatch can't let it slip through.
         if ( m_engine->GetModuleCount() > 0
@@ -2812,7 +2954,7 @@ namespace idattd
 
         // Recover this module's function boundaries from its .pdata exception
         // table so we can lay out whole functions (incl. code before the current
-        // PC) when the user steps into runtime-only code — no symbols, no replay.
+        // PC) when the user steps into runtime-only code -- no symbols, no replay.
         // Prefer the on-disk PE (reliable); fall back to recorded memory, since
         // TTD may not have captured the .pdata section.
         std::string modpath = hit != nullptr && hit->pModule != nullptr
@@ -2936,12 +3078,81 @@ namespace idattd
     }
 
     //-----------------------------------------------------------------------
+    qstring TraceManager::module_ident_at(ea_t ea) const
+    {
+        qstring out;
+        if ( !m_engine )
+            return out;
+        size_t n = m_engine->GetModuleCount();
+        const Module *list = m_engine->GetModuleList();
+        for ( size_t i = 0; i < n; i++ )
+        {
+            ea_t base = (ea_t)(uint64_t)list[i].Address;
+            if ( ea < base || ea >= base + (ea_t)list[i].Size )
+                continue;
+            std::string bn = base_name(to_utf8(list[i].pName, list[i].NameLength));
+            // Keep the extension -- "kernel32_dll" says more than "kernel32" for
+            // a segment name -- but a segment name has to be a valid IDA name,
+            // so anything that is not a name character becomes an underscore.
+            for ( char &c : bn )
+                if ( !qisalnum(c) && c != '_' )
+                    c = '_';
+            out = bn.c_str();
+            break;
+        }
+        return out;
+    }
+
+    //-----------------------------------------------------------------------
     std::vector<std::pair<ea_t, ea_t>> TraceManager::module_ranges() const
     {
         std::vector<std::pair<ea_t, ea_t>> out;
         for ( const ModuleSpan &s : module_spans() )
             out.push_back({ s.base, s.end });
         return out;
+    }
+
+    //-----------------------------------------------------------------------
+    std::vector<TraceManager::ModuleLoad> TraceManager::module_loads() const
+    {
+        std::vector<ModuleLoad> out;
+        if ( !m_engine )
+            return out;
+
+        size_t n = m_engine->GetModuleLoadedEventCount();
+        const ModuleLoadedEvent *evs = m_engine->GetModuleLoadedEventList();
+        out.reserve(n);
+        for ( size_t i = 0; i < n; i++ )
+        {
+            const Module *m = evs[i].pModule;
+            if ( m == nullptr )
+                continue;
+            ModuleLoad ml;
+            ml.base = (ea_t)(uint64_t)m->Address;
+            ml.size = m->Size;
+            ml.name = base_name(to_utf8(m->pName, m->NameLength)).c_str();
+            ml.pos  = evs[i].Position;
+            out.push_back(std::move(ml));
+        }
+        return out;
+    }
+
+    //-----------------------------------------------------------------------
+    uint64_t TraceManager::trace_fingerprint() const
+    {
+        if ( !m_engine )
+            return 0;
+        // Process id, the extent of the recording and how many modules it saw.
+        // Not a hash of the file -- that would mean reading gigabytes -- but
+        // enough that two different recordings do not collide in practice, and
+        // it costs nothing.
+        const SystemInfo &si = m_engine->GetSystemInfo();
+        uint64_t v = (uint64_t)si.ProcessId;
+        v = v * 1099511628211ull ^ (uint64_t)m_engine->GetFirstPosition().Sequence;
+        v = v * 1099511628211ull ^ (uint64_t)m_engine->GetLastPosition().Sequence;
+        v = v * 1099511628211ull ^ (uint64_t)m_engine->GetLastPosition().Steps;
+        v = v * 1099511628211ull ^ (uint64_t)m_engine->GetModuleCount();
+        return v;
     }
 
     //-----------------------------------------------------------------------
@@ -3014,7 +3225,7 @@ namespace idattd
         if ( !m_engine )
             return out;
 
-        // NB: the pThreadInfo / pModule back-pointers are checked before use —
+        // NB: the pThreadInfo / pModule back-pointers are checked before use --
         // resolve_symbols() already guards pModule, so a null is possible here too
         // and would otherwise crash the Timeline.
         {

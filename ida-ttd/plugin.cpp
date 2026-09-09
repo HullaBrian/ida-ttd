@@ -1,4 +1,5 @@
 #include "plugin.h"
+#include "trace_link.h"
 #include "registers.h"
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
@@ -56,6 +57,8 @@ namespace idattd
         { actions::COVERAGE_CLR,    false },
         { actions::COVERAGE_AUTO,   false },
         { actions::MEM_SEARCH,      true  },
+        { actions::MEM_MAP,         false },
+        { actions::MEM_MAP_CLR,     false },
         { actions::INDIRECT,        false },
         { actions::INDIRECT_CLR,    false },
     };
@@ -80,11 +83,12 @@ namespace idattd
         m_dbgEvents.p = this;
         m_uiEvents.p  = this;
         m_idbEvents.p = this;
+        m_attachTrace.p = this;
 
         // Icons are loaded once for the lifetime of the plugin (they are freed in
         // the destructor); the ACTIONS themselves are only registered while a
         // trace is loaded, so the TTD shortcuts and toolbar do not exist until
-        // then — see show_actions()/hide_actions().
+        // then -- see show_actions()/hide_actions().
         load_icons();
         // Pseudocode coverage highlighting, if this install has a decompiler.
         // Everything about it is optional: without Hex-Rays the plugin behaves
@@ -109,6 +113,11 @@ namespace idattd
             unregister_timer(m_autoCoverTimer);
             m_autoCoverTimer = nullptr;
         }
+        if ( m_attachTimer != nullptr )
+        {
+            unregister_timer(m_attachTimer);
+            m_attachTimer = nullptr;
+        }
         term_decompiler();
         unhook_event_listener(HT_IDB, &m_idbEvents);
         unhook_event_listener(HT_UI,  &m_uiEvents);
@@ -121,6 +130,12 @@ namespace idattd
         if ( ::dbg == &m_debugger )
             ::dbg = nullptr;
         hide_actions();     // toolbar + actions, if a session was still open
+        if ( m_attachRegistered )
+        {
+            detach_action_from_menu("Debugger/", actions::ATTACH_TRACE);
+            unregister_action(actions::ATTACH_TRACE);
+            m_attachRegistered = false;
+        }
         for ( int ic : { m_icoContinue, m_icoRevContinue, m_icoStepInto,
                          m_icoStepOver, m_icoStepOut, m_icoStepBack,
                          m_icoStepIntoBack, m_icoStepOutBack,
@@ -152,9 +167,207 @@ namespace idattd
     //-----------------------------------------------------------------------
     bool idaapi Plugin::run(size_t)
     {
-        info("ida-ttd: select 'TTD trace replayer' under Debugger > Switch debugger, "
-             "then start with a .run trace file as the application.");
+        if ( trace_link_present() && get_process_state() == DSTATE_NOTASK )
+        {
+            start_trace_session();
+            return true;
+        }
+        info("ida-ttd: open a .run trace directly, or select 'TTD trace replayer' "
+             "under Debugger > Switch debugger and start with the trace file as "
+             "the application.");
         return true;
+    }
+
+    //-----------------------------------------------------------------------
+    // Start replaying the recording this database was created from.
+    //
+    // No prompting here: this is the body of the Debugger menu action, where the
+    // user has already said what they want. offer_trace_session() is the one that
+    // asks.
+    void Plugin::start_trace_session()
+    {
+        TraceLink link;
+        if ( !trace_link_read(&link) )
+        {
+            warning("This database was not created from a TTD trace, so there is "
+                    "nothing to replay.\n\nUse Debugger > Switch debugger to attach "
+                    "a trace to it instead.");
+            return;
+        }
+        if ( get_process_state() != DSTATE_NOTASK )
+        {
+            warning("A debugging session is already running.");
+            return;
+        }
+
+        // The recording may have moved or been renamed since the database was
+        // made. That is a normal thing to happen to a file and not a reason to
+        // fail: ask where it went and remember the answer.
+        if ( !qfileexist(link.trace_path.c_str()) )
+        {
+            qstring prompt;
+            prompt.sprnt("Locate the TTD trace for this database (was %s)",
+                         link.trace_path.c_str());
+            const char *chosen = ask_file(false, link.trace_path.c_str(), "%s", prompt.c_str());
+            if ( chosen == nullptr )
+                return;
+            link.trace_path = chosen;
+            trace_link_set_path(chosen);
+        }
+
+        if ( !select_trace_debugger(link.trace_path.c_str()) )
+            return;
+        start_process(link.trace_path.c_str(), "", "");
+    }
+
+    //-----------------------------------------------------------------------
+    bool Plugin::select_trace_debugger(const char *trace_path, bool quiet)
+    {
+        // Say where the trace is BEFORE trying to switch, and whether or not
+        // the switch works. This is what puts the .run into Debugger > Process
+        // options, and it is the part that matters most: IDA's Application file
+        // browser filters on "*.exe" and no SDK field controls that filter, so a
+        // path that is already filled in is the difference between the feature
+        // working and the user hunting for their trace behind a wrong filter.
+        if ( trace_path != nullptr && trace_path[0] != '\0' )
+            set_process_options(trace_path, "", nullptr, "", "", "", -1);
+
+        if ( ::dbg != &m_debugger )
+        {
+            // What load_debugger() matches on is not documented, and the one
+            // example in the SDK is ambiguous: the Windows debugger calls
+            // load_debugger("win32_stub") while its debugger_t::name is "win32"
+            // and its plugin's wanted_name is "Remote Windows debugger" -- so
+            // "win32_stub" is its plugin FILE name. Rather than bet on one
+            // reading, try each candidate and say which one worked, because a
+            // wrong answer here is a dead end for the user.
+            const qstring self = plugin_module_name();
+            qstring selfdll = self;
+            if ( !selfdll.empty() )
+                selfdll.append(".dll");
+            const char *candidates[] =
+            {
+                self.c_str(),                   // plugin file name, e.g. "ida-ttd"
+                selfdll.c_str(),                // ...with the extension
+                m_debugger.name,                // debugger_t::name, "ttd"
+                "TTD trace replayer",           // the plugin's wanted_name
+            };
+            bool ok = false;
+            for ( const char *c : candidates )
+            {
+                if ( c == nullptr || *c == '\0' )
+                    continue;
+                if ( load_debugger(c, false) )
+                {
+                    msg("[ida-ttd] selected the TTD trace replayer (as '%s').\n", c);
+                    ok = true;
+                    break;
+                }
+            }
+            if ( !ok )
+            {
+                // Assigning ::dbg by hand is NOT a fallback. init() may do it
+                // because IDA is still building its debugger list then; doing it
+                // afterwards leaves the kernel's debugger state pointing at a
+                // backend it never initialised, and starting a process from
+                // there took IDA down. Say what happened and stop.
+                if ( !m_switchReported )
+                {
+                    m_switchReported = true;
+                    msg("[ida-ttd] IDA would not switch debuggers for us (tried "
+                        "'%s', '%s' and '%s'). Choose 'TTD trace replayer' under "
+                        "Debugger > Switch debugger; the trace path is already "
+                        "filled in, so starting the process is all that is "
+                        "left.\n",
+                        self.c_str(),
+                        m_debugger.name != nullptr ? m_debugger.name : "",
+                        "TTD trace replayer");
+                }
+                if ( !quiet )
+                {
+                    warning("Could not select the TTD trace replayer as the "
+                            "debugger.\n\n"
+                            "Use Debugger > Switch debugger to choose 'TTD trace "
+                            "replayer'. The trace path is already filled in, so "
+                            "starting the process is all that is left.");
+                }
+                return false;
+            }
+        }
+        return true;
+    }
+
+    //-----------------------------------------------------------------------
+    int idaapi Plugin::attach_cb(void *ud)
+    {
+        Plugin *p = static_cast<Plugin *>(ud);
+        // ui_ready_to_run fires while a freshly created database is still being
+        // auto-analysed. Starting a debugger session there rebases the program
+        // and lays debugger segments over the loader's while the analysis queue
+        // is walking them, which crashed IDA outright. Wait it out.
+        if ( !auto_is_ok() )
+            return 250;
+        p->m_attachTimer = nullptr;     // IDA frees the timer on -1
+        p->offer_trace_session();
+        return -1;
+    }
+
+    //-----------------------------------------------------------------------
+    void Plugin::schedule_trace_offer()
+    {
+        if ( m_attachTimer == nullptr )
+            m_attachTimer = register_timer(250, attach_cb, this);
+    }
+
+    //-----------------------------------------------------------------------
+    void Plugin::offer_trace_session()
+    {
+        if ( !trace_link_present() || get_process_state() != DSTATE_NOTASK )
+            return;
+
+        TraceLink link;
+        if ( !trace_link_read(&link) )
+            return;
+
+        // The action goes on the Debugger menu rather than the TTD menu: the TTD
+        // menu only exists while a session is running, and this is the thing that
+        // starts one. Registered here rather than in the constructor because it
+        // is only meaningful for a database that came from a recording.
+        if ( !m_attachRegistered )
+        {
+            if ( register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                     actions::ATTACH_TRACE, "Start the TTD replay for this database",
+                     &m_attachTrace, this, nullptr, nullptr, -1)) )
+            {
+                attach_action_to_menu("Debugger/", actions::ATTACH_TRACE, SETMENU_APP);
+                m_attachRegistered = true;
+            }
+        }
+
+        // Do this before asking, not after: whatever the answer, the database
+        // should already be pointed at the right backend with the right trace
+        // path, so Debugger > Process options and Start process just work.
+        if ( qfileexist(link.trace_path.c_str()) )
+            select_trace_debugger(link.trace_path.c_str(), true);
+
+        int pref = trace_link_autostart();
+        if ( pref == TL_NO )
+            return;                 // asked before, told no; the menu item remains
+        if ( pref == TL_ASK )
+        {
+            int r = ask_yn(ASKBTN_YES,
+                           "This database was created from a TTD trace:\n\n  %s\n\n"
+                           "Start replaying it now?\n\n"
+                           "(You can start it later from Debugger > Start the TTD "
+                           "replay for this database.)",
+                           link.trace_path.c_str());
+            if ( r == ASKBTN_CANCEL )
+                return;             // undecided: ask again next time
+            trace_link_set_autostart(r == ASKBTN_YES ? TL_YES : TL_NO);
+            if ( r != ASKBTN_YES )
+                return;
+        }
+        start_trace_session();
     }
 
     //-----------------------------------------------------------------------
@@ -186,6 +399,8 @@ namespace idattd
         m_bookmarksView.mgr = &m_mgr;  m_bookmarksView.store = &m_bookmarks;
         m_coverage.mgr      = &m_mgr;
         m_memSearch.mgr     = &m_mgr;
+        m_memMap.mgr        = &m_mgr;
+        m_memMapClear.mgr   = &m_mgr;
         m_indirect.mgr      = &m_mgr;
 
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
@@ -203,7 +418,7 @@ namespace idattd
         // Live trace-position readout (text-only toolbar button; click copies).
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
             actions::POS_LABEL, "TTD position", &m_posLabel, this,
-            nullptr, "Current TTD position (Sequence:Steps) — click to copy it to the clipboard", -1));
+            nullptr, "Current TTD position (Sequence:Steps) -- click to copy it to the clipboard", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
             actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, this,
             "Ctrl+Shift+A", "Analyze whole function: walk the trace backward to find the enclosing "
@@ -252,6 +467,14 @@ namespace idattd
             actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, this,
             "Ctrl+Shift+M", "Find memory accesses: every read, write or execute of "
             "an address anywhere in the recording", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::MEM_MAP, "Memory map", &m_memMap, this,
+            nullptr, "Memory map: every allocation, protection change and free the "
+            "recording made, with each live region as a segment", -1));
+        register_action(ACTION_DESC_LITERAL_PLUGMOD(
+            actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, this,
+            nullptr, "Clear memory map: forget the reconstructed regions and go "
+            "back to one range over user space", -1));
         register_action(ACTION_DESC_LITERAL_PLUGMOD(
             actions::INDIRECT, "Resolve indirect calls...", &m_indirect, this,
             nullptr, "Resolve indirect calls: record where each one actually went, "
@@ -304,7 +527,8 @@ namespace idattd
             actions::RUN_TRACE, actions::TIMELINE, actions::GOTO_POS,
             actions::ADD_BOOKMARK, actions::BOOKMARKS,
             actions::COVERAGE, actions::COVERAGE_CLR, actions::COVERAGE_AUTO,
-            actions::MEM_SEARCH, actions::INDIRECT, actions::INDIRECT_CLR,
+            actions::MEM_SEARCH, actions::MEM_MAP, actions::MEM_MAP_CLR,
+            actions::INDIRECT, actions::INDIRECT_CLR,
         };
         for ( const char *n : names )
             unregister_action(n);
@@ -323,7 +547,7 @@ namespace idattd
     // registers some of these actions lazily (e.g. ThreadRunToCursorBackwards may
     // not exist at the first show) and ALSO resets their icons whenever it rebuilds
     // the debugger toolbars (e.g. after a memory-cache invalidation on a TTD jump),
-    // so this must be reapplied repeatedly — at session start AND on every stop.
+    // so this must be reapplied repeatedly -- at session start AND on every stop.
     // Does nothing without an active trace: the override is global, so IDA's other
     // debuggers must keep their own icons.
     void Plugin::reskin_actions()
@@ -639,10 +863,10 @@ namespace idattd
                 p->update_position_label();
                 // Measure the function we landed in, if it has not been measured
                 // before and the user has left that switched on. Queued, not run
-                // here — see schedule_auto_coverage().
+                // here -- see schedule_auto_coverage().
                 p->schedule_auto_coverage();
                 // IDA can rebuild the debug toolbars across a stop and reset our
-                // action icons — reapply them (cheap, belt-and-suspenders).
+                // action icons -- reapply them (cheap, belt-and-suspenders).
                 p->reskin_actions();
                 // IDA forces the disassembly view to the front on each stop; if the
                 // user was in the decompiler, re-assert it afterward.
@@ -707,6 +931,11 @@ namespace idattd
                 // Everything is loaded by now, decompiler included. This is the
                 // point the SDK documents for plugins that need the finished UI.
                 p->try_hook_decompiler();
+                // Starting a debugger session from inside a UI notification is
+                // asking for reentrancy, and the prompt is modal. Hand it back to
+                // the message loop and do it a turn later.
+                if ( trace_link_present() )
+                    p->schedule_trace_offer();
                 break;
             case ui_current_widget_changed:
             {
@@ -730,7 +959,7 @@ namespace idattd
 
     //=======================================================================
     // HT_IDB: names changed (e.g. a PDB download finished and IDA applied
-    // symbols) — refresh the call stack so frames pick up the new names.
+    // symbols) -- refresh the call stack so frames pick up the new names.
     //=======================================================================
     ssize_t idaapi IdbEventListener::on_event(ssize_t code, va_list va)
     {
@@ -740,7 +969,7 @@ namespace idattd
         {
             ea_t        ea       = va_arg(va, ea_t);
             const char *new_name = va_arg(va, const char *);
-            // Debugger views — the call-stack window in particular — resolve
+            // Debugger views -- the call-stack window in particular -- resolve
             // <name>+offset through the DEBUG-NAME list, NOT plain IDB names. Our
             // exports (set_name) and the PDB plugin's symbols only populate IDB
             // names, so the call stack showed raw addresses. Mirror every applied
@@ -777,6 +1006,28 @@ namespace idattd
                 va_arg(va, int);            // port
                 va_arg(va, const char *);   // password
                 va_arg(va, qstring *);      // errbuf
+                // Re-read the database's bitness here rather than trusting what
+                // it was when this object was constructed. The constructor runs
+                // at plugin load, and nothing documents whether that is before or
+                // after a loader has finished setting up a new database -- but by
+                // the time a session is being initialised the answer is settled.
+                // Getting it wrong is not cosmetic: it picks the register table.
+                configure_debugger(m_debugger, inf_is_64bit());
+                m_tracer.set_64bit(inf_is_64bit());
+                // The user has just chosen us, possibly by hand because the
+                // programmatic switch above did not work. Point the Application
+                // field at the recording so they do not have to find it behind
+                // IDA's "*.exe" filter.
+                {
+                    TraceLink link;
+                    if ( get_process_state() == DSTATE_NOTASK
+                      && trace_link_read(&link)
+                      && !link.trace_path.empty() )
+                    {
+                        set_process_options(link.trace_path.c_str(), "", nullptr,
+                                            "", "", "", -1);
+                    }
+                }
                 return m_mgr.on_init();
             }
 

@@ -7,11 +7,15 @@
 #include "coverage.h"
 #include "decompiler.h"
 
+// Base name of this DLL without its extension, from dllmain.cpp. Needed because
+// load_debugger() identifies a debugger by the plugin's FILE name.
+qstring plugin_module_name();
+
 namespace idattd
 {
     class Plugin;
 
-    // Listener for HT_DBG notifications (module load/process start) — used to
+    // Listener for HT_DBG notifications (module load/process start) -- used to
     // resolve export symbols once IDA has created the module's segment.
     struct DbgEventListener : public event_listener_t
     {
@@ -19,7 +23,7 @@ namespace idattd
         ssize_t idaapi on_event(ssize_t code, va_list va) override;
     };
 
-    // Listener for HT_UI notifications — adds the "Trace this function" item to
+    // Listener for HT_UI notifications -- adds the "Trace this function" item to
     // the disassembly context menu.
     struct UiEventListener : public event_listener_t
     {
@@ -27,7 +31,7 @@ namespace idattd
         ssize_t idaapi on_event(ssize_t code, va_list va) override;
     };
 
-    // Listener for HT_IDB notifications — when names change (e.g. a PDB finishes
+    // Listener for HT_IDB notifications -- when names change (e.g. a PDB finishes
     // downloading and IDA applies symbols), refresh the call stack so frames show
     // names instead of raw VAs.
     struct IdbEventListener : public event_listener_t
@@ -80,6 +84,24 @@ namespace idattd
         // plugin too and may not have loaded when we first ask for it.
         void try_hook_decompiler();
 
+        // Databases created by the .run loader carry a record naming the
+        // recording they came from. When one is present, offer to start
+        // replaying it, and put an action on the Debugger menu so a declined
+        // offer is never a dead end. Called once the UI is up.
+        void offer_trace_session();
+        // Wait for the freshly created database to finish its initial analysis,
+        // then offer. Starting a debugger session while the auto-analysis queue
+        // is still draining is what crashed IDA on the first version of this.
+        void schedule_trace_offer();
+        void start_trace_session();     // the action body; no prompting
+        // Make IDA's debugger machinery point at us and know where the trace is,
+        // so Debugger > Process options and Start process are already correct
+        // whether or not the replay is started right now. Returns false when the
+        // backend could not be selected at all.
+        // 'quiet' suppresses the popup when another debugger is already
+        // active, for the call made silently on database open.
+        bool select_trace_debugger(const char *trace_path, bool quiet = false);
+
         // Source-path prompts. IDA offers to map a source file whenever it
         // finds line information for the address we stopped at; replaying
         // someone else's build, that source is not on this machine and the
@@ -97,6 +119,7 @@ namespace idattd
         static int idaapi refocus_cb(void *ud);
         void do_auto_coverage();              // timer body: sweep the current function
         static int idaapi autocover_cb(void *ud);
+        static int idaapi attach_cb(void *ud);  // timer body: wait for analysis, then offer
 
         debugger_t     m_debugger = {};
         TraceManager   m_mgr;
@@ -125,6 +148,7 @@ namespace idattd
         OpenTracedHandler   m_openTraced;
         OpenEventsHandler   m_openEvents;
         RunTraceHandler     m_runTrace;
+        AttachTraceHandler  m_attachTrace;
         // Bookmarks + execution coverage
         AddBookmarkHandler   m_addBookmark;
         OpenBookmarksHandler m_bookmarksView;
@@ -133,6 +157,8 @@ namespace idattd
         AutoCoverageHandler  m_coverageAuto;
         // Memory access search + indirect call annotation
         MemSearchHandler          m_memSearch;
+        MemoryMapHandler          m_memMap;
+        ClearMemoryMapHandler     m_memMapClear;
         IndirectCallsHandler      m_indirect;
         ClearIndirectCallsHandler m_indirectClear;
 
@@ -159,7 +185,7 @@ namespace idattd
 
         // IDA's own icons for the native movement actions we re-skin, captured
         // the first time each action is seen (they register lazily) and restored
-        // when the trace is unloaded — the override is global, so leaving it in
+        // when the trace is unloaded -- the override is global, so leaving it in
         // place would re-skin IDA's toolbar for every other debugger too.
         // Parallel to NATIVE_MOVEMENT_ACTIONS in plugin.cpp.
         int  m_nativeSaved[6]   = { -1, -1, -1, -1, -1, -1 };
@@ -177,6 +203,7 @@ namespace idattd
         // are remembered for the session only, so a sweep they stopped is not
         // offered again on the very next step -- but reopening the trace retries.
         qtimer_t        m_autoCoverTimer = nullptr;
+        qtimer_t        m_attachTimer    = nullptr;
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;
         bool            m_haveDecompiler = false;
@@ -184,5 +211,11 @@ namespace idattd
         // on: one the user had already disabled must stay that way. The
         // entries are string literals, so storing the pointers is safe.
         std::vector<const char *> m_srcProvidersOff;
+        // The "start the replay for this database" action, registered only when
+        // the database actually came from a .run. Unlike every other TTD action
+        // it lives OUTSIDE a session -- it is the thing that starts one.
+        bool m_attachRegistered = false;
+        // A failed debugger switch is worth saying once, not on every try.
+        bool m_switchReported   = false;
     };
 }

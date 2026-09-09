@@ -3,4 +3,5 @@
     <Platform Name="x64" />
   </Configurations>
   <Project Path="ida-ttd/ida-ttd.vcxproj" Id="55864e0c-4c71-4cec-83f0-448f5260a487" />
+  <Project Path="ida-ttd/ttd-loader.vcxproj" Id="7f2c1a64-9d3e-4b18-8a55-1c0f2e6b47d1" />
 </Solution>

@@ -479,7 +479,7 @@ namespace idattd
                 "truncated. Narrow the pattern to see the rest.\n", (int)kMaxRecords);
 
         // Phase 2 IS ours and runs on the main thread, so it gets real progress
-        // and a working Cancel — a sweep with thousands of hits used to sit behind
+        // and a working Cancel -- a sweep with thousands of hits used to sit behind
         // a single static message with no way to bail out.
         UniqueCursor cur = m_mgr->make_cursor();
         std::vector<FunctionInvocation> built;

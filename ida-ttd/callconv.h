@@ -15,7 +15,7 @@ namespace idattd
 
     // Offset (in bytes) from the stack pointer to the n-th argument, summing the
     // sizes of the stack-resident arguments that precede it. 'slot' is the stack
-    // slot granularity — 8 for x64, 4 for x86.
+    // slot granularity -- 8 for x64, 4 for x86.
     size_t stack_arg_offset(const tinfo_t &func_tinfo, size_t n, size_t first_stack_arg,
                             size_t slot);
 

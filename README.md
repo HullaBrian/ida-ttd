@@ -1,250 +1,153 @@
 # ida-ttd
 
-An IDA Pro 9.x plugin that registers a debugger backend for navigating Microsoft
-**Time Travel Debugging (TTD)** traces (`.run` files). Load a trace into IDA and
-step **forwards and backwards**, inspect registers and memory, set breakpoints
-(mapped to TTD memory watchpoints), jump to arbitrary timeline positions, get
-functions disassembled and named automatically (including runtime-only shellcode),
-and run trace-wide queries — all from the standard IDA debugger UI.
+Analyze Microsoft Time Travel Debugging traces inside IDA Pro.
 
-Built against the official IDA SDK (9.4) and the official Microsoft TTD Replay
-SDK (`Microsoft.TimeTravelDebugging.Apis`).
+A TTD recording contains every instruction a process executed, so the answer to
+"where did this pointer come from" or "what wrote these bytes" is already in the
+file. This plugin makes that recording navigable from the standard IDA debugger
+UI: step forwards and backwards, jump to any point on the timeline, and run
+queries across the whole execution.
 
----
+That matters most for code that is not in the binary you started with. Packed,
+injected and JIT-generated code only exists at runtime, and a recording of it is
+often the only artifact you have. `ida-ttd` disassembles that code, names it,
+shows which parts actually ran, and reconstructs the memory regions it lived in
+along with their protections.
+
+Built against the IDA SDK 9.4 and the Microsoft TTD Replay SDK.
 
 ## Features
 
-### Navigation
-- Load a `.run` trace as a debugger "process" and replay it forwards **and
-  backwards** (reverse-continue is TTD's headline capability).
-- A dedicated **TTD toolbar** with Microsoft **codicon** icons, grouped
-  forward / backward:
-  - **Forward:** Continue, Step into, Step over, Run until return, Run to cursor
-  - **Backward:** Continue backwards, Step into backwards, Step over backwards,
-    Step out backwards, Run to cursor backwards
-  - IDA has no native "continue backwards" / "step out backwards", so those two
-    are provided by the plugin.
-- x86 and x64 register views; memory served from the recorded trace.
-- Breakpoints mapped to TTD execute/read/write memory watchpoints.
-- Thread and module debug events synthesized while navigating.
+**Navigation**
 
-### Timeline & positions
-- **TTD timeline** chooser (thread create/exit, module load/unload, exceptions);
-  double-click an entry to jump there.
-- **Go to position** — enter a `Sequence:Steps` value to time-travel.
-- **Live position readout** on the toolbar (`TTD <Seq>:<Steps>`); **click it to
-  copy the current position to the clipboard**.
+- Replay a `.run` trace forwards and backwards, including reverse-continue,
+  step out backwards, and run to cursor in either direction.
+- Timeline view of thread and module events, and jump to an exact
+  `Sequence:Steps` position.
+- Position bookmarks with names and comments, saved in the database.
 
-### Symbols
-Two complementary sources stack on top of each other, both applied automatically:
+**Code discovery**
 
-- **Offline export names.** Each module's PE export table is parsed directly out
-  of the trace (read at the module's recorded load position), naming every export
-  at its runtime VA — works with **no symbol server / no network**.
-- **PDB symbols (silent).** The plugin drives IDA's PDB plugin per module to load
-  internal/non-exported names, **without the per-module "load symbols?" prompt**.
-  When offline or the PDB can't be found, it logs a one-line note to the Output
-  window instead of popping a dialog for every module.
+- Runtime-only code is disassembled a whole function at a time, using the PE
+  exception table for module code and the recorded execution for everything
+  else. Self-modified regions are re-analyzed when their bytes change.
+- Symbols come from each module's export table read out of the trace, so names
+  work with no symbol server. PDB symbols load on top when available.
+- Execution coverage colors the instructions that actually ran, in both the
+  disassembly and the decompiler.
+- Indirect calls are resolved to the targets they really reached and written
+  back as comments and cross-references.
 
-Both run on module load and again on every stop, so modules you *time-travel into*
-(loaded later in the trace) also get named. The call-stack view refreshes as
-symbols arrive.
+**Trace-wide queries**
 
-### Automatic disassembly of runtime-only code
-When you jump or step to code that isn't in the static database — system DLLs,
-JIT, **unpacked / shellcode regions** — the plugin lays out the **whole enclosing
-function** automatically (the way WinDbg/Binary Ninja do), not one instruction at
-a time. It uses the cheapest correct source available:
+- Find every call to a function, or to a wildcard pattern such as
+  `kernel32!Virtual*`, with arguments and return values.
+- Find every read, write or execute of an address or range.
+- Reconstruct the process memory map: every allocation, protection change and
+  free, with each live region exposed as an IDA segment carrying its real
+  permissions.
 
-- **Modules:** the x64 PE exception table (`.pdata` / `RUNTIME_FUNCTION`) gives
-  exact `[start, end)` bounds for every function — recovered from the on-disk PE,
-  so it works without symbols. The whole function is disassembled at once.
-- **Dynamic code (no module, no `.pdata`):** the plugin finds a real instruction
-  boundary at/above the PC from the execution trace (cheap *forward* replay) and
-  runs IDA's recursive-descent analysis from there, so branches and the code
-  *above* the PC are laid out too — important for stepping backward.
-- **Self-modifying / reused regions:** if the bytes at a previously-disassembled
-  location have changed (unpacking, or time-travel to a position where the same
-  address holds different code), that function is re-disassembled.
+**Opening traces**
 
-For the rare case where automatic analysis can't reach a function, **Analyze whole
-function** (`Ctrl+Shift+A`, also on the TTD menu / right-click) does a deeper,
-trace-walking analysis behind a cancellable progress box.
+- Open a `.run` file directly from `File > Open`. The recorded program's image
+  is read out of the trace, so no copy of the original binary is needed.
+- Or attach a trace to a database you already have.
 
-### Memory accuracy
-Memory is reconstructed with TTD's **global** query policy, so reads return the
-correct value from the most recent write *anywhere* in the trace (matching what
-WinDbg / Binary Ninja show) rather than only memory the current thread touched
-near the current position. Time-travel jumps invalidate IDA's memory cache so the
-views show the bytes at the new position, not the previous one.
+## Requirements
 
-### Trace-wide call queries
-- **Find all calls to this function** (one click, right-click a function): sweeps
-  the entire recording and lists every call with its arguments and return value.
-- **Find calls by name/pattern** (`Ctrl+Shift+F`): trace every function matching a
-  wildcard such as `kernel32!Virtual*` or `*Alloc` in a single sweep.
-- Results open in a **Tracing events** chooser:
-  - Columns: **Start**, **End** (call/return positions), **Thread**,
-    **Function**, the **arguments**, and **Return**.
-  - With a single matched function, arguments are split into one column **per
-    parameter** (named from the signature). With several functions, arguments are
-    condensed into one labeled column.
-  - Double-click a row to time-travel to that call.
-  - Multiple events tabs can be open at once (each is an independent snapshot).
-
----
-
-## Building
-
-Requirements:
-
-- Visual Studio 2022+ with the C++ desktop workload (toolset v143/v145).
-- The IDA SDK 9.4, expected at `ida-sdk/src` (already in this repo). The project
-  reads it via the `IdaSdkDir` property (`$(RepoRoot)ida-sdk\src`, where `RepoRoot`
-  is derived from the project file's own location), using `ida-sdk/src/include` for
-  headers and `ida-sdk/src/lib/x64_win_64` for `ida.lib`. Note the 9.4 lib directory
-  naming — 9.3 and earlier used `x64_win_vc_64`.
-- The TTD Replay NuGet package, restored into `packages/` (already present:
-  `packages/Microsoft.TimeTravelDebugging.Apis.0.9.5`).
-
-Steps:
-
-1. Open `ida-ttd.slnx` in Visual Studio, **or** build with MSBuild:
-   ```
-   msbuild ida-ttd\ida-ttd.vcxproj /p:Configuration=Release /p:Platform=x64 /t:Build /m:1
-   ```
-   Build **serial** (`/m:1`): parallel `cl` instances racing on the shared PDB can
-   produce a `C1041` error.
-2. If NuGet packages are not restored, run **Restore NuGet Packages** /
-   `nuget restore`.
-3. Output is `build\Release\ida-ttd.dll` (the project's `OutDir` is
-   `$(RepoRoot)build\$(Configuration)\`).
-
-Both `Release|x64` and `Debug|x64` build. `Debug` is an *unoptimised* build, not a
-debug-CRT build: it defines `NDEBUG` and links the **release** CRT (`/MD`), because
-that is the CRT IDA itself uses. Defining `_DEBUG` here would pull in debug-CRT-only
-symbols (`_CrtDbgReport`, `_calloc_dbg`, `msvcprtd.lib`) that the release CRT does
-not export, and the link fails with `LNK2001`/`LNK1120`.
-
-The project is x64-only because IDA 9.x is a 64-bit application. The TTD SDK
-`.props` file (imported by the project) wires up the SDK include path and the
-x64 `TTDReplay.lib` import-library path; the project links `ida.lib` and
-`TTDReplay.lib`. If you see `unresolved external symbol CreateReplayEngine`, the
-`.props` import or `TTDReplay.lib` reference is missing.
-
----
+- IDA Pro 9.4, Windows x64. The plugin is built against the 9.4 SDK.
+- `TTDReplay.dll` and `TTDReplayCPU.dll`. These are not redistributed here.
+  Take them from a WinDbg installation (under `...\amd64\ttd\`) or from the
+  Microsoft `Get-Ttd.ps1` download script.
 
 ## Installation
 
-1. Copy `build\Release\ida-ttd.dll` into your IDA `plugins\` directory
-   (e.g. `C:\Program Files\IDA Professional 9.4\plugins\`).
-2. Obtain the Microsoft TTD **runtime** DLLs — `TTDReplay.dll` and
-   `TTDReplayCPU.dll`. These are **not** in the NuGet package; get them from a
-   WinDbg / WinDbg Preview installation (under `...\amd64\ttd\`) or via the TTD
-   `Get-Ttd.ps1` download script. Place both DLLs in the **IDA install root**
-   (next to `ida.exe`) — the reliable location on the DLL search path.
-3. (Optional, for internal PDB symbols) configure IDA's symbol path / symbol
-   server the same way you would for WinDbg. Without it, offline export names
-   still apply.
-
----
+1. Download `ida-ttd.zip` from the
+   [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
+   `ida-ttd.dll` into your IDA `plugins` directory.
+2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` into the IDA install root, next
+   to `ida.exe`.
+3. Optional: copy `ttd-loader.dll` into your IDA `loaders` directory. This is
+   what makes `File > Open` recognize a `.run` file. Everything else works
+   without it.
 
 ## Usage
 
-1. Open the IDB for the binary you recorded (or create a fresh one — a fresh IDB
-   avoids any stale state and is recommended for malware).
-2. **Debugger → Switch debugger…** and choose **TTD trace replayer**.
-3. Start debugging; when asked for the application, point it at the `.run` trace
-   file.
-4. The **TTD toolbar** holds the movement buttons, the position readout, and the
-   query actions. A top-level **TTD** menu mirrors them.
+### Open a trace directly
+
+`File > Open` the `.run` file and choose **Microsoft TTD trace (.run)**. IDA
+builds a database from the recording and offers to start replaying it.
+
+If the trace has no index yet, you are asked whether to build one. Building can
+take several minutes. Declining still gives you a database with the right
+addresses, names and permissions, and the index is built when you start the
+replay instead.
+
+### Attach a trace to an existing database
+
+1. Open the IDB for the recorded binary.
+2. `Debugger > Switch debugger` and choose **TTD trace replayer**.
+3. Start debugging and give the `.run` file as the application.
+
+### Move through the recording
+
+Use the normal debugger controls to step forward. The TTD toolbar adds the
+backward equivalents, a live position readout, and the query actions. Everything
+is also on the top-level **TTD** menu.
+
+### Find where a buffer came from
+
+Right-click an address and choose **Find memory accesses**, or press
+`Ctrl+Shift+M` and enter a range. Every read, write and execute anywhere in the
+recording is listed with its position, thread and instruction. Double-click a
+row to travel to that moment.
+
+### Find every call to an API
+
+Press `Ctrl+Shift+F` and enter a pattern such as `kernel32!Virtual*`. The results
+list each call with its arguments and return value. Double-click to travel to
+the call.
+
+### Map allocated memory
+
+Run **TTD > Memory map**. The plugin replays the recording once and lists every
+allocation, protection change and free, with the code that requested it. Regions
+live at the current position become named IDA segments with their real
+permissions, so an RWX buffer is visible as one. The map is saved in the
+database.
 
 ### Default shortcuts
+
 | Action | Shortcut |
 | --- | --- |
 | Find all calls to this function | `Ctrl+Shift+C` |
 | Find calls by name/pattern | `Ctrl+Shift+F` |
+| Find memory accesses | `Ctrl+Shift+M` |
 | Analyze whole function | `Ctrl+Shift+A` |
-| TTD timeline | `Ctrl+Shift+T` |
+| Timeline | `Ctrl+Shift+T` |
 | Go to position | `Ctrl+Shift+G` |
+| Bookmark this position | `Ctrl+Shift+B` |
 
-Continue backwards and Step out backwards are on the toolbar / TTD menu. Native
-step actions keep their usual IDA shortcuts (`F7`, `F8`, `Ctrl+F7`, `F4`, and the
-backward variants).
+Stepping keeps IDA's usual shortcuts (`F7`, `F8`, `Ctrl+F7`, `F4`) and their
+backward variants. Continue backwards and step out backwards are on the TTD
+toolbar and menu.
 
----
+## Building from source
 
-## Architecture (source map)
+Requires Visual Studio 2022 or later with the C++ desktop workload. The
+project uses whichever toolset is installed.
 
-`ida-ttd/`
-- `plugin.{h,cpp}` — the plugmod_t; hooks `HT_IDD` (debugger events), `HT_DBG`
-  (symbol/PDB resolution, per-stop disassembly, toolbar rebuild, call-stack
-  refresh), `HT_UI` (disassembly popup), `HT_IDB` (refresh call stack when names
-  change). Registers actions, builds the TTD toolbar, manages the codicon icons.
-- `trace_manager.{h,cpp}` — owns the TTD replay engine + cursor; translates IDA
-  debugger events into trace navigation; the on-stop disassembly engine
-  (`.pdata` whole-function, dynamic-code recursive descent, SMC re-analysis);
-  symbol/PDB resolution; the deep "analyze whole function" walk.
-- `registers.{h,cpp}` — register class definitions + context↔regval marshalling;
-  advertises `DBG_RESMOD_*` so IDA drives the native movement buttons.
-- `symbols.{h,cpp}` — PE export-table parsing (names) and `.pdata` exception-table
-  parsing (function bounds), from guest memory and the on-disk PE.
-- `callconv.{h,cpp}` — calling-convention argument/return extraction (x86/x64).
-- `tracer.{h,cpp}` — the call-sweep engine (`FunctionTracer`) and its events.
-- `ui.{h,cpp}` — choosers (Timeline, Traced functions, Tracing events) and all
-  action handlers.
-- `event_queue.{h,cpp}` — synthesizes IDA `debug_event_t`s as we navigate.
-- `icons.hh` — embedded codicon SVG glyphs.
+```
+git clone --recurse-submodules https://github.com/HullaBrian/ida-ttd
+cd ida-ttd
+nuget install ida-ttd\packages.config -OutputDirectory packages
+msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
+```
 
----
+Build serially (`-m:1`): parallel compiler instances racing on the shared PDB
+can produce a `C1041` error. Output is `build\Release\ida-ttd.dll` and
+`build\Release\ttd-loader.dll`.
 
-## Notes for future analysis sessions
+## License
 
-**Symbol naming.** Names stack: offline PE-export names (always, no network) +
-PDB names (loaded silently, needs IDA's symbol path/server). If a call shows
-`sub_…`/`loc_…`, the target is either not an export (only a PDB would name it) and
-no PDB was available, or its module wasn't loaded at the current position.
-Resolution re-runs on every stop, so stepping to where the module is mapped names
-it. Offline PDB failures are logged to the Output window, not shown as dialogs.
-
-**On-stop disassembly.** The per-stop path defines the whole enclosing function
-(`.pdata` bounds for modules; trace-seeded recursive descent for dynamic code) and
-is cached per function, so revisiting it is free. It must stay **replay-light** —
-the dynamic-code path uses *forward* replay only (cheap). The deep **Analyze whole
-function** action is the one place that walks the trace **backward**, behind a
-cancellable wait box.
-
-**Performance — backward replay is expensive.** A single backward step is cheap,
-but in TTD each `ReplayBackward(1)` re-seeks toward a keyframe, so doing it
-hundreds/thousands of times in a loop is `O(n × keyframe-distance)` and freezes the
-UI. Never add a backward walk to the per-stop handler; that regression has bitten
-this project before.
-
-**Analysis cascade.** `add_func()` on a function full of `call`s would, with IDA's
-`AF_PROC` flag, recursively create and fully analyze every callee across whole
-modules — making navigation crawl. The plugin clears `AF_PROC`/`AF_PROCPTR` for the
-session (restored on exit) and defines only the function you're looking at. Don't
-re-enable per-callee auto-analysis during a session.
-
-**Memory reconstruction.** TTD records memory *accesses*, not snapshots, so a
-byte's value at a position is the last recorded write before it; never-accessed
-bytes are reconstructed. The plugin uses the **GloballyAggressive** policy to fill
-in as much as possible (like WinDbg). A genuinely-zero region usually means you
-time-traveled to *before* it was written — step forward past the write to see it.
-
-**Index files.** Memory accuracy needs an index (`.idx`) next to the `.run`. The
-plugin builds one on first load if missing (can take a while for large traces). If
-loading fails immediately, the TTD runtime DLLs aren't findable by IDA — see
-*Installation* step 2.
-
-**Debugger desktop / toolbar.** IDA uses a separate "debugger desktop" once a
-session starts; the TTD toolbar is (re)built when the session's process starts so
-it lands in that desktop. If the toolbar ever looks broken after an aborted
-session, reset the desktop (**Windows → Reset desktop**) and reselect the TTD
-debugger.
-
-**Call-sweep matching.** The tracer matches the *runtime* callee VA. Because a user
-usually clicks an **import thunk** or **import data slot**, target resolution
-follows thunks (`calc_thunk_func_target`) and reads the **live IAT pointer**.
-Pattern matching (`module!glob`) matches against IDB symbol names, so the relevant
-module's exports must already be named (they will be, once loaded).
+Apache 2.0. See [LICENSE](LICENSE).
