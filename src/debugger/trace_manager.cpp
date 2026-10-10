@@ -2,7 +2,6 @@
 #include "debugger/msttd_position.h"
 #include "analysis/trace_store.h"
 #include "debugger/registers.h"
-#include "common/symbols.h"
 #include "common/trace_link.h"
 
 using namespace TTD;
@@ -13,22 +12,6 @@ namespace idattd
     // to_utf8 / to_wstring / base_name and the index builder live in
     // trace_open.{h,cpp}: the .run loader is a separate binary that needs the
     // same four things and cannot reach into TraceManager.
-
-    // Is the on-disk file we loaded the same build as the module in the trace?
-    //
-    // (Timestamp, SizeOfImage) is the identity pair the Windows loader and the
-    // symbol servers key a binary on, and the engine records the timestamp and the
-    // checksum for every module. A field that is zero on either side cannot vote:
-    // checksums are routinely 0 in binaries that were never signed, so requiring a
-    // match there would throw away the fallback for perfectly good files.
-    static bool image_matches_module(const ModuleImage &img, const Module &m)
-    {
-        if ( m.Timestamp != 0 && img.timestamp != 0 && img.timestamp != m.Timestamp )
-            return false;
-        if ( m.Checksum != 0 && img.checksum != 0 && img.checksum != m.Checksum )
-            return false;
-        return true;
-    }
 
     //=======================================================================
     // Startup failure reporting
@@ -129,7 +112,6 @@ namespace idattd
     void TraceManager::reset_session_state()
     {
         m_cursor.reset();
-        m_symCursor.reset();
         m_anaCursor.reset();
         m_memCursor.reset();
         m_memPosValid = false;
@@ -138,13 +120,7 @@ namespace idattd
         m_activeBpts = 0;
         m_userWatchpoints.clear();
 
-        m_moduleSpans.clear();
-        m_spanCount  = (size_t)-1;
-        m_spanEngine = nullptr;
-        m_resolvedBases.clear();
-        m_pdbBases.clear();
-        m_funcRanges.clear();
-        m_moduleImages.clear();
+        m_modules.reset();
         m_reconRegions.clear();
         m_dynFuncBytes.clear();
         m_pdataExtended.clear();
@@ -262,6 +238,10 @@ namespace idattd
         // built it when the database was created, in which case this returns
         // immediately.
         build_trace_index(m_engine.get());
+
+        // The module registry answers every lookup from the engine's module
+        // list, so it cannot be bound before the engine exists.
+        m_modules.bind(m_engine.get(), m_is64, m_targetName.c_str());
 
         m_cursor = UniqueCursor{ m_engine->NewCursor() };
         if ( !m_cursor )
@@ -445,18 +425,6 @@ namespace idattd
     }
 
     // The engine's Module record for the module based at 'base'.
-    const Module *TraceManager::module_at(ea_t base) const
-    {
-        if ( !m_engine || base == BADADDR )
-            return nullptr;
-        size_t n = m_engine->GetModuleCount();
-        const Module *list = m_engine->GetModuleList();
-        for ( size_t i = 0; i < n; i++ )
-            if ( (ea_t)(uint64_t)list[i].Address == base )
-                return &list[i];
-        return nullptr;
-    }
-
     ICursorView *TraceManager::ana_cursor()
     {
         if ( !m_engine )
@@ -484,54 +452,6 @@ namespace idattd
             }
         }
         return m_anaCursor.get();
-    }
-
-    const ModuleImage *TraceManager::image_for(ea_t ea, ea_t &base_out)
-    {
-        if ( !m_engine )
-            return nullptr;
-
-        // Which loaded module (if any) contains 'ea'? (Binary search -- this runs
-        // once per gap of every memory read.)
-        size_t mi = module_index_at(ea);
-        if ( mi == (size_t)-1 )
-            return nullptr;
-        ea_t base = module_spans()[mi].base;
-
-        base_out = base;
-        auto it = m_moduleImages.find(base);
-        if ( it == m_moduleImages.end() )
-        {
-            // Only resolve the path on a cache miss (it costs a UTF-8 conversion).
-            const Module *m = module_at(base);
-            std::string   path = m != nullptr ? to_utf8(m->pName, m->NameLength) : std::string();
-
-            ModuleImage img;
-            load_module_image(path.c_str(), img);   // img.ok==false on failure
-
-            // The path was recorded on the machine that made the trace. The file
-            // sitting at that path on this machine may be a different build of the
-            // same DLL (a different patch level of ntdll is the common case), and
-            // its bytes would then be served as ground truth for disassembly with
-            // nothing to indicate they are wrong. The trace records the image's
-            // timestamp and checksum, so refuse anything that does not match.
-            if ( img.ok && m != nullptr && !image_matches_module(img, *m) )
-            {
-                msg("[ida-ttd] image fallback for %s @ 0x%llX: REJECTED, the on-disk "
-                    "file is a different build (trace %08X/%08X, file %08X/%08X).\n",
-                    base_name(path).c_str(), (uint64_t)base,
-                    m->Timestamp, m->Checksum, img.timestamp, img.checksum);
-                img = ModuleImage{};     // ok == false: never consulted again
-            }
-            else
-            {
-                msg("[ida-ttd] image fallback for %s @ 0x%llX: %s\n",
-                    base_name(path).c_str(), (uint64_t)base,
-                    img.ok ? "loaded" : "file unavailable / not a PE");
-            }
-            it = m_moduleImages.emplace(base, std::move(img)).first;
-        }
-        return it->second.ok ? &it->second : nullptr;
     }
 
     ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
@@ -705,7 +625,7 @@ namespace idattd
                 gap++;
 
             ea_t              base = BADADDR;
-            const ModuleImage *img = image_for(ea + o, base);
+            const ModuleImage *img = m_modules.image_for(ea + o, base);
             if ( img == nullptr )
             {
                 o += gap;            // not image-backed: the gap stays zero
@@ -820,7 +740,7 @@ namespace idattd
             // as "view_7FFA...". The address is kept as a suffix because one
             // module can hold several regions with different protections once a
             // VirtualProtect has split it.
-            qstring mod = module_ident_at(lo);
+            qstring mod = m_modules.ident_at(lo);
             if ( !mod.empty() )
                 nm.name.sprnt("%s_%a", mod.c_str(), lo);
             else
@@ -859,7 +779,7 @@ namespace idattd
                 if ( mhi <= mlo )
                     continue;
 
-                qstring ident = module_ident_at(mlo);
+                qstring ident = m_modules.ident_at(mlo);
                 if ( ident.empty() )
                     ident.sprnt("mod_%a", mlo);
 
@@ -1656,7 +1576,7 @@ namespace idattd
             // the CURRENT position, which can be before the loader filled the
             // import table in, and a stale or unreadable slot would otherwise send
             // add_func() off to carve a function out of garbage.
-            if ( tgt != 0 && tgt != BADADDR && module_index_at(tgt) != (size_t)-1 )
+            if ( tgt != 0 && tgt != BADADDR && m_modules.index_at(tgt) != (size_t)-1 )
                 return tgt;
         }
 
@@ -1675,7 +1595,7 @@ namespace idattd
             return;                         // already a function here
 
         ea_t fstart, fend;
-        if ( function_range_at(ea, fstart, fend) && fstart == ea && fstart < fend )
+        if ( m_modules.function_range_at(ea, fstart, fend) && fstart == ea && fstart < fend )
         {
             // The module's .pdata gives exact bounds: lay the whole body out in one
             // linear pass, the same way analyze_current_function does for PC.
@@ -1704,7 +1624,7 @@ namespace idattd
         }
 
         ea_t defined = get_func_start(ea);
-        if ( defined == ea && is_library_address(ea)
+        if ( defined == ea && m_modules.is_library_address(ea)
           && (get_func_flags(ea) & FUNC_LIB) == 0 )
         {
             set_func_flag(ea, FUNC_LIB, true);
@@ -1785,7 +1705,7 @@ namespace idattd
             return;                          // considered once per function
 
         ea_t ps = BADADDR, pe = BADADDR;
-        if ( !function_range_at(pc, ps, pe) )
+        if ( !m_modules.function_range_at(pc, ps, pe) )
             return;                          // x86, or no .pdata for this module
         m_pdataExtended.insert(fi.start_ea);
 
@@ -1873,7 +1793,7 @@ namespace idattd
         }
 
         ea_t fstart, fend;
-        if ( function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg.end_ea )
+        if ( m_modules.function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg.end_ea )
         {
             // Module function with authoritative .pdata bounds: disassemble the
             // whole range. Embedded data (jump tables) can't decode -- skip a byte.
@@ -2304,7 +2224,7 @@ namespace idattd
 
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.
-        resolve_loaded_modules();
+        m_modules.resolve_loaded(m_cursor.get());
         analyze_current_function(program_counter());
 
         // If the last navigation came to rest on the very first/last position of
@@ -2321,17 +2241,6 @@ namespace idattd
             info("%s", m_pendingNotice.c_str());
             m_pendingNotice.clear();
         }
-    }
-
-    void TraceManager::resolve_loaded_modules()
-    {
-        if ( !m_cursor )
-            return;
-        size_t n = m_cursor->GetModuleCount();
-        const ModuleInstance *list = m_cursor->GetModuleList();
-        for ( size_t i = 0; i < n; i++ )
-            if ( list[i].pModule != nullptr )
-                resolve_symbols((ea_t)(uint64_t)list[i].pModule->Address);
     }
 
     void TraceManager::emit_stop(bool is_step)
@@ -2636,384 +2545,9 @@ namespace idattd
         return TTD::Replay::UniqueCursor{ m_engine->NewCursor() };
     }
 
-    // Case-insensitive shell wildcard match ('*' = any run, '?' = one char).
-    static bool wildcard_match(const char *pat, const char *str)
-    {
-        const char *star = nullptr;
-        const char *ss   = str;
-        const char *p    = pat;
-        const char *s    = str;
-        while ( *s != '\0' )
-        {
-            if ( *p == '?' || tolower((unsigned char)*p) == tolower((unsigned char)*s) )
-            {
-                p++;
-                s++;
-            }
-            else if ( *p == '*' )
-            {
-                star = p++;
-                ss   = s;
-            }
-            else if ( star != nullptr )
-            {
-                p = star + 1;
-                s = ++ss;
-            }
-            else
-            {
-                return false;
-            }
-        }
-        while ( *p == '*' )
-            p++;
-        return *p == '\0';
-    }
-
-    std::vector<ea_t> TraceManager::resolve_function_pattern(const char *pattern) const
-    {
-        std::vector<ea_t> out;
-        if ( !m_engine || pattern == nullptr )
-            return out;
-
-        // Split an optional "module!" qualifier off the name pattern.
-        std::string pat = pattern;
-        std::string modpat, namepat;
-        size_t bang = pat.find('!');
-        if ( bang != std::string::npos )
-        {
-            modpat  = pat.substr(0, bang);
-            namepat = pat.substr(bang + 1);
-        }
-        else
-        {
-            namepat = pat;
-        }
-        if ( namepat.empty() )
-            return out;
-
-        // Build module address ranges (only needed when a module filter exists).
-        struct ModRange { ea_t base; ea_t end; std::string name; std::string stem; };
-        std::vector<ModRange> mods;
-        if ( !modpat.empty() )
-        {
-            size_t n = m_engine->GetModuleCount();
-            const Module *list = m_engine->GetModuleList();
-            for ( size_t i = 0; i < n; i++ )
-            {
-                ea_t b = (ea_t)(uint64_t)list[i].Address;
-                std::string bn = base_name(to_utf8(list[i].pName, list[i].NameLength));
-                std::string stem = bn;
-                size_t dot = stem.find_last_of('.');
-                if ( dot != std::string::npos )
-                    stem.erase(dot);
-                mods.push_back({ b, b + (ea_t)list[i].Size, bn, stem });
-            }
-        }
-
-        std::set<ea_t> seen;
-        size_t nn = get_nlist_size();
-        for ( size_t i = 0; i < nn; i++ )
-        {
-            const char *nm = get_nlist_name(i);
-            if ( nm == nullptr || !wildcard_match(namepat.c_str(), nm) )
-                continue;
-            ea_t ea = get_nlist_ea(i);
-
-            if ( !modpat.empty() )
-            {
-                bool ok = false;
-                for ( const ModRange &m : mods )
-                {
-                    if ( ea >= m.base && ea < m.end )
-                    {
-                        ok = wildcard_match(modpat.c_str(), m.name.c_str())
-                          || wildcard_match(modpat.c_str(), m.stem.c_str());
-                        break;
-                    }
-                }
-                if ( !ok )
-                    continue;
-            }
-
-            ea_t fstart = get_func_start(ea);
-            ea_t key = fstart != BADADDR ? fstart : ea;
-            if ( seen.insert(key).second )
-                out.push_back(key);
-        }
-        return out;
-    }
-
-    void TraceManager::load_module_pdb(ea_t base)
-    {
-        if ( base == BADADDR || !m_engine )
-            return;
-
-        // Never fetch a PDB for the analyzed binary itself (module 0). IDA already
-        // owns that file's database (its own symbols/analysis); asking the pdb
-        // plugin only triggers a redundant -- and possibly slow/networked --
-        // symbol-server lookup for the very file the user is analyzing. We match by
-        // base (authoritative) so a name mismatch can't let it slip through.
-        if ( m_engine->GetModuleCount() > 0
-          && (ea_t)(uint64_t)m_engine->GetModuleList()[0].Address == base )
-            return;
-
-        if ( !m_pdbBases.insert(base).second )
-            return;     // already requested for this module
-
-        // The module's path lets the PDB plugin find the PE / its debug directory
-        // (it can also read the PE from debugger memory at 'base').
-        const Module *m = module_at(base);
-        std::string   path = m != nullptr ? to_utf8(m->pName, m->NameLength) : std::string();
-        if ( path.empty() )
-            return;
-
-        // Never fetch a PDB for the input file itself: IDA already owns that
-        // module's database (its own symbols/analysis), and asking the PDB plugin
-        // for it only triggers a redundant symbol-server lookup for the binary the
-        // user is analyzing.
-        if ( _stricmp(base_name(path).c_str(), m_targetName.c_str()) == 0 )
-            return;
-
-        // Drive the PDB plugin with PDB_CC_USER_WITH_DATA (3): it reads the load
-        // address + path from the "$ pdb" netnode and applies symbols WITHOUT the
-        // "load symbols?" prompt that the automatic DOPT_LOAD_DINFO path shows.
-        static const char *PDB_NODE_NAME = "$ pdb";
-        const int PDB_DLLBASE_NODE_IDX  = 0;
-        const int PDB_DLLNAME_NODE_IDX  = 0;
-        const int PDB_CC_USER_WITH_DATA = 3;
-        netnode pdbnode;
-        pdbnode.create(PDB_NODE_NAME);
-        pdbnode.altset(PDB_DLLBASE_NODE_IDX, base);
-        pdbnode.supset(PDB_DLLNAME_NODE_IDX, path.c_str(), path.size() + 1);
-
-        // Suppress the plugin's dialogs while it runs: when offline / the PDB
-        // can't be found, it would otherwise pop an error or file-locate dialog
-        // for every module. With 'batch' set those are turned into log lines, and
-        // we report the miss to the output window ourselves.
-        // Restore via a scope guard: 'batch' is a global that changes how IDA
-        // reports every subsequent error, so an early return or a throw out of
-        // the plugin must not leave it stuck on.
-        struct BatchGuard
-        {
-            bool saved;
-            BatchGuard() : saved(batch) { batch = true; }
-            ~BatchGuard() { batch = saved; }
-        } batch_guard;
-        bool ran = load_and_run_plugin("pdb", PDB_CC_USER_WITH_DATA);
-
-        // The plugin writes its success flag back into the same netnode slot.
-        if ( !ran || pdbnode.altval(PDB_DLLBASE_NODE_IDX) == 0 )
-            msg("[ida-ttd] PDB symbols not resolved for %s (offline or unavailable).\n",
-                base_name(path).c_str());
-    }
-
-    void TraceManager::resolve_symbols(ea_t base)
-    {
-        if ( !m_engine || base == BADADDR )
-            return;
-        if ( !m_resolvedBases.insert(base).second )
-            return;     // already attempted for this module
-
-        // Find the load event for the module at this base so we can park the
-        // scratch cursor exactly where the image is recorded as mapped.
-        size_t n = m_engine->GetModuleLoadedEventCount();
-        const ModuleLoadedEvent *list = m_engine->GetModuleLoadedEventList();
-        const ModuleLoadedEvent *hit = nullptr;
-        for ( size_t i = 0; i < n; i++ )
-        {
-            if ( list[i].pModule != nullptr
-              && (ea_t)(uint64_t)list[i].pModule->Address == base )
-            {
-                hit = &list[i];
-                break;
-            }
-        }
-
-        if ( !m_symCursor )
-            m_symCursor = TTD::Replay::UniqueCursor{ m_engine->NewCursor() };
-        if ( !m_symCursor )
-            return;
-
-        m_symCursor->SetPosition(hit != nullptr ? hit->Position : TtdPosition::Min);
-        size_t named = apply_module_exports(m_symCursor.get(), base, m_is64);
-
-        // Recover this module's function boundaries from its .pdata exception
-        // table so we can lay out whole functions (incl. code before the current
-        // PC) when the user steps into runtime-only code -- no symbols, no replay.
-        // Prefer the on-disk PE (reliable); fall back to recorded memory, since
-        // TTD may not have captured the .pdata section.
-        std::string modpath = hit != nullptr && hit->pModule != nullptr
-                            ? to_utf8(hit->pModule->pName, hit->pModule->NameLength)
-                            : std::string();
-        std::vector<std::pair<ea_t, ea_t>> ranges;
-        // Only trust the on-disk PE when its headers match the module recorded in
-        // the trace; otherwise fall through to the (always correct, if sometimes
-        // incomplete) copy in guest memory.
-        const Module *mrec = hit != nullptr ? hit->pModule : module_at(base);
-        size_t nfunc = parse_pdata_functions_from_file(
-                           modpath.c_str(), base, m_is64,
-                           mrec != nullptr ? mrec->Timestamp : 0,
-                           mrec != nullptr ? mrec->Checksum  : 0,
-                           ranges);
-        if ( nfunc == 0 )
-            nfunc = parse_pdata_functions(m_symCursor.get(), base, m_is64, ranges);
-        if ( nfunc > 0 )
-            m_funcRanges[base] = std::move(ranges);
-
-        msg("[ida-ttd] %s @ 0x%llX: %u export(s), %u function range(s)\n",
-            base_name(modpath).c_str(), (uint64_t)base, (unsigned)named, (unsigned)nfunc);
-    }
-
-    bool TraceManager::function_range_at(ea_t pc, ea_t &start, ea_t &end) const
-    {
-        if ( !m_engine )
-            return false;
-
-        // Which module is PC in?
-        size_t mi = module_index_at(pc);
-        if ( mi == (size_t)-1 )
-            return false;
-        ea_t modbase = module_spans()[mi].base;
-
-        auto it = m_funcRanges.find(modbase);
-        if ( it == m_funcRanges.end() )
-            return false;
-
-        // Last range whose start <= pc, then verify pc is within it.
-        const std::vector<std::pair<ea_t, ea_t>> &v = it->second;
-        auto up = std::upper_bound(v.begin(), v.end(), std::make_pair(pc, (ea_t)BADADDR));
-        if ( up == v.begin() )
-            return false;
-        --up;
-        if ( pc >= up->first && pc < up->second )
-        {
-            start = up->first;
-            end   = up->second;
-            return true;
-        }
-        return false;
-    }
-
-    const std::vector<TraceManager::ModuleSpan> &TraceManager::module_spans() const
-    {
-        size_t n = m_engine ? m_engine->GetModuleCount() : 0;
-        if ( n != m_spanCount || m_engine.get() != m_spanEngine )
-        {
-            m_moduleSpans.clear();
-            if ( m_engine )
-            {
-                const Module *list = m_engine->GetModuleList();
-                m_moduleSpans.reserve(n);
-                for ( size_t i = 0; i < n; i++ )
-                {
-                    ModuleSpan s;
-                    s.base = (ea_t)(uint64_t)list[i].Address;
-                    s.end  = s.base + (ea_t)list[i].Size;
-                    m_moduleSpans.push_back(s);
-                }
-                std::sort(m_moduleSpans.begin(), m_moduleSpans.end());
-            }
-            m_spanCount  = n;
-            m_spanEngine = m_engine.get();
-        }
-        return m_moduleSpans;
-    }
-
     ea_t TraceManager::current_pc_ea() const
     {
         return m_cursor ? program_counter() : BADADDR;
-    }
-
-    bool TraceManager::module_range_at(ea_t ea, ea_t &lo, ea_t &hi) const
-    {
-        size_t idx = module_index_at(ea);
-        if ( idx == (size_t)-1 )
-            return false;
-        lo = module_spans()[idx].base;
-        hi = module_spans()[idx].end;
-        return true;
-    }
-
-    qstring TraceManager::module_name_at(ea_t ea) const
-    {
-        qstring out;
-        if ( !m_engine )
-            return out;
-        size_t n = m_engine->GetModuleCount();
-        const Module *list = m_engine->GetModuleList();
-        for ( size_t i = 0; i < n; i++ )
-        {
-            ea_t base = (ea_t)(uint64_t)list[i].Address;
-            if ( ea < base || ea >= base + (ea_t)list[i].Size )
-                continue;
-            // The file name without its directory, and without the extension,
-            // so a target reads as "kernel32!Foo" the way a debugger writes it.
-            std::string bn = base_name(to_utf8(list[i].pName, list[i].NameLength));
-            size_t dot = bn.rfind('.');
-            if ( dot != std::string::npos && dot != 0 )
-                bn.resize(dot);
-            out = bn.c_str();
-            break;
-        }
-        return out;
-    }
-
-    qstring TraceManager::module_ident_at(ea_t ea) const
-    {
-        qstring out;
-        if ( !m_engine )
-            return out;
-        size_t n = m_engine->GetModuleCount();
-        const Module *list = m_engine->GetModuleList();
-        for ( size_t i = 0; i < n; i++ )
-        {
-            ea_t base = (ea_t)(uint64_t)list[i].Address;
-            if ( ea < base || ea >= base + (ea_t)list[i].Size )
-                continue;
-            std::string bn = base_name(to_utf8(list[i].pName, list[i].NameLength));
-            // Keep the extension -- "kernel32_dll" says more than "kernel32" for
-            // a segment name -- but a segment name has to be a valid IDA name,
-            // so anything that is not a name character becomes an underscore.
-            for ( char &c : bn )
-                if ( !qisalnum(c) && c != '_' )
-                    c = '_';
-            out = bn.c_str();
-            break;
-        }
-        return out;
-    }
-
-    std::vector<std::pair<ea_t, ea_t>> TraceManager::module_ranges() const
-    {
-        std::vector<std::pair<ea_t, ea_t>> out;
-        for ( const ModuleSpan &s : module_spans() )
-            out.push_back({ s.base, s.end });
-        return out;
-    }
-
-    std::vector<TraceManager::ModuleLoad> TraceManager::module_loads() const
-    {
-        std::vector<ModuleLoad> out;
-        if ( !m_engine )
-            return out;
-
-        size_t n = m_engine->GetModuleLoadedEventCount();
-        const ModuleLoadedEvent *evs = m_engine->GetModuleLoadedEventList();
-        out.reserve(n);
-        for ( size_t i = 0; i < n; i++ )
-        {
-            const Module *m = evs[i].pModule;
-            if ( m == nullptr )
-                continue;
-            ModuleLoad ml;
-            ml.base = (ea_t)(uint64_t)m->Address;
-            ml.size = m->Size;
-            ml.name = base_name(to_utf8(m->pName, m->NameLength)).c_str();
-            ml.pos  = to_core(evs[i].Position);
-            out.push_back(std::move(ml));
-        }
-        return out;
     }
 
     uint64_t TraceManager::trace_fingerprint() const
@@ -3031,37 +2565,6 @@ namespace idattd
         v = v * 1099511628211ull ^ (uint64_t)m_engine->GetLastPosition().Steps;
         v = v * 1099511628211ull ^ (uint64_t)m_engine->GetModuleCount();
         return v;
-    }
-
-    size_t TraceManager::module_index_at(ea_t ea) const
-    {
-        const std::vector<ModuleSpan> &v = module_spans();
-        ModuleSpan probe;
-        probe.base = ea;
-        // Last module whose base <= ea, then check ea falls inside it.
-        auto it = std::upper_bound(v.begin(), v.end(), probe);
-        if ( it == v.begin() )
-            return (size_t)-1;
-        --it;
-        if ( ea >= it->base && ea < it->end )
-            return (size_t)(it - v.begin());
-        return (size_t)-1;
-    }
-
-    bool TraceManager::is_library_address(ea_t ea) const
-    {
-        if ( !m_engine )
-            return false;
-        size_t idx = module_index_at(ea);
-        if ( idx == (size_t)-1 )
-            return false;
-        // Module 0 in the engine's list is the analyzed binary; everything else is
-        // library/system code. (module_spans() is sorted by base, so compare the
-        // base rather than the index.)
-        ea_t mainBase = m_engine->GetModuleCount() > 0
-                      ? (ea_t)(uint64_t)m_engine->GetModuleList()[0].Address
-                      : BADADDR;
-        return module_spans()[idx].base != mainBase;
     }
 
     void TraceManager::goto_position()

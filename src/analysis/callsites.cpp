@@ -44,7 +44,7 @@ namespace idattd
                 name = dem;
         }
 
-        qstring mod = mgr != nullptr ? mgr->module_name_at(ea) : qstring();
+        qstring mod = mgr != nullptr ? mgr->modules().name_at(ea) : qstring();
         qstring out;
         if ( !name.empty() && !mod.empty() )
             out.sprnt("%s!%s (0x%llX)", mod.c_str(), name.c_str(), (uint64_t)ea);

@@ -799,8 +799,8 @@ namespace idattd
                 if ( ev != nullptr )
                 {
                     const modinfo_t &mi = ev->modinfo();
-                    p->manager().resolve_symbols((ea_t)mi.base);
-                    p->manager().load_module_pdb((ea_t)mi.base);  // silent PDB symbols
+                    p->manager().modules().resolve_symbols((ea_t)mi.base);
+                    p->manager().modules().load_pdb((ea_t)mi.base);  // silent PDB symbols
                 }
                 if ( code == dbg_process_start )
                     p->show_actions();   // (re)build the toolbar inside the now-active debugger desktop
@@ -933,7 +933,7 @@ namespace idattd
             // functions FUNC_LIB so library code is grouped/de-emphasized (the PDB
             // plugin defines them but does not flag them as library).
             if ( get_func_start(ea) == ea && (get_func_flags(ea) & FUNC_LIB) == 0
-              && p->manager().is_library_address(ea) )
+              && p->manager().modules().is_library_address(ea) )
             {
                 set_func_flag(ea, FUNC_LIB, true);
             }

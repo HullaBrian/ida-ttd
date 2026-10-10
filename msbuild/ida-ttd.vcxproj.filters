@@ -61,6 +61,9 @@
     <ClInclude Include="$(SrcDir)\core\position.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\module_registry.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\msttd_position.h">
       <Filter>debugger</Filter>
     </ClInclude>
@@ -130,6 +133,9 @@
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\module_registry.cpp">
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp">

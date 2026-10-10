@@ -3,7 +3,7 @@
 #include "common/pch.h"
 #include "core/position.h"
 #include "debugger/event_queue.h"
-#include "common/symbols.h"
+#include "debugger/module_registry.h"
 #include "common/trace_open.h"
 #include "analysis/memmap.h"
 
@@ -92,41 +92,13 @@ namespace idattd
         // The instruction the cursor is standing on. Bookmarks record this so the
         // list can show where each mark is without seeking to every row.
         ea_t                       current_pc_ea() const;
-        // Loaded module containing 'ea', as [lo, hi). False when 'ea' belongs to
-        // no module (dynamically allocated code).
-        bool                       module_range_at(ea_t ea, ea_t &lo, ea_t &hi) const;
-        // Name of the module containing 'ea', without directory or extension
-        // ("kernel32"), or empty when 'ea' is in no module.
-        qstring                    module_name_at(ea_t ea) const;
-        // Same, but keeping the extension and made safe to use as an IDA name
-        // ("kernel32_dll"). Used to name the segment a memory region maps to.
-        qstring                    module_ident_at(ea_t ea) const;
-        // Every loaded module as [lo, hi), sorted by base.
-        std::vector<std::pair<ea_t, ea_t>> module_ranges() const;
 
-        // [start, end) of the function containing 'pc', from the exception
-        // table of its module. This is the authority on where a function in a
-        // system DLL begins, with or without symbols -- x64 unwinding requires
-        // the table, so every module carries one. False for x86 modules, for a
-        // module whose table has not been read, and for addresses outside any
-        // recorded function. Populated as a side effect of resolve_symbols().
-        bool function_range_at(ea_t pc, ea_t &start, ea_t &end) const;
-
-        // One load of one module: where it went, how big it was, its base name,
-        // and the position at which the trace saw it mapped. That last field is
-        // what makes reading a module's own headers or export table possible --
-        // they can only be read at a position where the module exists.
-        struct ModuleLoad
-        {
-            ea_t     base = BADADDR;
-            uint64_t size = 0;
-            qstring  name;                    // base name, as recorded
-            Position pos;                     // where it was loaded
-        };
-        // Every module LOAD in the trace, in load order. A module loaded twice at
-        // the same address appears twice, which is deliberate: each load needs
-        // its own read position.
-        std::vector<ModuleLoad> module_loads() const;
+        // What the plugin knows about the modules the recording loaded: where
+        // they are, what they are called, where their functions start, which of
+        // their addresses have names, and their on-disk images. This class only
+        // tells it when a session begins and ends.
+        ModuleRegistry       &modules()       { return m_modules; }
+        const ModuleRegistry &modules() const { return m_modules; }
 
         // Identity of the loaded recording, so something cached in the database
         // against one trace is not shown against another. Zero with no trace.
@@ -154,29 +126,10 @@ namespace idattd
         TTD::Replay::UniqueCursor  make_cursor();
         bool                       is64() const { return m_is64; }
 
-        // Resolve a name pattern to the set of matching function addresses.
-        // Supports shell-style wildcards (* and ?), case-insensitive, with an
-        // optional "module!" qualifier, e.g. "kernel32!Virtual*" or "*Alloc".
-        std::vector<ea_t>          resolve_function_pattern(const char *pattern) const;
-
-        // Apply offline export-symbol names for the module loaded at 'base',
-        // reading its PE at the module's recorded load position. Deduplicated:
-        // a given base is only attempted once per trace.
-        void                       resolve_symbols(ea_t base);
-
-        // Silently drive IDA's PDB plugin to load symbols for the module at
-        // 'base' (no per-module "load symbols?" prompt). Deduplicated per module.
-        void                       load_module_pdb(ea_t base);
-
         // Called once per stop (from HT_DBG dbg_suspend_process), when the
         // debugger memory cache is valid for the new position: name exports for
         // any newly-seen module and disassemble a run of code around RIP.
         void                       on_suspended();
-
-        // True if 'ea' is inside a loaded module OTHER than the analyzed binary
-        // (module 0) -- i.e. library/system code. Used to mark library functions
-        // FUNC_LIB as their PDB/export names are applied.
-        bool                       is_library_address(ea_t ea) const;
 
         // Explicit, user-triggered deep analysis: walk the trace backward from the
         // current position to find the enclosing function's entry and define the
@@ -281,14 +234,6 @@ namespace idattd
                                 const std::set<const TTD::Replay::Module *> &mods_after);
         bool  is_target_module(const TTD::Replay::Module &m) const;
         void  emit_module_load(const TTD::Replay::Module &m);
-        void  resolve_loaded_modules();   // resolve exports for every loaded module
-        // Find the on-disk image of the module containing 'ea' (loading + caching it
-        // on first use). Returns nullptr if 'ea' is in no module or the file is
-        // unavailable; on success 'base_out' is the module's runtime base so the
-        // caller can form rva = ea - base. Used to serve never-recorded bytes.
-        const ModuleImage *image_for(ea_t ea, ea_t &base_out);
-        // The engine's Module record for the module based at 'base', or nullptr.
-        const TTD::Replay::Module *module_at(ea_t base) const;
         // Lazily create the scratch analysis cursor. It must replay segments
         // sequentially: the default is parallel multi-segment replay, which
         // dispatches callbacks from several threads at once, and the call/return
@@ -353,27 +298,14 @@ namespace idattd
         // or the call predates the window) so the caller can fall back.
         ea_t  find_dynamic_function_entry(ea_t pc);
 
-        // Sorted [base,end) table of the engine's modules, rebuilt only when the
-        // engine's module count changes. The naive form of this -- a linear scan of
-        // GetModuleList() -- was being run once per applied symbol name (~14000 of
-        // them when a PDB loads) from the idb_event::renamed handler.
-        struct ModuleSpan
-        {
-            ea_t base = 0, end = 0;
-            bool operator<(const ModuleSpan &o) const { return base < o.base; }
-        };
-        const std::vector<ModuleSpan> &module_spans() const;
-        // Index into module_spans() of the module containing 'ea', or SIZE_MAX.
-        size_t module_index_at(ea_t ea) const;
-
     private:
         SessionHooks      m_hooks;
+        ModuleRegistry    m_modules;
         IdaErrorReporting m_err;
 
         TTD::Replay::UniqueReplayEngine m_engine;
         TTD::Replay::UniqueCursor       m_cursor;
 
-        TTD::Replay::UniqueCursor       m_symCursor; // scratch cursor for symbol reads
         TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
         // Dedicated cursor for serving IDA's memory reads. It is only ever
         // SetPosition'd (never used to execute/replay), because a cursor left "in
@@ -404,22 +336,6 @@ namespace idattd
         std::set<ea_t>                  m_pdataExtended;
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
-        // Cache backing module_spans(); mutable so the const lookups above can
-        // refresh it lazily. m_spanCount is the module count it was built from.
-        mutable std::vector<ModuleSpan> m_moduleSpans;
-        mutable size_t                  m_spanCount = (size_t)-1;
-        // The engine the cache was built from. Two traces can have the same
-        // module count, so the count alone cannot detect a stale cache.
-        mutable const void             *m_spanEngine = nullptr;
-        std::set<ea_t>                  m_resolvedBases; // modules whose exports we've named
-        std::set<ea_t>                  m_pdbBases;      // modules whose PDB we've requested
-        // Per-module function bounds from the PE exception table (.pdata), keyed
-        // by module base; each vector is sorted by start address.
-        std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
-        // Per-module on-disk image cache, keyed by module base, for filling memory
-        // bytes TTD never recorded (image-backed never-executed code). An entry with
-        // ok==false means we already tried and the file was missing/not a PE.
-        std::map<ea_t, ModuleImage> m_moduleImages;
         // Bytes reconstructed from recorded writes, for non-module memory the
         // position query only zero-fills (unpacked/JIT code never executed at the
         // current position). Served by on_read_memory.

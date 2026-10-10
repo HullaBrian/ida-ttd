@@ -775,7 +775,7 @@ namespace idattd
             UniqueCursor sym = mgr->make_cursor();
             if ( !sym )
                 return false;
-            for ( const TraceManager::ModuleLoad &ml : mgr->module_loads() )
+            for ( const ModuleRegistry::Load &ml : mgr->modules().loads() )
             {
                 if ( _stricmp(ml.name.c_str(), "ntdll.dll") != 0 )
                     continue;
@@ -814,7 +814,7 @@ namespace idattd
         // main thread is pumping the UI behind the wait box, and TraceManager's
         // own module lookups build a cache lazily -- walking that from two
         // threads is exactly the kind of bug that never reproduces.
-        const std::vector<std::pair<ea_t, ea_t>> mods = mgr->module_ranges();
+        const std::vector<std::pair<ea_t, ea_t>> mods = mgr->modules().ranges();
 
         auto module_of = [&mods](ea_t ea) noexcept -> size_t
         {
@@ -1224,13 +1224,13 @@ namespace idattd
             for ( const Rec &r : st.recs )
             {
                 ea_t alo = 0, ahi = 0;
-                if ( r.api != BADADDR && mgr->module_range_at(r.api, alo, ahi) )
+                if ( r.api != BADADDR && mgr->modules().range_at(r.api, alo, ahi) )
                     bases.insert(alo);
                 for ( uint8_t k = 0; k < r.chain_n; k++ )
                 {
                     ea_t mlo = 0, mhi = 0;
                     if ( r.chain[k] != BADADDR
-                      && mgr->module_range_at(r.chain[k], mlo, mhi) )
+                      && mgr->modules().range_at(r.chain[k], mlo, mhi) )
                     {
                         bases.insert(mlo);
                     }
@@ -1238,14 +1238,14 @@ namespace idattd
             }
             for ( ea_t b : bases )
             {
-                mgr->resolve_symbols(b);
+                mgr->modules().resolve_symbols(b);
                 // Exports alone are not enough here. The code that allocates is
                 // usually an internal helper, and the nearest export below it
                 // can be a completely unrelated function -- which is exactly how
                 // an allocation gets attributed to something like
                 // RtlNtStatusToDosErrorNoTeb. A PDB names the real one. Silent
                 // and deduplicated; a no-op with no symbol path configured.
-                mgr->load_module_pdb(b);
+                mgr->modules().load_pdb(b);
             }
         }
 
@@ -1326,7 +1326,7 @@ namespace idattd
         // which is code the recording allocated and ran.
         for ( uint8_t k = 0; k < c.chain_n; k++ )
         {
-            if ( c.chain[k] != BADADDR && !mgr->is_library_address(c.chain[k]) )
+            if ( c.chain[k] != BADADDR && !mgr->modules().is_library_address(c.chain[k]) )
                 return c.chain[k];
         }
 
@@ -1334,13 +1334,13 @@ namespace idattd
         // that left the module the syscall's own caller sits in: for a heap
         // allocation that is the CRT's malloc rather than ntdll's internals.
         ea_t lo0 = 0, hi0 = 0;
-        if ( !mgr->module_range_at(c.chain[0], lo0, hi0) )
+        if ( !mgr->modules().range_at(c.chain[0], lo0, hi0) )
             return c.chain[c.chain_n - 1];
         for ( uint8_t k = 1; k < c.chain_n; k++ )
         {
             ea_t lo = 0, hi = 0;
             if ( c.chain[k] != BADADDR
-              && mgr->module_range_at(c.chain[k], lo, hi) && lo != lo0 )
+              && mgr->modules().range_at(c.chain[k], lo, hi) && lo != lo0 )
             {
                 return c.chain[k];
             }

@@ -267,7 +267,7 @@ namespace idattd
           || pat.empty() )
             return 1;
 
-        std::vector<ea_t> hits = mgr()->resolve_function_pattern(pat.c_str());
+        std::vector<ea_t> hits = mgr()->modules().resolve_function_pattern(pat.c_str());
         if ( hits.empty() )
         {
             info("No functions matched '%s'.\n\n"

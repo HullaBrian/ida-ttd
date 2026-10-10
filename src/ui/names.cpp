@@ -27,7 +27,7 @@ namespace idattd
         if ( ea == BADADDR )
             return out;
 
-        qstring mod = mgr != nullptr ? mgr->module_name_at(ea) : qstring();
+        qstring mod = mgr != nullptr ? mgr->modules().name_at(ea) : qstring();
         auto qualify = [&mod](const qstring &what)
         {
             qstring r;
@@ -56,7 +56,7 @@ namespace idattd
         //    function starts, symbols or not. Anything named before that start
         //    belongs to a different function and must not be borrowed.
         ea_t fnstart = BADADDR, fnend = BADADDR;
-        bool have_fn = mgr != nullptr && mgr->function_range_at(ea, fnstart, fnend);
+        bool have_fn = mgr != nullptr && mgr->modules().function_range_at(ea, fnstart, fnend);
 
         // 3. The nearest name at or below the address. get_nlist_idx returns the
         //    closest match, which can sit above the address, so step back until
@@ -104,7 +104,7 @@ namespace idattd
 
         // 5. Relative to the module, which is unambiguous even with no symbols.
         ea_t lo = 0, hi = 0;
-        if ( mgr != nullptr && mgr->module_range_at(ea, lo, hi) && !mod.empty() )
+        if ( mgr != nullptr && mgr->modules().range_at(ea, lo, hi) && !mod.empty() )
         {
             out.sprnt("%s+0x%llX", mod.c_str(), (uint64_t)(ea - lo));
             return out;

@@ -39,7 +39,7 @@ namespace idattd
             case SCOPE_MODULE:
             {
                 ea_t lo = 0, hi = 0;
-                if ( !mgr->module_range_at(ea, lo, hi) )
+                if ( !mgr->modules().range_at(ea, lo, hi) )
                 {
                     warning("0x%llX is not inside a module loaded by the trace.\n\n"
                             "Dynamically allocated code has no module to %s; use "
@@ -51,7 +51,7 @@ namespace idattd
             }
 
             default:
-                out = mgr->module_ranges();
+                out = mgr->modules().ranges();
                 return true;
         }
     }
