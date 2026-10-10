@@ -441,15 +441,22 @@ Each lands on its own and leaves the plugin working.
 `core/position.h`, `core/backend.h`, `core/backend_registry.*`. No behaviour.
 *Landed on this branch.*
 
-**Phase 1 — abstract the position.** Change the stores, the listings and the UI
-to `idattd::Position`, converting at the `TraceManager` boundary. 95 call sites,
-mechanical, no behaviour change. Bookmark and memory-map blobs keep their layout
-(two 64-bit words either way), so existing databases still read. This is the
-prerequisite for everything and the largest single diff.
+**Phase 1 — abstract the position.** *Landed on this branch.* The stores, the
+listings and the UI use `idattd::Position`, converting at the `TraceManager`
+boundary through `debugger/msttd_position.h`. `src/ui`, `src/plugin`,
+`src/core` and `src/abi` now contain no Microsoft TTD type at all. Bookmark
+blobs are unchanged; memory-map blobs moved to version 7 because they can hold
+an absent position, whose bit pattern differs between the two representations.
 
 **Phase 2 — split `TraceManager`.** `docs/code-review.md` §3.3 and §3.4, with
 the core/backend line from §4 above as the guide. Still one backend; the split
 is justified by itself.
+
+*§3.4 is landed as phase 2a*: the eleven mutually exclusive request flags are
+one `PendingRequest`, which is also the shape `INavigator` needs -- its request
+kinds are the navigator's methods. The remaining work is the class split
+itself: `ReplaySession`, `ModuleRegistry`, `MemoryReader`, `SegmentLayout`,
+`CodeAnalyzer`, `Navigator`.
 
 **Phase 3 — `ITraceBackend` behind the Microsoft implementation.** Have
 `MsTtdBackend` implement the core-side interface and make `ReplaySession` drive
@@ -540,6 +547,16 @@ the open items of the existing code review.
 - `docs/sogen-ttd-requests.md` — the SDK changes a Sogen backend wants, written
   to be handed to that project.
 
-They compile and are in the project. Nothing is wired to them, by design:
-phase 1 comes first, and the interface is here so phase 1 has something to aim
-at.
+The interfaces compile and are in the project; nothing is wired to them yet,
+since that is phase 3.
+
+Phases 1 and 2a are landed on top of them:
+
+- `src/core/position.{h,cpp}` is in use throughout the core, and the one place
+  a position is formatted or parsed is the one phase 3 routes through the
+  active backend.
+- `src/debugger/msttd_position.h` converts at the engine boundary, and the
+  `TtdPosition` alias marks every line that is Microsoft-specific.
+- `TraceManager::PendingRequest` replaces the eleven request flags.
+
+Release and Debug both build clean at every commit.
