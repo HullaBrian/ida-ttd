@@ -55,6 +55,7 @@
     <ClInclude Include="$(SrcDir)\core\backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />
+    <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h" />
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h" />
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h" />
     <ClInclude Include="$(SrcDir)\debugger\msttd_position.h" />
@@ -83,6 +84,7 @@
     <ClCompile Include="$(SrcDir)\common\trace_open.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\code_analyzer.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\module_registry.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />

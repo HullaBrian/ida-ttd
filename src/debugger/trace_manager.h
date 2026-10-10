@@ -5,6 +5,7 @@
 #include "debugger/event_queue.h"
 #include "debugger/module_registry.h"
 #include "debugger/memory_reader.h"
+#include "debugger/code_analyzer.h"
 #include "common/trace_open.h"
 #include "analysis/memmap.h"
 
@@ -176,6 +177,16 @@ namespace idattd
         // captured; 'cancelled' distinguishes "the user gave up" from "the call is
         // further back than we are willing to search".
         bool  find_frame_entry_position(TTD::Replay::Position &out, bool &cancelled);
+        // Scratch cursor for the frame search above, created on first use.
+        // Sequential, unfiltered replay: the search's call/return callback
+        // mutates an unsynchronized map, and the engine's default dispatches
+        // callbacks from several segment threads at once.
+        //
+        // CodeAnalyzer keeps one of its own for the same reason. One cursor
+        // shared between the two would be a mutable resource two unrelated
+        // concerns both install callbacks on; a cursor is cheap, and the
+        // engine is built to hand out several.
+        TTD::Replay::ICursorView *frame_cursor();
         // Seek the main cursor backward to 'p' in one engine call, with user
         // breakpoints still armed so anything in between still stops us.
         TTD::Replay::EventType rewind_to(const TTD::Replay::Position &p);
@@ -235,89 +246,19 @@ namespace idattd
                                 const std::set<const TTD::Replay::Module *> &mods_after);
         bool  is_target_module(const TTD::Replay::Module &m) const;
         void  emit_module_load(const TTD::Replay::Module &m);
-        // Lazily create the scratch analysis cursor. It must replay segments
-        // sequentially: the default is parallel multi-segment replay, which
-        // dispatches callbacks from several threads at once, and the call/return
-        // callback in find_dynamic_function_entry mutates an unsynchronized map.
-        TTD::Replay::ICursorView *ana_cursor();
-        // Cheap, replay-free disassembly of the function at 'pc'. Prefers the
-        // module's .pdata bounds (whole function at once); falls back to linear
-        // forward layout. Runs on every stop; must not walk the trace.
-        void  analyze_current_function(ea_t pc);
-        // Grow a function IDA defined too short to the end its module's
-        // exception table gives it. IDA's static analysis stops where it loses
-        // the flow (a noreturn call, an opaque tail jump), and the rest of the
-        // function then renders as a JUMPOUT to somewhere outside it. Only ever
-        // grows, only into space no other function claims, once per function.
-        void  extend_to_pdata_bounds(ea_t pc, const func_entry_info_t &fi);
-        // Define every function DIRECTLY called from [lo,hi) -- one level deep, no
-        // recursion into their callees. Without this, call targets stay undefined
-        // and render as "call unk_<addr>": we run with AF_PROC/AF_PROCPTR switched
-        // off (see on_start_process), which is exactly the auto-analysis rule that
-        // would otherwise create a function at a call target. Doing it ourselves,
-        // one level at a time, gives named callees without the runaway cascade
-        // that made those flags unusable here.
-        void  define_callees(ea_t lo, ea_t hi);
-        // Define a single function at 'ea', preferring the authoritative .pdata
-        // bounds of its module and marking library code FUNC_LIB. No-op when 'ea'
-        // is already the start of a function.
-        void  define_function_at(ea_t ea);
-        // Resolve the address a call instruction transfers to: the operand itself
-        // for a direct call, or the pointer STORED at the slot for an indirect
-        // call through memory (an import thunk's IAT entry). The latter only works
-        // because we are replaying: the IAT holds its real, resolved value at the
-        // current position. BADADDR when the target cannot be determined
-        // statically (call through a register).
-        ea_t  call_target_of(const insn_t &insn, ea_t &slot_out);
-        // For runtime-allocated code with no module/.pdata (shellcode, unpacked):
-        // seek a scratch cursor a little before the current position and replay
-        // forward (cheap), laying out the real executed instructions around PC so
-        // a window of code is disassembled in both directions, not one at a time.
-        void  lay_out_window(ea_t pc);
-        // Forward-replay a window around the current position and collect the
-        // current thread's executed instruction addresses within +/-0x2000 of pc
-        // (the shared engine behind lay_out_window and find_dynamic_start).
-        void  collect_window_pcs(ea_t pc, std::set<ea_t> &pcs);
-        // Best guess at the start of the function containing 'pc' for dynamic code:
-        // the lowest executed address contiguous (by instruction) with pc, so a
-        // recursive-descent add_func() there lays out the prologue above pc too.
-        ea_t  find_dynamic_start(ea_t pc);
-        // Recover the true head of the function the current position is executing
-        // in (for dynamic code) from the trace's call/return structure: replay
-        // forward over a look-back window tracking a per-thread call-frame stack;
-        // the top frame when we reach the current position is the call that
-        // entered this frame, so its target is the function head. Returns BADADDR
-        // when no enclosing call was captured (thread entry, jmp-based shellcode,
-        // or the call predates the window) so the caller can fall back.
-        ea_t  find_dynamic_function_entry(ea_t pc);
-
     private:
         SessionHooks      m_hooks;
         ModuleRegistry    m_modules;
         MemoryReader      m_memory;
+        CodeAnalyzer      m_code;
         IdaErrorReporting m_err;
 
         TTD::Replay::UniqueReplayEngine m_engine;
         TTD::Replay::UniqueCursor       m_cursor;
+        TTD::Replay::UniqueCursor       m_frameCursor;  // see frame_cursor()
 
-        TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
-        ea_t                            m_winLo = BADADDR; // last laid-out window range
-        ea_t                            m_winHi = 0;
-        // Start of the function whose callees we last defined. Stepping inside one
-        // function re-enters analyze_current_function on every stop, and there is
-        // nothing new to find until the function itself changes.
-        ea_t                            m_calleeScanFunc = BADADDR;
-        // Functions already considered for .pdata extension, so the check is
-        // paid once rather than on every stop inside the same function.
-        std::set<ea_t>                  m_pdataExtended;
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
-        // Functions we defined in dynamic (non-module) code, keyed by start_ea ->
-        // byte-hash at definition time. Used to detect self-modifying / reused
-        // regions (incl. time-travel to a position where the bytes differ) and
-        // re-disassemble them.
-        std::map<ea_t, uint64_t>        m_dynFuncBytes;
-
         EventQueue   m_events;
         bool         m_is64 = false;
         bool         m_isForward = true;
