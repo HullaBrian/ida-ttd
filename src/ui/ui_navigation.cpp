@@ -33,8 +33,7 @@ namespace idattd
         if ( n >= m_positions.size() )
             return;
         const TraceManager::NamedPosition &e = m_positions[n];
-        cols->at(0).sprnt("%llX:%llX",
-                          (uint64_t)e.pos.Sequence, (uint64_t)e.pos.Steps);
+        cols->at(0) = format_position(e.pos);
         cols->at(1) = e.name.c_str();
     }
 
@@ -110,9 +109,9 @@ namespace idattd
     {
         if ( mgr() == nullptr || !mgr()->is_active() )
             return 1;
-        TTD::Replay::Position p = mgr()->current_position();
-        qstring s;
-        s.sprnt("%llX:%llX", (uint64_t)p.Sequence, (uint64_t)p.Steps);
+        qstring s = format_position(mgr()->current_position());
+        if ( s.empty() )
+            return 1;
         copy_to_clipboard(s.c_str());
         msg("[ida-ttd] copied position %s to clipboard.\n", s.c_str());
         return 1;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "core/position.h"
 
 namespace idattd
 {
@@ -9,7 +10,7 @@ namespace idattd
     // without seeking the cursor to every row.
     struct Bookmark
     {
-        TTD::Replay::Position pos{};
+        Position pos{};
         ea_t                  ea  = BADADDR;
         uint32_t              tid = 0;
         qstring               name;

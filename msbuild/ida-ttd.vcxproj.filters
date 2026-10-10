@@ -61,6 +61,9 @@
     <ClInclude Include="$(SrcDir)\core\position.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\msttd_position.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -136,6 +139,9 @@
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\position.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp">

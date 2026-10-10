@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "core/position.h"
 #include "debugger/event_queue.h"
 #include "common/symbols.h"
 #include "common/trace_open.h"
@@ -25,8 +26,8 @@ namespace idattd
     public:
         struct NamedPosition
         {
-            std::string   name;
-            TTD::Replay::Position pos;
+            std::string name;
+            Position    pos;
         };
 
         TraceManager();
@@ -52,7 +53,7 @@ namespace idattd
         ssize_t on_exit_process();
 
         // ---- UI helpers ----------------------------------------------------
-        void                       set_next_position(const TTD::Replay::Position &p);
+        void                       set_next_position(const Position &p);
         void                       goto_position();
         void                       request_backward_step();
         void                       request_single_step(bool forward);
@@ -69,7 +70,7 @@ namespace idattd
         // (it tries to plant a real/source breakpoint), so we drive it ourselves
         // with a temporary Execute watchpoint, like the backward variant.
         void                       request_run_to_cursor_forward(ea_t addr);
-        TTD::Replay::Position              current_position() const;
+        Position                   current_position() const;
         // The instruction the cursor is standing on. Bookmarks record this so the
         // list can show where each mark is without seeking to every row.
         ea_t                       current_pc_ea() const;
@@ -102,7 +103,7 @@ namespace idattd
             ea_t     base = BADADDR;
             uint64_t size = 0;
             qstring  name;                    // base name, as recorded
-            TTD::Replay::Position pos;        // where it was loaded
+            Position pos;                     // where it was loaded
         };
         // Every module LOAD in the trace, in load order. A module loaded twice at
         // the same address appears twice, which is deliberate: each load needs
@@ -125,9 +126,9 @@ namespace idattd
         // current position differ from the ones it was last given. Called on
         // every stop: time travel can change the map underneath it.
         void refresh_memory_layout();
-        // Last position of the loaded trace (Position::Invalid with no trace).
-        // Used to turn a replay progress position into a percentage.
-        TTD::Replay::Position              last_position() const;
+        // Last position of the loaded trace, or Position::none() without one.
+        // Its 'hi' word is what a replay progress readout divides by.
+        Position                   last_position() const;
         std::vector<NamedPosition> collect_positions() const;
 
         // Create a fresh cursor over the loaded trace (empty if no trace). Used

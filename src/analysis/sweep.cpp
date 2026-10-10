@@ -25,13 +25,14 @@ namespace idattd
         cursor->SetReplayFlags(cursor->GetReplayFlags()
                              | ReplayFlags::ReplaySegmentsSequentially);
 
-        // A percentage needs the trace's length. Sequence numbers are the only
-        // monotonic measure the progress callback reports.
-        const uint64_t last_seq = (uint64_t)mgr->last_position().Sequence;
+        // A percentage needs the trace's length. The high word of a position
+        // is the only monotonic measure the progress callback reports -- a
+        // sequence number here, an instruction count for another backend.
+        const uint64_t last_seq = mgr->last_position().hi;
         std::atomic<uint32_t> pct{ 0 };
         std::atomic<bool>     done{ false };
 
-        auto on_progress = [&pct, last_seq](Position const &p) noexcept
+        auto on_progress = [&pct, last_seq](TTD::Replay::Position const &p) noexcept
         {
             if ( last_seq > 0 )
             {
@@ -41,7 +42,7 @@ namespace idattd
             }
         };
         cursor->SetReplayProgressCallback(on_progress);
-        cursor->SetPosition(Position::Min);
+        cursor->SetPosition(TTD::Replay::Position::Min);
 
         std::thread worker([cursor, &done]()
         {

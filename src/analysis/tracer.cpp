@@ -1,6 +1,7 @@
 #include "analysis/tracer.h"
 #include "debugger/callconv.h"
 #include "analysis/sweep.h"
+#include "debugger/msttd_position.h"
 #include "debugger/trace_manager.h"
 
 using namespace TTD;
@@ -319,9 +320,9 @@ namespace idattd
         {
             ea_t     disp;
             uint32_t tid;
-            Position callPos;
+            TtdPosition callPos;
             uint64_t retAddr;
-            Position retPos;
+            TtdPosition retPos;
             bool     hasRet;
         };
         std::vector<Rec> recs;
@@ -430,13 +431,13 @@ namespace idattd
                 cur->SetPosition(rec.callPos);
                 FunctionInvocation ev;
                 ev.func_ea = rec.disp;
-                ev.pos     = rec.callPos;
+                ev.pos     = to_core(rec.callPos);
                 ev.tid     = rec.tid;
                 extract_args(cur.get(), rec.disp, m_is64, ev.args);
                 if ( rec.hasRet )
                 {
                     cur->SetPosition(rec.retPos);
-                    ev.end_pos = rec.retPos;
+                    ev.end_pos = to_core(rec.retPos);
                     ev.retval  = render_return(cur.get(), rec.disp, m_is64);
                     ev.has_ret = true;
                 }

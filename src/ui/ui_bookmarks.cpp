@@ -20,13 +20,13 @@ namespace idattd
         fmt.sprnt("%s TTD bookmark\n"
                   "\n"
                   "\n"
-                  "Position %llX:%llX\n"
+                  "Position %s\n"
                   "\n"
                   "<~N~ame:q:256:60::>\n"
                   "<~C~omment:t::60:::>\n"
                   "\n",
                   is_new ? "New" : "Edit",
-                  (uint64_t)b.pos.Sequence, (uint64_t)b.pos.Steps);
+                  format_position(b.pos).c_str());
 
         qstring         name = b.name;
         textctrl_info_t ti;
@@ -75,7 +75,7 @@ namespace idattd
         const Bookmark *b = m_store != nullptr ? m_store->at(n) : nullptr;
         if ( b == nullptr )
             return;
-        cols->at(0).sprnt("%llX:%llX", (uint64_t)b->pos.Sequence, (uint64_t)b->pos.Steps);
+        cols->at(0) = format_position(b->pos);
         if ( b->ea != BADADDR )
             cols->at(1).sprnt("0x%llX", (uint64_t)b->ea);
         cols->at(2).sprnt("0x%X", b->tid);
@@ -144,8 +144,8 @@ namespace idattd
         if ( store() == nullptr || !bookmark_here(mgr(), b) || !ask_bookmark_details(b, true) )
             return 1;
         store()->add(b);
-        msg("[ida-ttd] bookmarked %llX:%llX (%s).\n",
-            (uint64_t)b.pos.Sequence, (uint64_t)b.pos.Steps, b.name.c_str());
+        msg("[ida-ttd] bookmarked %s (%s).\n",
+            format_position(b.pos).c_str(), b.name.c_str());
         // Any open bookmark window reads the same store, so tell it to re-read
         // rather than leaving the new entry invisible until it is reopened.
         refresh_chooser("TTD Bookmarks");

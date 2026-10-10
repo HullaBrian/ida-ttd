@@ -1,8 +1,5 @@
 #include "analysis/bookmarks.h"
 
-using namespace TTD;
-using namespace TTD::Replay;
-
 namespace idattd
 {
     // IDB storage. The "$ " prefix is the SDK's convention for a plugin-owned
@@ -121,7 +118,7 @@ namespace idattd
                     "entries.\n", (int)m_items.size(), (int)count);
                 break;
             }
-            b.pos = Replay::Position{ (SequenceId)seq, (StepCount)steps };
+            b.pos = Position{ seq, steps };
             b.ea  = (ea_t)ea;
             b.tid = tid;
             m_items.push_back(b);
@@ -150,8 +147,8 @@ namespace idattd
         put_u32(blob, (uint32_t)m_items.size());
         for ( const Bookmark &b : m_items )
         {
-            put_u64(blob, (uint64_t)b.pos.Sequence);
-            put_u64(blob, (uint64_t)b.pos.Steps);
+            put_u64(blob, b.pos.hi);
+            put_u64(blob, b.pos.lo);
             put_u64(blob, (uint64_t)b.ea);
             put_u32(blob, b.tid);
             put_str(blob, b.name);

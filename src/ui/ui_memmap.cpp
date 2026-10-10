@@ -39,7 +39,7 @@ namespace idattd
         if ( n >= m_rows.size() )
             return;
         const RegionChange &c = m_rows[n];
-        cols->at(0).sprnt("%llX:%llX", (uint64_t)c.pos.Sequence, (uint64_t)c.pos.Steps);
+        cols->at(0) = format_position(c.pos);
         cols->at(1).sprnt("0x%X", c.tid);
 
         qstring what = change_name(c.kind);
@@ -96,7 +96,7 @@ namespace idattd
             // inside the syscall stub, which is never what the row is about and
             // does not match the function the row names.
             const RegionChange &c = m_rows[n];
-            m_mgr->set_next_position(c.call_pos.IsValid() ? c.call_pos : c.pos);
+            m_mgr->set_next_position(c.call_pos.is_valid() ? c.call_pos : c.pos);
             request_continue_process();
             run_requests();
         }

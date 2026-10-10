@@ -1,5 +1,6 @@
 #include "analysis/memmap.h"
 #include "analysis/sweep.h"
+#include "debugger/msttd_position.h"
 #include "debugger/trace_manager.h"
 #include "common/trace_open.h"
 #include "common/symbols.h"
@@ -236,7 +237,7 @@ namespace idattd
         // An invalid position on either side means "the whole timeline", which
         // sorts after every real one -- so it can be reached from anywhere, and
         // nothing can be reached from it.
-        bool backward = pos.IsValid() && (!m_livePos.IsValid() || pos < m_livePos);
+        bool backward = pos.is_valid() && (!m_livePos.is_valid() || pos < m_livePos);
         if ( !m_liveValid || backward )
         {
             m_live.clear();
@@ -246,7 +247,7 @@ namespace idattd
         while ( m_liveIdx < m_changes.size() )
         {
             const RegionChange &c = m_changes[m_liveIdx];
-            if ( pos.IsValid() && c.pos > pos )
+            if ( pos.is_valid() && c.pos > pos )
                 break;
             apply_change(m_live, c);
             m_liveIdx++;
@@ -284,12 +285,15 @@ namespace idattd
     static const char  MM_NODE[]  = "$ ida-ttd memmap";
     static const uchar MM_TAG     = 'M';
     static const uint32_t MM_MAGIC   = 0x50414D54;   // 'TMAP'
+    // 7: positions are stored as the core's two words, whose "no position"
+    // marker differs from the one Microsoft TTD used, so a v6 map would read an
+    // absent call position back as a real one.
     // 6: the chain keeps module boundaries rather than the innermost frames.
     // 5 added the called export. 4 added the call chain, 3 the call position. 2 made RegionChange::pc the caller and
     // established the stack-argument offset from the stack rather than assuming
     // it, so a map written by an older build can hold a wrong Protect value.
     // Rebuild rather than show it.
-    static const uint32_t MM_VERSION = 6;
+    static const uint32_t MM_VERSION = 7;
     // A recording that allocates in a loop can produce a great many changes.
     // Past this there is nothing left to learn from another row, and the blob
     // has to fit in the database.
@@ -346,10 +350,10 @@ namespace idattd
         for ( size_t i = 0; i < n; i++ )
         {
             const RegionChange &c = m_changes[i];
-            w.u64((uint64_t)c.pos.Sequence);
-            w.u64((uint64_t)c.pos.Steps);
-            w.u64((uint64_t)c.call_pos.Sequence);
-            w.u64((uint64_t)c.call_pos.Steps);
+            w.u64(c.pos.hi);
+            w.u64(c.pos.lo);
+            w.u64(c.call_pos.hi);
+            w.u64(c.call_pos.lo);
             w.u32(c.tid);
             w.u64((uint64_t)c.pc);
             w.u64((uint64_t)c.api);
@@ -400,10 +404,10 @@ namespace idattd
             for ( uint64_t i = 0; i < count && r.ok; i++ )
             {
                 RegionChange c;
-                c.pos.Sequence      = (SequenceId)r.u64();
-                c.pos.Steps         = (StepCount)r.u64();
-                c.call_pos.Sequence = (SequenceId)r.u64();
-                c.call_pos.Steps    = (StepCount)r.u64();
+                c.pos.hi      = r.u64();
+                c.pos.lo      = r.u64();
+                c.call_pos.hi = r.u64();
+                c.call_pos.lo = r.u64();
                 c.tid          = r.u32();
                 c.pc           = (ea_t)r.u64();
                 c.api          = (ea_t)r.u64();
@@ -539,8 +543,8 @@ namespace idattd
             uint32_t tid = 0;
             ea_t     pc = BADADDR;
             ea_t     api = BADADDR;
-            Position retPos;
-            Position callPos;
+            TtdPosition retPos;
+            TtdPosition callPos;
             ea_t     chain[RegionChange::MAX_CHAIN] = { 0 };
             uint8_t  chain_n = 0;
             uint64_t pBase = 0, pSize = 0;   // addresses of the out-param slots
@@ -593,7 +597,7 @@ namespace idattd
             uint64_t retAddr;
             ea_t     pc;
             ea_t     api;
-            Position callPos;
+            TtdPosition callPos;
             uint64_t args[12];
             ea_t     chain[RegionChange::MAX_CHAIN];
             uint8_t  chain_n;
@@ -701,7 +705,7 @@ namespace idattd
     // of steps with a Read watchpoint on the slot, and take the value the guest
     // reads back. That read is the only recorded event the kernel's write ever
     // produces.
-    static bool recover_by_readback(TraceManager *mgr, const Position &from,
+    static bool recover_by_readback(TraceManager *mgr, const TtdPosition &from,
                                     uint32_t tid, uint64_t addr, uint32_t width,
                                     uint64_t *out)
     {
@@ -739,7 +743,7 @@ namespace idattd
         cur->SetReplayFlags(ReplayFlags::ReplayOnlyCurrentThread
                           | ReplayFlags::ReplaySegmentsSequentially);
         cur->SetPositionOnThread((UniqueThreadId)tid, from);
-        cur->ReplayForward(Position::Max, (StepCount)0x2000);
+        cur->ReplayForward(TtdPosition::Max, (StepCount)0x2000);
         cur->SetMemoryWatchpointCallback(nullptr, 0);
 
         if ( got )
@@ -776,7 +780,7 @@ namespace idattd
                 if ( _stricmp(ml.name.c_str(), "ntdll.dll") != 0 )
                     continue;
                 // Exports can only be read where the module is mapped.
-                sym->SetPosition(ml.pos);
+                sym->SetPosition(from_core(ml.pos));
                 GuestPeInfo pe;
                 bool havePe = read_guest_pe_info(sym.get(), ml.base, &pe);
                 bool is64   = havePe ? pe.is64 : mgr->is64();
@@ -1275,8 +1279,8 @@ namespace idattd
             }
 
             RegionChange c;
-            c.pos           = r.retPos;
-            c.call_pos      = r.callPos;
+            c.pos           = to_core(r.retPos);
+            c.call_pos      = to_core(r.callPos);
             c.api           = r.api;
             c.chain_n       = r.chain_n;
             for ( uint8_t k = 0; k < r.chain_n; k++ )

@@ -625,15 +625,12 @@ namespace idattd
         if ( !m_actionsRegistered )
             return;             // no session: the readout action does not exist
         qstring label;
-        if ( m_mgr.is_active() )
-        {
-            TTD::Replay::Position p = m_mgr.current_position();
-            label.sprnt("Position %llX:%llX", (uint64_t)p.Sequence, (uint64_t)p.Steps);
-        }
+        qstring pos = m_mgr.is_active() ? format_position(m_mgr.current_position())
+                                        : qstring();
+        if ( !pos.empty() )
+            label.sprnt("Position %s", pos.c_str());
         else
-        {
             label = "Position: XX:XX";
-        }
         update_action_label(actions::POS_LABEL, label.c_str());
     }
 

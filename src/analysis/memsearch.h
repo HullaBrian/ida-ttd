@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "core/position.h"
 
 namespace idattd
 {
@@ -18,7 +19,7 @@ namespace idattd
     // One recorded touch of the watched range.
     struct MemAccess
     {
-        TTD::Replay::Position pos{};
+        Position pos{};
         uint32_t tid  = 0;
         ea_t     pc   = BADADDR;   // the instruction that did it
         ea_t     addr = BADADDR;   // the address it touched

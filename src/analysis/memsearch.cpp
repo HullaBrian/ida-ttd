@@ -1,5 +1,6 @@
 #include "analysis/memsearch.h"
 #include "analysis/sweep.h"
+#include "debugger/msttd_position.h"
 #include "debugger/trace_manager.h"
 
 using namespace TTD;
@@ -89,7 +90,7 @@ namespace idattd
             try
             {
                 MemAccess a;
-                a.pos  = t->GetPosition();
+                a.pos  = to_core(t->GetPosition());
                 a.tid  = (uint32_t)t->GetThreadInfo().UniqueId;
                 a.pc   = (ea_t)(uint64_t)t->GetProgramCounter();
                 a.addr = (ea_t)(uint64_t)w.Address;

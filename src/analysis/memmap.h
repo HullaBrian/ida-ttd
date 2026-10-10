@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "core/position.h"
 
 namespace idattd
 {
@@ -41,11 +42,11 @@ namespace idattd
 
     struct RegionChange
     {
-        TTD::Replay::Position pos;               // where the syscall returned
+        Position pos;                            // where the syscall returned
         // Where it was CALLED. This is what the listing travels to: landing on
         // the return puts you inside the syscall stub, which is never the place
         // you wanted -- you wanted the code that asked for the memory.
-        TTD::Replay::Position call_pos;
+        Position call_pos;
         uint32_t tid  = 0;
         ea_t     pc   = BADADDR;                 // the caller, for the listing
         uint8_t  kind = RC_ALLOC;
@@ -102,7 +103,7 @@ namespace idattd
         //
         // Called on every stop, so the folded state is kept: moving forward
         // applies only the changes crossed. Moving backward rebuilds.
-        void state_at(const TTD::Replay::Position &pos, std::vector<Region> &out) const;
+        void state_at(const Position &pos, std::vector<Region> &out) const;
 
         // ---- persistence in the database ----------------------------------
         //
@@ -124,7 +125,7 @@ namespace idattd
         mutable size_t                 m_liveIdx = 0;   // changes applied so far
         // An invalid position here means "every change has been applied",
         // which is what folding with no position asked for does.
-        mutable TTD::Replay::Position  m_livePos = TTD::Replay::Position::Invalid;
+        mutable Position               m_livePos = Position::none();
         mutable bool                   m_liveValid = false;
     };
 

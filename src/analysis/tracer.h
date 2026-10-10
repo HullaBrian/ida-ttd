@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "core/position.h"
 
 namespace idattd
 {
@@ -10,9 +11,9 @@ namespace idattd
     // matching return was seen) its return value.
     struct FunctionInvocation
     {
-        ea_t                  func_ea = BADADDR; // the user-picked function (for display/types)
-        TTD::Replay::Position pos;               // position of the call site (start time)
-        TTD::Replay::Position end_pos;           // position of the matching return (end time)
+        ea_t     func_ea = BADADDR;  // the user-picked function (for display/types)
+        Position pos;                // position of the call site (start time)
+        Position end_pos;            // position of the matching return (end time)
         uint32_t              tid = 0;            // thread the call ran on
         std::vector<qstring>  args;
         qstring               retval;

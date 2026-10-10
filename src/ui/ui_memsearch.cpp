@@ -40,7 +40,7 @@ namespace idattd
         if ( n >= m_hits.size() )
             return;
         const MemAccess &a = m_hits[n];
-        cols->at(0).sprnt("%llX:%llX", (uint64_t)a.pos.Sequence, (uint64_t)a.pos.Steps);
+        cols->at(0) = format_position(a.pos);
         cols->at(1).sprnt("0x%X", a.tid);
         cols->at(2) = access_name(a.kind);
         cols->at(3).sprnt("0x%llX", (uint64_t)a.addr);

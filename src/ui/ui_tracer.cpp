@@ -152,9 +152,9 @@ namespace idattd
             return;
         const FunctionInvocation &ev = m_events[n];
 
-        cols->at(0).sprnt("%llX:%llX", (uint64_t)ev.pos.Sequence, (uint64_t)ev.pos.Steps);
+        cols->at(0) = format_position(ev.pos);
         if ( ev.has_ret )
-            cols->at(1).sprnt("%llX:%llX", (uint64_t)ev.end_pos.Sequence, (uint64_t)ev.end_pos.Steps);
+            cols->at(1) = format_position(ev.end_pos);
         cols->at(2).sprnt("%X", ev.tid);
         cols->at(3) = func_display_name(ev.func_ea);
 

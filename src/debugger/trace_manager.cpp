@@ -1,4 +1,5 @@
 #include "debugger/trace_manager.h"
+#include "debugger/msttd_position.h"
 #include "analysis/trace_store.h"
 #include "debugger/registers.h"
 #include "common/symbols.h"
@@ -55,7 +56,7 @@ namespace idattd
     //=======================================================================
     TraceManager::TraceManager()
     {
-        m_nextPosition = Position::Min;
+        m_nextPosition = TtdPosition::Min;
     }
 
     thid_t TraceManager::current_tid() const
@@ -280,8 +281,8 @@ namespace idattd
             return start_failed(errbuf, DRC_FAILED,
                        "Failed to create a replay cursor over the trace.");
         }
-        m_cursor->SetPosition(Position::Min);
-        clamp_to_trace();       // Position::Min is a sentinel; land on a real one
+        m_cursor->SetPosition(TtdPosition::Min);
+        clamp_to_trace();       // TtdPosition::Min is a sentinel; land on a real one
 
         // Serve memory like WinDbg/Binja: the Default policy resolves to a
         // thread-local query that only returns memory the current thread touched
@@ -383,7 +384,7 @@ namespace idattd
         if ( !cur )
             return false;
 
-        const Position target = m_cursor->GetPosition();
+        const TtdPosition target = m_cursor->GetPosition();
 
         ReconRegion reg;
         reg.lo = lo;
@@ -434,7 +435,7 @@ namespace idattd
         cur->SetMemoryWatchpointCallback(on_write);
         cur->SetEventMask(EventMask::MemoryWatchpoint);
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially); // chronological -> last write wins
-        cur->SetPosition(Position::Min);
+        cur->SetPosition(TtdPosition::Min);
 
         show_wait_box("HIDECANCEL\nReconstructing memory from recorded writes...");
         cur->ReplayForward(target);
@@ -569,7 +570,7 @@ namespace idattd
         ICursorView *mc = m_memCursor ? m_memCursor.get() : m_cursor.get();
         if ( m_memCursor )
         {
-            Position cur = m_cursor->GetPosition();
+            TtdPosition cur = m_cursor->GetPosition();
             if ( !m_memPosValid || cur.Sequence != m_memPos.Sequence || cur.Steps != m_memPos.Steps )
             {
                 m_memCursor->SetPosition(cur);
@@ -788,7 +789,8 @@ namespace idattd
         const ea_t  HI   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
         const uchar BITS = m_is64 ? 2 : 1;
 
-        Position now = m_cursor ? m_cursor->GetPosition() : Position::Invalid;
+        TtdPosition now = m_cursor ? m_cursor->GetPosition()
+                                             : TtdPosition::Invalid;
         if ( m_foldValid && now == m_foldPos )
         {
             *out = m_foldLayout;
@@ -812,7 +814,7 @@ namespace idattd
         // ---- the regions the recording built ------------------------------
         std::vector<Region> regs;
         if ( !m_memmap.empty() && m_cursor )
-            m_memmap.state_at(now, regs);
+            m_memmap.state_at(to_core(now), regs);
 
         for ( const Region &r : regs )
         {
@@ -1105,11 +1107,11 @@ namespace idattd
         // start of the trace.
         if ( steps != StepCount::Max )
             clamp_to_trace();
-        const Position before = m_cursor->GetPosition();
+        const TtdPosition before = m_cursor->GetPosition();
 
         ICursorView::ReplayResult r = forward
-            ? m_cursor->ReplayForward(Position::Max, steps)
-            : m_cursor->ReplayBackward(Position::Min, steps);
+            ? m_cursor->ReplayForward(TtdPosition::Max, steps)
+            : m_cursor->ReplayBackward(TtdPosition::Min, steps);
 
         // A bounded backward step that lands on the trace's first position moved
         // to the start instead of stepping, which means the cursor began somewhere
@@ -1117,8 +1119,8 @@ namespace idattd
         // the user.
         if ( !forward && steps != StepCount::Max )
         {
-            const Position after = m_cursor->GetPosition();
-            const Position first = m_engine ? m_engine->GetFirstPosition() : Position::Invalid;
+            const TtdPosition after = m_cursor->GetPosition();
+            const TtdPosition first = m_engine ? m_engine->GetFirstPosition() : TtdPosition::Invalid;
             if ( first.IsValid() && after <= first && before.Sequence != first.Sequence )
             {
                 msg("[ida-ttd] backward step from %llX:%llX landed at the start of "
@@ -1220,7 +1222,7 @@ namespace idattd
         auto mods_before    = snapshot_modules();
 
         if ( program_counter() == addr )
-            m_cursor->ReplayForward(Position::Max, StepCount{ 1 });
+            m_cursor->ReplayForward(TtdPosition::Max, StepCount{ 1 });
 
         MemoryWatchpointData wp{};
         bool owned = add_temp_exec_watchpoint(addr, wp);
@@ -1241,11 +1243,11 @@ namespace idattd
     {
         if ( !m_engine || !m_cursor )
             return;
-        const Position first = m_engine->GetFirstPosition();
-        const Position last  = m_engine->GetLastPosition();
+        const TtdPosition first = m_engine->GetFirstPosition();
+        const TtdPosition last  = m_engine->GetLastPosition();
         if ( !first.IsValid() || !last.IsValid() )
             return;
-        const Position p = m_cursor->GetPosition();
+        const TtdPosition p = m_cursor->GetPosition();
         if ( p > last )
             m_cursor->SetPosition(last);
         else if ( p < first )
@@ -1267,7 +1269,7 @@ namespace idattd
         // A breakpoint stop is not a trace edge.
         if ( sr == EventType::MemoryWatchpoint )
             return;
-        Position p = m_cursor->GetPosition();
+        TtdPosition p = m_cursor->GetPosition();
         if ( forward && !(p < m_engine->GetLastPosition()) )
             m_pendingBoundary = BOUNDARY_END;
         else if ( !forward && !(m_engine->GetFirstPosition() < p) )
@@ -1321,7 +1323,7 @@ namespace idattd
             }
             else
             {
-                ICursorView::ReplayResult r = m_cursor->ReplayForward(Position::Max, StepCount{ 1 });
+                ICursorView::ReplayResult r = m_cursor->ReplayForward(TtdPosition::Max, StepCount{ 1 });
                 if ( r.StopReason == EventType::MemoryWatchpoint ) { hit_bpt = true; break; }
                 if ( r.StopReason == EventType::Position
                   || r.StopReason == EventType::Process
@@ -1351,23 +1353,23 @@ namespace idattd
     // and replay forward to it, tracking a per-thread stack of open calls; the
     // top of our thread's stack at the playhead is the call we want. The window
     // widens until it captures that call.
-    bool TraceManager::find_frame_entry_position(Position &out, bool &cancelled)
+    bool TraceManager::find_frame_entry_position(TtdPosition &out, bool &cancelled)
     {
         cancelled = false;
-        out       = Position::Invalid;
+        out       = TtdPosition::Invalid;
         if ( ana_cursor() == nullptr )
             return false;
 
         const ThreadInfo &ti  = m_cursor->GetThreadInfo();
         const uint32_t    tid = (uint32_t)ti.UniqueId;
-        const Position    last = m_engine->GetLastPosition();
+        const TtdPosition    last = m_engine->GetLastPosition();
 
         // Floor for the search. ActiveTime is the span in which this thread
         // actually executed instructions, so nothing it did can lie before
         // ActiveTime.Min: a window that reaches it without finding an open call
         // means the thread genuinely is in its outermost frame, and that is a
         // real answer rather than a search that ran out of patience.
-        Position first = m_engine->GetFirstPosition();
+        TtdPosition first = m_engine->GetFirstPosition();
         if ( ti.ActiveTime.Min.IsValid() && first < ti.ActiveTime.Min )
             first = ti.ActiveTime.Min;
 
@@ -1375,7 +1377,7 @@ namespace idattd
         // normally guarantees this, but a sentinel here would make every look-back
         // window (cur.Sequence - N) land past the end of the trace and replay
         // nothing, which reads to the user as "the call cannot be found".
-        Position cur = m_cursor->GetPosition();
+        TtdPosition cur = m_cursor->GetPosition();
         if ( last.IsValid() && cur > last )
             cur = last;
         // The thread-accurate ceiling. GetLastPosition() is the end of the whole
@@ -1398,7 +1400,7 @@ namespace idattd
         // open frame, so the top of the stack is the innermost one -- ours. If the
         // entering call happened before the window, the stack ends up empty and the
         // caller widens.
-        std::map<uint32_t, std::vector<Position>> stacks;
+        std::map<uint32_t, std::vector<TtdPosition>> stacks;
         uint64_t seen_all  = 0;     // call/ret callbacks dispatched in this window
         uint64_t seen_mine = 0;     // ...of those, ones on the thread we stand in
         auto on_call_ret = [&](GuestAddress, GuestAddress fall_through,
@@ -1415,7 +1417,7 @@ namespace idattd
             {
                 if ( (uint64_t)fall_through != 0 )
                 {
-                    std::vector<Position> &st = stacks[utid];
+                    std::vector<TtdPosition> &st = stacks[utid];
                     if ( st.size() < kMaxDepth )
                         st.push_back(t->GetPosition());
                 }
@@ -1453,8 +1455,8 @@ namespace idattd
         show_wait_box("Looking for the call that entered this frame "
                       "(Cancel to stop)...");
         bool     found     = false;
-        Position lastStart = Position::Invalid;
-        Position winStart  = Position::Invalid;   // window actually replayed last
+        TtdPosition lastStart = TtdPosition::Invalid;
+        TtdPosition winStart  = TtdPosition::Invalid;   // window actually replayed last
         uint64_t winInsns  = 0;                   // ...and what it executed
         for ( size_t i = 0; i < qnumber(kAttempts) && !found; i++ )
         {
@@ -1467,7 +1469,7 @@ namespace idattd
                              "(Cancel to stop)...\nsearch %d of %d",
                              (int)i + 1, (int)qnumber(kAttempts));
 
-            Position s = cur;
+            TtdPosition s = cur;
             if ( kAttempts[i].by_steps )
             {
                 uint64_t st = (uint64_t)cur.Steps;
@@ -1524,7 +1526,7 @@ namespace idattd
         return found;
     }
 
-    EventType TraceManager::rewind_to(const Position &p)
+    EventType TraceManager::rewind_to(const TtdPosition &p)
     {
         auto threads_before = snapshot_threads();
         auto mods_before    = snapshot_modules();
@@ -1543,7 +1545,7 @@ namespace idattd
 
     EventType TraceManager::navigate_out_backward()
     {
-        Position entry;
+        TtdPosition entry;
         bool     cancelled = false;
         if ( !find_frame_entry_position(entry, cancelled) )
         {
@@ -1572,7 +1574,7 @@ namespace idattd
         const uint64_t start_sp = (uint64_t)m_cursor->GetStackPointer();
         const uint32_t utid     = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
 
-        ICursorView::ReplayResult r = m_cursor->ReplayBackward(Position::Min, StepCount{ 1 });
+        ICursorView::ReplayResult r = m_cursor->ReplayBackward(TtdPosition::Min, StepCount{ 1 });
         const bool hit_bpt = r.StopReason == EventType::MemoryWatchpoint;
 
         // Did that step take us into a callee, or just to the previous instruction
@@ -1603,7 +1605,7 @@ namespace idattd
             // it. If it cannot be found we simply stay on the RET: the step already
             // moved, and a popup about an unfindable frame would be noise for what
             // the user asked (step back one), unlike an explicit "step out".
-            Position entry;
+            TtdPosition entry;
             bool     cancelled = false;
             if ( find_frame_entry_position(entry, cancelled) )
                 return rewind_to(entry);
@@ -1995,17 +1997,17 @@ namespace idattd
         const uint64_t AFTER  = 192;    // instructions after PC
         const ea_t     W      = 0x2000; // only collect addresses within +/-W of PC
 
-        Position cur = m_cursor->GetPosition();
+        TtdPosition cur = m_cursor->GetPosition();
         uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
 
         // Seek a little before the current position, then replay forward (cheap --
         // no per-step keyframe re-seek like going backward).
-        Position start = cur;
+        TtdPosition start = cur;
         start.Steps = (StepCount)((uint64_t)cur.Steps > BEFORE ? (uint64_t)cur.Steps - BEFORE : 0);
         m_anaCursor->SetPosition(start);
 
         int budget = (int)((BEFORE + AFTER) * 3) + 256;  // extra for thread interleaving
-        Position prev = m_anaCursor->GetPosition();
+        TtdPosition prev = m_anaCursor->GetPosition();
         for ( int i = 0; i < budget; i++ )
         {
             if ( (uint32_t)m_anaCursor->GetThreadInfo().UniqueId == tid )
@@ -2015,8 +2017,8 @@ namespace idattd
                 if ( d <= W )
                     pcs.insert(a);
             }
-            m_anaCursor->ReplayForward(Position::Max, StepCount{ 1 });
-            Position now = m_anaCursor->GetPosition();
+            m_anaCursor->ReplayForward(TtdPosition::Max, StepCount{ 1 });
+            TtdPosition now = m_anaCursor->GetPosition();
             if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
                 break;                  // reached the end of the trace
             prev = now;
@@ -2075,7 +2077,7 @@ namespace idattd
         if ( ana_cursor() == nullptr )
             return BADADDR;
 
-        const Position cur = m_cursor->GetPosition();
+        const TtdPosition cur = m_cursor->GetPosition();
         const uint32_t tid = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
 
         struct Frame { ea_t entry; uint64_t ret; };
@@ -2104,7 +2106,7 @@ namespace idattd
         for ( uint64_t back : kWindows )
         {
             stacks.clear();
-            Position s = cur;
+            TtdPosition s = cur;
             s.Steps = (StepCount)((uint64_t)cur.Steps > back ? (uint64_t)cur.Steps - back : 0);
             m_anaCursor->SetPosition(s);
             m_anaCursor->SetCallReturnCallback(on_call_ret);
@@ -2214,7 +2216,7 @@ namespace idattd
         const int MAX_STEP = 1000000;
         int examined = 0, steps = 0;
         bool cancelled = false;
-        Position prev = cur->GetPosition();
+        TtdPosition prev = cur->GetPosition();
 
         show_wait_box("Analyzing function from the trace (Cancel to stop)...");
         while ( examined < MAX_INSN && steps < MAX_STEP )
@@ -2225,9 +2227,9 @@ namespace idattd
                 if ( user_cancelled() ) { cancelled = true; break; }
             }
 
-            cur->ReplayBackward(Position::Min, StepCount{ 1 });
+            cur->ReplayBackward(TtdPosition::Min, StepCount{ 1 });
             steps++;
-            Position now = cur->GetPosition();
+            TtdPosition now = cur->GetPosition();
             if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
                 break;                              // reached the start of the trace
             prev = now;
@@ -2356,7 +2358,7 @@ namespace idattd
             m_events.add_breakpoint(m_pid, current_tid(), pc);
     }
 
-    void TraceManager::navigate_to(const Position &p)
+    void TraceManager::navigate_to(const TtdPosition &p)
     {
         auto threads_before = snapshot_threads();
         auto mods_before    = snapshot_modules();
@@ -2544,20 +2546,20 @@ namespace idattd
     //=======================================================================
     void TraceManager::set_next_position(const Position &p)
     {
-        m_nextPosition    = p;
+        m_nextPosition    = from_core(p);
         m_hasNextPosition = true;
     }
 
     Position TraceManager::current_position() const
     {
         if ( !m_cursor )
-            return Position::Invalid;
-        return m_cursor->GetPosition();
+            return Position::none();
+        return to_core(m_cursor->GetPosition());
     }
 
     Position TraceManager::last_position() const
     {
-        return m_engine ? m_engine->GetLastPosition() : Position::Invalid;
+        return m_engine ? to_core(m_engine->GetLastPosition()) : Position::none();
     }
 
     void TraceManager::request_backward_step()
@@ -2848,7 +2850,7 @@ namespace idattd
         if ( !m_symCursor )
             return;
 
-        m_symCursor->SetPosition(hit != nullptr ? hit->Position : Position::Min);
+        m_symCursor->SetPosition(hit != nullptr ? hit->Position : TtdPosition::Min);
         size_t named = apply_module_exports(m_symCursor.get(), base, m_is64);
 
         // Recover this module's function boundaries from its .pdata exception
@@ -3023,7 +3025,7 @@ namespace idattd
             ml.base = (ea_t)(uint64_t)m->Address;
             ml.size = m->Size;
             ml.name = base_name(to_utf8(m->pName, m->NameLength)).c_str();
-            ml.pos  = evs[i].Position;
+            ml.pos  = to_core(evs[i].Position);
             out.push_back(std::move(ml));
         }
         return out;
@@ -3085,22 +3087,19 @@ namespace idattd
             return;
         }
 
+        qstring prompt;
+        prompt.sprnt("Go to position (%s)", position_syntax());
         qstring str;
-        if ( !ask_str(&str, 0, "Go to position (Sequence:Steps in hex)") )
+        if ( !ask_str(&str, 0, "%s", prompt.c_str()) )
             return;
 
-        const char *s = str.c_str();
-        const char *colon = strchr(s, ':');
-        if ( colon == nullptr )
+        Position p;
+        if ( !parse_position(str.c_str(), &p) )
         {
-            warning("Invalid position. Expected format Sequence:Steps, e.g. 4B17B:1D4D");
+            warning("Invalid position. Expected %s, e.g. 4B17B:1D4D", position_syntax());
             return;
         }
 
-        uint64_t seq   = strtoull(std::string(s, colon).c_str(), nullptr, 16);
-        uint64_t steps = strtoull(colon + 1, nullptr, 16);
-
-        Position p{ (SequenceId)seq, (StepCount)steps };
         set_next_position(p);
         request_continue_process();
         run_requests();
@@ -3124,7 +3123,7 @@ namespace idattd
                     continue;
                 qstring nm;
                 nm.sprnt("Thread 0x%X created", (uint32_t)list[i].pThreadInfo->Id);
-                out.push_back({ std::string(nm.c_str()), list[i].Position });
+                out.push_back({ std::string(nm.c_str()), to_core(list[i].Position) });
             }
         }
         {
@@ -3136,7 +3135,7 @@ namespace idattd
                     continue;
                 qstring nm;
                 nm.sprnt("Thread 0x%X exited", (uint32_t)list[i].pThreadInfo->Id);
-                out.push_back({ std::string(nm.c_str()), list[i].Position });
+                out.push_back({ std::string(nm.c_str()), to_core(list[i].Position) });
             }
         }
         {
@@ -3147,7 +3146,7 @@ namespace idattd
                 if ( list[i].pModule == nullptr )
                     continue;
                 std::string nm = "Load " + base_name(to_utf8(list[i].pModule->pName, list[i].pModule->NameLength));
-                out.push_back({ nm, list[i].Position });
+                out.push_back({ nm, to_core(list[i].Position) });
             }
         }
         {
@@ -3158,7 +3157,7 @@ namespace idattd
                 if ( list[i].pModule == nullptr )
                     continue;
                 std::string nm = "Unload " + base_name(to_utf8(list[i].pModule->pName, list[i].pModule->NameLength));
-                out.push_back({ nm, list[i].Position });
+                out.push_back({ nm, to_core(list[i].Position) });
             }
         }
         {
@@ -3168,7 +3167,7 @@ namespace idattd
             {
                 qstring nm;
                 nm.sprnt("Exception 0x%08X @ 0x%llX", list[i].Code, (uint64_t)list[i].ProgramCounter);
-                out.push_back({ std::string(nm.c_str()), list[i].Position });
+                out.push_back({ std::string(nm.c_str()), to_core(list[i].Position) });
             }
         }
 

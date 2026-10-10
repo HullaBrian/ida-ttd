@@ -60,6 +60,22 @@ namespace idattd
         static constexpr uint64_t SENTINEL_WORD = UINT64_MAX;
     };
 
+    // Render a position the way the recording's own tooling numbers it, and
+    // parse that rendering back.
+    //
+    // In phase 3 of docs/modular-backends.md these route through the active
+    // backend (ITraceBackend::format_position). Until then there is one
+    // backend and this is its convention: two hex words separated by a colon,
+    // which is exactly Microsoft TTD's "Sequence:Steps".
+    //
+    // format_position() of an invalid position is the empty string, so a
+    // listing column for a position that was never recorded comes out blank
+    // rather than saying FFFFFFFFFFFFFFFF.
+    qstring     format_position(Position p);
+    bool        parse_position(const char *text, Position *out);
+    // What to put next to an input box that takes one.
+    const char *position_syntax();
+
     // A half-open [first, last] span of a recording. 'first' as begin() and
     // 'last' as end() is "the whole thing", which is what a query with no range
     // given means.
