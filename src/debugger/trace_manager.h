@@ -6,8 +6,8 @@
 #include "debugger/module_registry.h"
 #include "debugger/memory_reader.h"
 #include "debugger/code_analyzer.h"
+#include "debugger/segment_layout.h"
 #include "common/trace_open.h"
-#include "analysis/memmap.h"
 
 namespace idattd
 {
@@ -106,18 +106,14 @@ namespace idattd
         // against one trace is not shown against another. Zero with no trace.
         uint64_t trace_fingerprint() const;
 
-        // The recording's reconstructed memory map. Empty until a sweep has been
-        // run (or a saved one loaded), in which case the debugger's memory layout
-        // is the single flat range it has always been.
-        const MemoryMap &memmap() const { return m_memmap; }
-        // The same map, for a caller that is about to change it. Taking it
-        // invalidates the layout folded for the current position, which any
-        // change makes stale -- doing that here means no call site can forget.
-        MemoryMap &memmap_for_update() { m_foldValid = false; return m_memmap; }
-        // Tell IDA to re-read the memory layout, if the regions in force at the
-        // current position differ from the ones it was last given. Called on
-        // every stop: time travel can change the map underneath it.
-        void refresh_memory_layout();
+        // What IDA is told the recorded address space looks like, and the
+        // reconstructed memory map behind it.
+        SegmentLayout       &layout()       { return m_layout; }
+        const SegmentLayout &layout() const { return m_layout; }
+        // Shorthands, because almost every caller wants the map rather than
+        // the layout machinery around it.
+        const MemoryMap &memmap() const        { return m_layout.map(); }
+        MemoryMap       &memmap_for_update()   { return m_layout.map_for_update(); }
         // Last position of the loaded trace, or Position::none() without one.
         // Its 'hi' word is what a replay progress readout divides by.
         Position                   last_position() const;
@@ -145,9 +141,6 @@ namespace idattd
         // when one starts, so a second trace cannot inherit the first's
         // reconstructed bytes or module tables.
         void   reset_session_state();
-        // Compose the memory layout IDA should see at the current position
-        // from the reconstructed map (see on_get_memory_info).
-        void   build_memory_layout(meminfo_vec_t *out) const;
         thid_t                     current_tid() const;
         ea_t                       program_counter() const;
         std::map<uint32_t, thid_t> snapshot_threads() const;
@@ -251,6 +244,7 @@ namespace idattd
         ModuleRegistry    m_modules;
         MemoryReader      m_memory;
         CodeAnalyzer      m_code;
+        SegmentLayout     m_layout;
         IdaErrorReporting m_err;
 
         TTD::Replay::UniqueReplayEngine m_engine;
@@ -276,18 +270,6 @@ namespace idattd
         // on_suspended, for the same reason as m_pendingBoundary: a modal popup
         // raised while handling ev_resume is not safe.
         qstring      m_pendingNotice;
-
-        // The reconstructed memory map, and the layout it last produced. The
-        // layout is kept so on_get_memory_info can answer DRC_NOCHG rather than
-        // making IDA rebuild every debugger segment on every single step.
-        MemoryMap     m_memmap;
-        meminfo_vec_t m_lastLayout;      // what IDA was last given
-        bool          m_haveLayout = false;
-        // The layout folded for one position, so a stop that asks for it twice
-        // (once to decide whether it changed, once to hand it over) folds once.
-        mutable meminfo_vec_t         m_foldLayout;
-        mutable TTD::Replay::Position m_foldPos;
-        mutable bool                  m_foldValid = false;
 
         pid_t         m_pid = 1;
 

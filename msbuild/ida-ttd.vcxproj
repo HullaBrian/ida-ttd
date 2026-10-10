@@ -50,6 +50,7 @@
     <ClInclude Include="$(SrcDir)\debugger\callconv.h" />
     <ClInclude Include="$(SrcDir)\debugger\event_queue.h" />
     <ClInclude Include="$(SrcDir)\debugger\registers.h" />
+    <ClInclude Include="$(SrcDir)\debugger\segment_layout.h" />
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h" />
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />
@@ -88,6 +89,7 @@
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\module_registry.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\segment_layout.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp" />
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp" />
     <ClCompile Include="$(SrcDir)\core\position.cpp" />

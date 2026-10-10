@@ -454,9 +454,21 @@ is justified by itself.
 
 *§3.4 is landed as phase 2a*: the eleven mutually exclusive request flags are
 one `PendingRequest`, which is also the shape `INavigator` needs -- its request
-kinds are the navigator's methods. The remaining work is the class split
-itself: `ReplaySession`, `ModuleRegistry`, `MemoryReader`, `SegmentLayout`,
-`CodeAnalyzer`, `Navigator`.
+kinds are the navigator's methods.
+
+*Four of the six classes are landed as phase 2b*: `ModuleRegistry`,
+`MemoryReader`, `CodeAnalyzer` and `SegmentLayout`. `trace_manager.cpp` is
+1,446 lines, down from 3,179, and its header 243 from 484. Each was verified
+line-for-line against the file it came out of, and each takes the execution
+cursor as a parameter rather than keeping a pointer to it -- that cursor is
+destroyed and recreated per session, and a stored pointer is the kind of thing
+that works until the second trace.
+
+What is left of the split is `Navigator` (the `navigate_*` family, the pending
+request, the watchpoint bookkeeping) and, once that leaves, `ReplaySession` --
+whatever remains, which is the IDA debugger protocol and the engine's lifetime.
+`Navigator` is deliberately last: it is both the most entangled with the cursor
+and the part phase 3 reshapes most, since its methods are `INavigator`'s.
 
 **Phase 3 — `ITraceBackend` behind the Microsoft implementation.** Have
 `MsTtdBackend` implement the core-side interface and make `ReplaySession` drive
@@ -558,5 +570,7 @@ Phases 1 and 2a are landed on top of them:
 - `src/debugger/msttd_position.h` converts at the engine boundary, and the
   `TtdPosition` alias marks every line that is Microsoft-specific.
 - `TraceManager::PendingRequest` replaces the eleven request flags.
+- `debugger/{module_registry,memory_reader,code_analyzer,segment_layout}.*`
+  are four of the six classes `TraceManager` becomes.
 
 Release and Debug both build clean at every commit.

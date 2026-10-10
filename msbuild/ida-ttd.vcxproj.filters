@@ -46,6 +46,9 @@
     <ClInclude Include="$(SrcDir)\debugger\registers.h">
       <Filter>debugger</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\segment_layout.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h">
       <Filter>debugger</Filter>
     </ClInclude>
@@ -151,6 +154,9 @@
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\segment_layout.cpp">
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp">
