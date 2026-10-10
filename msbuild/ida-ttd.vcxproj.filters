@@ -2,6 +2,9 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!-- Generated to mirror the src/ tree; see msbuild/gen_filters.py. -->
   <ItemGroup>
+    <Filter Include="abi">
+      <UniqueIdentifier>{688CFA9C-11C6-B956-8C5F-887200A261A3}</UniqueIdentifier>
+    </Filter>
     <Filter Include="analysis">
       <UniqueIdentifier>{936CFFF2-93FD-3099-474E-7E46AFFEDBFA}</UniqueIdentifier>
     </Filter>
@@ -45,6 +48,9 @@
     </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h">
       <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h">
+      <Filter>abi</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\core\backend.h">
       <Filter>core</Filter>

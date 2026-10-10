@@ -5,18 +5,16 @@
 
 namespace idattd
 {
-    // Which backends this build has, and which one a file belongs to.
+    // Which backends are available, and which one a file belongs to.
     //
-    // Backends are compiled in, not loaded at runtime: the core is a static
-    // library and each backend is another, and the plugin DLL links whichever
-    // the build asked for (see docs/modular-backends.md). A build with no Sogen
-    // support therefore contains no Sogen code at all, rather than a module
-    // that fails to load -- which matters because the two backends have
-    // different third-party dependencies.
+    // Backends are separate DLLs the core loads at startup from its backend
+    // directory (see docs/modular-backends.md). Installing one is dropping a
+    // file in; a backend the user does not have is simply absent, rather than
+    // code they paid for in the download. It also keeps each backend's
+    // third-party dependencies -- and its licence -- to itself.
     //
-    // Registration happens before IDA has done anything: each backend library
-    // contributes one REGISTER_TTD_BACKEND at file scope, so adding a backend
-    // to a build is a project-file change and nothing else.
+    // add() exists for a backend compiled into the core, which none is today;
+    // it is what a test double would use.
     class BackendRegistry
     {
     public:

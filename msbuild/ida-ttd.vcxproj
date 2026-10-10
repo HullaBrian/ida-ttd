@@ -51,6 +51,7 @@
     <ClInclude Include="$(SrcDir)\debugger\event_queue.h" />
     <ClInclude Include="$(SrcDir)\debugger\registers.h" />
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h" />
+    <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />

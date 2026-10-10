@@ -2,17 +2,32 @@
 
 #include "common/pch.h"
 #include "core/position.h"
+#include "abi/ida_ttd_backend.h"
 
 // What the core plugin needs from a recording, and nothing about how any one
-// kind of recording provides it. See docs/modular-backends.md for the plan this
-// belongs to, and for why the whole-trace work is expressed as queries rather
-// than as "install a watchpoint and replay".
+// kind of recording provides it. See docs/modular-backends.md.
 //
-// The short version: Microsoft TTD answers "every access to this range" by
-// replaying the recording with a watchpoint armed, and Sogen answers it by
+// Why the whole-trace work is expressed as queries rather than as "install a
+// watchpoint and replay": Microsoft TTD answers "every access to this range"
+// by replaying the recording with a watchpoint armed, and Sogen answers it by
 // reading a page index. An interface written in terms of watchpoints and
-// replays would make Sogen pretend to replay; an interface written in terms of
+// replays would make Sogen pretend to replay; one written in terms of
 // questions lets each backend answer the way it can.
+//
+// ---------------------------------------------------------------------------
+// This is the CORE-SIDE view, in C++ and free to use IDA types. It is not the
+// boundary a backend module sees.
+//
+// A backend is a separate DLL, so the actual boundary is the flat C ABI in
+// abi/ida_ttd_backend.h: no C++ types, no IDA types, caller-provided buffers.
+// BackendModule adapts a loaded module to the interface below, and a backend
+// compiled into the core (if any ever is) implements the interface directly.
+//
+// The two are kept deliberately close in shape, so the adapter stays a
+// translation and never grows logic of its own. Where this file uses an ABI
+// type outright -- ittd_regs below -- that is on purpose: a third
+// representation of the same registers would only be translated twice.
+// ---------------------------------------------------------------------------
 
 namespace idattd
 {
@@ -21,6 +36,9 @@ namespace idattd
     // What a backend can be asked. The core checks these before offering a
     // command, so a backend is never asked a question it cannot answer and
     // the user is never shown an action that would only apologise.
+    //
+    // The same set as the ITTD_CAP_* bits, as named booleans: core code reads
+    // these far more often than the adapter translates them.
     struct Capabilities
     {
         // Accesses to an address range can be listed (memory search, coverage).
@@ -154,10 +172,16 @@ namespace idattd
         virtual uint32_t thread_id() const = 0;
         virtual ea_t     program_counter() const = 0;
         virtual uint64_t stack_pointer() const = 0;
-        // Fill IDA's register array for the register table configure_debugger()
-        // installed. The IDA layout is the lingua franca: a backend-neutral
-        // register struct would only be translated twice.
-        virtual bool     read_registers(regval_t *values) const = 0;
+        // The canonical register set (abi/ida_ttd_backend.h). The core maps it
+        // onto IDA's register array for the table configure_debugger()
+        // installed.
+        //
+        // An earlier draft had the backend fill regval_t directly, which is
+        // simpler but only works in-process: a backend DLL must not see IDA
+        // types at all. Both engines have something close to ittd_regs already
+        // -- Microsoft's CROSS_PLATFORM_CONTEXT, Sogen's save_registers blob --
+        // so neither pays much to produce it.
+        virtual bool     read_registers(ittd_regs *out) const = 0;
 
         // Bytes as the recording has them at this position.
         //
@@ -221,7 +245,7 @@ namespace idattd
 
         // ---- identity, before anything is open -----------------------------
         //
-        // Short id used in the database and in build switches ("msttd",
+        // Short id used in the database and when naming a module ("msttd",
         // "sogen"). It is written into the trace-link record, so changing one
         // orphans existing databases.
         virtual const char *id() const = 0;
