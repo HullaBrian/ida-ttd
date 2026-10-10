@@ -54,11 +54,6 @@ namespace idattd
     //=======================================================================
     // TraceManager
     //=======================================================================
-    TraceManager::TraceManager()
-    {
-        m_nextPosition = TtdPosition::Min;
-    }
-
     thid_t TraceManager::current_tid() const
     {
         const ThreadInfo &ti = m_cursor->GetThreadInfo();
@@ -164,17 +159,10 @@ namespace idattd
         m_winHi          = 0;
         m_calleeScanFunc = BADADDR;
 
-        m_isForward           = true;
-        m_resumeMode          = RESMOD_NONE;
-        m_hasNextPosition     = false;
-        m_backwardSingleStep  = false;
-        m_forwardSingleStep   = false;
-        m_runOnce             = false;
-        m_stepOutBackward     = false;
-        m_runToCursorBackward = false;
-        m_runToCursorForward  = false;
-        m_runToCursorAddr     = BADADDR;
-        m_pendingBoundary     = BOUNDARY_NONE;
+        m_isForward       = true;
+        m_resumeMode      = RESMOD_NONE;
+        m_pending         = PendingRequest{};
+        m_pendingBoundary = BOUNDARY_NONE;
         m_pendingNotice.clear();
     }
 
@@ -2400,74 +2388,62 @@ namespace idattd
         if ( event->eid() != BREAKPOINT && event->eid() != STEP )
             return DRC_OK;
 
-        if ( m_hasNextPosition )
+        // A queued request wins over IDA's resume mode: it is the user asking
+        // for a movement IDA has no action of its own for.
+        //
+        // The request is taken and cleared before it is carried out, not after.
+        // These navigations show wait boxes, which pump the message loop, so a
+        // second ev_resume can arrive in the middle of one -- and a request
+        // still set would be performed twice.
+        if ( m_pending.kind != Request::None )
         {
-            navigate_to(m_nextPosition);
-            emit_stop(false);
-            m_hasNextPosition = false;
+            const PendingRequest req = m_pending;
+            m_pending    = PendingRequest{};
             m_resumeMode = RESMOD_NONE;
-            return DRC_OK;
-        }
 
-        if ( m_backwardSingleStep )
-        {
-            EventType sr = navigate_steps(false, StepCount{ 1 });
-            settle_after_navigation(sr, false);
-            emit_stop(false);
-            m_backwardSingleStep = false;
-            m_resumeMode = RESMOD_NONE;
-            return DRC_OK;
-        }
+            switch ( req.kind )
+            {
+                case Request::GotoPosition:
+                    navigate_to(req.position);
+                    emit_stop(false);
+                    break;
 
-        if ( m_forwardSingleStep )
-        {
-            EventType sr = navigate_steps(true, StepCount{ 1 });
-            settle_after_navigation(sr, true);
-            emit_stop(false);
-            m_forwardSingleStep = false;
-            m_resumeMode = RESMOD_NONE;
-            return DRC_OK;
-        }
+                case Request::Step:
+                {
+                    EventType sr = navigate_steps(req.forward, StepCount{ 1 });
+                    settle_after_navigation(sr, req.forward);
+                    emit_stop(false);
+                    break;
+                }
 
-        if ( m_runOnce )
-        {
-            EventType sr = navigate_steps(m_runForward, StepCount::Max);
-            settle_after_navigation(sr, m_runForward);
-            emit_stop(false);
-            m_runOnce = false;
-            m_resumeMode = RESMOD_NONE;
-            return DRC_OK;
-        }
+                case Request::Run:
+                {
+                    EventType sr = navigate_steps(req.forward, StepCount::Max);
+                    settle_after_navigation(sr, req.forward);
+                    emit_stop(false);
+                    break;
+                }
 
-        if ( m_stepOutBackward )
-        {
-            EventType sr = navigate_out_backward();
-            settle_after_navigation(sr, false);
-            emit_stop(false);
-            m_stepOutBackward = false;
-            m_resumeMode = RESMOD_NONE;
-            return DRC_OK;
-        }
+                case Request::StepOutBackward:
+                {
+                    EventType sr = navigate_out_backward();
+                    settle_after_navigation(sr, false);
+                    emit_stop(false);
+                    break;
+                }
 
-        if ( m_runToCursorBackward )
-        {
-            EventType sr = navigate_backward_to(m_runToCursorAddr);
-            settle_after_navigation(sr, false);
-            emit_stop(false);
-            m_runToCursorBackward = false;
-            m_runToCursorAddr = BADADDR;
-            m_resumeMode = RESMOD_NONE;
-            return DRC_OK;
-        }
+                case Request::RunToCursor:
+                {
+                    EventType sr = req.forward ? navigate_forward_to(req.address)
+                                               : navigate_backward_to(req.address);
+                    settle_after_navigation(sr, req.forward);
+                    emit_stop(false);
+                    break;
+                }
 
-        if ( m_runToCursorForward )
-        {
-            EventType sr = navigate_forward_to(m_runToCursorAddr);
-            settle_after_navigation(sr, true);
-            emit_stop(false);
-            m_runToCursorForward = false;
-            m_runToCursorAddr = BADADDR;
-            m_resumeMode = RESMOD_NONE;
+                case Request::None:
+                    break;      // excluded by the guard above
+            }
             return DRC_OK;
         }
 
@@ -2546,8 +2522,9 @@ namespace idattd
     //=======================================================================
     void TraceManager::set_next_position(const Position &p)
     {
-        m_nextPosition    = from_core(p);
-        m_hasNextPosition = true;
+        m_pending          = PendingRequest{};
+        m_pending.kind     = Request::GotoPosition;
+        m_pending.position = from_core(p);
     }
 
     Position TraceManager::current_position() const
@@ -2569,7 +2546,9 @@ namespace idattd
             warning("Time travel is only available while replaying a trace.");
             return;
         }
-        m_backwardSingleStep = true;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = Request::Step;
+        m_pending.forward = false;
         request_continue_process();
         run_requests();
     }
@@ -2581,10 +2560,9 @@ namespace idattd
             warning("Time travel is only available while replaying a trace.");
             return;
         }
-        if ( forward )
-            m_forwardSingleStep = true;
-        else
-            m_backwardSingleStep = true;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = Request::Step;
+        m_pending.forward = forward;
         request_continue_process();
         run_requests();
     }
@@ -2596,8 +2574,9 @@ namespace idattd
             warning("Time travel is only available while replaying a trace.");
             return;
         }
-        m_runOnce    = true;
-        m_runForward = forward;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = Request::Run;
+        m_pending.forward = forward;
         request_continue_process();
         run_requests();
     }
@@ -2609,7 +2588,9 @@ namespace idattd
             warning("Time travel is only available while replaying a trace.");
             return;
         }
-        m_stepOutBackward = true;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = Request::StepOutBackward;
+        m_pending.forward = false;
         request_continue_process();
         run_requests();
     }
@@ -2623,8 +2604,10 @@ namespace idattd
         }
         if ( addr == BADADDR )
             return;
-        m_runToCursorBackward = true;
-        m_runToCursorAddr     = addr;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = Request::RunToCursor;
+        m_pending.forward = false;
+        m_pending.address = addr;
         request_continue_process();
         run_requests();
     }
@@ -2638,8 +2621,10 @@ namespace idattd
         }
         if ( addr == BADADDR )
             return;
-        m_runToCursorForward = true;
-        m_runToCursorAddr    = addr;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = Request::RunToCursor;
+        m_pending.forward = true;
+        m_pending.address = addr;
         request_continue_process();
         run_requests();
     }

@@ -30,7 +30,7 @@ namespace idattd
             Position    pos;
         };
 
-        TraceManager();
+        TraceManager() = default;
 
         void set_session_hooks(SessionHooks h) { m_hooks = std::move(h); }
         bool is_active() const { return (bool)m_cursor; }
@@ -51,6 +51,24 @@ namespace idattd
         ssize_t on_set_resume_mode(thid_t tid, resume_mode_t resmod);
         ssize_t on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel);
         ssize_t on_exit_process();
+
+        // What the UI has asked for, to be carried out by the next ev_resume.
+        //
+        // One request rather than a flag per kind. Eleven mutually exclusive
+        // booleans had nothing to stop two being set: two request_* calls
+        // before a resume was drained resolved by the order of an if-chain in
+        // on_resume, and the loser survived to fire on the following resume --
+        // a time jump the user never asked for. A single value cannot be in
+        // two states, and setting a request plainly replaces the previous one.
+        enum class Request
+        {
+            None,               // nothing queued: follow IDA's resume mode
+            GotoPosition,       // 'position'
+            Step,               // one instruction, in 'forward'
+            Run,                // to a breakpoint or the trace edge, in 'forward'
+            StepOutBackward,    // rewind out of the current frame
+            RunToCursor,        // to 'address', in 'forward'
+        };
 
         // ---- UI helpers ----------------------------------------------------
         void                       set_next_position(const Position &p);
@@ -421,14 +439,6 @@ namespace idattd
         EventQueue   m_events;
         bool         m_is64 = false;
         bool         m_isForward = true;
-        bool         m_backwardSingleStep = false;
-        bool         m_forwardSingleStep = false;
-        bool         m_runOnce = false;
-        bool         m_runForward = true;
-        bool         m_stepOutBackward = false;
-        bool         m_runToCursorBackward = false;
-        bool         m_runToCursorForward = false;
-        ea_t         m_runToCursorAddr = BADADDR;
         resume_mode_t m_resumeMode = RESMOD_NONE;
         int          m_activeBpts = 0;
         // Watchpoints registered on behalf of user breakpoints. Temporary
@@ -457,8 +467,17 @@ namespace idattd
         mutable bool                  m_foldValid = false;
 
         pid_t         m_pid = 1;
-        TTD::Replay::Position m_nextPosition;
-        bool          m_hasNextPosition = false;
+
+        // The one queued request; see Request above. Only the fields its kind
+        // names are meaningful.
+        struct PendingRequest
+        {
+            Request               kind    = Request::None;
+            bool                  forward = true;
+            ea_t                  address = BADADDR;    // RunToCursor
+            TTD::Replay::Position position;             // GotoPosition
+        };
+        PendingRequest m_pending;
 
         std::string m_targetName; // file name of the analyzed binary (for rebase)
     };
