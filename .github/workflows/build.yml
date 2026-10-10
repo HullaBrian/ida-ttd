@@ -1,0 +1,38 @@
+name: Build
+
+# Every push and pull request, so a change is compiled before release time
+# rather than for the first time at it. Both configurations are built: Debug
+# has an unusual NDEBUG + release-CRT arrangement (see msbuild/common.props)
+# that would otherwise rot unnoticed.
+on:
+  push:
+    branches-ignore:
+      - "gh-pages"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        configuration: [Debug, Release]
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore the TTD Replay SDK
+        run: nuget install msbuild\packages.config -OutputDirectory packages
+
+      - name: Build
+        run: msbuild ida-ttd.slnx -p:Configuration=${{ matrix.configuration }} -p:Platform=x64 -t:Rebuild -m:1

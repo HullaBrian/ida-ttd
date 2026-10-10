@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Auto-imported by MSBuild for every project in this directory, before anything
+  else is evaluated. It holds the paths and versions that both projects need and
+  that must only be written down once.
+-->
+<Project>
+  <PropertyGroup>
+    <!-- Repo root, resolved from THIS file rather than $(SolutionDir): MSBuild
+         only defines SolutionDir when a solution drives the build, so building
+         a single .vcxproj would otherwise point these at the wrong place. -->
+    <RepoRoot>$(MSBuildThisFileDirectory)..\</RepoRoot>
+    <SrcDir>$(RepoRoot)src</SrcDir>
+    <IdaSdkDir>$(RepoRoot)ida-sdk\src</IdaSdkDir>
+    <PackagesDir>$(RepoRoot)packages</PackagesDir>
+
+    <!-- The TTD Replay SDK version. This is the single place it is written:
+         packages.config next to this file pins the same version for restore,
+         and CI reads it from there. -->
+    <TTDApiVersion>0.9.5</TTDApiVersion>
+    <TTDReplaySdkProps>$(PackagesDir)\Microsoft.TimeTravelDebugging.Apis.$(TTDApiVersion)\build\native\Microsoft.TimeTravelDebugging.Apis.props</TTDReplaySdkProps>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{7f2c1a64-9d3e-4b18-8a55-1c0f2e6b47d1}</ProjectGuid>
+    <RootNamespace>idattdloader</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="LoaderBuild">
+    <!-- What the SDK's own loaders define. -->
+    <ExtraPreprocessorDefines>__LOADER__;LOADER_COMPILE</ExtraPreprocessorDefines>
+    <ExtraIncludeDirectories>$(IdaSdkDir)\ldr</ExtraIncludeDirectories>
+    <ExtraLinkDependencies>delayimp.lib</ExtraLinkDependencies>
+    <!-- Delay-load the replay runtime. Without this, an install that has no
+         TTDReplay.dll cannot load ttd-loader.dll at all, and IDA silently stops
+         recognising .run files with no message anywhere. Delayed, the loader
+         always loads, accept_file (which touches no TTD API) keeps working, and
+         the failure surfaces in load_file, where it can be explained. -->
+    <ExtraDelayLoadDLLs>TTDReplay.dll</ExtraDelayLoadDLLs>
+  </PropertyGroup>
+  <Import Project="common.props" />
+  <PropertyGroup>
+    <TargetName>ttd-loader</TargetName>
+  </PropertyGroup>
+
+  <!--
+    The loader has to do the same three things the debugger backend does before
+    it can look at a recording (create the engine, initialise it on the .run and
+    build the memory index), so it shares src\common with the plugin. It does
+    not link dllmain.cpp: the loader never calls plugin_module_name(), and
+    compiling it in would only add a second DllMain.
+  -->
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\pch.h" />
+    <ClInclude Include="$(SrcDir)\common\symbols.h" />
+    <ClInclude Include="$(SrcDir)\common\trace_link.h" />
+    <ClInclude Include="$(SrcDir)\common\trace_open.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\symbols.cpp" />
+    <ClCompile Include="$(SrcDir)\common\trace_link.cpp" />
+    <ClCompile Include="$(SrcDir)\common\trace_open.cpp" />
+    <ClCompile Include="$(SrcDir)\loader\ldr_main.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

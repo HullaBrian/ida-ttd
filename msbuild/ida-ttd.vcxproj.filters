@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Generated to mirror the src/ tree; see msbuild/gen_filters.py. -->
+  <ItemGroup>
+    <Filter Include="analysis">
+      <UniqueIdentifier>{936CFFF2-93FD-3099-474E-7E46AFFEDBFA}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="common">
+      <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="debugger">
+      <UniqueIdentifier>{6F0FFD6B-7E1D-FCF3-D575-149FB25537B1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="plugin">
+      <UniqueIdentifier>{1100D5E9-12BF-360D-2D2B-528063D16C88}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ui">
+      <UniqueIdentifier>{442BFBD5-56F8-CE66-8866-1A6934DF517B}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\pch.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\symbols.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\trace_link.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\trace_open.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\callconv.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\event_queue.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\registers.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\trace_manager.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\bookmarks.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\callsites.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\coverage.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\memmap.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\memsearch.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\sweep.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\trace_store.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\tracer.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\clipboard.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\decompiler.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\icons.hh">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\names.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\scope.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\ui.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\plugin.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\pch.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\symbols.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\trace_link.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\trace_open.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\callconv.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\registers.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\callsites.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\coverage.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\memmap.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\memsearch.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\sweep.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\trace_store.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\tracer.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\clipboard.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\decompiler.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\names.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\scope.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_bookmarks.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_callsites.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_coverage.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_memmap.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_memsearch.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\plugin.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+</Project>

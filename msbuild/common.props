@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Everything ida-ttd.vcxproj and ttd-loader.vcxproj build the same way. Each
+  imports this once, after Microsoft.Cpp.props.
+
+  A project varies the build by setting these before the import:
+
+    ExtraPreprocessorDefines   e.g. __LOADER__;LOADER_COMPILE
+    ExtraIncludeDirectories    e.g. $(IdaSdkDir)\ldr
+    ExtraLinkDependencies      e.g. delayimp.lib
+    ExtraDelayLoadDLLs         e.g. TTDReplay.dll
+-->
+<Project>
+  <!-- TTD Replay SDK: adds the SDK include dir and the x64 import-lib dir. -->
+  <Import Project="$(TTDReplaySdkProps)" Condition="Exists('$(TTDReplaySdkProps)')" />
+
+  <!-- The import above has to be conditional (MSBuild evaluates imports before
+       any target could restore the package), so say plainly what is missing
+       rather than letting the compile fail on <TTD/IReplayEngine.h>. -->
+  <Target Name="RequireTTDReplaySdk" BeforeTargets="PrepareForBuild">
+    <Error Condition="!Exists('$(TTDReplaySdkProps)')"
+           Text="The TTD Replay SDK is not restored: $(TTDReplaySdkProps) does not exist. Run &quot;nuget install msbuild\packages.config -OutputDirectory packages&quot; from the repository root." />
+  </Target>
+
+  <PropertyGroup>
+    <OutDir>$(RepoRoot)build\$(Configuration)\</OutDir>
+    <!-- Both projects compile some of the same sources, so each needs its own
+         object directory. Kept under build\ so one .gitignore rule covers it. -->
+    <IntDir>$(RepoRoot)build\obj\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <!-- src\ is the single include root: every local include is written from
+           it ("debugger/trace_manager.h"), so a header's home is visible at the
+           include site and two folders can hold like-named files. -->
+      <AdditionalIncludeDirectories>$(SrcDir);$(IdaSdkDir)\include;$(ExtraIncludeDirectories);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- NDEBUG in both configurations, not _DEBUG: both keep the RELEASE CRT
+           (RuntimeLibrary below) because that is what IDA itself uses. _DEBUG
+           would make the MSVC headers reference debug-CRT-only symbols
+           (_CrtDbgReport, _calloc_dbg, msvcprtd.lib) that the release CRT does
+           not export -> LNK2001/LNK1120. -->
+      <PreprocessorDefinitions>NDEBUG;__NT__;__EA64__;__X64__;_CRT_SECURE_NO_WARNINGS;_SILENCE_ALL_CXX20_DEPRECATION_WARNINGS;WIN32;_WINDOWS;_USRDLL;$(ExtraPreprocessorDefines);%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Match IDA's CRT: the dynamic release runtime, in Debug too. -->
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableUAC>false</EnableUAC>
+      <AdditionalLibraryDirectories>$(IdaSdkDir)\lib\x64_win_64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ida.lib;TTDReplay.lib;$(ExtraLinkDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <DelayLoadDLLs>$(ExtraDelayLoadDLLs);%(DelayLoadDLLs)</DelayLoadDLLs>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <!-- Stated rather than inherited: this is an unoptimised build with full
+           debug info, not a debug-CRT build, so the usual Debug defaults that
+           follow from UseDebugLibraries do not all apply here. -->
+      <Optimization>Disabled</Optimization>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

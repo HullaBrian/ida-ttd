@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{55864e0c-4c71-4cec-83f0-448f5260a487}</ProjectGuid>
+    <RootNamespace>idattd</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <!-- Whatever Visual Studio is installed, unless overridden with
+         -p:PlatformToolset=... Pinning a toolset here would break the build on
+         any machine that has a different one. -->
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <Import Project="common.props" />
+  <PropertyGroup>
+    <TargetName>ida-ttd</TargetName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\pch.h" />
+    <ClInclude Include="$(SrcDir)\common\symbols.h" />
+    <ClInclude Include="$(SrcDir)\common\trace_link.h" />
+    <ClInclude Include="$(SrcDir)\common\trace_open.h" />
+    <ClInclude Include="$(SrcDir)\debugger\callconv.h" />
+    <ClInclude Include="$(SrcDir)\debugger\event_queue.h" />
+    <ClInclude Include="$(SrcDir)\debugger\registers.h" />
+    <ClInclude Include="$(SrcDir)\debugger\trace_manager.h" />
+    <ClInclude Include="$(SrcDir)\analysis\bookmarks.h" />
+    <ClInclude Include="$(SrcDir)\analysis\callsites.h" />
+    <ClInclude Include="$(SrcDir)\analysis\coverage.h" />
+    <ClInclude Include="$(SrcDir)\analysis\memmap.h" />
+    <ClInclude Include="$(SrcDir)\analysis\memsearch.h" />
+    <ClInclude Include="$(SrcDir)\analysis\sweep.h" />
+    <ClInclude Include="$(SrcDir)\analysis\trace_store.h" />
+    <ClInclude Include="$(SrcDir)\analysis\tracer.h" />
+    <ClInclude Include="$(SrcDir)\ui\clipboard.h" />
+    <ClInclude Include="$(SrcDir)\ui\decompiler.h" />
+    <ClInclude Include="$(SrcDir)\ui\icons.hh" />
+    <ClInclude Include="$(SrcDir)\ui\names.h" />
+    <ClInclude Include="$(SrcDir)\ui\scope.h" />
+    <ClInclude Include="$(SrcDir)\ui\ui.h" />
+    <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h" />
+    <ClInclude Include="$(SrcDir)\plugin\plugin.h" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\pch.cpp" />
+    <ClCompile Include="$(SrcDir)\common\symbols.cpp" />
+    <ClCompile Include="$(SrcDir)\common\trace_link.cpp" />
+    <ClCompile Include="$(SrcDir)\common\trace_open.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\callconv.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\callsites.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\coverage.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\memmap.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\memsearch.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\sweep.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\trace_store.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\tracer.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\clipboard.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\decompiler.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\names.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\scope.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_bookmarks.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_callsites.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_coverage.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_memmap.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_memsearch.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

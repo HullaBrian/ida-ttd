@@ -140,13 +140,33 @@ project uses whichever toolset is installed.
 ```
 git clone --recurse-submodules https://github.com/HullaBrian/ida-ttd
 cd ida-ttd
-nuget install ida-ttd\packages.config -OutputDirectory packages
+nuget install msbuild\packages.config -OutputDirectory packages
 msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
 ```
 
 Build serially (`-m:1`): parallel compiler instances racing on the shared PDB
 can produce a `C1041` error. Output is `build\Release\ida-ttd.dll` and
 `build\Release\ttd-loader.dll`.
+
+## Repository layout
+
+```
+src/common/     opening a recording, the .run link record, PE and symbol
+                reading -- the part the plugin and the loader both use
+src/debugger/   the IDA debugger backend: engine and cursor ownership, trace
+                navigation, registers, calling conventions
+src/analysis/   whole-trace passes -- call tracing, coverage, memory search,
+                memory map, indirect calls, bookmarks -- and the shared replay
+                sweep driver they all run on
+src/ui/         choosers, action handlers, pseudocode highlighting
+src/plugin/     the plugmod_t, the event listeners, the actions and the toolbar
+src/loader/     ttd-loader.dll, which makes File > Open recognise a .run
+msbuild/        the two project files and the settings they share
+```
+
+`src/` is the single include root, so every local include names its folder
+(`#include "debugger/trace_manager.h"`) and a header's home is visible wherever
+it is used.
 
 ## License
 
