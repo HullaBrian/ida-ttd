@@ -4,6 +4,7 @@
 #include "core/position.h"
 #include "debugger/event_queue.h"
 #include "debugger/module_registry.h"
+#include "debugger/memory_reader.h"
 #include "common/trace_open.h"
 #include "analysis/memmap.h"
 
@@ -239,14 +240,6 @@ namespace idattd
         // dispatches callbacks from several threads at once, and the call/return
         // callback in find_dynamic_function_entry mutates an unsynchronized map.
         TTD::Replay::ICursorView *ana_cursor();
-        // Reconstruct the real bytes of [lo,hi) from the trace's recorded writes.
-        // The position-based memory query returns zero-fill for non-module memory
-        // that was written earlier (e.g. an unpacker decompressing a beacon) but not
-        // executed at the current position. We replay forward to the current
-        // position with a Write watchpoint over [lo,hi), capturing the latest written
-        // value of each byte (this is how WinDbg shows those bytes). Cached; served
-        // by on_read_memory. Returns true if any byte was recovered.
-        bool  reconstruct_region(ea_t lo, ea_t hi);
         // Cheap, replay-free disassembly of the function at 'pc'. Prefers the
         // module's .pdata bounds (whole function at once); falls back to linear
         // forward layout. Runs on every stop; must not walk the trace.
@@ -301,30 +294,13 @@ namespace idattd
     private:
         SessionHooks      m_hooks;
         ModuleRegistry    m_modules;
+        MemoryReader      m_memory;
         IdaErrorReporting m_err;
 
         TTD::Replay::UniqueReplayEngine m_engine;
         TTD::Replay::UniqueCursor       m_cursor;
 
         TTD::Replay::UniqueCursor       m_anaCursor; // scratch cursor for forward window walks
-        // Dedicated cursor for serving IDA's memory reads. It is only ever
-        // SetPosition'd (never used to execute/replay), because a cursor left "in
-        // execution" answers memory queries with the thread-local policy regardless
-        // of the requested policy -- which made non-executed bytes (the rest of a
-        // shellcode function) read back as zeros. A position-only cursor honors the
-        // aggressive policies, matching what WinDbg/Binja show.
-        TTD::Replay::UniqueCursor       m_memCursor;
-        TTD::Replay::Position           m_memPos{};       // position m_memCursor is parked at
-        bool                            m_memPosValid = false;
-        // Scratch "which bytes did we resolve" mask, reused across on_read_memory
-        // calls. That function is on the hottest path in the plugin (every
-        // disassembly line, register deref and stack row), so it must not heap
-        // allocate per call; assign() reuses the existing capacity.
-        std::vector<uint8_t>            m_readFilled;
-        // Scratch destination for the ThreadLocal probe that tells a recorded
-        // run of zeros apart from the engine's "mapped, here is zero" answer.
-        // Only used for all-zero runs, and reused for the same reason as above.
-        std::vector<uint8_t>            m_readProbe;
         ea_t                            m_winLo = BADADDR; // last laid-out window range
         ea_t                            m_winHi = 0;
         // Start of the function whose callees we last defined. Stepping inside one
@@ -336,16 +312,6 @@ namespace idattd
         std::set<ea_t>                  m_pdataExtended;
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
-        // Bytes reconstructed from recorded writes, for non-module memory the
-        // position query only zero-fills (unpacked/JIT code never executed at the
-        // current position). Served by on_read_memory.
-        struct ReconRegion
-        {
-            ea_t                 lo = 0, hi = 0;
-            std::vector<uint8_t> data;     // hi-lo bytes
-            std::vector<bool>    known;    // which bytes were recovered
-        };
-        std::vector<ReconRegion> m_reconRegions;
         // Functions we defined in dynamic (non-module) code, keyed by start_ea ->
         // byte-hash at definition time. Used to detect self-modifying / reused
         // regions (incl. time-travel to a position where the bytes differ) and
