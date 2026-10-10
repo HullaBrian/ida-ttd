@@ -8,6 +8,9 @@
     <Filter Include="common">
       <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="core">
+      <UniqueIdentifier>{FB556B44-F2C3-FD30-0F75-241C1B1475DC}</UniqueIdentifier>
+    </Filter>
     <Filter Include="debugger">
       <UniqueIdentifier>{6F0FFD6B-7E1D-FCF3-D575-149FB25537B1}</UniqueIdentifier>
     </Filter>
@@ -42,6 +45,15 @@
     </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h">
       <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\backend.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\backend_registry.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\position.h">
+      <Filter>core</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h">
       <Filter>analysis</Filter>
@@ -116,6 +128,9 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp">
       <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\backend_registry.cpp">
+      <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp">
       <Filter>analysis</Filter>

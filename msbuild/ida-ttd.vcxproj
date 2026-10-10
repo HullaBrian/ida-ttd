@@ -51,6 +51,9 @@
     <ClInclude Include="$(SrcDir)\debugger\event_queue.h" />
     <ClInclude Include="$(SrcDir)\debugger\registers.h" />
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h" />
+    <ClInclude Include="$(SrcDir)\core\backend.h" />
+    <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
+    <ClInclude Include="$(SrcDir)\core\position.h" />
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h" />
     <ClInclude Include="$(SrcDir)\analysis\callsites.h" />
     <ClInclude Include="$(SrcDir)\analysis\coverage.h" />
@@ -78,6 +81,7 @@
     <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp" />
+    <ClCompile Include="$(SrcDir)\core\backend_registry.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\callsites.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\coverage.cpp" />
