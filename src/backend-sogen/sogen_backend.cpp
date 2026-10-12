@@ -680,6 +680,95 @@ namespace
         return found;
     }
 
+    // Whether the instruction bytes of an execute event are a call: E8 rel32,
+    // or FF /2 and FF /3 (near and far indirect), after any legacy or REX
+    // prefixes.
+    bool is_call_insn(const ttd::access_event &e)
+    {
+        size_t n = (size_t)std::min<uint64_t>(e.size, e.payload.size());
+        size_t i = 0;
+        for ( ; i < n; i++ )
+        {
+            uint8_t b = e.payload[i];
+            bool prefix = b == 0x66 || b == 0x67 || b == 0xF2 || b == 0xF3 || b == 0x2E || b == 0x3E
+                       || b == 0x26 || b == 0x36 || b == 0x64 || b == 0x65 || (b & 0xF0) == 0x40;
+            if ( !prefix )
+                break;
+        }
+        if ( i >= n )
+            return false;
+        if ( e.payload[i] == 0xE8 )
+            return true;
+        if ( e.payload[i] == 0xFF && i + 1 < n )
+        {
+            uint8_t reg = (e.payload[i + 1] >> 3) & 7;
+            return reg == 2 || reg == 3;
+        }
+        return false;
+    }
+
+    // Forward step over: run the instruction about to execute on this thread,
+    // and if it is a call, the whole call. The return comes from calls_to,
+    // which pairs a call with its ret through the stack slot the return
+    // address was pushed to -- exact under recursion, where "the next time
+    // this thread reaches the return address" is not.
+    //
+    // Backward is not offered yet: stepping back over a call means finding the
+    // call from its return, and that wants the frame's entry, which no single
+    // reader query gives.
+    int nav_step_over(ittd_cursor *hc, int forward, int *out_stop)
+    {
+        cursor_t *c = C(hc);
+        if ( c == nullptr )
+            return ITTD_E_BAD_ARG;
+        if ( !forward )
+            return ITTD_E_UNSUPPORTED;
+        return guarded(c->owner->error, [&]()
+        {
+            ttd::trace &t = *c->trace;
+            uint32_t tid = thread_after(t, c->position);
+            int stop = ITTD_STOP_BOUNDARY;
+            uint64_t dest = last_position(t);
+
+            std::optional<ttd::access_event> cur = t.next_instruction(c->position, tid);
+            std::optional<ttd::access_event> after = cur ? t.next_instruction(cur->step, tid) : std::nullopt;
+            if ( cur && after )
+            {
+                if ( is_call_insn(*cur) )
+                {
+                    // 'after' is the callee's first instruction.
+                    for ( const ttd::call_event &e : t.calls_to(after->ip, after->step, after->step) )
+                    {
+                        if ( e.step == cur->step && e.return_step != UINT64_MAX )
+                        {
+                            dest = e.return_step;   // just after the ret
+                            stop = ITTD_STOP_STEPPED;
+                        }
+                    }
+                }
+                else
+                {
+                    dest = after->step - 1;
+                    stop = ITTD_STOP_STEPPED;
+                }
+            }
+
+            // A breakpoint inside the call stops the step there, as it would
+            // on a live process.
+            uint64_t bp = 0, hit = 0;
+            if ( !c->breakpoints.empty() && nearest_execution(c, c->breakpoints, true, &bp, &hit)
+              && bp > c->position && bp < dest )
+            {
+                dest = bp;
+                stop = ITTD_STOP_BREAKPOINT;
+            }
+            move(c, dest);
+            if ( out_stop != nullptr )
+                *out_stop = stop;
+            return ITTD_OK;
+        });
+    }
+
     int nav_run_to(ittd_cursor *hc, uint64_t addr, int forward, int *out_stop)
     {
         cursor_t *c = C(hc);
@@ -1086,8 +1175,8 @@ namespace
         a.cursor_read_memory = cursor_read_memory;
         a.cursor_threads     = cursor_threads;
         a.nav_step           = nav_step;
-        a.nav_step_over      = nullptr;     // not yet: needs the call depth
-        a.nav_step_out       = nullptr;
+        a.nav_step_over      = nav_step_over;   // forward only, see there
+        a.nav_step_out       = nullptr;     // not yet: needs the frame's entry
         a.nav_run            = nav_run;
         a.nav_run_to         = nav_run_to;
         a.nav_breakpoints    = nav_breakpoints;

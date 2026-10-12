@@ -292,8 +292,23 @@ int main(int argc, char **argv)
             if ( !is_none(e->pos) )
                 check(at_pos == e->site, "  rip at pos is the call site");
             check(at_entry == e->target, "  rip at entry_pos is the target");
+            if ( !is_none(e->pos) && !is_none(e->ret_pos) && api->nav_step_over != NULL )
+            {
+                ittd_position landed;
+                int stop = -1;
+                api->cursor_seek(c, e->pos);
+                t0 = now_ms();
+                if ( api->nav_step_over(c, 1, &stop) == ITTD_OK )
+                {
+                    api->cursor_position(c, &landed);
+                    printf("    step over the call: stop %d at %s, %.1f ms\n", stop, pos_text(landed),
+                           now_ms() - t0);
+                    check(landed.lo == e->ret_pos.lo, "  stepping over the call lands on ret_pos");
+                }
+            }
             if ( !is_none(e->ret_pos) )
             {
+                at_ret = rip_at(c, e->ret_pos);
                 check(at_ret > e->site && at_ret <= e->site + 15, "  rip at ret_pos is just past the site");
                 if ( at_ret != ITTD_BADADDR && api->cursor_regs(c, &r) == ITTD_OK )
                     printf("    returned rax %llx\n", (unsigned long long)r.gp[ITTD_REG_RAX]);

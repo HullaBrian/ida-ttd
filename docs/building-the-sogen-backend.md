@@ -87,6 +87,7 @@ Run on 2026-10-12 against Sogen `ttd/next` at `86954f33`, Release.
 | `regs_at`, 200 entry positions | 4.9 ms each |
 | indirect branches in test-sample.exe | 329 edges, 2.7 s |
 | exceptions | 5, 1.1 s |
+| step over a call (forward) | 0.2 ms, lands on the paired return |
 | position checks | all pass |
 
 **`bench.sogttd`** (recorded 2026-10-08, before register snapshots): queries
@@ -99,7 +100,7 @@ registers.
 
 | | Why |
 | --- | --- |
-| `nav_step_over`, `nav_step_out` | They need the call depth; `calls_to` and the execute stream can give it, but it is not written yet |
+| `nav_step_over` backward, `nav_step_out` | Both need the entry of the current frame, which no single reader query gives. Forward step over is done: it pairs the call with its `ret` through `calls_to` (0.2 ms, exact under recursion) |
 | `query_mapping_changes` | Sogen's region section is in progress (requests-2 §1) |
 | `module_functions` | Sogen records no `.pdata`; the core reads it from the file on disk |
 | Thread stacks and the module machine | Read when the trace has them (sections 15 and 16); the test traces predate both |
