@@ -130,6 +130,9 @@
     <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h">
       <Filter>plugin</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\script_api.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\plugin\plugin.h">
       <Filter>plugin</Filter>
     </ClInclude>
@@ -244,6 +247,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_api.cpp">
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp">

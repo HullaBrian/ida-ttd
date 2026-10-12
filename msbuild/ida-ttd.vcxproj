@@ -78,6 +78,7 @@
     <ClInclude Include="$(SrcDir)\ui\scope.h" />
     <ClInclude Include="$(SrcDir)\ui\ui.h" />
     <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h" />
+    <ClInclude Include="$(SrcDir)\plugin\script_api.h" />
     <ClInclude Include="$(SrcDir)\plugin\plugin.h" />
   </ItemGroup>
 
@@ -119,6 +120,7 @@
     <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_api.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
   </ItemGroup>
 

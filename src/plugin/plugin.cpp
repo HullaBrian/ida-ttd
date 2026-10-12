@@ -2,6 +2,7 @@
 #include "common/trace_link.h"
 #include "common/symsrv.h"
 #include "core/backend_module.h"
+#include "plugin/script_api.h"
 #include "debugger/registers.h"
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
@@ -56,6 +57,9 @@ namespace idattd
         // DLLs under plugins/ida-ttd-backends. Nothing is there unless the user
         // put it there, in which case each one is named in the output window.
         load_backend_modules();
+        // ttd("...") for scripts: how the plugin is driven and tested without
+        // a person at the UI (plugin/script_api.h).
+        install_script_api(this);
 
         configure_debugger(m_debugger, inf_is_64bit());
         m_tracer.set_manager(&m_mgr);
@@ -106,8 +110,10 @@ namespace idattd
     Plugin::~Plugin()
     {
         // Before anything else: a symbol download must not outlive the plugin
-        // whose session asked for it.
+        // whose session asked for it, and a script must not reach a plugin
+        // that is going away.
         symsrv_shutdown();
+        remove_script_api();
         m_refocusTimer.cancel();
         m_autoCoverTimer.cancel();
         m_attachTimer.cancel();
