@@ -32,7 +32,9 @@ Built against the IDA SDK 9.4 and the Microsoft TTD Replay SDK.
   exception table for module code and the recorded execution for everything
   else. Self-modified regions are re-analyzed when their bytes change.
 - Symbols come from each module's export table read out of the trace, so names
-  work with no symbol server. PDB symbols load on top when available.
+  work with no symbol server. PDB symbols load on top when available: the
+  exact PDB each recorded module was built with is downloaded in the
+  background, so a slow symbol server never freezes IDA.
 - Execution coverage colors the instructions that actually ran, in both the
   disassembly and the decompiler.
 - Indirect calls are resolved to the targets they really reached and written
@@ -76,7 +78,11 @@ Built against the IDA SDK 9.4 and the Microsoft TTD Replay SDK.
 ### Open a trace directly
 
 `File > Open` the `.run` file and choose **Microsoft TTD trace (.run)**. IDA
-builds a database from the recording and offers to start replaying it.
+builds a database from the recording and starts replaying it.
+
+To open the database without replaying, turn off **Debugger > Replay the TTD
+trace when this database opens**. **Debugger > Start the TTD replay for this
+database** starts it again later.
 
 If the trace has no index yet, you are asked whether to build one. Building can
 take several minutes. Declining still gives you a database with the right
@@ -92,8 +98,8 @@ replay instead.
 ### Move through the recording
 
 Use the normal debugger controls to step forward. The TTD toolbar adds the
-backward equivalents, a live position readout, and the query actions. Everything
-is also on the top-level **TTD** menu.
+backward equivalents, run to cursor in both directions, a live position readout
+and the bookmark buttons. The queries are on the top-level **TTD** menu.
 
 ### Find where a buffer came from
 
@@ -116,6 +122,16 @@ live at the current position become named IDA segments with their real
 permissions, so an RWX buffer is visible as one. The map is saved in the
 database.
 
+### Re-read memory the database got wrong
+
+IDA caches the bytes at an address the first time it shows them. A range read
+before its module was mapped, or before the write that produced its contents was
+replayed, keeps that first answer.
+
+Select the range and run **TTD > Re-read memory from the recording**, also on the
+disassembly right-click menu. The cached bytes are discarded, the range is
+rebuilt from the recording's writes, and it is disassembled again.
+
 ### Default shortcuts
 
 | Action | Shortcut |
@@ -130,7 +146,7 @@ database.
 
 Stepping keeps IDA's usual shortcuts (`F7`, `F8`, `Ctrl+F7`, `F4`) and their
 backward variants. Continue backwards and step out backwards are on the TTD
-toolbar and menu.
+toolbar.
 
 ## Building from source
 
