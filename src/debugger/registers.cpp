@@ -116,6 +116,33 @@ namespace idattd
                          | DBG_RESMOD_STEP_BACKINTO;
     }
 
+    void fill_regvals(const ittd_regs &r, bool is64, regval_t *values)
+    {
+        // The table order above, which for x64 is ittd_regs' own order up to
+        // RIP. A 32-bit target has its registers in the low halves.
+        static const int x86_gp[] = {
+            ITTD_REG_RAX, ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_RBX,
+            ITTD_REG_RSP, ITTD_REG_RBP, ITTD_REG_RSI, ITTD_REG_RDI, ITTD_REG_RIP,
+        };
+        static const int seg_order[] = {
+            ITTD_SEG_CS, ITTD_SEG_DS, ITTD_SEG_SS, ITTD_SEG_ES, ITTD_SEG_FS, ITTD_SEG_GS,
+        };
+        int i = 0;
+        if ( is64 )
+        {
+            for ( int k = 0; k < ITTD_REG_GP_COUNT; k++ )
+                values[i++].set_int(r.gp[k]);
+        }
+        else
+        {
+            for ( int k : x86_gp )
+                values[i++].set_int((uint32_t)r.gp[k]);
+        }
+        values[i++].set_int((uint32_t)r.rflags);
+        for ( int k : seg_order )
+            values[i++].set_int(r.seg[k]);
+    }
+
     void fill_regvals(const CROSS_PLATFORM_CONTEXT &ctx, bool is64, regval_t *values)
     {
         if ( is64 )

@@ -1,62 +1,7 @@
 #include "debugger/callconv.h"
 
-using namespace TTD;
-using namespace TTD::Replay;
-
 namespace idattd
 {
-    // Fill buf[0..size) from guest [addr, addr+size), zero-filling anything the
-    // recording cannot supply, and return how many bytes are real counting from
-    // the start of the range (so a caller reading one value can test == size,
-    // and a string reader can scan exactly that far).
-    //
-    // Names its policies explicitly and steps over holes: QueryMemoryBuffer stops
-    // at the first unrecorded byte, so a single call would drop every recorded
-    // byte past one.
-    size_t read_guest(ICursorView *cursor, uint64_t addr, void *buf, size_t size)
-    {
-        if ( cursor == nullptr || buf == nullptr || size == 0 )
-            return 0;
-
-        static const QueryMemoryPolicy kPolicies[] = {
-            QueryMemoryPolicy::GloballyAggressive,   // cheap; zero-fills mapped memory
-            QueryMemoryPolicy::InFragmentAggressive, // look across the whole fragment
-        };
-
-        uint8_t *out = (uint8_t *)buf;
-        memset(out, 0, size);
-
-        size_t off        = 0;   // next byte of the range to resolve
-        size_t contiguous = 0;   // real bytes counted from the start, no holes
-        bool   unbroken   = true;
-        while ( off < size )
-        {
-            MemoryBuffer mb{};
-            for ( QueryMemoryPolicy p : kPolicies )
-            {
-                mb = cursor->QueryMemoryBuffer(GuestAddress{ addr + off },
-                                               BufferView{ out + off, size - off }, p);
-                if ( mb.Memory.Size > 0 )
-                    break;
-            }
-            if ( mb.Memory.Size == 0 )
-            {
-                unbroken = false;    // hole: keep the zero and step over it
-                off++;
-                continue;
-            }
-
-            size_t run = mb.Memory.Size;
-            if ( run > size - off )
-                run = size - off;
-            off += run;
-            if ( unbroken )
-                contiguous = off;
-        }
-        return contiguous;
-    }
-
-    // 'slot' is the stack slot granularity: 8 on x64, 4 on x86.
     size_t stack_arg_offset(const tinfo_t &func_tinfo, size_t n, size_t first_stack_arg,
                             size_t slot)
     {
@@ -78,9 +23,11 @@ namespace idattd
     // We sample at the call instruction *before* it executes, so the return
     // address has not been pushed yet: register args live in their registers and
     // stack args sit at SP + shadow space (+ preceding stack args).
-    uint64_t get_int_arg(ICursorView *cursor, const tinfo_t &tinfo, size_t n, bool is64)
+    uint64_t get_int_arg(const GuestView &view, const tinfo_t &tinfo, size_t n, bool is64)
     {
-        CROSS_PLATFORM_CONTEXT ctx = cursor->GetCrossPlatformContext();
+        ittd_regs r{};
+        if ( !view.regs || !view.regs(&r) )
+            return 0;
 
         func_type_data_t fd;
         cm_t cc = CM_CC_UNKNOWN;
@@ -89,66 +36,53 @@ namespace idattd
 
         if ( is64 )
         {
-            const AMD64_CONTEXT &c = ctx.Amd64Context;
             if ( n < 4 )
             {
-                // The MS x64 ABI assigns argument slots positionally across two
-                // parallel register files: slot n is RCX/RDX/R8/R9 for integers and
-                // pointers, but XMM0-3 for float and double. Reading a float
-                // argument out of the integer register (as this did unconditionally)
-                // yields whatever the caller happened to leave there.
                 tinfo_t arg = tinfo.get_nth_arg((int)n);
                 if ( arg.is_floating() )
                 {
-                    const M128BIT xmm[4] = { c.Xmm0, c.Xmm1, c.Xmm2, c.Xmm3 };
-                    return xmm[n].Low;
+                    // The low 64 bits of XMM0..3.
+                    uint64_t lo = 0;
+                    memcpy(&lo, r.xmm[n], sizeof(lo));
+                    return lo;
                 }
-                const uint64_t regs[4] = { c.Rcx, c.Rdx, c.R8, c.R9 };
-                return regs[n];
+                const int regs[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 };
+                return r.gp[regs[n]];
             }
-            // 0x20 bytes of shadow space precede the first stack argument.
             size_t off = 0x20 + stack_arg_offset(tinfo, n, 4, 8);
             uint64_t v = 0;
-            read_guest(cursor, c.Rsp + off, &v, sizeof(v));
+            view.read(r.gp[ITTD_REG_RSP] + off, &v, sizeof(v));
             return v;
         }
 
-        const X86_NT5_CONTEXT &c = ctx.X86Nt5Context;
+        // A 32-bit target has its registers in the low halves of the slots.
         size_t first_stack_arg = 0;
         if ( cc == CM_CC_FASTCALL )
         {
             if ( n < 2 )
-            {
-                const uint32_t regs[2] = { c.Ecx, c.Edx };
-                return regs[n];
-            }
+                return (uint32_t)r.gp[n == 0 ? ITTD_REG_RCX : ITTD_REG_RDX];
             first_stack_arg = 2;
         }
         else if ( cc == CM_CC_THISCALL )
         {
-            // 'this' travels in ECX; the remaining arguments start at stack
-            // slot 0.
             if ( n == 0 )
-                return c.Ecx;
+                return (uint32_t)r.gp[ITTD_REG_RCX];
             first_stack_arg = 1;
         }
-        // cdecl / stdcall: args on the stack, no return address pushed yet.
         size_t off = stack_arg_offset(tinfo, n, first_stack_arg, 4);
-        // Read the argument at its own width, not always 4 bytes: a 64-bit
-        // parameter (int64, double, a LARGE_INTEGER by value) occupies two stack
-        // slots, and truncating to the low dword silently halved every one of them.
         tinfo_t arg = tinfo.get_nth_arg((int)n);
         size_t  sz  = arg.get_size();
         uint64_t v = 0;
-        read_guest(cursor, (uint64_t)c.Esp + off, &v, sz == 8 ? 8 : 4);
+        view.read((uint32_t)r.gp[ITTD_REG_RSP] + off, &v, sz == 8 ? 8 : 4);
         return v;
     }
 
-    uint64_t get_return_value(ICursorView *cursor, bool is64)
+    uint64_t get_return_value(const GuestView &view, bool is64)
     {
-        CROSS_PLATFORM_CONTEXT ctx = cursor->GetCrossPlatformContext();
-        return is64 ? (uint64_t)ctx.Amd64Context.Rax
-                    : (uint64_t)ctx.X86Nt5Context.Eax;
+        ittd_regs r{};
+        if ( !view.regs || !view.regs(&r) )
+            return 0;
+        return is64 ? r.gp[ITTD_REG_RAX] : (uint32_t)r.gp[ITTD_REG_RAX];
     }
 
     static void cat_char(qstring *out, wchar_t c)
@@ -172,7 +106,7 @@ namespace idattd
     // for every string argument of every traced call.
     static const int kMaxStrChars = 260;
 
-    qstring read_string_at(ICursorView *cursor, uint64_t addr)
+    qstring read_string_at(const GuestView &view, uint64_t addr)
     {
         qstring out;
         char    chunk[64];
@@ -182,7 +116,7 @@ namespace idattd
             size_t want = (size_t)(kMaxStrChars - done);
             if ( want > sizeof(chunk) )
                 want = sizeof(chunk);
-            size_t got = read_guest(cursor, addr + done, chunk, want);
+            size_t got = view.read(addr + done, chunk, want);
             if ( got == 0 )
                 break;
             for ( size_t i = 0; i < got; i++ )
@@ -196,7 +130,7 @@ namespace idattd
         return out;
     }
 
-    qstring read_wstring_at(ICursorView *cursor, uint64_t addr)
+    qstring read_wstring_at(const GuestView &view, uint64_t addr)
     {
         qstring out;
         wchar_t chunk[64];
@@ -206,7 +140,7 @@ namespace idattd
             size_t want = (size_t)(kMaxStrChars - done) * sizeof(wchar_t);
             if ( want > sizeof(chunk) )
                 want = sizeof(chunk);
-            size_t got = read_guest(cursor, addr + (uint64_t)done * sizeof(wchar_t), chunk, want);
+            size_t got = view.read(addr + (uint64_t)done * sizeof(wchar_t), chunk, want);
             size_t nch = got / sizeof(wchar_t);
             if ( nch == 0 )
                 break;

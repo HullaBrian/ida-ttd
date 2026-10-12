@@ -1,5 +1,6 @@
 #include "analysis/tracer.h"
 #include "debugger/callconv.h"
+#include "debugger/msttd_guest.h"
 #include "analysis/sweep.h"
 #include "debugger/msttd_position.h"
 #include "debugger/trace_manager.h"
@@ -10,22 +11,22 @@ using namespace TTD::Replay;
 namespace idattd
 {
     // Raw integer-register argument when no prototype is available.
-    static uint64_t raw_int_arg(ICursorView *cur, size_t n, bool is64)
+    static uint64_t raw_int_arg(const GuestView &view, size_t n, bool is64)
     {
-        CROSS_PLATFORM_CONTEXT ctx = cur->GetCrossPlatformContext();
+        ittd_regs r{};
+        if ( !view.regs || !view.regs(&r) )
+            return 0;
         if ( is64 )
         {
-            const AMD64_CONTEXT &c = ctx.Amd64Context;
-            const uint64_t r[4] = { c.Rcx, c.Rdx, c.R8, c.R9 };
-            return n < 4 ? r[n] : 0;
+            const int regs[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 };
+            return n < 4 ? r.gp[regs[n]] : 0;
         }
-        const X86_NT5_CONTEXT &c = ctx.X86Nt5Context;
         uint32_t v = 0;
-        read_guest(cur, (uint64_t)c.Esp + n * 4, &v, sizeof(v));
+        view.read((uint32_t)r.gp[ITTD_REG_RSP] + n * 4, &v, sizeof(v));
         return v;
     }
 
-    static qstring render_pointer(ICursorView *cur, const tinfo_t &ptr_t, uint64_t ptr)
+    static qstring render_pointer(const GuestView &cur, const tinfo_t &ptr_t, uint64_t ptr)
     {
         tinfo_t pointed = ptr_t.get_ptrarr_object();
         qstring pt;
@@ -52,7 +53,7 @@ namespace idattd
 
     // Render a single argument value (no type prefix) from the integer fetched
     // at the call site.
-    static qstring render_value(ICursorView *cur, const tinfo_t &arg, uint64_t raw)
+    static qstring render_value(const GuestView &cur, const tinfo_t &arg, uint64_t raw)
     {
         qstring value;
         if ( arg.is_ptr_or_array() )
@@ -110,7 +111,7 @@ namespace idattd
     // Produce one "name=value" string per *actual* argument of the function's
     // signature (so the count matches the prototype). Falls back to four raw
     // register/stack args when there is no prototype.
-    static void extract_args(ICursorView *cur, ea_t func_ea, bool is64, std::vector<qstring> &out)
+    static void extract_args(const GuestView &cur, ea_t func_ea, bool is64, std::vector<qstring> &out)
     {
         tinfo_t          tinfo;
         func_type_data_t fd;
@@ -136,7 +137,7 @@ namespace idattd
         }
     }
 
-    static qstring render_return(ICursorView *cur, ea_t func_ea, bool is64)
+    static qstring render_return(const GuestView &cur, ea_t func_ea, bool is64)
     {
         uint64_t rv = get_return_value(cur, is64);
 
@@ -433,12 +434,12 @@ namespace idattd
                 ev.func_ea = rec.disp;
                 ev.pos     = to_core(rec.callPos);
                 ev.tid     = rec.tid;
-                extract_args(cur.get(), rec.disp, m_is64, ev.args);
+                extract_args(msttd_view(cur.get(), m_is64), rec.disp, m_is64, ev.args);
                 if ( rec.hasRet )
                 {
                     cur->SetPosition(rec.retPos);
                     ev.end_pos = to_core(rec.retPos);
-                    ev.retval  = render_return(cur.get(), rec.disp, m_is64);
+                    ev.retval  = render_return(msttd_view(cur.get(), m_is64), rec.disp, m_is64);
                     ev.has_ret = true;
                 }
                 built.push_back(std::move(ev));

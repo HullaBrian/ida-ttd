@@ -1,35 +1,30 @@
 #include "common/symbols.h"
 
-using namespace TTD;
-using namespace TTD::Replay;
-
 namespace idattd
 {
     // Read exactly 'size' bytes of guest memory; return false on a short read.
-    static bool read_mem(ICursorView *c, uint64_t addr, void *buf, size_t size)
+    static bool read_mem(const GuestRead &c, uint64_t addr, void *buf, size_t size)
     {
-        MemoryBuffer mb = c->QueryMemoryBuffer(GuestAddress{ addr }, BufferView{ buf, size });
-        return mb.Memory.Size == size;
+        return c(addr, buf, size) == size;
     }
 
     template <typename T>
-    static bool read_val(ICursorView *c, uint64_t addr, T *out)
+    static bool read_val(const GuestRead &c, uint64_t addr, T *out)
     {
         return read_mem(c, addr, out, sizeof(T));
     }
 
     // Read a NUL-terminated ASCII string from guest memory (bounded).
-    static std::string read_cstr(ICursorView *c, uint64_t addr, size_t maxlen = 512)
+    static std::string read_cstr(const GuestRead &c, uint64_t addr, size_t maxlen = 512)
     {
         std::string s;
         char chunk[64];
         while ( s.size() < maxlen )
         {
-            MemoryBuffer mb = c->QueryMemoryBuffer(
-                GuestAddress{ addr + s.size() }, BufferView{ chunk, sizeof(chunk) });
-            if ( mb.Memory.Size == 0 )
+            size_t got = c(addr + s.size(), chunk, sizeof(chunk));
+            if ( got == 0 )
                 break;
-            for ( size_t i = 0; i < mb.Memory.Size; i++ )
+            for ( size_t i = 0; i < got; i++ )
             {
                 if ( chunk[i] == '\0' )
                     return s;
@@ -41,7 +36,7 @@ namespace idattd
 
     // Locate a module's NT headers and say which flavour they are. Shared by
     // read_guest_pe_info and resolve_export_va so the DOS/NT walk is written once.
-    static bool locate_nt_headers(ICursorView *c, uint64_t base, uint64_t *nt_addr_out,
+    static bool locate_nt_headers(const GuestRead &c, uint64_t base, uint64_t *nt_addr_out,
                                   bool *is64_out)
     {
         IMAGE_DOS_HEADER dos{};
@@ -73,7 +68,7 @@ namespace idattd
 
     // The export data directory of a module whose NT header is at 'ntAddr', or
     // false when it has none.
-    static bool read_export_dir(ICursorView *c, uint64_t ntAddr, bool is64,
+    static bool read_export_dir(const GuestRead &c, uint64_t ntAddr, bool is64,
                                 uint32_t *rva_out, uint32_t *size_out)
     {
         if ( is64 )
@@ -97,7 +92,7 @@ namespace idattd
         return *rva_out != 0 && *size_out != 0;
     }
 
-    bool read_guest_pe_info(ICursorView *cursor, ea_t base, GuestPeInfo *out)
+    bool read_guest_pe_info(const GuestRead &cursor, ea_t base, GuestPeInfo *out)
     {
         if ( cursor == nullptr || out == nullptr || base == BADADDR )
             return false;
@@ -151,10 +146,8 @@ namespace idattd
             return true;    // valid headers; a sectionless image is merely odd
 
         std::vector<IMAGE_SECTION_HEADER> hdrs(nsections);
-        MemoryBuffer mb = cursor->QueryMemoryBuffer(
-            GuestAddress{ sectAddr },
-            BufferView{ hdrs.data(), (size_t)nsections * sizeof(IMAGE_SECTION_HEADER) });
-        size_t got = mb.Memory.Size / sizeof(IMAGE_SECTION_HEADER);
+        size_t mb = cursor(sectAddr, hdrs.data(), (size_t)nsections * sizeof(IMAGE_SECTION_HEADER));
+        size_t got = mb / sizeof(IMAGE_SECTION_HEADER);
 
         out->sections.reserve(got);
         for ( size_t i = 0; i < got; i++ )
@@ -173,7 +166,7 @@ namespace idattd
     }
 
     // The debug data directory of a module whose NT header is at 'ntAddr'.
-    static bool read_debug_dir(ICursorView *c, uint64_t ntAddr, bool is64,
+    static bool read_debug_dir(const GuestRead &c, uint64_t ntAddr, bool is64,
                                uint32_t *rva_out, uint32_t *size_out)
     {
         if ( is64 )
@@ -197,7 +190,7 @@ namespace idattd
         return *rva_out != 0 && *size_out != 0;
     }
 
-    bool read_guest_pdb_info(ICursorView *cursor, ea_t base, GuestPdbInfo *out)
+    bool read_guest_pdb_info(const GuestRead &cursor, ea_t base, GuestPdbInfo *out)
     {
         if ( cursor == nullptr || out == nullptr || base == BADADDR )
             return false;
@@ -265,7 +258,7 @@ namespace idattd
         return false;
     }
 
-    ea_t resolve_export_va(ICursorView *cursor, ea_t base, bool is64, const char *name)
+    ea_t resolve_export_va(const GuestRead &cursor, ea_t base, bool is64, const char *name)
     {
         qnotused(is64);   // the image's own header is the authority; see below
         if ( cursor == nullptr || base == BADADDR || name == nullptr || *name == '\0' )
@@ -300,19 +293,13 @@ namespace idattd
         std::vector<uint16_t> ordinals(nNames);
         std::vector<uint32_t> funcRvas(nFuncs);
 
-        MemoryBuffer mbN = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + exp.AddressOfNames },
-            BufferView{ nameRvas.data(), (size_t)nNames * sizeof(uint32_t) });
-        MemoryBuffer mbO = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + exp.AddressOfNameOrdinals },
-            BufferView{ ordinals.data(), (size_t)nNames * sizeof(uint16_t) });
-        MemoryBuffer mbF = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + exp.AddressOfFunctions },
-            BufferView{ funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t) });
+        size_t mbN = cursor(b + exp.AddressOfNames, nameRvas.data(), (size_t)nNames * sizeof(uint32_t));
+        size_t mbO = cursor(b + exp.AddressOfNameOrdinals, ordinals.data(), (size_t)nNames * sizeof(uint16_t));
+        size_t mbF = cursor(b + exp.AddressOfFunctions, funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t));
 
-        size_t gotNames = mbN.Memory.Size / sizeof(uint32_t);
-        size_t gotOrds  = mbO.Memory.Size / sizeof(uint16_t);
-        size_t gotFuncs = mbF.Memory.Size / sizeof(uint32_t);
+        size_t gotNames = mbN / sizeof(uint32_t);
+        size_t gotOrds  = mbO / sizeof(uint16_t);
+        size_t gotFuncs = mbF / sizeof(uint32_t);
         size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
 
         for ( size_t i = 0; i < usable; i++ )
@@ -334,7 +321,7 @@ namespace idattd
         return BADADDR;
     }
 
-    size_t apply_module_exports(ICursorView *cursor, ea_t base, bool is64)
+    size_t apply_module_exports(const GuestRead &cursor, ea_t base, bool is64)
     {
         if ( cursor == nullptr || base == BADADDR )
             return 0;
@@ -399,21 +386,15 @@ namespace idattd
         std::vector<uint16_t> ordinals(nNames);
         std::vector<uint32_t> funcRvas(nFuncs);
 
-        MemoryBuffer mbN = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + exp.AddressOfNames },
-            BufferView{ nameRvas.data(), (size_t)nNames * sizeof(uint32_t) });
-        MemoryBuffer mbO = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + exp.AddressOfNameOrdinals },
-            BufferView{ ordinals.data(), (size_t)nNames * sizeof(uint16_t) });
-        MemoryBuffer mbF = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + exp.AddressOfFunctions },
-            BufferView{ funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t) });
+        size_t mbN = cursor(b + exp.AddressOfNames, nameRvas.data(), (size_t)nNames * sizeof(uint32_t));
+        size_t mbO = cursor(b + exp.AddressOfNameOrdinals, ordinals.data(), (size_t)nNames * sizeof(uint16_t));
+        size_t mbF = cursor(b + exp.AddressOfFunctions, funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t));
 
         // Each array may come back short (TTD only records accessed memory); use
         // whatever prefix actually resolved.
-        size_t gotNames = mbN.Memory.Size / sizeof(uint32_t);
-        size_t gotOrds  = mbO.Memory.Size / sizeof(uint16_t);
-        size_t gotFuncs = mbF.Memory.Size / sizeof(uint32_t);
+        size_t gotNames = mbN / sizeof(uint32_t);
+        size_t gotOrds  = mbO / sizeof(uint16_t);
+        size_t gotFuncs = mbF / sizeof(uint32_t);
         size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
 
         size_t named = 0;
@@ -467,7 +448,7 @@ namespace idattd
         return named;
     }
 
-    size_t parse_pdata_functions(ICursorView *cursor, ea_t base, bool is64,
+    size_t parse_pdata_functions(const GuestRead &cursor, ea_t base, bool is64,
                                  std::vector<std::pair<ea_t, ea_t>> &out)
     {
         out.clear();
@@ -502,9 +483,8 @@ namespace idattd
             maxEntries = kMaxFuncs;
 
         std::vector<RtFunc> buf(maxEntries);
-        MemoryBuffer mb = cursor->QueryMemoryBuffer(
-            GuestAddress{ b + rva }, BufferView{ buf.data(), maxEntries * sizeof(RtFunc) });
-        size_t got = mb.Memory.Size / sizeof(RtFunc);
+        size_t mb = cursor(b + rva, buf.data(), maxEntries * sizeof(RtFunc));
+        size_t got = mb / sizeof(RtFunc);
 
         out.reserve(got);
         for ( size_t i = 0; i < got; i++ )

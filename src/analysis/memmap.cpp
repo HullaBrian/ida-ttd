@@ -1,4 +1,5 @@
 #include "analysis/memmap.h"
+#include "debugger/msttd_guest.h"
 #include "analysis/sweep.h"
 #include "debugger/msttd_position.h"
 #include "debugger/trace_manager.h"
@@ -737,11 +738,11 @@ namespace idattd
                 // Exports can only be read where the module is mapped.
                 sym->SetPosition(from_core(ml.pos));
                 GuestPeInfo pe;
-                bool havePe = read_guest_pe_info(sym.get(), ml.base, &pe);
+                bool havePe = read_guest_pe_info(msttd_read_plain(sym.get()), ml.base, &pe);
                 bool is64   = havePe ? pe.is64 : mgr->is64();
                 for ( const WatchDesc &d : kWatches )
                 {
-                    ea_t a = resolve_export_va(sym.get(), ml.base, is64, d.name);
+                    ea_t a = resolve_export_va(msttd_read_plain(sym.get()), ml.base, is64, d.name);
                     if ( a == BADADDR )
                         continue;
                     st.watched[a]     = &d;

@@ -17,6 +17,7 @@
 // loader itself never touches the debugger.
 // ---------------------------------------------------------------------------
 #include "common/pch.h"
+#include "debugger/msttd_guest.h"
 // idaldr.h's validate_array_count template trips C4018/C4267 at this project's
 // warning level. It is SDK code we do not control, so the warnings are silenced
 // around the include only -- our own code still compiles at Level3.
@@ -334,7 +335,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
 
     // ---- the recorded image's own headers --------------------------------
     GuestPeInfo pe;
-    bool havePe = read_guest_pe_info(cur.get(), mainBase, &pe);
+    bool havePe = read_guest_pe_info(msttd_read_plain(cur.get()), mainBase, &pe);
 
     // Bitness comes from the optional header magic. It must not come from the
     // engine's SystemInfo: that describes the recording machine, so a 32-bit
@@ -486,7 +487,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     // is bytes with no structure until the debugger attaches.
     if ( haveIndex && (neflags & NEF_MINI) == 0 )
     {
-        size_t named = apply_module_exports(cur.get(), mainBase, is64);
+        size_t named = apply_module_exports(msttd_read_plain(cur.get()), mainBase, is64);
         if ( named != 0 )
             msg("[ida-ttd] named %d export(s) of %s from the recording.\n",
                 (int)named, mainName.c_str());

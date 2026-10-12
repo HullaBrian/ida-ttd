@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "core/guest_view.h"
 
 namespace idattd
 {
@@ -13,7 +14,7 @@ namespace idattd
     // This is the offline-first symbol path: it works with no symbol server and
     // names every export. IDA's own PDB symbols (when available) apply on top and
     // add internal/non-exported names.
-    size_t apply_module_exports(TTD::Replay::ICursorView *cursor, ea_t base, bool is64);
+    size_t apply_module_exports(const GuestRead &cursor, ea_t base, bool is64);
 
     // Parse the x64 PE exception directory (.pdata / RUNTIME_FUNCTION table) of
     // the module at 'base' out of guest memory, returning the [start, end) address
@@ -21,7 +22,7 @@ namespace idattd
     // function boundaries of stripped system DLLs are recovered without symbols
     // (x64 unwinding requires this table) -- the same source WinDbg uses. Returns
     // the number of ranges; 'out' is sorted ascending. x64 only (returns 0 for x86).
-    size_t parse_pdata_functions(TTD::Replay::ICursorView *cursor, ea_t base, bool is64,
+    size_t parse_pdata_functions(const GuestRead &cursor, ea_t base, bool is64,
                                  std::vector<std::pair<ea_t, ea_t>> &out);
 
     // Same as parse_pdata_functions but reads the .pdata from the module's on-disk
@@ -94,7 +95,7 @@ namespace idattd
     // Bitness comes from the optional header magic. It deliberately does not come
     // from the engine's SystemInfo: that reports the recording machine, so a
     // 32-bit program recorded on an x64 box calls itself AMD64 there.
-    bool read_guest_pe_info(TTD::Replay::ICursorView *cursor, ea_t base, GuestPeInfo *out);
+    bool read_guest_pe_info(const GuestRead &cursor, ea_t base, GuestPeInfo *out);
 
     // Runtime address of one export of the module at 'base', read from the
     // module's own export directory in guest memory. BADADDR when the module is
@@ -103,7 +104,7 @@ namespace idattd
     //
     // This is the address-returning sibling of apply_module_exports, which walks
     // the same table but applies IDA names instead.
-    ea_t resolve_export_va(TTD::Replay::ICursorView *cursor, ea_t base, bool is64,
+    ea_t resolve_export_va(const GuestRead &cursor, ea_t base, bool is64,
                            const char *name);
 
     // Which PDB a module was built with, taken from the CodeView record in its
@@ -120,7 +121,7 @@ namespace idattd
     // Read the above out of guest memory for the module mapped at 'base'. The
     // cursor must be positioned where the module is loaded. False when the module
     // is unreadable there, has no debug directory, or carries no CodeView record.
-    bool read_guest_pdb_info(TTD::Replay::ICursorView *cursor, ea_t base,
+    bool read_guest_pdb_info(const GuestRead &cursor, ea_t base,
                              GuestPdbInfo *out);
 
     // Read the module file at 'path' into 'out' and parse its section map. Returns

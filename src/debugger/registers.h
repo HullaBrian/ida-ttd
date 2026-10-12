@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/pch.h"
+#include "abi/ida_ttd_backend.h"
 
 namespace idattd
 {
@@ -23,4 +24,8 @@ namespace idattd
     // 'values' must have register_count(is64) elements, matching the order of
     // the register table installed by configure_debugger().
     void fill_regvals(const CROSS_PLATFORM_CONTEXT &ctx, bool is64, regval_t *values);
+
+    // The same table filled from the ABI's canonical register set, which is
+    // what every backend produces. 'values' has register_count(is64) entries.
+    void fill_regvals(const ittd_regs &regs, bool is64, regval_t *values);
 }

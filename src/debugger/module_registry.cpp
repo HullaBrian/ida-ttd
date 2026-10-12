@@ -1,4 +1,5 @@
 #include "debugger/module_registry.h"
+#include "debugger/msttd_guest.h"
 #include "debugger/msttd_position.h"
 #include "common/trace_open.h"
 #include "common/symsrv.h"
@@ -330,7 +331,7 @@ namespace idattd
             return;
 
         m_symCursor->SetPosition(hit != nullptr ? hit->Position : TtdPosition::Min);
-        size_t named = apply_module_exports(m_symCursor.get(), base, m_is64);
+        size_t named = apply_module_exports(msttd_read_plain(m_symCursor.get()), base, m_is64);
 
         // Recover this module's function boundaries from its .pdata exception
         // table, so a whole function can be laid out (including code before the
@@ -351,7 +352,7 @@ namespace idattd
                            mrec != nullptr ? mrec->Checksum  : 0,
                            franges);
         if ( nfunc == 0 )
-            nfunc = parse_pdata_functions(m_symCursor.get(), base, m_is64, franges);
+            nfunc = parse_pdata_functions(msttd_read_plain(m_symCursor.get()), base, m_is64, franges);
         if ( nfunc > 0 )
             m_funcRanges[base] = std::move(franges);
 
@@ -539,7 +540,7 @@ namespace idattd
         if ( !m_symCursor )
             return false;
         m_symCursor->SetPosition(hit != nullptr ? hit->Position : TtdPosition::Min);
-        return read_guest_pdb_info(m_symCursor.get(), base, out);
+        return read_guest_pdb_info(msttd_read_plain(m_symCursor.get()), base, out);
     }
 
     //=======================================================================

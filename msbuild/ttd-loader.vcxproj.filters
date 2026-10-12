@@ -5,6 +5,9 @@
     <Filter Include="common">
       <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="debugger">
+      <UniqueIdentifier>{6F0FFD6B-7E1D-FCF3-D575-149FB25537B1}</UniqueIdentifier>
+    </Filter>
     <Filter Include="loader">
       <UniqueIdentifier>{C4DBC2E1-E8EC-1059-6718-19B92738A99C}</UniqueIdentifier>
     </Filter>
@@ -12,6 +15,9 @@
   <ItemGroup>
     <ClInclude Include="$(SrcDir)\common\pch.h">
       <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\msttd_guest.h">
+      <Filter>debugger</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\common\symbols.h">
       <Filter>common</Filter>
@@ -24,6 +30,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\debugger\msttd_guest.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\common\symbols.cpp">
       <Filter>common</Filter>
     </ClCompile>
