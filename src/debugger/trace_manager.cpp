@@ -552,6 +552,9 @@ namespace idattd
 
     ssize_t TraceManager::on_resume(debug_event_t *event)
     {
+        m_lastResume.sprnt("event %d, resume mode %d, %s, request %d",
+                           (int)event->eid(), (int)m_resumeMode,
+                           m_isForward ? "forward" : "backward", (int)m_pending.kind);
         // Only act when continuing from a stop (breakpoint or single step).
         if ( event->eid() != BREAKPOINT && event->eid() != STEP )
             return DRC_OK;

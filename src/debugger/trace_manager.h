@@ -54,6 +54,7 @@ namespace idattd
         ssize_t on_read_registers(thid_t tid, int clsmask, regval_t *values);
         ssize_t on_rebase_if_required_to(ea_t new_base);
         ssize_t on_resume(debug_event_t *event);
+        const qstring &last_resume() const { return m_lastResume; }
         ssize_t on_set_backwards(bool backwards);
         ssize_t on_set_resume_mode(thid_t tid, resume_mode_t resmod);
         ssize_t on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel);
@@ -198,6 +199,9 @@ namespace idattd
 
         bool          m_isForward = true;
         resume_mode_t m_resumeMode = RESMOD_NONE;
+        // What the last ev_resume carried, for the script API's 'state': which
+        // movement IDA actually asked for is otherwise invisible.
+        qstring       m_lastResume;
 
         // The edge of the recording a movement ran into, reported once the
         // stop is shown (a modal box inside ev_resume would be unsafe).

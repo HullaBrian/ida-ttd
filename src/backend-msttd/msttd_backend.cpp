@@ -514,7 +514,7 @@ namespace idattd
             auto it = stacks.find(tid);
             if ( it != stacks.end() )
                 for ( auto f = it->second.rbegin(); f != it->second.rend(); ++f )
-                    if ( f->sp > sp_at )
+                    if ( f->sp >= sp_at )
                     {
                         if ( entry != nullptr )
                             *entry = f->entry;

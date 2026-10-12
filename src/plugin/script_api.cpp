@@ -659,7 +659,8 @@ namespace idattd
            .boolean("actions_visible", g_plugin->actions_visible());
         if ( mgr().is_active() )
             out.str("pos", format_position(mgr().current_position())).hex("pc", mgr().current_pc_ea());
-        out.str("drv_backend", g_drv.backend != nullptr ? g_drv.backend->id() : "");
+        out.str("drv_backend", g_drv.backend != nullptr ? g_drv.backend->id() : "")
+           .str("last_resume", mgr().last_resume());
     }
 
     static void cmd_start(const Args &a, JObj &out)

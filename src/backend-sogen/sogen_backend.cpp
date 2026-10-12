@@ -784,14 +784,39 @@ namespace
         return ITTD_OK;
     }
 
+    // The stack pointer of the thread about to run after 'position', or
+    // nothing when the state there cannot be rebuilt.
+    std::optional<uint64_t> sp_at(ttd::trace &t, uint64_t position)
+    {
+        try
+        {
+            ttd::cpu_view view(t, position);
+            return view.cpu().reg<uint64_t>(x86_register::rsp);
+        }
+        catch ( const ttd::divergence_error & )
+        {
+            return std::nullopt;
+        }
+    }
+
     // The call that entered the frame thread 'tid' stands in at cursor
     // position 'pos'. Walk the thread's instructions backward from the one
     // about to run, counting returns in and calls out: the first call met at
     // depth zero entered this frame. Each step is a lookup in the thread's
     // runs, so a short walk is cheap enough for every stop.
+    //
+    // Not every call is matched by a ret: one whose callee leaves by a
+    // syscall, a context switch or an exception looks, walking back, exactly
+    // like the call that entered this frame. The difference is the stack: the
+    // entering call was made from a shallower frame, above the stack pointer
+    // here, and one of those is below it. So a call at depth zero is accepted
+    // only if its stack pointer was higher -- read just before it, where the
+    // thread about to run is certainly this one. That costs a cpu_view per
+    // candidate, and there is rarely more than one.
     std::optional<ttd::access_event> entering_call(ttd::trace &t, uint64_t pos, uint32_t tid,
                                                    uint64_t max_back)
     {
+        std::optional<uint64_t> here_sp = thread_after(t, pos) == tid ? sp_at(t, pos) : std::nullopt;
         uint64_t s = pos + 1;               // the instruction about to run
         int64_t depth = 0;
         for ( uint64_t n = 0; n < max_back; n++ )
@@ -807,7 +832,12 @@ namespace
             else if ( is_call_insn(*ev) )
             {
                 if ( depth == 0 )
-                    return ev;
+                {
+                    std::optional<uint64_t> call_sp = here_sp ? sp_at(t, ev->step - 1) : std::nullopt;
+                    if ( !here_sp || !call_sp || *call_sp > *here_sp )
+                        return ev;
+                    continue;               // a deeper call that never returned
+                }
                 depth--;
             }
         }

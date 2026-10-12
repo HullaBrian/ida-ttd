@@ -428,8 +428,10 @@ namespace idattd
         // Not every call is matched by a RET: one that leaves by a syscall, a
         // context switch or an exception stays open on the stack forever. The
         // call that entered this frame is the innermost open one made from a
-        // shallower frame -- above the stack pointer here. Anything at or
-        // below it is one of those deeper calls that never came back.
+        // shallower frame -- at or above the stack pointer here (at the
+        // callee's first instruction the two can be equal, depending on whether
+        // the engine reports the stack before or after the call's push).
+        // Anything below it is one of those deeper calls that never came back.
         const uint64_t here_sp = (uint64_t)cur()->GetStackPointer();
 
         show_wait_box("Looking for the call that entered this frame (Cancel to stop)...");
@@ -481,7 +483,7 @@ namespace idattd
             if ( it != stacks.end() )
             {
                 for ( auto o = it->second.rbegin(); o != it->second.rend(); ++o )
-                    if ( o->sp > here_sp )
+                    if ( o->sp >= here_sp )
                     {
                         out   = o->pos;
                         found = true;
