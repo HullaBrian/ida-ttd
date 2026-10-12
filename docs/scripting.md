@@ -63,13 +63,27 @@ machinery.
 | `state` | process state, whether a session is up, where |
 | `stop` | end the session |
 
+**`an.*`: the analyses**, inside a session, run by the same functions as their
+UI actions, so they show the same wait boxes and write the same things into the
+database. The scope is given here instead of in a dialog.
+
+| Command | |
+| --- | --- |
+| `an.search LO HI [rwx] [MAX]` | Search memory accesses |
+| `an.coverage LO HI [COLOR]` | measure coverage and colour what ran |
+| `an.callsites LO HI` | annotate indirect calls; lists the comments it wrote |
+| `an.trace EA [MAX]` | find all calls to a function, with arguments and return values |
+| `an.memmap [MAX]` | build the memory map; the regions as they stand at the playhead |
+
 `help` lists every command with its arguments, and `backends` lists the loaded
 backend DLLs.
 
 ## From the IDA MCP
 
 The MCP runs Python against a GUI database when IDA is open, and in a headless
-idalib worker otherwise. In either, either:
+idalib worker otherwise. Both work, and a debugger session starts in a headless
+worker too: `open_database` on a trace runs the loader, then `start` replays it.
+In either:
 
 ```python
 exec(open(r"C:\path\to\ida-ttd\scripts\ida_ttd.py").read())
@@ -80,3 +94,7 @@ call("state")
 `ensure_loaded()` loads `ida-ttd` from IDA's plugins directory when the worker
 has not. The plugin must be installed there, along with any backends in
 `plugins\ida-ttd-backends`.
+
+The MCP server can run on another machine than the one with the source: paths
+are the IDA machine's. A plain `idc.eval_idc('ttd("...")')` works without the
+helper module, since the plugin is loaded in the worker either way.

@@ -2,6 +2,11 @@
 #include "plugin/plugin.h"
 #include "core/backend_registry.h"
 #include "core/backend_module.h"
+#include "analysis/memsearch.h"
+#include "analysis/coverage.h"
+#include "analysis/callsites.h"
+#include "analysis/tracer.h"
+#include "analysis/memmap.h"
 
 #include <expr.hpp>
 
@@ -776,6 +781,130 @@ namespace idattd
         out.num("process_state", get_process_state());
     }
 
+    // ------------------------------------------------------------------ an.*
+    //
+    // The analyses, run inside the session exactly as their UI actions run
+    // them -- the same functions, the same wait boxes, the same writes into
+    // the database -- with the scope given here instead of in a dialog.
+
+    static uint8_t access_mask(const Args &a, size_t i)
+    {
+        qstring k = a.count() > i ? a.at(i) : qstring("rwx");
+        uint8_t m = 0;
+        if ( k.find('r') != qstring::npos ) m |= ACC_READ;
+        if ( k.find('w') != qstring::npos ) m |= ACC_WRITE;
+        if ( k.find('x') != qstring::npos ) m |= ACC_EXEC;
+        return m;
+    }
+
+    static void cmd_an_search(const Args &a, JObj &out)
+    {
+        need_session();
+        ea_t lo = (ea_t)a.u64(0), hi = (ea_t)a.u64(1);
+        uint64_t max = a.u64_or(3, 200);
+        std::vector<MemAccess> v;
+        bool truncated = false, cancelled = false;
+        if ( !search_memory(&mgr(), lo, hi, access_mask(a, 2), &v, &truncated, &cancelled) )
+            fail("the search did not run");
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.str("pos", format_position(v[i].pos)).hex("pc", v[i].pc).hex("addr", v[i].addr)
+             .num("size", v[i].size).num("tid", v[i].tid).str("kind", access_name(v[i].kind));
+            arr.add(o.done());
+        }
+        out.boolean("truncated", truncated).boolean("cancelled", cancelled)
+           .num("count", (int64_t)v.size()).raw("accesses", arr.done());
+    }
+
+    static void cmd_an_coverage(const Args &a, JObj &out)
+    {
+        need_session();
+        CoverageResult r;
+        bgcolor_t color = (bgcolor_t)a.u64_or(2, 0xC0F0C0);
+        if ( !run_coverage(&mgr(), { { (ea_t)a.u64(0), (ea_t)a.u64(1) } }, color, &r) )
+            fail("coverage did not run");
+        out.num("executed", (int64_t)r.executed).num("colored", (int64_t)r.colored)
+           .num("undefined", (int64_t)r.undefined).boolean("cancelled", r.cancelled);
+    }
+
+    static void cmd_an_callsites(const Args &a, JObj &out)
+    {
+        need_session();
+        ea_t lo = (ea_t)a.u64(0), hi = (ea_t)a.u64(1);
+        CallSiteResult r;
+        if ( !annotate_indirect_calls(&mgr(), { { lo, hi } }, &r) )
+            fail("the call site sweep did not run");
+        // What it wrote: the repeatable comment at each annotated site.
+        JArr arr;
+        for ( ea_t ea = lo; ea < hi && ea != BADADDR && arr.size() < 64; ea = next_head(ea, hi) )
+        {
+            qstring cmt;
+            if ( get_cmt(&cmt, ea, true) > 0 && strncmp(cmt.c_str(), "TTD:", 4) == 0 )
+            {
+                JObj o;
+                o.hex("site", ea).str("comment", cmt);
+                arr.add(o.done());
+            }
+        }
+        out.num("sites", (int64_t)r.sites).num("targets", (int64_t)r.targets)
+           .num("polymorphic", (int64_t)r.polymorphic).num("undefined", (int64_t)r.undefined)
+           .boolean("truncated", r.truncated).boolean("cancelled", r.cancelled)
+           .raw("annotated", arr.done());
+    }
+
+    static void cmd_an_trace(const Args &a, JObj &out)
+    {
+        need_session();
+        FunctionTracer &tr = g_plugin->tracer();
+        uint64_t max = a.u64_or(1, 40);
+        tr.reset();
+        tr.add_func((ea_t)a.u64(0));
+        tr.run_sweep();
+        std::vector<FunctionInvocation> v = tr.snapshot_events();
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JArr args;
+            for ( const qstring &s : v[i].args )
+            {
+                qstring q;
+                json_escape(&q, s.c_str());
+                args.add(q);
+            }
+            JObj o;
+            o.hex("func", v[i].func_ea).str("pos", format_position(v[i].pos))
+             .str("end", v[i].has_ret ? format_position(v[i].end_pos) : qstring())
+             .num("tid", v[i].tid).raw("args", args.done()).str("ret", v[i].retval);
+            arr.add(o.done());
+        }
+        out.num("count", (int64_t)v.size()).raw("calls", arr.done());
+    }
+
+    static void cmd_an_memmap(const Args &a, JObj &out)
+    {
+        need_session();
+        uint64_t max = a.u64_or(0, 40);
+        MemoryMap mm;
+        bool cancelled = false;
+        if ( !build_memory_map(&mgr(), &mm, &cancelled) )
+            fail("the memory map was not built");
+        // The regions as they stand at the playhead.
+        std::vector<Region> regions;
+        mm.state_at(mgr().current_position(), regions);
+        JArr arr;
+        for ( size_t i = 0; i < regions.size() && i < max; i++ )
+        {
+            JObj o;
+            o.hex("base", regions[i].base).hex("size", (ea_t)regions[i].size)
+             .hex("protect", regions[i].protect).str("origin", change_name(regions[i].origin));
+            arr.add(o.done());
+        }
+        out.num("changes", (int64_t)mm.size()).boolean("cancelled", cancelled)
+           .num("regions", (int64_t)regions.size()).raw("at_playhead", arr.done());
+    }
+
     // ------------------------------------------------------------------ dispatch
 
     using Handler = void (*)(const Args &, JObj &);
@@ -805,6 +934,11 @@ namespace idattd
         { "read",           cmd_read,           "EA [SIZE] debugger memory, as IDA reads it" },
         { "segments",       cmd_segments,       "[MAX] the segments, debugger ones included" },
         { "stop",           cmd_stop,           "end the session" },
+        { "an.search",      cmd_an_search,      "LO HI [rwx] [MAX] memory search, as the dialog runs it" },
+        { "an.coverage",    cmd_an_coverage,    "LO HI [COLOR] measure and colour execution coverage" },
+        { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },
+        { "an.trace",       cmd_an_trace,       "EA [MAX] find all calls to a function, with arguments" },
+        { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },
