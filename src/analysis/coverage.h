@@ -6,10 +6,12 @@ namespace idattd
 {
     class TraceManager;
 
-    // Default background colour for executed instructions, suiting IDA's dark
-    // theme. The shade is configurable per database because IDA exposes no way
-    // to ask whether the current theme is light or dark.
-    static const bgcolor_t COVERAGE_DEFAULT_COLOR = 0x2D5A2D;
+    // Default background colour for executed instructions: #584848, a muted
+    // red-brown that reads well on IDA's default dark theme without drowning
+    // the listing's syntax colours. bgcolor_t is 0xBBGGRR. The shade is
+    // configurable per database because IDA exposes no way to ask whether the
+    // current theme is light or dark.
+    static const bgcolor_t COVERAGE_DEFAULT_COLOR = 0x484858;
 
     // The colour this database was last painted with (the default if never).
     bgcolor_t coverage_color();

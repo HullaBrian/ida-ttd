@@ -838,7 +838,7 @@ namespace idattd
     {
         need_session();
         CoverageResult r;
-        bgcolor_t color = (bgcolor_t)a.u64_or(2, 0xC0F0C0);
+        bgcolor_t color = (bgcolor_t)a.u64_or(2, COVERAGE_DEFAULT_COLOR);
         if ( !run_coverage(&mgr(), { { (ea_t)a.u64(0), (ea_t)a.u64(1) } }, color, &r) )
             fail("coverage did not run");
         out.num("executed", (int64_t)r.executed).num("colored", (int64_t)r.colored)
