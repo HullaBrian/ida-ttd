@@ -622,9 +622,11 @@ namespace idattd
         auto threads_before = snapshot_threads();
         auto mods_before    = snapshot_modules();
 
-        uint64_t start_sp = (uint64_t)m_cursor->GetStackPointer();
-        uint32_t utid     = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
-        bool hit_bpt = false;
+        TtdPosition start_pos = m_cursor->GetPosition();
+        uint64_t    start_sp  = (uint64_t)m_cursor->GetStackPointer();
+        uint32_t    utid      = (uint32_t)m_cursor->GetThreadInfo().UniqueId;
+        bool hit_bpt  = false;
+        bool boundary = false;      // ran out of recording rather than unwinding
 
         // Both of these can run for a long time: stepping over a call that never
         // returns (exception, longjmp, ExitThread) replays to the END of the
@@ -655,9 +657,16 @@ namespace idattd
 
             if ( is_call )
             {
-                RunStop oc = run_to_addr_guarded((ea_t)((uint64_t)pc + len), start_sp, utid);
+                // The guard belongs to THIS call, not to the frame being stepped
+                // out of. By the time a nested call is reached the stack has
+                // grown down past that frame's entry level, so guarding on
+                // start_sp would reject the very return being waited for and
+                // replay to the end of the recording instead. For a step-over
+                // the two are the same value, which is why only step-out broke.
+                uint64_t call_sp = (uint64_t)m_cursor->GetStackPointer();
+                RunStop oc = run_to_addr_guarded((ea_t)((uint64_t)pc + len), call_sp, utid);
                 if ( oc == RunStop::Breakpoint ) { hit_bpt = true; break; }
-                if ( oc == RunStop::TraceBoundary ) break;
+                if ( oc == RunStop::TraceBoundary ) { boundary = true; break; }
             }
             else
             {
@@ -666,7 +675,10 @@ namespace idattd
                 if ( r.StopReason == EventType::Position
                   || r.StopReason == EventType::Process
                   || r.StopReason == EventType::Error )
+                {
+                    boundary = true;
                     break;
+                }
             }
 
             if ( !step_out )
@@ -675,6 +687,18 @@ namespace idattd
                 break;                                  // step-out: frame has returned
         }
         hide_wait_box();
+
+        // The recording ran out before the frame unwound: the thread exited
+        // inside it, or the call it was in never returned. The end of the
+        // recording is not an answer to "step out", so stay where we were.
+        if ( step_out && boundary
+          && (uint64_t)m_cursor->GetStackPointer() <= start_sp )
+        {
+            m_cursor->SetPosition(start_pos);
+            m_pendingNotice = "This frame does not return anywhere in the "
+                              "recording, so there is nothing to step out to.\n\n"
+                              "The position has been left where it was.";
+        }
 
         auto threads_after = snapshot_threads();
         auto mods_after    = snapshot_modules();

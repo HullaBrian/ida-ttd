@@ -39,7 +39,7 @@ namespace idattd
         // The same map, for a caller about to change it. Taking it invalidates
         // the fold cached for the current position, which any change makes
         // stale -- doing it here means no call site can forget.
-        MemoryMap &map_for_update() { m_foldValid = false; return m_map; }
+        MemoryMap &map_for_update() { m_foldValid = false; m_foldConst = false; return m_map; }
 
         // ev_get_memory_info: the layout at 'playhead''s position, or DRC_NOCHG
         // when it is the one IDA already has.
@@ -64,8 +64,14 @@ namespace idattd
 
         // The layout folded for one position, so a stop that asks for it twice
         // folds once.
+        //
+        // m_foldConst records that the fold cannot vary with the position at
+        // all, which is the case whenever no memory map has been built: the
+        // modules come from the whole recording rather than the position. The
+        // whole session then reuses one fold.
         mutable meminfo_vec_t         m_foldLayout;
         mutable TTD::Replay::Position m_foldPos;
         mutable bool                  m_foldValid = false;
+        mutable bool                  m_foldConst = false;
     };
 }

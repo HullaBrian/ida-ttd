@@ -21,6 +21,7 @@ namespace idattd
         m_haveLayout = false;
         m_foldLayout.qclear();
         m_foldValid  = false;
+        m_foldConst  = false;
     }
 
     void SegmentLayout::build(ICursorView *playhead, meminfo_vec_t *out) const
@@ -35,7 +36,7 @@ namespace idattd
 
         TtdPosition now = playhead != nullptr ? playhead->GetPosition()
                                                       : TtdPosition::Invalid;
-        if ( m_foldValid && now == m_foldPos )
+        if ( m_foldValid && (m_foldConst || now == m_foldPos) )
         {
             *out = m_foldLayout;
             return;
@@ -56,6 +57,12 @@ namespace idattd
         std::vector<Named> named;
 
         // ---- the regions the recording built ------------------------------
+        //
+        // A region inside a module is skipped: the module already has a segment,
+        // and splitting it would make IDA rebuild that segment and discard the
+        // code defined in it. What the map adds that a module cannot is the
+        // memory a module does not cover, which is where an RWX allocation or a
+        // manually mapped payload lives.
         std::vector<Region> regs;
         if ( !m_map.empty() && playhead != nullptr )
             m_map.state_at(to_core(now), regs);
@@ -66,56 +73,51 @@ namespace idattd
             ea_t hi = r.end() > HI ? HI : (ea_t)r.end();
             if ( hi <= lo )
                 continue;
+            ea_t mlo = 0, mhi = 0;
+            if ( m_modules->range_at(lo, mlo, mhi) )
+                continue;
+
             uchar perm = protection_perm(r.protect);
             Named nm;
             nm.lo   = lo;
             nm.hi   = hi;
             nm.perm = perm;
-            // Name it after the module it belongs to when it belongs to one --
-            // a mapped view of kernel32 reads far better as "kernel32_dll" than
-            // as "view_7FFA...". The address is kept as a suffix because one
-            // module can hold several regions with different protections once a
-            // VirtualProtect has split it.
-            qstring mod = m_modules->ident_at(lo);
-            if ( !mod.empty() )
-                nm.name.sprnt("%s_%a", mod.c_str(), lo);
-            else
-                nm.name.sprnt("%s_%a",
-                              r.origin == RC_MAPVIEW ? "view"
-                            : r.origin == RC_PROTECT ? "prot" : "alloc", lo);
+            nm.name.sprnt("%s_%a",
+                          r.origin == RC_MAPVIEW ? "view"
+                        : r.origin == RC_PROTECT ? "prot" : "alloc", lo);
             nm.sclass = (perm & SEGPERM_EXEC) != 0 ? "CODE" : "DATA";
             named.push_back(nm);
         }
         std::sort(named.begin(), named.end());
         size_t nregions = named.size();
 
-        // ---- the modules mapped at this position --------------------------
+        // ---- every module the recording ever loaded -----------------------
         //
-        // Without these every module falls into the generic filler below, so a
-        // function in kernelbase reads as being in a segment called "TTD". The
-        // recording knows exactly where each module is; there is no reason to
-        // make the user guess.
+        // Without these a function in kernelbase reads as being in a segment
+        // called "TTD", because everything unnamed falls into the filler below.
         //
-        // Read and execute, not read/write/execute: we do not track a module's
-        // per-section protections, and marking every module writable would bury
-        // the RWX allocations this whole feature exists to make visible.
-        if ( playhead != nullptr )
+        // Taken from the module registry, which lists every module across the
+        // whole recording, NOT from the playhead, which lists only those mapped
+        // right now. That difference matters more than the extra entries cost:
+        // IDA rebuilds its debugger segments whenever this layout changes, and
+        // rebuilding one discards the code it had defined there. A per-position
+        // list changes on every module load, so stepping through startup would
+        // repeatedly throw away the disassembly it had just produced.
+        //
+        // Read and execute, not read/write/execute: per-section protections are
+        // not tracked, and marking every module writable would bury the RWX
+        // allocations this feature exists to make visible.
         {
-            size_t n = playhead->GetModuleCount();
-            const ModuleInstance *list = playhead->GetModuleList();
-            for ( size_t i = 0; i < n; i++ )
+            for ( const ModuleRegistry::Span &sp : m_modules->spans() )
             {
-                const Module *m = list[i].pModule;
-                if ( m == nullptr )
-                    continue;
-                ea_t mlo = (ea_t)(uint64_t)m->Address;
-                ea_t mhi = mlo + (ea_t)m->Size;
+                ea_t mlo = sp.base;
+                ea_t mhi = sp.end;
                 if ( mlo < LO ) mlo = LO;
                 if ( mhi > HI ) mhi = HI;
                 if ( mhi <= mlo )
                     continue;
 
-                qstring ident = m_modules->ident_at(mlo);
+                qstring ident = sp.ident;
                 if ( ident.empty() )
                     ident.sprnt("mod_%a", mlo);
 
@@ -124,22 +126,28 @@ namespace idattd
                 ea_t cur = mlo;
                 for ( size_t k = 0; k < nregions && cur < mhi; k++ )
                 {
-                    const Named &r = named[k];
-                    if ( r.hi <= cur )
+                    // Copy the bounds rather than hold a reference: the push_back
+                    // below appends to this same vector, and a reallocation there
+                    // would leave the reference pointing at freed memory. Reading
+                    // a garbage end through it left the rest of the module unnamed,
+                    // so a DLL showed up as its header followed by unnamed filler.
+                    ea_t rlo = named[k].lo;
+                    ea_t rhi = named[k].hi;
+                    if ( rhi <= cur )
                         continue;
-                    if ( r.lo >= mhi )
+                    if ( rlo >= mhi )
                         break;
-                    if ( r.lo > cur )
+                    if ( rlo > cur )
                     {
                         Named nm;
                         nm.lo     = cur;
-                        nm.hi     = r.lo;
+                        nm.hi     = rlo;
                         nm.name   = ident;
                         nm.sclass = "CODE";
                         nm.perm   = SEGPERM_READ | SEGPERM_EXEC;
                         named.push_back(nm);
                     }
-                    cur = r.hi > cur ? r.hi : cur;
+                    cur = rhi > cur ? rhi : cur;
                 }
                 if ( cur < mhi )
                 {
@@ -203,6 +211,10 @@ namespace idattd
         m_foldLayout = *out;
         m_foldPos    = now;
         m_foldValid  = true;
+        // Only the regions vary with the position, and with no map there are
+        // none. Changing the map goes through map_for_update(), which drops the
+        // fold.
+        m_foldConst  = m_map.empty();
     }
 
     ssize_t SegmentLayout::on_get_memory_info(ICursorView *playhead, meminfo_vec_t *ranges)
@@ -215,6 +227,13 @@ namespace idattd
         if ( m_haveLayout && layout == m_lastLayout )
             return DRC_NOCHG;
 
+        // Worth saying out loud: IDA rebuilds every debugger segment when the
+        // layout changes, and rebuilding one discards the code defined in it.
+        // A run of these lines is the explanation for disassembly disappearing.
+        if ( m_haveLayout )
+            msg("[ida-ttd] memory layout changed (%d ranges); IDA is rebuilding "
+                "its debugger segments.\n", (int)layout.size());
+
         m_lastLayout = layout;
         m_haveLayout = true;
         *ranges = layout;
@@ -223,9 +242,9 @@ namespace idattd
 
     void SegmentLayout::refresh(ICursorView *playhead)
     {
-        // The layout is no longer a constant even without a memory map: it
-        // names the modules mapped at the current position, and time travel can
-        // cross a module load or unload.
+        // Without a memory map the layout is the same at every position (the
+        // modules come from the whole recording) and build() answers from its
+        // cache. With one, time travel can cross an allocation or a free.
         if ( !m_haveLayout )
             return;
         meminfo_vec_t now;

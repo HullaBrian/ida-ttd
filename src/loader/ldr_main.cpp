@@ -110,7 +110,7 @@ static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const c
 //
 // TTD only records memory that was actually touched, and QueryMemoryBuffer
 // returns only the contiguous run that begins exactly at the address asked for
-// -- it does not skip holes -- so a hole is stepped over a page at a time rather
+// -- it does not skip holes -- so a hole is stepped over in small steps rather
 // than ending the copy.
 //
 // A non-zero result also does not mean the bytes are real. For a page the engine
@@ -120,43 +120,70 @@ static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const c
 // so an all-zero page is confirmed against it before being kept.
 static size_t fill_from_trace(ICursorView *cur, ea_t lo, ea_t hi)
 {
-    static const size_t PAGE = 0x1000;
-    uint8_t page[PAGE];
+    static const size_t PAGE  = 0x1000;
+    static const size_t GRAIN = 0x40;    // retry step inside an unreadable page
+    uint8_t buf[PAGE];
     uint8_t probe[PAGE];
     size_t  total = 0;
 
-    for ( ea_t a = lo; a < hi; a += PAGE )
+    // Copy one run that starts exactly at 'a', or return 0 if nothing does.
+    auto copy_run = [&](ea_t a, size_t want) -> size_t
     {
-        size_t want = (size_t)qmin((uint64_t)PAGE, (uint64_t)(hi - a));
-
         MemoryBuffer mb = cur->QueryMemoryBuffer(
-            GuestAddress{ (uint64_t)a }, BufferView{ page, want },
+            GuestAddress{ (uint64_t)a }, BufferView{ buf, want },
             QueryMemoryPolicy::GloballyAggressive);
         size_t got = mb.Memory.Size;
         if ( got == 0 )
-            continue;                       // nothing here at all
+            return 0;
 
         bool all_zero = true;
         for ( size_t k = 0; k < got; k++ )
-            if ( page[k] != 0 )
+            if ( buf[k] != 0 )
             {
                 all_zero = false;
                 break;
             }
-
         if ( all_zero )
         {
             // Either a recorded run of zeros or the engine's "this page exists,
-            // here is zero" placeholder. Only ThreadLocal can tell them apart.
+            // here is zero" placeholder. Only ThreadLocal tells them apart.
             MemoryBuffer tl = cur->QueryMemoryBuffer(
                 GuestAddress{ (uint64_t)a }, BufferView{ probe, got },
                 QueryMemoryPolicy::ThreadLocal);
             if ( tl.Memory.Size == 0 )
-                continue;                   // placeholder: leave it out
+                return 0;
+        }
+        mem2base(buf, a, a + got, -1);   // -1: these bytes have no file offset
+        return got;
+    };
+
+    ea_t a = lo;
+    while ( a < hi )
+    {
+        size_t want = (size_t)qmin((uint64_t)PAGE, (uint64_t)(hi - a));
+        size_t got  = copy_run(a, want);
+        if ( got != 0 )
+        {
+            total += got;
+            a += got;
+            continue;
         }
 
-        mem2base(page, a, a + got, -1);     // -1: these bytes have no file offset
-        total += got;
+        // QueryMemoryBuffer only returns the run beginning exactly at the
+        // address asked for, so an unrecorded first byte hides everything
+        // behind it. Step through the page rather than write off the whole of
+        // it: the recorded part of a page is often most of it.
+        ea_t page_end = a + want;
+        for ( a += GRAIN; a < page_end; a += GRAIN )
+        {
+            size_t sub = copy_run(a, (size_t)qmin((uint64_t)GRAIN, (uint64_t)(page_end - a)));
+            if ( sub != 0 )
+            {
+                total += sub;
+                a += sub - GRAIN;   // the loop step adds GRAIN back
+            }
+        }
+        a = page_end;
     }
     return total;
 }
