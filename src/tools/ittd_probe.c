@@ -1,0 +1,375 @@
+/*
+ * ittd-probe: load an ida-ttd backend DLL and exercise it against a recording,
+ * with no IDA involved.
+ *
+ *   ittd-probe BACKEND.dll TRACE [EXPORT]
+ *
+ * Prints what the backend reports, and checks the promises the ABI makes about
+ * positions -- the part a wrong answer to is silent in the UI (a register view
+ * one instruction off):
+ *
+ *   - at an access's position, the program counter is the instruction that did
+ *     it;
+ *   - at a call's pos the PC is the call site, at entry_pos the target, and at
+ *     ret_pos it is back in the caller just past the site;
+ *   - a forward step moves the position by one.
+ *
+ * EXPORT (default RtlAllocateHeap) is the function whose calls are listed.
+ *
+ * Written in C on purpose: it is also the check that abi/ida_ttd_backend.h is
+ * the plain C it says it is.
+ */
+
+#include <abi/ida_ttd_backend.h>
+
+#include <windows.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const ittd_backend_api *api;
+static ittd_backend *B;
+static int failures;
+
+static double now_ms(void)
+{
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER t;
+    if ( freq.QuadPart == 0 )
+        QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&t);
+    return (double)t.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
+static void check(int ok, const char *what)
+{
+    printf("  [%s] %s\n", ok ? "ok" : "FAIL", what);
+    if ( !ok )
+        failures++;
+}
+
+static const char *pos_text(ittd_position p)
+{
+    static char buf[4][64];
+    static int k;
+    char *b = buf[k++ & 3];
+    if ( api->format_position != NULL )
+        api->format_position(B, p, b, sizeof(buf[0]));
+    else
+        snprintf(b, sizeof(buf[0]), "%llx:%llx", (unsigned long long)p.hi, (unsigned long long)p.lo);
+    return b;
+}
+
+static int is_none(ittd_position p) { return p.hi == UINT64_MAX && p.lo == UINT64_MAX; }
+
+static uint64_t rip_at(ittd_cursor *c, ittd_position p)
+{
+    ittd_regs r;
+    static int reported;
+    if ( api->cursor_seek(c, p) != ITTD_OK || api->cursor_regs(c, &r) != ITTD_OK
+      || (r.have & ITTD_REGS_GP) == 0 )
+    {
+        if ( !reported++ )
+            printf("    (no registers at %s: %s)\n", pos_text(p), api->last_error(B));
+        return ITTD_BADADDR;
+    }
+    return r.gp[ITTD_REG_RIP];
+}
+
+/* Count-then-fill into a fresh array of 'size'-byte elements. */
+static void *query_all(int (*count_fill)(void *buf, size_t cap, size_t *n), size_t size, size_t *n)
+{
+    void *buf;
+    *n = 0;
+    if ( count_fill(NULL, 0, n) != ITTD_OK )
+        return NULL;
+    buf = calloc(*n ? *n : 1, size);
+    if ( buf != NULL && count_fill(buf, *n, n) != ITTD_OK )
+    {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
+static int f_modules(void *b, size_t cap, size_t *n) { return api->modules(B, (ittd_module *)b, cap, n); }
+static int f_threads(void *b, size_t cap, size_t *n) { return api->threads(B, (ittd_thread *)b, cap, n); }
+static int f_timeline(void *b, size_t cap, size_t *n) { return api->timeline(B, (ittd_trace_event *)b, cap, n); }
+
+static uint64_t g_symbase;
+static int f_symbols(void *b, size_t cap, size_t *n) { return api->module_symbols(B, g_symbase, (ittd_symbol *)b, cap, n); }
+
+int main(int argc, char **argv)
+{
+    const char *want = argc > 3 ? argv[3] : "RtlAllocateHeap";
+    HMODULE dll;
+    ittd_entry_point entry;
+    ittd_trace_info info;
+    ittd_module *mods;
+    ittd_thread *thr;
+    ittd_trace_event *tl;
+    ittd_cursor *c;
+    size_t nmods = 0, nthr = 0, ntl = 0, i;
+    uint64_t target = ITTD_BADADDR;
+    double t0;
+
+    if ( argc < 3 )
+    {
+        fprintf(stderr, "usage: ittd-probe BACKEND.dll TRACE [EXPORT]\n");
+        return 2;
+    }
+
+    dll = LoadLibraryA(argv[1]);
+    if ( dll == NULL )
+    {
+        fprintf(stderr, "could not load %s (error %lu)\n", argv[1], GetLastError());
+        return 1;
+    }
+    entry = (ittd_entry_point)GetProcAddress(dll, ITTD_ENTRY_POINT_NAME);
+    api = entry != NULL ? entry(ITTD_ABI_VERSION) : NULL;
+    if ( api == NULL )
+    {
+        fprintf(stderr, "%s does not speak ABI version %u\n", argv[1], ITTD_ABI_VERSION);
+        return 1;
+    }
+    printf("backend: %s (%s), filter \"%s\"\n", api->id(), api->display_name(), api->file_filter());
+    printf("can_open: %d\n", api->can_open(argv[2]));
+
+    t0 = now_ms();
+    B = api->open(argv[2]);
+    if ( B == NULL )
+    {
+        fprintf(stderr, "open failed: %s\n", api->last_error(NULL));
+        return 1;
+    }
+    printf("open: %.1f ms\n", now_ms() - t0);
+
+    api->info(B, &info);
+    printf("info: %s, %s, %d-bit, positions %s..%s, fingerprint %016llx, caps 0x%x\n",
+           info.backend_name, info.main_module, info.is64 ? 64 : 32,
+           pos_text(info.first), pos_text(info.last),
+           (unsigned long long)info.fingerprint, info.capabilities);
+
+    /* ---- modules, threads, timeline ---------------------------------- */
+    mods = (ittd_module *)query_all(f_modules, sizeof(ittd_module), &nmods);
+    printf("modules: %zu\n", nmods);
+    for ( i = 0; i < nmods && i < 8; i++ )
+        printf("  %016llx %8llx machine %04x  %s\n", (unsigned long long)mods[i].base,
+               (unsigned long long)mods[i].size, mods[i].machine, mods[i].name);
+
+    thr = (ittd_thread *)query_all(f_threads, sizeof(ittd_thread), &nthr);
+    printf("threads: %zu\n", nthr);
+    for ( i = 0; i < nthr && i < 6; i++ )
+        printf("  tid %u  %s..%s  teb %llx  stack %llx..%llx  %s\n", thr[i].tid,
+               pos_text(thr[i].created), pos_text(thr[i].exited),
+               (unsigned long long)thr[i].teb, (unsigned long long)thr[i].stack_limit,
+               (unsigned long long)thr[i].stack_base, thr[i].name);
+
+    t0 = now_ms();
+    tl = (ittd_trace_event *)query_all(f_timeline, sizeof(ittd_trace_event), &ntl);
+    printf("timeline: %zu event(s) in %.1f ms\n", ntl, now_ms() - t0);
+    for ( i = 0; i < ntl && i < 5; i++ )
+        printf("  %s  %s\n", pos_text(tl[i].pos), tl[i].text);
+
+    /* ---- the export whose calls we list --------------------------------- */
+    for ( i = 0; i < nmods && target == ITTD_BADADDR; i++ )
+    {
+        size_t ns = 0, k;
+        ittd_symbol *syms;
+        g_symbase = mods[i].base;
+        syms = (ittd_symbol *)query_all(f_symbols, sizeof(ittd_symbol), &ns);
+        for ( k = 0; syms != NULL && k < ns; k++ )
+            if ( strcmp(syms[k].name, want) == 0 )
+            {
+                target = syms[k].ea;
+                printf("export %s!%s at %llx (%zu exports in the module)\n",
+                       mods[i].name, want, (unsigned long long)target, ns);
+                break;
+            }
+        free(syms);
+    }
+
+    c = api->cursor_open(B);
+    if ( c == NULL )
+    {
+        fprintf(stderr, "cursor_open failed: %s\n", api->last_error(B));
+        return 1;
+    }
+
+    /* ---- positions and registers ------------------------------------------ */
+    printf("\npositions\n");
+    {
+        ittd_position mid = info.last, here;
+        ittd_regs r;
+        uint32_t tid = 0;
+        int stop = -1;
+        uint8_t bytes[16], known[16];
+        size_t nk = 0;
+
+        mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+        t0 = now_ms();
+        check(api->cursor_seek(c, mid) == ITTD_OK, "seek to the middle");
+        memset(&r, 0, sizeof(r));
+        if ( api->cursor_regs(c, &r) != ITTD_OK )
+            printf("  registers: %s\n", api->last_error(B));
+        check((r.have & ITTD_REGS_GP) != 0, "registers there");
+        printf("  regs at %s: %.1f ms, rip %llx rsp %llx\n", pos_text(mid), now_ms() - t0,
+               (unsigned long long)r.gp[ITTD_REG_RIP], (unsigned long long)r.gp[ITTD_REG_RSP]);
+        api->cursor_thread(c, &tid);
+        printf("  thread %u\n", tid);
+
+        t0 = now_ms();
+        memset(bytes, 0, sizeof(bytes));
+        api->cursor_read_memory(c, r.gp[ITTD_REG_RIP], bytes, known, sizeof(bytes), &nk);
+        printf("  16 bytes at rip, %zu known, %.1f ms:", nk, now_ms() - t0);
+        for ( i = 0; i < 16; i++ )
+            printf(known[i] ? " %02x" : " ??", bytes[i]);
+        printf("\n");
+        check(nk > 0, "the instruction at rip is readable");
+
+        /* The access at this position must be done by the instruction at rip. */
+        {
+            ittd_access acc[8];
+            size_t n = 0;
+            int trunc = 0;
+            ittd_position_range when;
+            when.first = mid;
+            when.last  = mid;
+            /* the position just before an instruction runs, to the one after it */
+            when.last.lo = mid.lo + 1;
+            api->query_accesses(B, r.gp[ITTD_REG_RIP], r.gp[ITTD_REG_RIP] + 1, ITTD_ACCESS_EXEC,
+                                when, acc, 8, &n, &trunc, NULL);
+            check(n >= 1 && acc[0].pc == r.gp[ITTD_REG_RIP] && acc[0].pos.lo == mid.lo,
+                  "the execute event of the instruction at rip is at this position");
+        }
+
+        api->nav_step(c, 1, &stop);
+        api->cursor_position(c, &here);
+        check(here.lo == mid.lo + 1 && stop == ITTD_STOP_STEPPED, "a forward step moves one position");
+        api->nav_step(c, 0, &stop);
+        api->cursor_position(c, &here);
+        check(here.lo == mid.lo, "and a backward step moves back");
+
+        /* run to the instruction at rip again, from just past it */
+        api->nav_step(c, 1, &stop);
+        t0 = now_ms();
+        api->nav_run_to(c, r.gp[ITTD_REG_RIP], 0, &stop);
+        api->cursor_position(c, &here);
+        printf("  run back to rip: stop %d at %s, %.1f ms\n", stop, pos_text(here), now_ms() - t0);
+        check(here.lo == mid.lo && stop == ITTD_STOP_STEPPED, "running backward to rip lands on this position");
+    }
+
+    /* ---- calls -------------------------------------------------------------- */
+    if ( target != ITTD_BADADDR )
+    {
+        ittd_position_range all;
+        ittd_call *calls;
+        size_t n = 0, with_ret = 0, k;
+        int trunc = 0;
+        all.first.hi = 0; all.first.lo = 0;
+        all.last.hi = UINT64_MAX; all.last.lo = UINT64_MAX - 1;
+
+        printf("\ncalls to %s\n", want);
+        t0 = now_ms();
+        api->query_calls(B, &target, 1, all, NULL, 0, &n, &trunc, NULL);
+        calls = (ittd_call *)calloc(n ? n : 1, sizeof(ittd_call));
+        api->query_calls(B, &target, 1, all, calls, n, &n, &trunc, NULL);
+        for ( k = 0; k < n; k++ )
+            if ( !is_none(calls[k].ret_pos) )
+                with_ret++;
+        printf("  %zu call(s), %zu with a return, %.1f ms\n", n, with_ret, now_ms() - t0);
+
+        for ( k = 0; k < n && k < 3; k++ )
+        {
+            ittd_call *e = &calls[k];
+            uint64_t at_pos = is_none(e->pos) ? ITTD_BADADDR : rip_at(c, e->pos);
+            uint64_t at_entry = rip_at(c, e->entry_pos);
+            uint64_t at_ret = is_none(e->ret_pos) ? ITTD_BADADDR : rip_at(c, e->ret_pos);
+            ittd_regs r;
+            printf("  #%zu tid %u site %llx pos %s entry %s ret %s%s\n", k, e->tid,
+                   (unsigned long long)e->site, pos_text(e->pos), pos_text(e->entry_pos),
+                   pos_text(e->ret_pos), (e->flags & ITTD_CALL_F_NOT_CALL) ? " (jump)" : "");
+            if ( !is_none(e->pos) )
+                check(at_pos == e->site, "  rip at pos is the call site");
+            check(at_entry == e->target, "  rip at entry_pos is the target");
+            if ( !is_none(e->ret_pos) )
+            {
+                check(at_ret > e->site && at_ret <= e->site + 15, "  rip at ret_pos is just past the site");
+                if ( at_ret != ITTD_BADADDR && api->cursor_regs(c, &r) == ITTD_OK )
+                    printf("    returned rax %llx\n", (unsigned long long)r.gp[ITTD_REG_RAX]);
+            }
+        }
+
+        /* the batch form, against the cursor's answers */
+        if ( api->regs_at != NULL && n > 0 )
+        {
+            size_t m = n < 200 ? n : 200, ok = 0;
+            ittd_position *ps = (ittd_position *)calloc(m, sizeof(ittd_position));
+            ittd_regs *rs = (ittd_regs *)calloc(m, sizeof(ittd_regs));
+            for ( k = 0; k < m; k++ )
+                ps[m - 1 - k] = calls[k].entry_pos;      /* reversed on purpose */
+            t0 = now_ms();
+            api->regs_at(B, ps, m, rs, NULL);
+            printf("  regs_at for %zu entries: %.1f ms (%.2f ms each)\n", m, now_ms() - t0,
+                   (now_ms() - t0) / (double)m);
+            for ( k = 0; k < m; k++ )
+                if ( (rs[k].have & ITTD_REGS_GP) != 0 && rs[k].gp[ITTD_REG_RIP] == target )
+                    ok++;
+            check(ok == m, "  every batched entry shows rip at the target");
+            free(ps);
+            free(rs);
+        }
+        free(calls);
+    }
+
+    /* ---- indirect branches in the main module ------------------------------- */
+    if ( nmods > 0 )
+    {
+        ittd_range r;
+        ittd_call_target *tg;
+        size_t n = 0, k, m = 0;
+        int trunc = 0;
+        for ( k = 0; k < nmods; k++ )
+            if ( _stricmp(mods[k].name, info.main_module) == 0 )
+                m = k;
+        r.start = mods[m].base;
+        r.end   = mods[m].base + mods[m].size;
+        printf("\nindirect calls in %s\n", mods[m].name);
+        t0 = now_ms();
+        api->query_indirect(B, &r, 1, 0, NULL, 0, &n, &trunc, NULL);
+        tg = (ittd_call_target *)calloc(n ? n : 1, sizeof(ittd_call_target));
+        api->query_indirect(B, &r, 1, 0, tg, n, &n, &trunc, NULL);
+        printf("  %zu edge(s), %.1f ms\n", n, now_ms() - t0);
+        for ( k = 0; k < n && k < 5; k++ )
+        {
+            printf("  %llx -> %llx  x%llu  first %s\n", (unsigned long long)tg[k].site,
+                   (unsigned long long)tg[k].target, (unsigned long long)tg[k].hits,
+                   pos_text(tg[k].first_pos));
+            if ( k == 0 && !is_none(tg[k].first_pos) )
+                check(rip_at(c, tg[k].first_pos) == tg[k].site, "  rip at first_pos is the site");
+        }
+        free(tg);
+    }
+
+    /* ---- exceptions ---------------------------------------------------------- */
+    if ( api->query_exceptions != NULL )
+    {
+        ittd_exception ex[8];
+        size_t n = 0, k;
+        int trunc = 0;
+        t0 = now_ms();
+        api->query_exceptions(B, ex, 8, &n, &trunc, NULL);
+        printf("\nexceptions: %zu, %.1f ms\n", n, now_ms() - t0);
+        for ( k = 0; k < n && k < 8; k++ )
+            printf("  %s  tid %u  code %08x at %llx  raised at %s\n", pos_text(ex[k].pos), ex[k].tid,
+                   ex[k].code, (unsigned long long)ex[k].address, pos_text(ex[k].raise_pos));
+    }
+
+    api->cursor_close(c);
+    api->close(B);
+    free(mods);
+    free(thr);
+    free(tl);
+    printf("\n%d check(s) failed\n", failures);
+    return failures == 0 ? 0 : 3;
+}

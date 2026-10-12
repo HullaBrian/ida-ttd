@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ida-ttd-sogen.dll: the backend for Sogen time-travel traces (.sogttd).
+
+  Not part of ida-ttd.slnx, so a normal build never needs Sogen. It links
+  Sogen's trace reader and cpu_view, which are GPL-2.0-only, so the DLL it
+  produces is a GPL-2.0 binary (docs/modular-backends.md section 3).
+
+  It needs a Sogen checkout and a CMake build of that checkout's
+  windows-ttd-view target, configured with these cache values (and built for
+  that one target): CMAKE_BUILD_TYPE=RelWithDebInfo, SOGEN_BUILD_STATIC=ON,
+  SOGEN_BUILD_TOOLS=OFF, SOGEN_ENABLE_PYTHON_BINDINGS=OFF,
+  SOGEN_ENABLE_RUST_CODE=OFF, SOGEN_DISABLE_FEX=ON, SOGEN_ENABLE_SDL3=OFF and
+  SOGEN_ENABLE_LTO=OFF. docs/building-the-sogen-backend.md has the commands.
+  Then build this project with -p:SogenRoot= (the checkout) and -p:SogenBuild=
+  (the CMake build directory).
+
+  The defines and language flags below are the ones Sogen compiles its own
+  headers with for that configuration; they have to match, or the structures
+  the headers declare would not be the ones the libraries were built with.
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{c4e7a9d1-2b5f-4e83-a6c0-91d3f7b2e845}</ProjectGuid>
+    <RootNamespace>idattdsogen</RootNamespace>
+    <TargetName>ida-ttd-sogen</TargetName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <!-- backends\ mirrors where IDA looks for them: plugins\ida-ttd-backends\. -->
+    <OutDir>$(RepoRoot)build\$(Configuration)\backends\</OutDir>
+    <IntDir>$(RepoRoot)build\obj\$(ProjectName)\$(Configuration)\</IntDir>
+    <SogenArtifacts>$(SogenBuild)\artifacts</SogenArtifacts>
+  </PropertyGroup>
+
+  <Target Name="RequireSogen" BeforeTargets="PrepareForBuild">
+    <Error Condition="'$(SogenRoot)' == '' Or !Exists('$(SogenRoot)\src\windows-ttd\reader\ttd_trace.hpp')"
+           Text="Set -p:SogenRoot= to a Sogen checkout (one with src\windows-ttd\reader)." />
+    <Error Condition="'$(SogenBuild)' == '' Or !Exists('$(SogenArtifacts)\windows-ttd-view.lib')"
+           Text="Set -p:SogenBuild= to a CMake build of Sogen's windows-ttd-view target; see the comment at the top of backend-sogen.vcxproj." />
+  </Target>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ExceptionHandling>Async</ExceptionHandling>
+      <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(SrcDir);$(SogenRoot)\src\windows-ttd\reader;$(SogenRoot)\src\windows-ttd\view;$(SogenRoot)\src\common;$(SogenRoot)\src\emulator-platform;$(SogenRoot)\src;$(SogenRoot)\src\emulator;$(SogenRoot)\src\backends\unicorn-emulator;$(SogenRoot)\deps\zstd\lib;$(SogenRoot)\deps\minidump_cpp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>SOGEN_BUILD_STATIC=1;SOGEN_ENABLE_REFLECTION=1;SOGEN_ENABLE_RUST_CODE=0;SOGEN_REFLECTION_LEVEL=0;ZSTD_MULTITHREAD;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;NDEBUG;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Sogen's default: the dynamic release CRT, shared allocators. -->
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <Optimization Condition="'$(Configuration)'=='Debug'">Disabled</Optimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(SogenArtifacts);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>windows-ttd-view.lib;windows-ttd-reader.lib;unicorn-emulator.lib;emulator.lib;emulator-common.lib;minidump.lib;unicorn.lib;x86_64-softmmu.lib;unicorn-common.lib;zstd_static.lib;ws2_32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_backend.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

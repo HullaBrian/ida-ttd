@@ -586,6 +586,20 @@ No longer blocked on Sogen: §1–§6 of the requests landed on `ttd/next` at
 `31cfc3ea`. What is still missing there (the memory map, #28, #33, #34) costs
 one feature each, not the backend.
 
+*Started out of order, ahead of phases 3 and 4*, because the backend side
+can be built and tested without IDA, while Sogen's answers are fresh:
+`src/backend-sogen/sogen_backend.cpp` implements the ABI against Sogen's
+reader and `cpu_view`, and `src/tools/ittd_probe.c` drives any backend
+through the ABI and checks the position semantics. On a real trace every
+check passes; [building-the-sogen-backend.md](building-the-sogen-backend.md)
+has the build steps and the measurements. What it proved about the ABI:
+the three call positions and the "before the instruction at the PC" rule
+hold up against a second engine, with the off-by-one contained in the
+backend. The core does not load the DLL yet: that is still phase 4.
+
+The project file is `msbuild/backend-sogen.vcxproj`, next to the others
+rather than in `src/backend-sogen/` as §5 sketched, and outside the solution.
+
 **Phase 6 — what only one backend can do.** Sogen's recorded syscall list,
 `self_modifying_code()`, and its replay scans for strings and buffers have no
 Microsoft equivalent and want UI of their own, gated on the capability flags.
