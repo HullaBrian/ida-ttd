@@ -214,10 +214,13 @@ namespace idattd
                  ? StopReason::Stepped : StopReason::Failed;
         }
 
-        void set_breakpoints(const std::vector<Breakpoint> &bpts) override
+        bool set_breakpoints(const std::vector<Breakpoint> &bpts,
+                             std::vector<bool> *accepted) override
         {
+            if ( accepted != nullptr )
+                accepted->assign(bpts.size(), false);
             if ( m_api->nav_breakpoints == nullptr )
-                return;
+                return false;
             std::vector<ittd_breakpoint> v;
             v.reserve(bpts.size());
             for ( const Breakpoint &b : bpts )
@@ -230,7 +233,11 @@ namespace idattd
                         | ((b.kinds & ACCESS_EXEC)  ? ITTD_ACCESS_EXEC  : 0);
                 v.push_back(x);
             }
-            m_api->nav_breakpoints(m_c, v.data(), v.size());
+            // The ABI answers for the whole set.
+            bool ok = m_api->nav_breakpoints(m_c, v.data(), v.size()) == ITTD_OK;
+            if ( accepted != nullptr )
+                accepted->assign(bpts.size(), ok);
+            return ok;
         }
 
     private:

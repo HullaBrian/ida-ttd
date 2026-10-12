@@ -8,6 +8,9 @@
     <Filter Include="analysis">
       <UniqueIdentifier>{936CFFF2-93FD-3099-474E-7E46AFFEDBFA}</UniqueIdentifier>
     </Filter>
+    <Filter Include="backend-msttd">
+      <UniqueIdentifier>{5359579A-ED70-4702-8161-04FA31B8B12E}</UniqueIdentifier>
+    </Filter>
     <Filter Include="common">
       <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
     </Filter>
@@ -66,6 +69,12 @@
     </ClInclude>
     <ClInclude Include="$(SrcDir)\core\guest_view.h">
       <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h">
+      <Filter>backend-msttd</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_navigator.h">
+      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\core\backend_module.h">
       <Filter>core</Filter>
@@ -191,6 +200,12 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\guest_view.cpp">
       <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_navigator.cpp">
+      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\backend_module.cpp">
       <Filter>core</Filter>

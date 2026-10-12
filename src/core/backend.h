@@ -301,7 +301,17 @@ namespace idattd
         // backends key them by address and replacing the set is cheaper and
         // harder to get wrong than reconciling adds and deletes. A data
         // breakpoint stops at the instruction that made the access.
-        virtual void set_breakpoints(const std::vector<Breakpoint> &bpts) = 0;
+        //
+        // 'accepted', when given, gets one entry per breakpoint: false for one
+        // the engine refused, so IDA can show it as bad instead of as a
+        // breakpoint that silently never fires.
+        virtual bool set_breakpoints(const std::vector<Breakpoint> &bpts,
+                                     std::vector<bool> *accepted = nullptr) = 0;
+
+        // Something the last movement wants the user told once the stop is
+        // shown ("this frame does not return anywhere"), or empty. Taking it
+        // clears it.
+        virtual qstring take_notice() { return qstring(); }
     };
 
     // ------------------------------------------------------------ the backend
