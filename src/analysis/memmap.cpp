@@ -4,6 +4,7 @@
 #include "debugger/trace_manager.h"
 #include "common/trace_open.h"
 #include "common/symbols.h"
+#include "common/dbstore.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -299,46 +300,19 @@ namespace idattd
     // has to fit in the database.
     static const size_t MM_MAX_ITEMS = 200000;
 
-    namespace
-    {
-        // Little-endian writer/reader for the blob. Bounds-checked on the way in:
-        // the blob is database content, and a truncated or corrupted one must
-        // fail cleanly rather than walk off the end.
-        struct BlobWriter
-        {
-            std::vector<uint8_t> b;
-            void u8 (uint8_t v)  { b.push_back(v); }
-            void u32(uint32_t v) { for ( int i = 0; i < 4; i++ ) b.push_back((uint8_t)(v >> (i * 8))); }
-            void u64(uint64_t v) { for ( int i = 0; i < 8; i++ ) b.push_back((uint8_t)(v >> (i * 8))); }
-        };
-
-        struct BlobReader
-        {
-            const uint8_t *p = nullptr;
-            size_t n = 0, i = 0;
-            bool ok = true;
-            bool have(size_t k) { if ( i + k > n ) { ok = false; return false; } return true; }
-            uint8_t  u8()  { if ( !have(1) ) return 0; return p[i++]; }
-            uint32_t u32() { if ( !have(4) ) return 0; uint32_t v = 0;
-                             for ( int k = 0; k < 4; k++ ) v |= (uint32_t)p[i++] << (k * 8); return v; }
-            uint64_t u64() { if ( !have(8) ) return 0; uint64_t v = 0;
-                             for ( int k = 0; k < 8; k++ ) v |= (uint64_t)p[i++] << (k * 8); return v; }
-        };
-    }
-
+    // The blob is the header PluginNode writes (u32 magic, u32 version, u64
+    // trace fingerprint) followed by the changes -- the same bytes as before
+    // the codec moved to common/dbstore, so saved maps still load.
     void MemoryMap::save(uint64_t fingerprint) const
     {
-        netnode nn(MM_NODE, 0, true);
+        PluginNode node(MM_NODE);
         if ( m_changes.empty() )
         {
-            nn.delblob(0, MM_TAG);
+            node.erase(MM_TAG);
             return;
         }
 
         BlobWriter w;
-        w.u32(MM_MAGIC);
-        w.u32(MM_VERSION);
-        w.u64(fingerprint);
         size_t n = m_changes.size() < MM_MAX_ITEMS ? m_changes.size() : MM_MAX_ITEMS;
         if ( n < m_changes.size() )
         {
@@ -368,32 +342,23 @@ namespace idattd
             for ( uint8_t k = 0; k < nc; k++ )
                 w.u64((uint64_t)c.chain[k]);
         }
-        nn.setblob(w.b.data(), w.b.size(), 0, MM_TAG);
+        node.put(MM_TAG, MM_MAGIC, MM_VERSION, w, fingerprint);
     }
 
     bool MemoryMap::load(uint64_t fingerprint)
     {
         clear();
-        netnode nn(MM_NODE);
-        if ( nn == BADNODE )
-            return false;
 
-        size_t sz = 0;
-        void *raw = nn.getblob(nullptr, &sz, 0, MM_TAG);
-        if ( raw == nullptr )
-            return false;
-
-        BlobReader r;
-        r.p = (const uint8_t *)raw;
-        r.n = sz;
-
-        bool ok = r.u32() == MM_MAGIC && r.u32() == MM_VERSION;
         // A map built from a different recording would show addresses and
-        // positions that mean nothing here. Refuse it rather than mislead.
-        if ( ok && r.u64() != fingerprint )
-            ok = false;
+        // positions that mean nothing here. get() refuses it rather than
+        // mislead.
+        std::vector<uchar> blob;
+        if ( !PluginNode(MM_NODE).get(MM_TAG, MM_MAGIC, MM_VERSION, fingerprint, &blob) )
+            return false;
 
-        uint64_t count = ok ? r.u64() : 0;
+        BlobReader r(blob.data(), blob.size());
+        bool ok = true;
+        uint64_t count = r.u64();
         if ( count > MM_MAX_ITEMS )
             ok = false;
 
@@ -401,7 +366,7 @@ namespace idattd
         if ( ok )
         {
             v.reserve((size_t)count);
-            for ( uint64_t i = 0; i < count && r.ok; i++ )
+            for ( uint64_t i = 0; i < count && r.ok(); i++ )
             {
                 RegionChange c;
                 c.pos.hi      = r.u64();
@@ -425,15 +390,14 @@ namespace idattd
                     ok = false;             // corrupt: refuse the whole blob
                     break;
                 }
-                for ( uint8_t k = 0; k < nc && r.ok; k++ )
+                for ( uint8_t k = 0; k < nc && r.ok(); k++ )
                     c.chain[k] = (ea_t)r.u64();
                 c.chain_n = nc;
                 if ( c.kind < RC_COUNT )
                     v.push_back(c);
             }
-            ok = r.ok;
+            ok = ok && r.ok();
         }
-        qfree(raw);
 
         if ( !ok )
             return false;
@@ -445,24 +409,15 @@ namespace idattd
 
     void MemoryMap::erase()
     {
-        netnode nn(MM_NODE);
-        if ( nn != BADNODE )
-            nn.delblob(0, MM_TAG);
+        PluginNode(MM_NODE).erase(MM_TAG);
     }
 
     bool MemoryMap::stored()
     {
-        netnode nn(MM_NODE);
-        if ( nn == BADNODE )
-            return false;
-        // getblob(nullptr, &sz, ...) allocates, so the answer has to be freed
-        // even when all we wanted was "is there one".
-        size_t sz = 0;
-        void *raw = nn.getblob(nullptr, &sz, 0, MM_TAG);
-        if ( raw == nullptr )
-            return false;
-        qfree(raw);
-        return true;
+        // Any fingerprint: this only asks whether a map of this version is
+        // there at all.
+        std::vector<uchar> blob;
+        return PluginNode(MM_NODE).get(MM_TAG, MM_MAGIC, MM_VERSION, 0, &blob);
     }
 
     //=======================================================================

@@ -1,4 +1,5 @@
 #include "analysis/bookmarks.h"
+#include "common/dbstore.h"
 
 namespace idattd
 {
@@ -20,67 +21,8 @@ namespace idattd
     // A bookmark list is small, but the blob is IDB data and IDB data can be
     // stale, truncated or written by something else entirely. Cap what we are
     // willing to believe before allocating from it.
+    // Strings are capped at DB_MAX_STR (common/dbstore.h) on both sides.
     static const uint32_t BM_MAX_ITEMS = 100000;
-    static const uint32_t BM_MAX_STR   = 4096;
-
-    static void put_u32(bytevec_t &b, uint32_t v)
-    {
-        for ( int i = 0; i < 4; i++ )
-            b.push_back((uchar)((v >> (i * 8)) & 0xFF));
-    }
-
-    static void put_u64(bytevec_t &b, uint64_t v)
-    {
-        for ( int i = 0; i < 8; i++ )
-            b.push_back((uchar)((v >> (i * 8)) & 0xFF));
-    }
-
-    static void put_str(bytevec_t &b, const qstring &s)
-    {
-        uint32_t n = (uint32_t)qmin(s.length(), (size_t)BM_MAX_STR);
-        put_u32(b, n);
-        for ( uint32_t i = 0; i < n; i++ )
-            b.push_back((uchar)s[i]);
-    }
-
-    // Bounds-checked reader over the blob. Every get_* returns false rather than
-    // reading past the end, and one false abandons the whole parse.
-    struct BlobReader
-    {
-        const uchar *p   = nullptr;
-        size_t       n   = 0;
-        size_t       off = 0;
-
-        bool get_u32(uint32_t *out)
-        {
-            if ( off + 4 > n )
-                return false;
-            *out = (uint32_t)p[off] | ((uint32_t)p[off + 1] << 8)
-                 | ((uint32_t)p[off + 2] << 16) | ((uint32_t)p[off + 3] << 24);
-            off += 4;
-            return true;
-        }
-
-        bool get_u64(uint64_t *out)
-        {
-            uint32_t lo = 0, hi = 0;
-            if ( !get_u32(&lo) || !get_u32(&hi) )
-                return false;
-            *out = (uint64_t)lo | ((uint64_t)hi << 32);
-            return true;
-        }
-
-        bool get_str(qstring *out)
-        {
-            uint32_t len = 0;
-            if ( !get_u32(&len) || len > BM_MAX_STR || off + len > n )
-                return false;
-            out->qclear();
-            out->append((const char *)p + off, len);
-            off += len;
-            return true;
-        }
-    };
 
     void BookmarkStore::load()
     {
@@ -95,11 +37,13 @@ namespace idattd
         if ( nn.getblob(&blob, BM_IDX, BM_TAG) <= 0 )
             return;
 
-        BlobReader r{ blob.begin(), blob.size(), 0 };
-        uint32_t magic = 0, version = 0, count = 0;
-        if ( !r.get_u32(&magic) || magic != BM_MAGIC
-          || !r.get_u32(&version) || version != BM_VERSION
-          || !r.get_u32(&count) || count > BM_MAX_ITEMS )
+        // Not PluginNode::get(): bookmarks predate its header, and their blob
+        // is kept byte for byte so existing databases keep their marks.
+        BlobReader r(blob.begin(), blob.size());
+        uint32_t magic   = r.u32();
+        uint32_t version = r.u32();
+        uint32_t count   = r.u32();
+        if ( !r.ok() || magic != BM_MAGIC || version != BM_VERSION || count > BM_MAX_ITEMS )
         {
             msg("[ida-ttd] the bookmark record in this database is not one we "
                 "understand; leaving it untouched.\n");
@@ -108,11 +52,14 @@ namespace idattd
 
         for ( uint32_t i = 0; i < count; i++ )
         {
-            uint64_t seq = 0, steps = 0, ea = 0;
-            uint32_t tid = 0;
             Bookmark b;
-            if ( !r.get_u64(&seq) || !r.get_u64(&steps) || !r.get_u64(&ea)
-              || !r.get_u32(&tid) || !r.get_str(&b.name) || !r.get_str(&b.comment) )
+            uint64_t seq   = r.u64();
+            uint64_t steps = r.u64();
+            uint64_t ea    = r.u64();
+            uint32_t tid   = r.u32();
+            r.str(&b.name);
+            r.str(&b.comment);
+            if ( !r.ok() )
             {
                 msg("[ida-ttd] the bookmark record ends early; recovered %d of %d "
                     "entries.\n", (int)m_items.size(), (int)count);
@@ -141,20 +88,20 @@ namespace idattd
             return;
         }
 
-        bytevec_t blob;
-        put_u32(blob, BM_MAGIC);
-        put_u32(blob, BM_VERSION);
-        put_u32(blob, (uint32_t)m_items.size());
+        BlobWriter w;
+        w.u32(BM_MAGIC);
+        w.u32(BM_VERSION);
+        w.u32((uint32_t)m_items.size());
         for ( const Bookmark &b : m_items )
         {
-            put_u64(blob, b.pos.hi);
-            put_u64(blob, b.pos.lo);
-            put_u64(blob, (uint64_t)b.ea);
-            put_u32(blob, b.tid);
-            put_str(blob, b.name);
-            put_str(blob, b.comment);
+            w.u64(b.pos.hi);
+            w.u64(b.pos.lo);
+            w.u64((uint64_t)b.ea);
+            w.u32(b.tid);
+            w.str(b.name);
+            w.str(b.comment);
         }
-        nn.setblob(blob.begin(), blob.size(), BM_IDX, BM_TAG);
+        nn.setblob(w.data(), w.size(), BM_IDX, BM_TAG);
     }
 
     size_t BookmarkStore::size()

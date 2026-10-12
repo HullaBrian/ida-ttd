@@ -25,6 +25,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\dbstore.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\pch.h">
       <Filter>common</Filter>
     </ClInclude>
@@ -129,6 +132,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\dbstore.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\common\pch.cpp">
       <Filter>common</Filter>
     </ClCompile>
