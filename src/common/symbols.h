@@ -106,6 +106,23 @@ namespace idattd
     ea_t resolve_export_va(TTD::Replay::ICursorView *cursor, ea_t base, bool is64,
                            const char *name);
 
+    // Which PDB a module was built with, taken from the CodeView record in its
+    // debug directory. This is the only authoritative answer when the copy of
+    // the DLL on this machine is a different build from the recorded one: the
+    // local file names a different PDB, and symbols fetched for it describe
+    // code the recording never ran.
+    struct GuestPdbInfo
+    {
+        std::string name;           // e.g. "ntdll.pdb", as the linker wrote it
+        std::string signature;      // GUID + age, the symbol server's directory
+    };
+
+    // Read the above out of guest memory for the module mapped at 'base'. The
+    // cursor must be positioned where the module is loaded. False when the module
+    // is unreadable there, has no debug directory, or carries no CodeView record.
+    bool read_guest_pdb_info(TTD::Replay::ICursorView *cursor, ea_t base,
+                             GuestPdbInfo *out);
+
     // Read the module file at 'path' into 'out' and parse its section map. Returns
     // out.ok. Safe to call on a non-PE / missing file (returns false, out.ok=false).
     bool load_module_image(const char *path, ModuleImage &out);

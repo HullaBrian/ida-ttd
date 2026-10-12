@@ -1,6 +1,7 @@
 #include "debugger/module_registry.h"
 #include "debugger/msttd_position.h"
 #include "common/trace_open.h"
+#include "common/symsrv.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -387,8 +388,6 @@ namespace idattd
         if ( !m_pdbBases.insert(base).second )
             return;     // already requested for this module
 
-        // The module's path lets the PDB plugin find the PE and its debug
-        // directory (it can also read the PE from debugger memory at 'base').
         const Module *m = record_at(base);
         std::string   path = m != nullptr ? to_utf8(m->pName, m->NameLength) : std::string();
         if ( path.empty() )
@@ -399,10 +398,44 @@ namespace idattd
         if ( _stricmp(base_name(path).c_str(), m_targetName.c_str()) == 0 )
             return;
 
+        // Which PDB this module was actually built with, read from the image as
+        // the recording had it mapped. The copy of the DLL on this machine cannot
+        // answer that: it is often a different build, and ntdll on a machine
+        // patched since the recording is the usual case. Its symbols would
+        // describe code this recording never ran.
+        GuestPdbInfo pdb;
+        if ( !pdb_identity(base, &pdb) )
+        {
+            // No debug directory in the recorded image, or the headers were never
+            // recorded. Nothing to look up and nothing to tell the user.
+            return;
+        }
+
+        switch ( fetch_pdb(pdb.name.c_str(), pdb.signature.c_str(), base) )
+        {
+            case FetchState::Cached:
+                apply_pdb(base, path, pdb);
+                break;
+            case FetchState::Fetching:
+                // A worker has it. apply_finished_pdbs() picks it up at the next
+                // stop; nothing blocks here, which is the whole point.
+                break;
+            case FetchState::Failed:
+                report_missing_pdb(path, pdb);
+                break;
+        }
+    }
+
+    void ModuleRegistry::apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb)
+    {
         // Drive the PDB plugin with PDB_CC_USER_WITH_DATA (3): it reads the
         // load address and path from the "$ pdb" netnode and applies symbols
         // without the "load symbols?" prompt the automatic DOPT_LOAD_DINFO path
         // shows.
+        //
+        // It resolves the PDB through _NT_SYMBOL_PATH, which symsrv_install_path()
+        // put our store at the front of, so this finds a local file rather than
+        // going to the network from the main thread.
         static const char *PDB_NODE_NAME = "$ pdb";
         const int PDB_DLLBASE_NODE_IDX  = 0;
         const int PDB_DLLNAME_NODE_IDX  = 0;
@@ -412,8 +445,8 @@ namespace idattd
         pdbnode.altset(PDB_DLLBASE_NODE_IDX, base);
         pdbnode.supset(PDB_DLLNAME_NODE_IDX, path.c_str(), path.size() + 1);
 
-        // Suppress the plugin's dialogs while it runs: offline, or with the PDB
-        // not found, it would otherwise pop an error or file-locate dialog for
+        // Suppress the plugin's dialogs while it runs: when the PDB cannot be
+        // matched it would otherwise pop an error or file-locate dialog for
         // every module. With 'batch' set those become log lines, and the miss is
         // reported to the output window here instead.
         //
@@ -429,9 +462,84 @@ namespace idattd
         bool ran = load_and_run_plugin("pdb", PDB_CC_USER_WITH_DATA);
 
         // The plugin writes its success flag back into the same netnode slot.
-        if ( !ran || pdbnode.altval(PDB_DLLBASE_NODE_IDX) == 0 )
-            msg("[ida-ttd] PDB symbols not resolved for %s (offline or unavailable).\n",
-                base_name(path).c_str());
+        if ( ran && pdbnode.altval(PDB_DLLBASE_NODE_IDX) != 0 )
+        {
+            msg("[ida-ttd] PDB symbols applied for %s (%s).\n",
+                base_name(path).c_str(), pdb.name.c_str());
+            return;
+        }
+        report_missing_pdb(path, pdb);
+    }
+
+    // Say which PDB is wanted and where it lives. Only the recording knows: the
+    // identity comes from the CodeView record of the image as it was mapped, and
+    // that is the one thing a mismatched local DLL cannot tell the user.
+    void ModuleRegistry::report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb)
+    {
+        msg("[ida-ttd] PDB symbols not resolved for %s.\n"
+            "           The matching symbols are %s %s:\n"
+            "           https://msdl.microsoft.com/download/symbols/%s/%s/%s\n"
+            "           Save that file, then File > Load file > PDB file.\n",
+            base_name(path).c_str(),
+            pdb.name.c_str(), pdb.signature.c_str(),
+            pdb.name.c_str(), pdb.signature.c_str(), pdb.name.c_str());
+    }
+
+    void ModuleRegistry::apply_finished_pdbs()
+    {
+        std::vector<FetchResult> done;
+        if ( symsrv_take_completed(&done) == 0 )
+            return;
+
+        for ( const FetchResult &r : done )
+        {
+            const Module *m = record_at(r.base);
+            std::string   path = m != nullptr ? to_utf8(m->pName, m->NameLength)
+                                              : std::string();
+            if ( path.empty() )
+                continue;
+
+            if ( r.path.empty() )
+            {
+                msg("[ida-ttd] could not download %s for %s: %s.\n",
+                    r.name.c_str(), base_name(path).c_str(), r.error.c_str());
+                continue;
+            }
+
+            GuestPdbInfo pdb;
+            if ( pdb_identity(r.base, &pdb) )
+                apply_pdb(r.base, path, pdb);
+        }
+    }
+
+    // Which PDB the module at 'base' was built with, read from the image as the
+    // recording had it mapped.
+    bool ModuleRegistry::pdb_identity(ea_t base, GuestPdbInfo *out)
+    {
+        if ( m_engine == nullptr || out == nullptr )
+            return false;
+
+        // Read it where the module is known to be mapped: its load event.
+        // Reading at the playhead would fail for a module unloaded since.
+        const ModuleLoadedEvent *hit = nullptr;
+        size_t n = m_engine->GetModuleLoadedEventCount();
+        const ModuleLoadedEvent *list = m_engine->GetModuleLoadedEventList();
+        for ( size_t i = 0; i < n; i++ )
+        {
+            if ( list[i].pModule != nullptr
+              && (ea_t)(uint64_t)list[i].pModule->Address == base )
+            {
+                hit = &list[i];
+                break;
+            }
+        }
+
+        if ( !m_symCursor )
+            m_symCursor = UniqueCursor{ m_engine->NewCursor() };
+        if ( !m_symCursor )
+            return false;
+        m_symCursor->SetPosition(hit != nullptr ? hit->Position : TtdPosition::Min);
+        return read_guest_pdb_info(m_symCursor.get(), base, out);
     }
 
     //=======================================================================

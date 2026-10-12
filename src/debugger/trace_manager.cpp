@@ -3,6 +3,7 @@
 #include "analysis/trace_store.h"
 #include "debugger/registers.h"
 #include "common/trace_link.h"
+#include "common/symsrv.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -94,6 +95,9 @@ namespace idattd
 
     ssize_t TraceManager::on_term()
     {
+        // Before anything else: the download workers hold no IDA state, but
+        // they must not outlive the session that asked for their work.
+        symsrv_shutdown();
         if ( m_hooks.on_end )
             m_hooks.on_end();
         set_current_trace(0);
@@ -258,6 +262,10 @@ namespace idattd
         // Tell the analysis stores which recording they are being read against,
         // so results saved for a different one are not shown against this one.
         set_current_trace(trace_fingerprint());
+
+        // Put our own symbol store ahead of whatever IDA would reach for, so
+        // the PDB plugin only ever resolves files that are already local.
+        symsrv_install_path();
 
         if ( m_layout.map_for_update().load(trace_fingerprint()) )
             msg("[ida-ttd] loaded a saved memory map: %d recorded change(s).\n",
@@ -1027,6 +1035,11 @@ namespace idattd
         // free, so the regions in force here may not be the ones IDA was last
         // given. This is a no-op unless a memory map has been built.
         m_layout.refresh(m_cursor.get());
+
+        // Apply any PDB that finished downloading since the last stop. This is
+        // the main thread, which is the only place IDA's symbol machinery may be
+        // driven from.
+        m_modules.apply_finished_pdbs();
 
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.

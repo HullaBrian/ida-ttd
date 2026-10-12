@@ -100,9 +100,15 @@ namespace idattd
         void resolve_symbols(ea_t base);
         // The same for every module loaded at 'cursor''s position.
         void resolve_loaded(TTD::Replay::ICursorView *cursor);
-        // Silently drive IDA's PDB plugin for the module at 'base' (no
-        // per-module "load symbols?" prompt). Deduplicated per module.
+        // Load symbols for the module at 'base' without blocking: the PDB the
+        // recorded image names is fetched into a local store on a worker
+        // thread (common/symsrv.h), and IDA's PDB plugin is only driven, with
+        // no "load symbols?" prompt, once the file is on disk. Deduplicated per
+        // module.
         void load_pdb(ea_t base);
+        // Hand every PDB that finished downloading since the last call to IDA.
+        // Main thread only; called once per stop.
+        void apply_finished_pdbs();
 
         // ---- on-disk images ------------------------------------------------
         //
@@ -118,6 +124,13 @@ namespace idattd
         const TTD::Replay::Module *record_at(ea_t base) const;
 
     private:
+        // Which PDB the module at 'base' was built with, read from the
+        // recording rather than from whatever file sits at that path here.
+        bool pdb_identity(ea_t base, GuestPdbInfo *out);
+        // Hand one already-downloaded PDB to IDA, and say so when it fails.
+        void apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb);
+        void report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb);
+
         TTD::Replay::IReplayEngine *m_engine = nullptr;
         bool                        m_is64 = false;
         qstring                     m_targetName;

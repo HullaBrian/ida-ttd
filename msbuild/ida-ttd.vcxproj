@@ -45,6 +45,7 @@
   <ItemGroup>
     <ClInclude Include="$(SrcDir)\common\pch.h" />
     <ClInclude Include="$(SrcDir)\common\symbols.h" />
+    <ClInclude Include="$(SrcDir)\common\symsrv.h" />
     <ClInclude Include="$(SrcDir)\common\trace_link.h" />
     <ClInclude Include="$(SrcDir)\common\trace_open.h" />
     <ClInclude Include="$(SrcDir)\debugger\callconv.h" />
@@ -81,6 +82,7 @@
   <ItemGroup>
     <ClCompile Include="$(SrcDir)\common\pch.cpp" />
     <ClCompile Include="$(SrcDir)\common\symbols.cpp" />
+    <ClCompile Include="$(SrcDir)\common\symsrv.cpp" />
     <ClCompile Include="$(SrcDir)\common\trace_link.cpp" />
     <ClCompile Include="$(SrcDir)\common\trace_open.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp" />

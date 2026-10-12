@@ -1,5 +1,6 @@
 #include "plugin/plugin.h"
 #include "common/trace_link.h"
+#include "common/symsrv.h"
 #include "debugger/registers.h"
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
@@ -98,6 +99,9 @@ namespace idattd
 
     Plugin::~Plugin()
     {
+        // Before anything else: a symbol download must not outlive the plugin
+        // whose session asked for it.
+        symsrv_shutdown();
         m_refocusTimer.cancel();
         m_autoCoverTimer.cancel();
         m_attachTimer.cancel();

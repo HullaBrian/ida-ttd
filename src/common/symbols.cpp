@@ -172,6 +172,99 @@ namespace idattd
         return true;
     }
 
+    // The debug data directory of a module whose NT header is at 'ntAddr'.
+    static bool read_debug_dir(ICursorView *c, uint64_t ntAddr, bool is64,
+                               uint32_t *rva_out, uint32_t *size_out)
+    {
+        if ( is64 )
+        {
+            IMAGE_NT_HEADERS64 nt{};
+            if ( !read_val(c, ntAddr, &nt) )
+                return false;
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+            *rva_out  = dd.VirtualAddress;
+            *size_out = dd.Size;
+        }
+        else
+        {
+            IMAGE_NT_HEADERS32 nt{};
+            if ( !read_val(c, ntAddr, &nt) )
+                return false;
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+            *rva_out  = dd.VirtualAddress;
+            *size_out = dd.Size;
+        }
+        return *rva_out != 0 && *size_out != 0;
+    }
+
+    bool read_guest_pdb_info(ICursorView *cursor, ea_t base, GuestPdbInfo *out)
+    {
+        if ( cursor == nullptr || out == nullptr || base == BADADDR )
+            return false;
+        *out = GuestPdbInfo();
+
+        uint64_t b = (uint64_t)base;
+        uint64_t ntAddr = 0;
+        bool     is64   = false;
+        if ( !locate_nt_headers(cursor, b, &ntAddr, &is64) )
+            return false;
+
+        uint32_t dbgRva = 0, dbgSize = 0;
+        if ( !read_debug_dir(cursor, ntAddr, is64, &dbgRva, &dbgSize) )
+            return false;
+
+        // The directory is an array of fixed-size entries. Cap the count the same
+        // way the section table is capped: the size field comes out of an image we
+        // do not control, and a wild value would ask for an enormous read.
+        static const uint32_t kMaxEntries = 64;
+        uint32_t nentries = dbgSize / (uint32_t)sizeof(IMAGE_DEBUG_DIRECTORY);
+        if ( nentries > kMaxEntries )
+            nentries = kMaxEntries;
+
+        for ( uint32_t i = 0; i < nentries; i++ )
+        {
+            IMAGE_DEBUG_DIRECTORY dd{};
+            if ( !read_val(cursor, b + dbgRva + i * sizeof(IMAGE_DEBUG_DIRECTORY), &dd) )
+                return false;
+            if ( dd.Type != IMAGE_DEBUG_TYPE_CODEVIEW || dd.AddressOfRawData == 0 )
+                continue;
+
+            // The CodeView record: "RSDS", a GUID, an age, then the PDB path as
+            // the linker wrote it. Anything else is a format we cannot name a
+            // symbol-server directory for.
+            struct RsdsHeader
+            {
+                uint32_t signature;     // 'SDSR'
+                GUID     guid;
+                uint32_t age;
+            } rs{};
+            uint64_t cv = b + dd.AddressOfRawData;
+            if ( !read_val(cursor, cv, &rs) || rs.signature != 0x53445352 )
+                continue;
+
+            std::string path = read_cstr(cursor, cv + sizeof(RsdsHeader), MAX_PATH);
+            if ( path.empty() )
+                continue;
+            // The linker records a build-machine path; only the file name is
+            // meaningful anywhere else.
+            size_t slash = path.find_last_of("/" "\\");
+            out->name = slash == std::string::npos ? path : path.substr(slash + 1);
+
+            // Symbol servers key on the GUID in registry order with no separators,
+            // followed by the age in hex. Both are upper case.
+            char sig[64];
+            qsnprintf(sig, sizeof(sig),
+                      "%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%X",
+                      rs.guid.Data1, rs.guid.Data2, rs.guid.Data3,
+                      rs.guid.Data4[0], rs.guid.Data4[1], rs.guid.Data4[2],
+                      rs.guid.Data4[3], rs.guid.Data4[4], rs.guid.Data4[5],
+                      rs.guid.Data4[6], rs.guid.Data4[7], rs.age);
+            out->signature = sig;
+            return true;
+        }
+        return false;
+    }
+
     ea_t resolve_export_va(ICursorView *cursor, ea_t base, bool is64, const char *name)
     {
         qnotused(is64);   // the image's own header is the authority; see below
