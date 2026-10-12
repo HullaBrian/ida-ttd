@@ -136,6 +136,10 @@ typedef struct ittd_position_range
 #define ITTD_CAP_REVERSE_STEP     0x0040u  /* the recording can be stepped backwards */
 #define ITTD_CAP_PREPARE          0x0080u  /* prepare() has something to do */
 #define ITTD_CAP_EXCEPTIONS       0x0100u  /* dispatched exceptions can be listed */
+/* Reading a page of memory costs about a copy, so the core can let IDA
+ * analyse a whole module -- which reads all of its code -- when symbols for
+ * it load. Without it the core keeps the names and drops that analysis. */
+#define ITTD_CAP_CHEAP_READS      0x0200u
 
 #define ITTD_NAME_MAX  256
 #define ITTD_PATH_MAX  520

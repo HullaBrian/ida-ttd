@@ -286,6 +286,7 @@ namespace idattd
             if ( c.cheap_seek )       caps |= ITTD_CAP_CHEAP_SEEK;
             if ( c.reverse_step )     caps |= ITTD_CAP_REVERSE_STEP;
             if ( c.exceptions )       caps |= ITTD_CAP_EXCEPTIONS;
+            if ( c.cheap_reads )      caps |= ITTD_CAP_CHEAP_READS;
             if ( !h->b->prepared() )  caps |= ITTD_CAP_PREPARE;
             out->capabilities = caps;
             return ITTD_OK;

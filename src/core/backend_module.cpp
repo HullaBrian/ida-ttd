@@ -381,6 +381,7 @@ namespace idattd
         m_caps.cheap_seek       = (c & ITTD_CAP_CHEAP_SEEK) != 0;
         m_caps.reverse_step     = (c & ITTD_CAP_REVERSE_STEP) != 0;
         m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;
+        m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
         return true;
     }
 

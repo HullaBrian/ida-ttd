@@ -462,9 +462,32 @@ namespace idattd
         {
             msg("[ida-ttd] PDB symbols applied for %s (%s).\n",
                 base_name(path).c_str(), pdb.name.c_str());
+            keep_names_only(base);
             return;
         }
         report_missing_pdb(path, pdb);
+    }
+
+    // The PDB plugin queues every function it names for analysis, and
+    // analysing a library reads nearly all of its code. On a backend whose
+    // reads are not cheap that is minutes with IDA frozen (ntdll's 600 pages
+    // at tens of milliseconds each), so the names are kept and the queued
+    // work dropped. Code the user stops in is laid out per stop anyway
+    // (CodeAnalyzer), which is all a library needs to be read.
+    void ModuleRegistry::keep_names_only(ea_t base)
+    {
+        if ( m_backend == nullptr || m_backend->capabilities().cheap_reads )
+            return;
+        const ModuleInfo *m = record_at(base);
+        if ( m == nullptr || m->size == 0 )
+            return;
+        ea_t end = (ea_t)(base + m->size);
+        static const atype_t queues[] = {
+            AU_UNK, AU_CODE, AU_WEAK, AU_PROC, AU_TAIL, AU_FCHUNK, AU_USED,
+            AU_USD2, AU_TYPE, AU_LIBF, AU_LBF2, AU_LBF3, AU_CHLB, AU_FINAL,
+        };
+        for ( atype_t q : queues )
+            auto_unmark(base, end, q);
     }
 
     // Say which PDB is wanted and where it lives. Only the recording knows: the

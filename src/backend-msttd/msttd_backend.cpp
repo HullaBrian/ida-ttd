@@ -150,6 +150,7 @@ namespace idattd
         m_caps.cheap_seek     = true;
         m_caps.reverse_step   = true;
         m_caps.exceptions     = true;
+        m_caps.cheap_reads    = true;      // the engine's memory index
         return true;
     }
 

@@ -128,6 +128,7 @@ namespace idattd
         GuestRead read_at_load(ea_t base);
         bool pdb_identity(ea_t base, GuestPdbInfo *out);
         void apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb);
+        void keep_names_only(ea_t base);
         void report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb);
 
         ITraceBackend *m_backend = nullptr;

@@ -67,6 +67,9 @@ namespace idattd
         bool reverse_step     = true;
         // Exceptions the system dispatched can be listed (query_exceptions).
         bool exceptions       = false;
+        // Reading a page costs about a copy (ITTD_CAP_CHEAP_READS): IDA may
+        // analyse whole library modules, reading all of their code.
+        bool cheap_reads      = false;
     };
 
     // ------------------------------------------------------------- the trace
