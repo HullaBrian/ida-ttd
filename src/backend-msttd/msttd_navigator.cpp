@@ -278,6 +278,7 @@ namespace idattd
             insn_t insn;
             int len = decode_insn(&insn, pc);
             bool is_call = len > 0 && is_call_insn(insn);
+            bool is_ret  = len > 0 && !is_call && is_ret_insn(insn);
 
             if ( is_call )
             {
@@ -305,8 +306,11 @@ namespace idattd
 
             if ( !step_out )
                 break;                                  // step-over: a single iteration
-            if ( (uint64_t)cur()->GetStackPointer() > start_sp )
-                break;                                  // step-out: frame has returned
+            // Step-out: the frame has returned once a RET took the stack above
+            // where it started. The rise alone is not the test -- an epilogue's
+            // 'add rsp' does that a few instructions before the RET.
+            if ( is_ret && (uint64_t)cur()->GetStackPointer() > start_sp )
+                break;
         }
         hide_wait_box();
 
@@ -375,7 +379,8 @@ namespace idattd
         // A CALL pushes, a RET pops. A RET with nothing on the stack is a frame
         // already open when the window began; ignoring it is what makes a
         // partial window still give the right answer.
-        std::map<uint32_t, std::vector<TtdPosition>> stacks;
+        struct Open { TtdPosition pos; uint64_t sp; };
+        std::map<uint32_t, std::vector<Open>> stacks;
         uint64_t seen_all  = 0;
         uint64_t seen_mine = 0;
         auto on_call_ret = [&](GuestAddress, GuestAddress fall_through, IThreadView const *t) noexcept
@@ -391,9 +396,9 @@ namespace idattd
             {
                 if ( (uint64_t)fall_through != 0 )
                 {
-                    std::vector<TtdPosition> &st = stacks[utid];
+                    std::vector<Open> &st = stacks[utid];
                     if ( st.size() < kMaxDepth )
-                        st.push_back(t->GetPosition());
+                        st.push_back(Open{ t->GetPosition(), (uint64_t)t->GetStackPointer() });
                 }
                 else
                 {
@@ -419,6 +424,13 @@ namespace idattd
             { false, 64    }, { false, 256   }, { false, 1024  },
             { false, 4096  }, { false, 16384 },
         };
+
+        // Not every call is matched by a RET: one that leaves by a syscall, a
+        // context switch or an exception stays open on the stack forever. The
+        // call that entered this frame is the innermost open one made from a
+        // shallower frame -- above the stack pointer here. Anything at or
+        // below it is one of those deeper calls that never came back.
+        const uint64_t here_sp = (uint64_t)cur()->GetStackPointer();
 
         show_wait_box("Looking for the call that entered this frame (Cancel to stop)...");
         bool        found     = false;
@@ -466,11 +478,17 @@ namespace idattd
             winInsns = (uint64_t)rr.InstructionsExecuted;
 
             auto it = stacks.find(tid);
-            if ( it != stacks.end() && !it->second.empty() )
+            if ( it != stacks.end() )
             {
-                out   = it->second.back();
-                found = true;
-                break;
+                for ( auto o = it->second.rbegin(); o != it->second.rend(); ++o )
+                    if ( o->sp > here_sp )
+                    {
+                        out   = o->pos;
+                        found = true;
+                        break;
+                    }
+                if ( found )
+                    break;
             }
             if ( !(first < s) )
                 break;      // the window already reached the start of the trace

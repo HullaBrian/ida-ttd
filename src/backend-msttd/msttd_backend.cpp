@@ -116,6 +116,7 @@ namespace idattd
         m_caps = Capabilities{};
         m_caps.access_queries = true;      // by replay with watchpoints armed
         m_caps.call_queries   = true;      // by replay with the call/return callback
+        m_caps.mapping_changes = true;     // reconstructed from the memory syscalls
         m_caps.cheap_seek     = true;
         m_caps.reverse_step   = true;
         m_caps.exceptions     = true;
@@ -463,7 +464,7 @@ namespace idattd
         }
 
         const TtdPosition cur = from_core(at);
-        struct Frame { ea_t entry; TtdPosition pos; };
+        struct Frame { ea_t entry; TtdPosition pos; uint64_t sp; };
         std::map<uint32_t, std::vector<Frame>> stacks;
         // CALL: instr == callee (the function head), fall_through == return
         // address. RET: fall_through == 0; pop the innermost open frame.
@@ -475,7 +476,8 @@ namespace idattd
             {
                 if ( (uint64_t)fall_through != 0 )
                 {
-                    stacks[utid].push_back(Frame{ (ea_t)(uint64_t)instr, t->GetPosition() });
+                    stacks[utid].push_back(Frame{ (ea_t)(uint64_t)instr, t->GetPosition(),
+                                                  (uint64_t)t->GetStackPointer() });
                 }
                 else
                 {
@@ -502,15 +504,24 @@ namespace idattd
             m_frameScratch->ReplayForward(cur);                 // stop AT the position
             m_frameScratch->SetCallReturnCallback(nullptr, 0);
 
+            // The innermost open call made from a shallower frame than the
+            // one at 'at': a call that left by a syscall or a context switch
+            // never sees its RET and stays open below it. Only the thread
+            // standing at 'at' has its stack pointer to hand; for another
+            // the innermost open call is the best answer there is.
+            uint64_t sp_at = (uint32_t)m_frameScratch->GetThreadInfo().Id == tid
+                           ? (uint64_t)m_frameScratch->GetStackPointer() : 0;
             auto it = stacks.find(tid);
-            if ( it != stacks.end() && !it->second.empty() )
-            {
-                if ( entry != nullptr )
-                    *entry = it->second.back().entry;
-                if ( call_pos != nullptr )
-                    *call_pos = to_core(it->second.back().pos);
-                return true;
-            }
+            if ( it != stacks.end() )
+                for ( auto f = it->second.rbegin(); f != it->second.rend(); ++f )
+                    if ( f->sp > sp_at )
+                    {
+                        if ( entry != nullptr )
+                            *entry = f->entry;
+                        if ( call_pos != nullptr )
+                            *call_pos = to_core(f->pos);
+                        return true;
+                    }
             if ( (uint64_t)cur.Steps <= back )
                 break;       // the window already reached the start of the sequence
         }
