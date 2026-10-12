@@ -283,7 +283,17 @@ namespace idattd
             return DRC_OK;
         }
         *code = m_events.empty() ? GDE_ONE_EVENT : GDE_MANY_EVENTS;
+        qstring line;
+        line.sprnt("event %d at %a", (int)event->eid(), event->ea);
+        log_event(line);
         return DRC_OK;
+    }
+
+    void TraceManager::log_event(const qstring &line)
+    {
+        if ( m_eventLog.size() >= 16 )
+            m_eventLog.pop_front();
+        m_eventLog.push_back(line);
     }
 
     ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
@@ -555,6 +565,7 @@ namespace idattd
         m_lastResume.sprnt("event %d, resume mode %d, %s, request %d",
                            (int)event->eid(), (int)m_resumeMode,
                            m_isForward ? "forward" : "backward", (int)m_pending.kind);
+        log_event(qstring("resume: ") + m_lastResume);
         // Only act when continuing from a stop (breakpoint or single step).
         if ( event->eid() != BREAKPOINT && event->eid() != STEP )
             return DRC_OK;

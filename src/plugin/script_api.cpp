@@ -661,6 +661,14 @@ namespace idattd
             out.str("pos", format_position(mgr().current_position())).hex("pc", mgr().current_pc_ea());
         out.str("drv_backend", g_drv.backend != nullptr ? g_drv.backend->id() : "")
            .str("last_resume", mgr().last_resume());
+        JArr log;
+        for ( const qstring &l : mgr().event_log() )
+        {
+            qstring q;
+            json_escape(&q, l.c_str());
+            log.add(q);
+        }
+        out.raw("event_log", log.done());
     }
 
     static void cmd_start(const Args &a, JObj &out)
