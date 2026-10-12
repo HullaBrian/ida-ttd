@@ -78,7 +78,9 @@
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalLibraryDirectories>$(SogenArtifacts);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>windows-ttd-view.lib;windows-ttd-reader.lib;unicorn-emulator.lib;emulator.lib;emulator-common.lib;minidump.lib;unicorn.lib;x86_64-softmmu.lib;unicorn-common.lib;zstd_static.lib;ws2_32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- Full paths, so a rebuilt Sogen library relinks the backend. By bare
+           name through the library path, MSBuild's link tracking missed it. -->
+      <AdditionalDependencies>$(SogenArtifacts)\windows-ttd-view.lib;$(SogenArtifacts)\windows-ttd-reader.lib;$(SogenArtifacts)\unicorn-emulator.lib;$(SogenArtifacts)\emulator.lib;$(SogenArtifacts)\emulator-common.lib;$(SogenArtifacts)\minidump.lib;$(SogenArtifacts)\unicorn.lib;$(SogenArtifacts)\x86_64-softmmu.lib;$(SogenArtifacts)\unicorn-common.lib;$(SogenArtifacts)\zstd_static.lib;ws2_32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

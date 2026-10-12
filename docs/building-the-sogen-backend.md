@@ -16,6 +16,18 @@ From a Visual Studio x64 developer prompt, against a Sogen checkout on
 `ttd/next` (`%SOGEN%`) and a build directory of your choosing
 (`%SOGEN_BUILD%`):
 
+Use `ttd/next` at `ada569b0` or later. Before it, reading a page of memory
+walked every recorded access to it -- tens to hundreds of milliseconds on a
+hot code page -- and IDA reads whole modules after their symbols load; with
+it, a page is read from the checkpoint and the writes since, in tens of
+microseconds. The backend reports ITTD_CAP_CHEAP_READS only for recordings
+with checkpoint memory, so an older recording still opens, more slowly.
+
+To update an existing build after pulling Sogen, reconfigure with
+`-DFETCHCONTENT_FULLY_DISCONNECTED=ON` -- otherwise CMake tries to update the
+dependencies it fetched, which can fail on long paths -- and build the same
+target again.
+
 ```bat
 cmake -S %SOGEN% -B %SOGEN_BUILD% -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
       -DSOGEN_BUILD_STATIC=ON -DSOGEN_BUILD_TOOLS=OFF -DSOGEN_ENABLE_PYTHON_BINDINGS=OFF ^

@@ -105,6 +105,7 @@ namespace idattd
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_funcRanges.clear();
+        m_funcTried.clear();
         m_moduleImages.clear();
         m_targetName.clear();
     }
@@ -215,6 +216,8 @@ namespace idattd
         if ( mi == (size_t)-1 )
             return false;
 
+        // Worked out on first use when the backend's reads are not cheap.
+        const_cast<ModuleRegistry *>(this)->function_ranges(m_spans[mi].base);
         auto it = m_funcRanges.find(m_spans[mi].base);
         if ( it == m_funcRanges.end() )
             return false;
@@ -333,12 +336,35 @@ namespace idattd
                 named = apply_module_exports(rd, base, m_is64);
         }
 
-        // Function boundaries, so a whole function can be laid out (including
-        // code before the current PC) when the user steps into runtime-only
-        // code: from the backend if it knows them, else the module's .pdata --
-        // from the on-disk file when it is the build the recording ran (it is
-        // complete), from recorded memory otherwise (always right, sometimes
-        // incomplete).
+        // Function boundaries: now when reads are cheap, otherwise when a stop
+        // first asks for one in this module (function_range_at) -- they can
+        // mean reading the module's whole .pdata out of the recording.
+        size_t nfunc = 0;
+        if ( m_backend->capabilities().cheap_reads )
+            nfunc = function_ranges(base);
+
+        msg("[ida-ttd] %s @ 0x%llX: %u export(s)%s\n",
+            base_name(modpath).c_str(), (uint64_t)base, (unsigned)named,
+            m_backend->capabilities().cheap_reads ? qstring().sprnt(", %u function range(s)", (unsigned)nfunc).c_str()
+                                                  : "");
+    }
+
+    // Function boundaries, so a whole function can be laid out (including
+    // code before the current PC) when the user steps into runtime-only code:
+    // from the backend if it knows them, else the module's .pdata -- from the
+    // on-disk file when it is the build the recording ran (it is complete),
+    // from recorded memory otherwise (always right, sometimes incomplete).
+    // Worked out once per module; returns how many there are.
+    size_t ModuleRegistry::function_ranges(ea_t base)
+    {
+        if ( !m_funcTried.insert(base).second )
+        {
+            auto it = m_funcRanges.find(base);
+            return it != m_funcRanges.end() ? it->second.size() : 0;
+        }
+        DiagTimer diag_timer("function ranges");
+        const ModuleInfo *rec = record_at(base);
+        std::string modpath = rec != nullptr ? rec->path.c_str() : "";
         std::vector<std::pair<ea_t, ea_t>> franges = m_backend->module_functions(base);
         size_t nfunc = franges.size();
         if ( nfunc == 0 )
@@ -368,9 +394,7 @@ namespace idattd
             std::sort(franges.begin(), franges.end());
             m_funcRanges[base] = std::move(franges);
         }
-
-        msg("[ida-ttd] %s @ 0x%llX: %u export(s), %u function range(s)\n",
-            base_name(modpath).c_str(), (uint64_t)base, (unsigned)named, (unsigned)nfunc);
+        return nfunc;
     }
 
     void ModuleRegistry::resolve_loaded(Position pos)
@@ -379,9 +403,15 @@ namespace idattd
             resolve_symbols(m->base);
     }
 
-    void ModuleRegistry::load_pdb(ea_t base)
+    void ModuleRegistry::load_pdb(ea_t base, bool stopped_here)
     {
         if ( base == BADADDR || m_backend == nullptr )
+            return;
+        // Applying a PDB has IDA's PDB plugin read through the module, which
+        // on a backend whose reads are not cheap is seconds per module -- and
+        // a recording loads dozens. Then only the module a stop lands in
+        // gets its PDB, when it does.
+        if ( !stopped_here && !m_backend->capabilities().cheap_reads )
             return;
 
         // Never fetch a PDB for the analysed binary itself. IDA already owns

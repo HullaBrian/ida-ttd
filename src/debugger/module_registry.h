@@ -108,7 +108,9 @@ namespace idattd
         // thread (common/symsrv.h), and IDA's PDB plugin is only driven, with
         // no "load symbols?" prompt, once the file is on disk. Deduplicated per
         // module.
-        void load_pdb(ea_t base);
+        // 'stopped_here': the user is stopped in this module, so it gets its
+        // PDB even when the backend's reads are not cheap.
+        void load_pdb(ea_t base, bool stopped_here = false);
         // Hand every PDB that finished downloading since the last call to IDA.
         // Main thread only; called once per stop.
         void apply_finished_pdbs();
@@ -129,6 +131,7 @@ namespace idattd
         bool pdb_identity(ea_t base, GuestPdbInfo *out);
         void apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb);
         void keep_names_only(ea_t base);
+        size_t function_ranges(ea_t base);
         void report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb);
 
         ITraceBackend *m_backend = nullptr;
@@ -145,6 +148,7 @@ namespace idattd
         // Per-module function bounds, keyed by module base; each vector is
         // sorted by start address.
         std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
+        std::set<ea_t> m_funcTried;     // function_ranges() ran for these
 
         // Per-module on-disk image cache, keyed by module base. An entry with
         // ok == false means the file was already tried and rejected.

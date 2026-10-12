@@ -371,6 +371,12 @@ namespace
             // mapped or unmapped, which is not enough to draw a map from.
             if ( t.has_memory_regions() )
                 out->capabilities |= ITTD_CAP_MAPPING_CHANGES;
+            // With checkpoint memory, memory_at starts from the checkpoint and
+            // applies the writes since (ttd/next ada569b0): a page is tens of
+            // microseconds once its checkpoint is decoded. Without it, a page
+            // walks every access to it, and is not cheap.
+            if ( t.has_checkpoint_memory() )
+                out->capabilities |= ITTD_CAP_CHEAP_READS;
             out->fingerprint = fold_id(t.id());
             out->first = at(first_position(t));
             out->last  = at(last_position(t));

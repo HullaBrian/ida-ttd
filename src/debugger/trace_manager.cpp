@@ -535,6 +535,11 @@ namespace idattd
         {
             DiagTimer t("stop: module symbols");
             m_modules.resolve_loaded(m_cursor->position());
+            // The module stopped in gets its PDB now if it did not at load
+            // (a backend whose reads are not cheap; see load_pdb).
+            ea_t lo = 0, hi = 0;
+            if ( m_modules.range_at(program_counter(), lo, hi) )
+                m_modules.load_pdb(lo, true);
         }
         {
             DiagTimer t("stop: code layout");
