@@ -205,6 +205,9 @@ namespace idattd
             return start_failed(errbuf, DRC_FAILED, "%s", err.c_str());
         m_backend = backend;
         set_position_backend(m_backend);
+        // Microsoft's memory index; returns at once when the loader built it.
+        if ( !m_backend->prepared() )
+            m_backend->prepare(nullptr);
         msg("[ida-ttd] %s is a %s recording.\n", path, m_backend->display_name());
 
         m_modules.bind(m_backend, m_is64, m_targetName.c_str());

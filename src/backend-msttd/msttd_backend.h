@@ -33,6 +33,10 @@ namespace idattd
         bool open(const char *path, qstring *errbuf) override;
         void close() override;
         bool is_open() const override { return (bool)m_engine; }
+        // The memory index: without it, memory reads are severely limited.
+        // Built behind IDA's wait box; the engine cannot be interrupted.
+        bool prepare(ProgressSink *progress) override;
+        bool prepared() const override;
         const TraceInfo    &info() const override         { return m_info; }
         const Capabilities &capabilities() const override { return m_caps; }
 
@@ -89,6 +93,7 @@ namespace idattd
         TTD::Replay::UniqueCursor       m_insnScratch;     // query_instructions, likewise
         TraceInfo                       m_info;
         Capabilities                    m_caps;
+        bool                            m_indexed = false;   // prepare() ran this session
     };
 
     // A position in a Microsoft recording, with the playhead's thread and

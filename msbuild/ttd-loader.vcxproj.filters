@@ -2,8 +2,14 @@
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <!-- Generated to mirror the src/ tree; see msbuild/gen_filters.py. -->
   <ItemGroup>
+    <Filter Include="backend-msttd">
+      <UniqueIdentifier>{5359579A-ED70-4702-8161-04FA31B8B12E}</UniqueIdentifier>
+    </Filter>
     <Filter Include="common">
       <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="core">
+      <UniqueIdentifier>{FB556B44-F2C3-FD30-0F75-241C1B1475DC}</UniqueIdentifier>
     </Filter>
     <Filter Include="debugger">
       <UniqueIdentifier>{6F0FFD6B-7E1D-FCF3-D575-149FB25537B1}</UniqueIdentifier>
@@ -16,7 +22,34 @@
     <ClInclude Include="$(SrcDir)\common\pch.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\position.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\backend.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\backend_module.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\backend_registry.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\guest_view.h">
+      <Filter>core</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h">
+      <Filter>backend-msttd</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_navigator.h">
+      <Filter>backend-msttd</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h">
+      <Filter>backend-msttd</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\msttd_guest.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\msttd_position.h">
       <Filter>debugger</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\common\symbols.h">
@@ -30,6 +63,33 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\core\position.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\backend_module.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\backend_registry.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\guest_view.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_navigator.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_queries.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\msttd_guest.cpp">
       <Filter>debugger</Filter>
     </ClCompile>

@@ -35,6 +35,7 @@ namespace idattd
         const TraceInfo    &info() const override { return m_info; }
         const Capabilities &capabilities() const override { return m_caps; }
         bool prepare(ProgressSink *progress) override;
+        bool prepared() const override;
 
         qstring     format_position(Position p) const override;
         bool        parse_position(const char *text, Position *out) const override;
@@ -83,6 +84,7 @@ namespace idattd
         const ittd_backend_api *m_api = nullptr;
         qstring       m_path;
         ittd_backend *m_handle = nullptr;
+        bool          m_prepared = false;
         TraceInfo     m_info;
         Capabilities  m_caps;
     };

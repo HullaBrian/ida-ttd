@@ -4,7 +4,7 @@
 
 namespace idattd
 {
-    // The record a database created from a .run file carries about that file.
+    // The record a database created from a recording carries about that file.
     //
     // The loader runs exactly once, when the database is created. Every later
     // open of the .i64 goes straight to the plugin, so anything the plugin needs
@@ -12,7 +12,7 @@ namespace idattd
     // and not recomputed.
     struct TraceLink
     {
-        qstring  trace_path;            // absolute path of the .run, as it was then
+        qstring  trace_path;            // absolute path of the recording, as it was then
         qstring  module_path;           // main module's full path on the RECORDING machine
         qstring  module_name;           // its base name -- what a module load is matched against
         ea_t     module_base = BADADDR; // recorded load address of the main image
@@ -20,12 +20,12 @@ namespace idattd
         int      bitness = 0;           // 0 unknown, 32, or 64
     };
 
-    // True when this database was created by the .run loader.
+    // True when this database was created by the trace loader.
     bool trace_link_present();
     // Read the record. False when absent or written by a newer schema.
     bool trace_link_read(TraceLink *out);
     void trace_link_write(const TraceLink &link);
-    // Point the record at a different .run. Used when the recording has been
+    // Point the record at a different recording. Used when the recording has been
     // moved or renamed since the database was made and the user re-locates it.
     void trace_link_set_path(const char *path);
 

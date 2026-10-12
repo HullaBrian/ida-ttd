@@ -364,10 +364,16 @@ namespace idattd
         virtual const Capabilities  &capabilities() const = 0;
 
         // Work the backend would like done once per recording before its seeks
-        // become fast, with a progress bar -- building Microsoft's memory index,
-        // filling Sogen's keyframes. Nothing to do returns true immediately. The
-        // core offers it when a session starts, and does not insist.
+        // become fast or its reads complete -- building Microsoft's memory
+        // index, filling Sogen's keyframes. Nothing to do returns true
+        // immediately. Called on the main thread after open(): the debugger
+        // runs it when a session starts, the loader asks the user first.
+        //
+        // 'progress' may be null; a backend whose preparation cannot be
+        // interrupted may show IDA's wait box itself.
         virtual bool prepare(ProgressSink *progress) { qnotused(progress); return true; }
+        // Whether prepare() has nothing left to do for the open recording.
+        virtual bool prepared() const { return true; }
 
         // ---- positions -----------------------------------------------------
         virtual qstring format_position(Position p) const = 0;

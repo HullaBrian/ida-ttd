@@ -349,9 +349,10 @@ namespace idattd
     {
         if ( m_handle != nullptr && m_api->close != nullptr )
             m_api->close(m_handle);
-        m_handle = nullptr;
-        m_info   = TraceInfo{};
-        m_caps   = Capabilities{};
+        m_handle   = nullptr;
+        m_info     = TraceInfo{};
+        m_caps     = Capabilities{};
+        m_prepared = false;
     }
 
     bool BackendModule::prepare(ProgressSink *progress)
@@ -359,7 +360,14 @@ namespace idattd
         if ( m_handle == nullptr || m_api->prepare == nullptr )
             return true;
         ProgressBridge pb(progress);
-        return m_api->prepare(m_handle, pb.get()) == ITTD_OK;
+        m_prepared = m_api->prepare(m_handle, pb.get()) == ITTD_OK;
+        return m_prepared;
+    }
+
+    bool BackendModule::prepared() const
+    {
+        // The ABI cannot be asked, so: nothing to prepare, or it ran.
+        return m_handle != nullptr && (m_api->prepare == nullptr || m_prepared);
     }
 
     qstring BackendModule::format_position(Position p) const

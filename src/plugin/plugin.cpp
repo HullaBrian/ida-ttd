@@ -301,7 +301,7 @@ namespace idattd
             start_trace_session();
             return true;
         }
-        info("ida-ttd: open a .run trace directly, or select 'TTD trace replayer' "
+        info("ida-ttd: open a trace (.run, .sogttd) directly, or select 'TTD trace replayer' "
              "under Debugger > Switch debugger and start with the trace file as "
              "the application.");
         return true;
@@ -1188,7 +1188,7 @@ plugin_t PLUGIN =
     nullptr,
     nullptr,
     "Time Travel Debugger (TTD) trace replayer",
-    "Loads Microsoft TTD .run traces and lets you navigate them in IDA.",
+    "Loads time travel recordings (Microsoft TTD, Sogen) and lets you navigate them in IDA.",
     "TTD trace replayer",
     nullptr
 };

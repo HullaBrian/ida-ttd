@@ -30,6 +30,23 @@ namespace idattd
             && memcmp(magic, "TTDLog", sizeof(magic)) == 0;
     }
 
+    bool MsTtdBackend::prepare(ProgressSink *progress)
+    {
+        qnotused(progress);     // BuildIndex reports progress but takes no Cancel
+        if ( !m_engine )
+            return false;
+        m_indexed = build_trace_index(m_engine.get());
+        return m_indexed;
+    }
+
+    bool MsTtdBackend::prepared() const
+    {
+        // An index the engine could not save is still built and in memory, so
+        // the status alone does not say; what this session built does.
+        return m_engine && (m_indexed
+                         || m_engine->GetIndexStatus() == TTD::Replay::IndexStatus::IndexFileLoaded);
+    }
+
     bool MsTtdBackend::open(const char *path, qstring *errbuf)
     {
         close();
@@ -59,11 +76,6 @@ namespace idattd
             m_engine.reset();
             return fail("Failed to load the trace: %s", path);
         }
-
-        // Without the memory index, memory reads are severely limited. The
-        // .run loader may already have built it, in which case this returns
-        // at once.
-        build_trace_index(m_engine.get());
 
         m_info = TraceInfo{};
         m_info.first        = to_core(m_engine->GetFirstPosition());
@@ -118,6 +130,7 @@ namespace idattd
         m_engine.reset();
         m_info = TraceInfo{};
         m_caps = Capabilities{};
+        m_indexed = false;
     }
 
     // Microsoft's own notation, Sequence:Steps in hex, which core/position.h
