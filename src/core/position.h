@@ -14,7 +14,7 @@ namespace idattd
     // Ordering is the recording's own chronology, so lexicographic order on
     // (hi, lo) has to be the order the backend replays in. Both satisfy that:
     // Microsoft's sequence/steps pair is already ordered that way, and Sogen's
-    // counter goes in 'hi' with 'lo' zero.
+    // counter goes in 'lo' with 'hi' zero.
     //
     // Two words rather than an opaque handle because a position has to be
     // cheap to copy (every row of every listing holds one), trivially

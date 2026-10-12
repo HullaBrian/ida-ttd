@@ -56,6 +56,7 @@
     <ClInclude Include="$(SrcDir)\debugger\trace_manager.h" />
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />
+    <ClInclude Include="$(SrcDir)\core\backend_module.h" />
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h" />
@@ -95,6 +96,7 @@
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\segment_layout.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp" />
+    <ClCompile Include="$(SrcDir)\core\backend_module.cpp" />
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp" />
     <ClCompile Include="$(SrcDir)\core\position.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp" />

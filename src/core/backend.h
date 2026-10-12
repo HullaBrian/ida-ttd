@@ -372,6 +372,19 @@ namespace idattd
         virtual QueryResult query_exceptions(std::vector<ExceptionEvent> *out,
                                              ProgressSink *progress) = 0;
 
+        // Every mapping change the recording holds, as the ABI's own structs
+        // (ittd_mapping_change carries Windows' MEM_* and PAGE_* values, which
+        // the memory map wants as they are), and the mapped-file names their
+        // 'file' fields index, one-based. Requires capabilities().
+        // mapping_changes; a backend without it answers not-ran.
+        virtual QueryResult query_mapping_changes(std::vector<ittd_mapping_change> *out,
+                                                  std::vector<qstring> *files,
+                                                  ProgressSink *progress)
+        {
+            qnotused(out); qnotused(files); qnotused(progress);
+            return QueryResult{};
+        }
+
         // The registers at each of 'positions', in the same order; an entry
         // whose 'have' is 0 could not be reconstructed. A batch because
         // neighbouring positions share work -- see ittd_backend_api::regs_at.

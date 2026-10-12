@@ -1,6 +1,7 @@
 #include "plugin/plugin.h"
 #include "common/trace_link.h"
 #include "common/symsrv.h"
+#include "core/backend_module.h"
 #include "debugger/registers.h"
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
@@ -51,6 +52,11 @@ namespace idattd
     }
     Plugin::Plugin()
     {
+        // Backends for kinds of recording other than Microsoft's, installed as
+        // DLLs under plugins/ida-ttd-backends. Nothing is there unless the user
+        // put it there, in which case each one is named in the output window.
+        load_backend_modules();
+
         configure_debugger(m_debugger, inf_is_64bit());
         m_tracer.set_manager(&m_mgr);
         m_tracer.set_64bit(inf_is_64bit());

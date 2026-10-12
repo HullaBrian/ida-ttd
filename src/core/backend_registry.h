@@ -22,11 +22,15 @@ namespace idattd
 
         using Factory = BackendPtr (*)();
         void add(Factory f);
+        // A backend that already exists: one loaded from a DLL
+        // (core/backend_module.h). Kept in the order added, after every
+        // compiled-in one.
+        void add_backend(BackendPtr b);
 
         // One instance of every registered backend, created on first use and
         // kept: can_open() and the identity accessors are valid before anything
         // is opened, and the chosen one then has open() called on it.
-        const std::vector<BackendPtr> &all();
+        const std::vector<ITraceBackend *> &all();
 
         // The first registered backend that says it handles 'path', or nullptr.
         // Registration order is the tie-break, which is why a backend's
@@ -38,8 +42,11 @@ namespace idattd
         qstring file_filters();
 
     private:
-        std::vector<Factory>   m_factories;
-        std::vector<BackendPtr> m_backends;
+        std::vector<Factory>         m_factories;
+        std::vector<BackendPtr>      m_compiled;   // owners, one per factory run
+        std::vector<BackendPtr>      m_loaded;     // owners, from add_backend()
+        std::vector<ITraceBackend *> m_all;        // both, compiled-in first
+        bool                         m_dirty = true;
     };
 
     // Helper for the macro below.

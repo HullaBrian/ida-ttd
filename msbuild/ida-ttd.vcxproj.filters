@@ -64,6 +64,9 @@
     <ClInclude Include="$(SrcDir)\core\backend.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\backend_module.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\core\backend_registry.h">
       <Filter>core</Filter>
     </ClInclude>
@@ -173,6 +176,9 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp">
       <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\backend_module.cpp">
+      <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp">
       <Filter>core</Filter>
