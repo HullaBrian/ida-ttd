@@ -60,13 +60,14 @@ namespace idattd
         static constexpr uint64_t SENTINEL_WORD = UINT64_MAX;
     };
 
+    class ITraceBackend;
+
     // Render a position the way the recording's own tooling numbers it, and
-    // parse that rendering back.
-    //
-    // In phase 3 of docs/modular-backends.md these route through the active
-    // backend (ITraceBackend::format_position). Until then there is one
-    // backend and this is its convention: two hex words separated by a colon,
-    // which is exactly Microsoft TTD's "Sequence:Steps".
+    // parse that rendering back: through the backend of the session that is
+    // running (set_position_backend), so a Sogen recording shows instruction
+    // numbers and a Microsoft one Sequence:Steps. With none set they use
+    // Microsoft's notation, which is what positions stored before backends
+    // existed are written in.
     //
     // format_position() of an invalid position is the empty string, so a
     // listing column for a position that was never recorded comes out blank
@@ -75,6 +76,16 @@ namespace idattd
     bool        parse_position(const char *text, Position *out);
     // What to put next to an input box that takes one.
     const char *position_syntax();
+
+    // The backend the three above defer to; nullptr for none. The session
+    // sets it when a recording opens and clears it when it closes.
+    void set_position_backend(const ITraceBackend *backend);
+
+    // Microsoft TTD's notation, two hex words "Sequence:Steps": the default
+    // above, and what its backend answers with.
+    qstring     format_hex_position(Position p);
+    bool        parse_hex_position(const char *text, Position *out);
+    const char *hex_position_syntax();
 
     // A half-open [first, last] span of a recording. 'first' as begin() and
     // 'last' as end() is "the whole thing", which is what a query with no range

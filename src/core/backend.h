@@ -97,6 +97,12 @@ namespace idattd
         // IMAGE_FILE_MACHINE_*: 0x8664, or 0x14c for 32-bit code in a WoW64
         // process. 0 when the recording does not say; read the PE header.
         uint16_t machine = 0;
+        // The image's TimeDateStamp and CheckSum as the recording saw them,
+        // which is how a file on this machine is told apart from a different
+        // build of the same DLL. 0 when the backend does not say; the core
+        // then reads them from the recorded headers.
+        uint32_t timestamp = 0;
+        uint32_t checksum  = 0;
     };
 
     struct ThreadInfo

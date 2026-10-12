@@ -1,13 +1,41 @@
 #include "core/position.h"
+#include "core/backend.h"
 
 namespace idattd
 {
+    static const ITraceBackend *g_position_backend = nullptr;
+
+    void set_position_backend(const ITraceBackend *backend)
+    {
+        g_position_backend = backend;
+    }
+
     const char *position_syntax()
+    {
+        return g_position_backend != nullptr ? g_position_backend->position_syntax()
+                                             : hex_position_syntax();
+    }
+
+    qstring format_position(Position p)
+    {
+        if ( !p.is_valid() )
+            return qstring();
+        return g_position_backend != nullptr ? g_position_backend->format_position(p)
+                                             : format_hex_position(p);
+    }
+
+    bool parse_position(const char *text, Position *out)
+    {
+        return g_position_backend != nullptr ? g_position_backend->parse_position(text, out)
+                                             : parse_hex_position(text, out);
+    }
+
+    const char *hex_position_syntax()
     {
         return "Sequence:Steps in hex";
     }
 
-    qstring format_position(Position p)
+    qstring format_hex_position(Position p)
     {
         qstring out;
         if ( !p.is_valid() )
@@ -48,7 +76,7 @@ namespace idattd
         return true;
     }
 
-    bool parse_position(const char *text, Position *out)
+    bool parse_hex_position(const char *text, Position *out)
     {
         if ( text == nullptr || out == nullptr )
             return false;

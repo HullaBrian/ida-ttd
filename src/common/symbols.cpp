@@ -112,6 +112,7 @@ namespace idattd
         IMAGE_FILE_HEADER fh{};
         if ( !read_val(cursor, ntAddr + 4, &fh) )
             return false;
+        out->timestamp = fh.TimeDateStamp;
         uint16_t nsections = fh.NumberOfSections;
         uint64_t sectAddr  = ntAddr + 4 + sizeof(IMAGE_FILE_HEADER) + fh.SizeOfOptionalHeader;
 
@@ -124,6 +125,7 @@ namespace idattd
             out->size_of_image   = nt.OptionalHeader.SizeOfImage;
             out->size_of_headers = nt.OptionalHeader.SizeOfHeaders;
             out->preferred_base  = nt.OptionalHeader.ImageBase;
+            out->checksum        = nt.OptionalHeader.CheckSum;
         }
         else
         {
@@ -134,6 +136,7 @@ namespace idattd
             out->size_of_image   = nt.OptionalHeader.SizeOfImage;
             out->size_of_headers = nt.OptionalHeader.SizeOfHeaders;
             out->preferred_base  = nt.OptionalHeader.ImageBase;
+            out->checksum        = nt.OptionalHeader.CheckSum;
         }
 
         // NumberOfSections is a 16-bit file field: 65535 would ask for a 2.5 MB
@@ -418,34 +421,41 @@ namespace idattd
             if ( name.empty() )
                 continue;
 
-            ea_t va = (ea_t)(b + funcRva);
-            // Several exports routinely share one address: ntdll exports every
-            // syscall stub twice, as NtXxx and ZwXxx. The export name table is
-            // sorted alphabetically, so without care the Zw spelling arrives
-            // second and renames the address, and every call site in the
-            // database then reads ZwAllocateVirtualMemory.
-            //
-            // Whichever real name got there first keeps the address, except that
-            // a Zw name is replaced by the Nt spelling of the same stub. A dummy
-            // sub_/loc_ name is always replaced.
-            if ( has_user_name(get_flags(va)) )
-            {
-                qstring cur;
-                if ( get_name(&cur, va) <= 0 )
-                    continue;
-                bool zw_to_nt = cur.length() == name.length()
-                             && cur.length() > 2
-                             && strncmp(cur.c_str(), "Zw", 2) == 0
-                             && name.compare(0, 2, "Nt") == 0
-                             && strcmp(cur.c_str() + 2, name.c_str() + 2) == 0;
-                if ( !zw_to_nt )
-                    continue;
-            }
-            if ( set_name(va, name.c_str(), SN_NOWARN | SN_FORCE | SN_NOCHECK) )
+            if ( apply_export_name((ea_t)(b + funcRva), name.c_str()) )
                 named++;
         }
 
         return named;
+    }
+
+    bool apply_export_name(ea_t va, const char *name)
+    {
+        if ( va == BADADDR || name == nullptr || name[0] == '\0' )
+            return false;
+        // Several exports routinely share one address: ntdll exports every
+        // syscall stub twice, as NtXxx and ZwXxx. The export name table is
+        // sorted alphabetically, so without care the Zw spelling arrives
+        // second and renames the address, and every call site in the
+        // database then reads ZwAllocateVirtualMemory.
+        //
+        // Whichever real name got there first keeps the address, except that
+        // a Zw name is replaced by the Nt spelling of the same stub. A dummy
+        // sub_/loc_ name is always replaced.
+        if ( has_user_name(get_flags(va)) )
+        {
+            qstring cur;
+            if ( get_name(&cur, va) <= 0 )
+                return false;
+            size_t n = strlen(name);
+            bool zw_to_nt = cur.length() == n
+                         && n > 2
+                         && strncmp(cur.c_str(), "Zw", 2) == 0
+                         && strncmp(name, "Nt", 2) == 0
+                         && strcmp(cur.c_str() + 2, name + 2) == 0;
+            if ( !zw_to_nt )
+                return false;
+        }
+        return set_name(va, name, SN_NOWARN | SN_FORCE | SN_NOCHECK);
     }
 
     size_t parse_pdata_functions(const GuestRead &cursor, ea_t base, bool is64,

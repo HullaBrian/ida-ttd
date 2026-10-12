@@ -16,6 +16,12 @@ namespace idattd
     // add internal/non-exported names.
     size_t apply_module_exports(const GuestRead &cursor, ea_t base, bool is64);
 
+    // Name one exported address, by the rules every export source follows: a
+    // real name already there keeps the address, except that a Zw syscall
+    // stub gives way to the Nt spelling of the same stub. True when the name
+    // was applied. For exports a backend recorded rather than ones parsed here.
+    bool apply_export_name(ea_t va, const char *name);
+
     // Parse the x64 PE exception directory (.pdata / RUNTIME_FUNCTION table) of
     // the module at 'base' out of guest memory, returning the [start, end) address
     // range of every function in the module (sorted by start). This is how the
@@ -85,6 +91,8 @@ namespace idattd
         uint32_t size_of_image = 0;
         uint32_t size_of_headers = 0;
         uint64_t preferred_base = 0;
+        uint32_t timestamp = 0;     // FileHeader.TimeDateStamp
+        uint32_t checksum = 0;      // OptionalHeader.CheckSum
         std::vector<GuestPeSection> sections;
     };
 

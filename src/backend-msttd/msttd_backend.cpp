@@ -121,10 +121,10 @@ namespace idattd
 
     // Microsoft's own notation, Sequence:Steps in hex, which core/position.h
     // has always used and the database's stored positions are written in.
-    qstring MsTtdBackend::format_position(Position p) const { return ::idattd::format_position(p); }
+    qstring MsTtdBackend::format_position(Position p) const { return format_hex_position(p); }
     bool MsTtdBackend::parse_position(const char *text, Position *out) const
-    { return ::idattd::parse_position(text, out); }
-    const char *MsTtdBackend::position_syntax() const { return ::idattd::position_syntax(); }
+    { return parse_hex_position(text, out); }
+    const char *MsTtdBackend::position_syntax() const { return hex_position_syntax(); }
 
     UniqueCursor MsTtdBackend::new_engine_cursor() const
     {
@@ -181,8 +181,10 @@ namespace idattd
             mi.size     = m->Size;
             mi.path     = to_utf8(m->pName, m->NameLength).c_str();
             mi.name     = base_name(mi.path.c_str()).c_str();
-            mi.loaded   = to_core(ld[i].Position);
-            mi.unloaded = Position::none();
+            mi.loaded    = to_core(ld[i].Position);
+            mi.unloaded  = Position::none();
+            mi.timestamp = m->Timestamp;
+            mi.checksum  = m->Checksum;
             for ( size_t k = 0; k < nu; k++ )
                 if ( un[k].pModule == m && ld[i].Position < un[k].Position )
                 {
@@ -204,8 +206,10 @@ namespace idattd
             mi.size     = list[i].Size;
             mi.path     = to_utf8(list[i].pName, list[i].NameLength).c_str();
             mi.name     = base_name(mi.path.c_str()).c_str();
-            mi.loaded   = m_info.first;
-            mi.unloaded = Position::none();
+            mi.loaded    = m_info.first;
+            mi.unloaded  = Position::none();
+            mi.timestamp = list[i].Timestamp;
+            mi.checksum  = list[i].Checksum;
             out.push_back(mi);
         }
         return out;
