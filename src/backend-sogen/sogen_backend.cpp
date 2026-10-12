@@ -633,9 +633,12 @@ namespace
         return ITTD_OK;
     }
 
-    // The next (or previous) execution of an instruction starting at 'a', by
-    // step. An execute event matches any instruction overlapping the address,
-    // so one that merely covers it is stepped past.
+    // The next (or previous) execution of an instruction covering 'a', by step.
+    //
+    // Covering, not starting at: that is what an execute breakpoint means to
+    // Microsoft's engine, and IDA relies on it. Its backward step-over puts
+    // the temporary breakpoint on the return address minus one -- the last
+    // byte of the call -- and runs backward to it.
     //
     // next_access(s) answers steps above s and previous_access(s) steps below
     // s. At cursor position p the instruction about to run is step p + 1: run
@@ -644,17 +647,11 @@ namespace
     std::optional<uint64_t> execution_of(ttd::trace &t, uint64_t a, uint64_t position, bool forward)
     {
         const uint64_t X = (uint64_t)ttd::access_kind::execute;
-        uint64_t s = position + 1;
-        for ( ;; )
-        {
-            std::optional<ttd::access_event> ev = forward ? t.next_access(a, 1, s, X)
-                                                          : t.previous_access(a, 1, s, X);
-            if ( !ev )
-                return std::nullopt;
-            if ( ev->ip == a )
-                return ev->step;
-            s = ev->step;
-        }
+        std::optional<ttd::access_event> ev = forward ? t.next_access(a, 1, position + 1, X)
+                                                      : t.previous_access(a, 1, position + 1, X);
+        if ( !ev )
+            return std::nullopt;
+        return ev->step;
     }
 
     // The next (or previous) read or write of any byte of [a, a + size), by

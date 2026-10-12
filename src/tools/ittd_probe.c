@@ -390,6 +390,26 @@ int main(int argc, char **argv)
                     printf("    step out backwards: stop %d at %s\n", stop, pos_text(landed));
                     check(landed.lo == e->pos.lo, "  stepping out backwards lands on pos");
                 }
+                /* IDA's own backward step over: an execute breakpoint on the
+                   return address minus one -- the call's last byte, not its
+                   first -- and a run backward from just after the return. */
+                {
+                    uint64_t ret_ip = rip_at(c, e->ret_pos);
+                    ittd_breakpoint bp;
+                    memset(&bp, 0, sizeof(bp));
+                    bp.addr  = ret_ip - 1;
+                    bp.size  = 1;
+                    bp.kinds = ITTD_ACCESS_EXEC;
+                    api->cursor_seek(c, e->ret_pos);
+                    api->nav_breakpoints(c, &bp, 1);
+                    stop = -1;
+                    api->nav_run(c, 0, &stop);
+                    api->cursor_position(c, &landed);
+                    api->nav_breakpoints(c, NULL, 0);
+                    printf("    run back to the call's last byte: stop %d at %s\n", stop, pos_text(landed));
+                    check(stop == ITTD_STOP_BREAKPOINT && landed.lo == e->pos.lo,
+                          "  an execute breakpoint inside the call stops at the call");
+                }
             }
             if ( !is_none(e->ret_pos) )
             {
