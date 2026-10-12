@@ -62,6 +62,8 @@ namespace idattd
         QueryResult query_mapping_changes(std::vector<ittd_mapping_change> *out,
                                           std::vector<qstring> *files,
                                           ProgressSink *progress) override;
+        QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
+                                       std::vector<Access> *out, ProgressSink *progress) override;
         QueryResult registers_at(const std::vector<Position> &positions,
                                  std::vector<ittd_regs> *out,
                                  ProgressSink *progress) override;

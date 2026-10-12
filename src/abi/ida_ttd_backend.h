@@ -295,6 +295,16 @@ typedef struct ittd_exception
     uint32_t      reserved;
 } ittd_exception;
 
+/* One breakpoint: an execution of 'addr', or a read or write of any byte of
+ * [addr, addr + size). */
+typedef struct ittd_breakpoint
+{
+    uint64_t addr;
+    uint64_t size;                  /* 1 for an execute breakpoint */
+    uint32_t kinds;                 /* ITTD_ACCESS_* */
+    uint32_t reserved;
+} ittd_breakpoint;
+
 typedef struct ittd_symbol
 {
     uint64_t ea;
@@ -544,15 +554,21 @@ typedef struct ittd_backend_api
     /*
      * Bytes as the recording has them at this position.
      *
-     * 'known' is a byte per requested byte: non-zero where the recording can
-     * account for that byte. The rest are left untouched -- the core fills them
-     * from the module's on-disk image where there is one, which is the same job
-     * for every backend and so is not a backend's.
+     * 'known' is a byte per requested byte, ITTD_KNOWN_*: whether the recording
+     * can account for that byte. Unknown bytes are left untouched -- the core
+     * fills them from the module's on-disk image where there is one, which is
+     * the same job for every backend and so is not a backend's. A placeholder
+     * byte is written as zero, but the core still prefers the image for it:
+     * an engine that knows a page is mapped and has no value for it says
+     * "zero", and believing that is how a string literal lost its first bytes.
      *
      * *out_known receives the number of bytes marked known.
      */
     int (*cursor_read_memory)(ittd_cursor *c, uint64_t ea, void *buf, uint8_t *known,
                               size_t size, size_t *out_known);
+#define ITTD_KNOWN_NO          0u   /* nothing to serve */
+#define ITTD_KNOWN_YES         1u   /* the recording's value */
+#define ITTD_KNOWN_PLACEHOLDER 2u   /* mapped, but the value is not known: zero */
 
     /* The threads alive at this position. A count query. */
     int (*cursor_threads)(ittd_cursor *c, ittd_thread *buf, size_t cap, size_t *out_count);
@@ -576,10 +592,12 @@ typedef struct ittd_backend_api
     int (*nav_run)(ittd_cursor *c, int forward, int *out_stop);
     int (*nav_run_to)(ittd_cursor *c, uint64_t addr, int forward, int *out_stop);
 
-    /* Execute breakpoints as the whole set rather than one at a time: both
-     * engines key them by address, and replacing the set is cheaper and harder
-     * to get wrong than reconciling adds against deletes. */
-    int (*nav_breakpoints)(ittd_cursor *c, const uint64_t *addrs, size_t count);
+    /* Breakpoints as the whole set rather than one at a time: both engines
+     * key them by address, and replacing the set is cheaper and harder to get
+     * wrong than reconciling adds against deletes. An execute breakpoint stops
+     * with the program counter on 'addr'; a data breakpoint stops at the
+     * instruction that made the access. */
+    int (*nav_breakpoints)(ittd_cursor *c, const ittd_breakpoint *bpts, size_t count);
 
     /* ---- enumeration -------------------------------------------------- */
 
@@ -681,6 +699,21 @@ typedef struct ittd_backend_api
      * count query, valid after query_mapping_changes. */
     int (*query_mapping_files)(ittd_backend *b, ittd_name *buf, size_t cap,
                                size_t *out_count);
+
+    /*
+     * The instructions executed within 'when', in order, as ITTD_ACCESS_EXEC
+     * accesses whose pc is the instruction: on thread 'tid', or on every
+     * thread when 'tid' is 0. What the core walks to lay out code that only
+     * exists at runtime, and to find where a function began.
+     *
+     * Not a count query, because a replay engine cannot count without doing
+     * all the work: the backend fills at most 'cap' entries, writes how many
+     * to *out_count, and sets *out_truncated when the range held more. The
+     * caller keeps 'when' short.
+     */
+    int (*query_instructions)(ittd_backend *b, ittd_position_range when, uint32_t tid,
+                              ittd_access *buf, size_t cap, size_t *out_count,
+                              int *out_truncated, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

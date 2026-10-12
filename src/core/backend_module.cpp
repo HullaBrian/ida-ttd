@@ -214,11 +214,22 @@ namespace idattd
                  ? StopReason::Stepped : StopReason::Failed;
         }
 
-        void set_breakpoints(const std::vector<ea_t> &addrs) override
+        void set_breakpoints(const std::vector<Breakpoint> &bpts) override
         {
             if ( m_api->nav_breakpoints == nullptr )
                 return;
-            std::vector<uint64_t> v(addrs.begin(), addrs.end());
+            std::vector<ittd_breakpoint> v;
+            v.reserve(bpts.size());
+            for ( const Breakpoint &b : bpts )
+            {
+                ittd_breakpoint x{};
+                x.addr  = (uint64_t)b.addr;
+                x.size  = b.size == 0 ? 1 : b.size;
+                x.kinds = ((b.kinds & ACCESS_READ)  ? ITTD_ACCESS_READ  : 0)
+                        | ((b.kinds & ACCESS_WRITE) ? ITTD_ACCESS_WRITE : 0)
+                        | ((b.kinds & ACCESS_EXEC)  ? ITTD_ACCESS_EXEC  : 0);
+                v.push_back(x);
+            }
             m_api->nav_breakpoints(m_c, v.data(), v.size());
         }
 
@@ -606,6 +617,36 @@ namespace idattd
                             { return m_api->query_mapping_files(m_handle, b, cap, n); }) == ITTD_OK )
                 for ( const ittd_name &n : names )
                     files->push_back(qstring(n.name));
+        }
+        return result_of(rc, trunc);
+    }
+
+    QueryResult BackendModule::query_instructions(PositionRange when, uint32_t tid, size_t max,
+                                                  std::vector<Access> *out, ProgressSink *progress)
+    {
+        if ( m_handle == nullptr || m_api->query_instructions == nullptr || out == nullptr || max == 0 )
+            return QueryResult{};
+        // One call into a buffer of 'max': this query is capped, not counted
+        // (see the ABI), because counting would cost a replay the full price.
+        ProgressBridge pb(progress);
+        int trunc = 0;
+        std::vector<ittd_access> v(max);
+        size_t n = 0;
+        int rc = m_api->query_instructions(m_handle, to_abi(when), tid, v.data(), v.size(),
+                                           &n, &trunc, pb.get());
+        if ( rc == ITTD_OK )
+        {
+            for ( size_t i = 0; i < n && i < v.size(); i++ )
+            {
+                Access x;
+                x.pos  = from_abi(v[i].pos);
+                x.tid  = v[i].tid;
+                x.pc   = (ea_t)v[i].pc;
+                x.addr = (ea_t)v[i].addr;
+                x.size = v[i].size;
+                x.kind = ACCESS_EXEC;
+                out->push_back(x);
+            }
         }
         return result_of(rc, trunc);
     }

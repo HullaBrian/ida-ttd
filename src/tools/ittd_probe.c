@@ -243,6 +243,25 @@ int main(int argc, char **argv)
                   "the execute event of the instruction at rip is at this position");
         }
 
+        /* The instruction stream from here starts with the instruction at rip. */
+        if ( api->query_instructions != NULL )
+        {
+            ittd_access ins[16];
+            ittd_position_range w;
+            size_t n = 0;
+            int trunc = 0;
+            uint32_t tid2 = 0;
+            w.first = mid;
+            w.last.hi = UINT64_MAX;
+            w.last.lo = UINT64_MAX - 1;
+            api->cursor_thread(c, &tid2);
+            t0 = now_ms();
+            api->query_instructions(B, w, tid2, ins, 16, &n, &trunc, NULL);
+            printf("  16 instructions from here on thread %u: %zu, %.1f ms\n", tid2, n, now_ms() - t0);
+            check(n == 16 && trunc && ins[0].pc == r.gp[ITTD_REG_RIP] && ins[0].pos.lo == mid.lo,
+                  "the instruction stream starts here, with the instruction at rip");
+        }
+
         api->nav_step(c, 1, &stop);
         api->cursor_position(c, &here);
         check(here.lo == mid.lo + 1 && stop == ITTD_STOP_STEPPED, "a forward step moves one position");
@@ -292,6 +311,32 @@ int main(int argc, char **argv)
             if ( !is_none(e->pos) )
                 check(at_pos == e->site, "  rip at pos is the call site");
             check(at_entry == e->target, "  rip at entry_pos is the target");
+            /* A write breakpoint on the slot the call pushes its return address
+               into stops at the call, run forward from just before it. */
+            if ( k == 0 && !is_none(e->pos) && e->pos.lo > 0 && api->nav_breakpoints != NULL )
+            {
+                ittd_regs rr;
+                ittd_breakpoint bp;
+                ittd_position before = e->pos, landed;
+                int stop = -1;
+                memset(&bp, 0, sizeof(bp));
+                api->cursor_seek(c, e->pos);
+                if ( api->cursor_regs(c, &rr) == ITTD_OK )
+                {
+                    bp.addr  = rr.gp[ITTD_REG_RSP] - 8;
+                    bp.size  = 8;
+                    bp.kinds = ITTD_ACCESS_WRITE;
+                    before.lo = e->pos.lo - 1;
+                    api->cursor_seek(c, before);
+                    api->nav_breakpoints(c, &bp, 1);
+                    api->nav_run(c, 1, &stop);
+                    api->cursor_position(c, &landed);
+                    api->nav_breakpoints(c, NULL, 0);
+                    printf("    write breakpoint on [rsp-8, rsp): stop %d at %s\n", stop, pos_text(landed));
+                    check(stop == ITTD_STOP_BREAKPOINT && landed.lo == e->pos.lo,
+                          "  a write breakpoint on the return-address slot stops at the call");
+                }
+            }
             if ( !is_none(e->pos) && !is_none(e->ret_pos) && api->nav_step_over != NULL )
             {
                 ittd_position landed;

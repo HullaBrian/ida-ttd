@@ -60,7 +60,7 @@ namespace
         backend_t *owner = nullptr;
         std::unique_ptr<ttd::trace> trace;   // this cursor's own reader
         uint64_t position = 0;
-        std::vector<uint64_t> breakpoints;
+        std::vector<ittd_breakpoint> breakpoints;
         // The CPU at 'position', built on first use and dropped on every move.
         std::unique_ptr<ttd::cpu_view> view;
     };
@@ -657,30 +657,68 @@ namespace
         }
     }
 
-    // The nearest execution of any of 'addrs' after (or before) the cursor, as
-    // the position just before that instruction, and which address it was.
-    // Each address is a page-index lookup, so a breakpoint set is answered
-    // without replaying.
-    bool nearest_execution(cursor_t *c, const std::vector<uint64_t> &addrs, bool forward,
-                           uint64_t *out_pos, uint64_t *out_addr)
+    // The next (or previous) read or write of any byte of [a, a + size), by
+    // step, with the same "after the instruction about to run" convention as
+    // execution_of. A host write -- a syscall writing guest memory -- is a
+    // write as far as a breakpoint on "who wrote this" is concerned.
+    std::optional<uint64_t> access_of(ttd::trace &t, const ittd_breakpoint &b, uint64_t position,
+                                      bool forward)
+    {
+        uint64_t mask = 0;
+        if ( b.kinds & ITTD_ACCESS_READ )
+            mask |= (uint64_t)ttd::access_kind::read;
+        if ( b.kinds & ITTD_ACCESS_WRITE )
+            mask |= (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+        if ( mask == 0 )
+            return std::nullopt;
+        uint64_t size = b.size == 0 ? 1 : b.size;
+        std::optional<ttd::access_event> ev = forward ? t.next_access(b.addr, size, position + 1, mask)
+                                                      : t.previous_access(b.addr, size, position + 1, mask);
+        if ( !ev )
+            return std::nullopt;
+        return ev->step;
+    }
+
+    // The nearest hit of any of 'bpts' after (or before) the cursor, as the
+    // position just before the instruction that hit it, and which breakpoint
+    // it was. Each breakpoint is a page-index lookup, so a breakpoint set is
+    // answered without replaying.
+    bool nearest_hit(cursor_t *c, const std::vector<ittd_breakpoint> &bpts, bool forward,
+                     uint64_t *out_pos, size_t *out_index)
     {
         bool found = false;
         uint64_t best = 0;
-        for ( uint64_t a : addrs )
+        for ( size_t i = 0; i < bpts.size(); i++ )
         {
-            std::optional<uint64_t> step = execution_of(*c->trace, a, c->position, forward);
-            if ( !step )
-                continue;
-            if ( !found || (forward ? *step < best : *step > best) )
+            const ittd_breakpoint &b = bpts[i];
+            std::optional<uint64_t> steps[2];
+            if ( b.kinds & ITTD_ACCESS_EXEC )
+                steps[0] = execution_of(*c->trace, b.addr, c->position, forward);
+            steps[1] = access_of(*c->trace, b, c->position, forward);
+            for ( const std::optional<uint64_t> &step : steps )
             {
-                best      = *step;
-                *out_addr = a;
-                found     = true;
+                if ( !step )
+                    continue;
+                if ( !found || (forward ? *step < best : *step > best) )
+                {
+                    best       = *step;
+                    *out_index = i;
+                    found      = true;
+                }
             }
         }
         if ( found )
             *out_pos = best - 1;
         return found;
+    }
+
+    ittd_breakpoint exec_bp(uint64_t addr)
+    {
+        ittd_breakpoint b{};
+        b.addr  = addr;
+        b.size  = 1;
+        b.kinds = ITTD_ACCESS_EXEC;
+        return b;
     }
 
     // Whether the instruction bytes of an execute event are a call: E8 rel32,
@@ -758,8 +796,9 @@ namespace
 
             // A breakpoint inside the call stops the step there, as it would
             // on a live process.
-            uint64_t bp = 0, hit = 0;
-            if ( !c->breakpoints.empty() && nearest_execution(c, c->breakpoints, true, &bp, &hit)
+            uint64_t bp = 0;
+            size_t hit = 0;
+            if ( !c->breakpoints.empty() && nearest_hit(c, c->breakpoints, true, &bp, &hit)
               && bp > c->position && bp < dest )
             {
                 dest = bp;
@@ -779,14 +818,15 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(c->owner->error, [&]()
         {
-            std::vector<uint64_t> targets = c->breakpoints;
-            targets.push_back(addr);
-            uint64_t p = 0, hit = 0;
+            std::vector<ittd_breakpoint> targets = c->breakpoints;
+            targets.push_back(exec_bp(addr));
+            uint64_t p = 0;
+            size_t hit = 0;
             int stop = ITTD_STOP_BOUNDARY;
-            if ( nearest_execution(c, targets, forward != 0, &p, &hit) )
+            if ( nearest_hit(c, targets, forward != 0, &p, &hit) )
             {
                 move(c, p);
-                stop = hit == addr ? ITTD_STOP_STEPPED : ITTD_STOP_BREAKPOINT;
+                stop = hit == targets.size() - 1 ? ITTD_STOP_STEPPED : ITTD_STOP_BREAKPOINT;
             }
             else
             {
@@ -805,9 +845,10 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(c->owner->error, [&]()
         {
-            uint64_t p = 0, hit = 0;
+            uint64_t p = 0;
+            size_t hit = 0;
             int stop = ITTD_STOP_BOUNDARY;
-            if ( nearest_execution(c, c->breakpoints, forward != 0, &p, &hit) )
+            if ( nearest_hit(c, c->breakpoints, forward != 0, &p, &hit) )
             {
                 move(c, p);
                 stop = ITTD_STOP_BREAKPOINT;
@@ -822,12 +863,12 @@ namespace
         });
     }
 
-    int nav_breakpoints(ittd_cursor *hc, const uint64_t *addrs, size_t count)
+    int nav_breakpoints(ittd_cursor *hc, const ittd_breakpoint *bpts, size_t count)
     {
         cursor_t *c = C(hc);
-        if ( c == nullptr || (addrs == nullptr && count != 0) )
+        if ( c == nullptr || (bpts == nullptr && count != 0) )
             return ITTD_E_BAD_ARG;
-        c->breakpoints.assign(addrs, addrs + count);
+        c->breakpoints.assign(bpts, bpts + count);
         return ITTD_OK;
     }
 
@@ -1077,6 +1118,62 @@ namespace
         });
     }
 
+    // The instruction stream of one thread (or all) over a range of positions,
+    // straight from the execute events: no replay, so a long window costs only
+    // the events it reads. Stops after 'cap'.
+    int query_instructions(ittd_backend *hb, ittd_position_range when, uint32_t tid,
+                           ittd_access *buf, size_t cap, size_t *out_count,
+                           int *out_truncated, const ittd_progress *progress)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr || (buf == nullptr && cap != 0) )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            ttd::trace &t = *b->trace;
+            ttd::operation_control ctl = control(progress);
+            uint64_t s0 = 0, s1 = 0;
+            step_range(t, when, &s0, &s1);
+            size_t n = 0;
+            bool more = false;
+            if ( s0 <= s1 )
+            {
+                const uint64_t X = (uint64_t)ttd::access_kind::execute;
+                ttd::event_reader reader(t, t.first_event_after(s0 - 1));
+                for ( uint64_t seen = 0;; seen++ )
+                {
+                    std::optional<ttd::access_event> ev = reader.next(X);
+                    if ( !ev || ev->step > s1 )
+                        break;
+                    if ( (seen & 0xFFFF) == 0 )
+                        ctl.check();
+                    uint32_t et = t.thread_at(ev->step).value_or(0);
+                    if ( tid != 0 && et != tid )
+                        continue;
+                    if ( n == cap )
+                    {
+                        more = true;
+                        break;
+                    }
+                    ittd_access &a = buf[n++];
+                    a = ittd_access{};
+                    a.pos  = before_step(ev->step);
+                    a.pc   = ev->ip;
+                    a.addr = ev->ip;
+                    a.size = (uint32_t)ev->size;
+                    a.kind = ITTD_ACCESS_EXEC;
+                    a.tid  = et;
+                }
+            }
+            if ( out_count != nullptr )
+                *out_count = n;
+            if ( out_truncated != nullptr )
+                *out_truncated = more ? 1 : 0;
+            return ITTD_OK;
+        });
+    }
+
     // Sogen's finer region kind, as the ABI's region_type.
     uint32_t region_type_of(uint32_t kind)
     {
@@ -1285,6 +1382,7 @@ namespace
         a.module_functions   = nullptr;     // the core reads .pdata from the file
         a.query_exceptions   = query_exceptions;
         a.regs_at            = regs_at;
+        a.query_instructions = query_instructions;
         a.query_mapping_files = query_mapping_files;
         return a;
     }();

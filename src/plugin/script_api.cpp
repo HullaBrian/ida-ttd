@@ -402,14 +402,66 @@ namespace idattd
     static void cmd_drv_runto(const Args &a, JObj &out)
     { drv(); movement("runto", g_drv.nav->run_to((ea_t)a.u64(0), !a.back()), out); }
 
+    static void query_status(const QueryResult &r, JObj &out);
+
+    // EA, or EA:SIZE:KINDS with KINDS any of r, w, x.
+    static Breakpoint parse_bp(const qstring &spec)
+    {
+        Breakpoint b;
+        qstring rest = spec;
+        size_t c1 = rest.find(':');
+        qstring ea = c1 == qstring::npos ? rest : rest.substr(0, c1);
+        uint64_t v = 0;
+        if ( !parse_u64(ea, &v) )
+            fail("'%s' is not a breakpoint (EA or EA:SIZE:rwx)", spec.c_str());
+        b.addr = (ea_t)v;
+        if ( c1 == qstring::npos )
+            return b;
+        qstring tail = rest.substr(c1 + 1);
+        size_t c2 = tail.find(':');
+        qstring sz = c2 == qstring::npos ? tail : tail.substr(0, c2);
+        if ( !parse_u64(sz, &v) || v == 0 )
+            fail("'%s': bad size", spec.c_str());
+        b.size = v;
+        b.kinds = 0;
+        qstring k = c2 == qstring::npos ? qstring("w") : tail.substr(c2 + 1);
+        if ( k.find('r') != qstring::npos ) b.kinds |= ACCESS_READ;
+        if ( k.find('w') != qstring::npos ) b.kinds |= ACCESS_WRITE;
+        if ( k.find('x') != qstring::npos ) b.kinds |= ACCESS_EXEC;
+        if ( b.kinds == 0 )
+            fail("'%s': kinds are r, w and x", spec.c_str());
+        return b;
+    }
+
     static void cmd_drv_bp(const Args &a, JObj &out)
     {
         drv();
-        std::vector<ea_t> v;
+        std::vector<Breakpoint> v;
         for ( size_t i = 0; i < a.count(); i++ )
-            v.push_back((ea_t)a.u64(i));
+            v.push_back(parse_bp(a.at(i)));
         g_drv.nav->set_breakpoints(v);
         out.num("breakpoints", (int64_t)v.size());
+    }
+
+    static void cmd_drv_insns(const Args &a, JObj &out)
+    {
+        ITraceBackend &b = drv();
+        uint64_t n = a.u64_or(0, 0x20);
+        // To the end of the recording: the backend stops after 'n', and a
+        // window in positions would mean something different to each backend.
+        Position from = g_drv.cursor->position();
+        Position to   = Position::end();
+        std::vector<Access> v;
+        query_status(b.query_instructions(PositionRange{ from, to }, g_drv.cursor->thread_id(),
+                                          (size_t)n, &v, nullptr), out);
+        JArr arr;
+        for ( const Access &x : v )
+        {
+            JObj o;
+            o.str("pos", position_text(b, x.pos)).hex("pc", x.pc).num("size", x.size).num("tid", x.tid);
+            arr.add(o.done());
+        }
+        out.raw("instructions", arr.done());
     }
 
     static void cmd_drv_regs(const Args &, JObj &out)
@@ -762,7 +814,8 @@ namespace idattd
         { "drv.out",        cmd_drv_out,        "[back]" },
         { "drv.run",        cmd_drv_run,        "[back] to a breakpoint set with drv.bp" },
         { "drv.runto",      cmd_drv_runto,      "EA [back]" },
-        { "drv.bp",         cmd_drv_bp,         "EA... replace the execute breakpoints" },
+        { "drv.bp",         cmd_drv_bp,         "EA|EA:SIZE:rwx ... replace the breakpoints" },
+        { "drv.insns",      cmd_drv_insns,      "[N] the next N instructions on the cursor's thread" },
         { "drv.regs",       cmd_drv_regs,       "registers at the cursor" },
         { "drv.read",       cmd_drv_read,       "EA [SIZE] memory at the cursor, ?? where unknown" },
         { "drv.accesses",   cmd_drv_accesses,   "LO HI [rwx] [MAX] accesses to [LO, HI)" },

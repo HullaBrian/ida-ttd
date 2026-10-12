@@ -225,17 +225,43 @@ namespace idattd
 
         // Bytes as the recording has them at this position.
         //
-        // 'known' is resized to 'size' and marks the bytes the recording can
-        // actually account for. The rest are left as the caller found them: the
-        // core fills those from the module's on-disk image where there is one,
-        // which is backend-independent and therefore not a backend's job.
+        // 'known' is resized to 'size' and marks each byte ITTD_KNOWN_*: the
+        // recording's value, a placeholder zero (mapped, value unknown), or
+        // nothing. Unknown bytes are left as the caller found them: the core
+        // fills those -- and placeholders -- from the module's on-disk image
+        // where there is one, which is backend-independent and therefore not a
+        // backend's job.
         //
-        // Returns the number of bytes marked known.
+        // Returns the number of bytes marked known or placeholder.
         virtual size_t   read_memory(ea_t ea, void *buf, size_t size,
                                      std::vector<uint8_t> *known) = 0;
 
         // The threads alive at this position.
         virtual std::vector<ThreadInfo> live_threads() const = 0;
+
+        // Rebuild [lo, hi) as of this position from the recording's own
+        // writes, for memory the position query cannot answer (an unpacker's
+        // output before it runs), and serve it from then on; anything rebuilt
+        // for the range before is replaced. Returns the bytes recovered. A
+        // backend whose reads are already complete has nothing to do: 0.
+        virtual size_t   rebuild_range(ea_t lo, ea_t hi) { qnotused(lo); qnotused(hi); return 0; }
+    };
+
+    // One breakpoint: an execution of 'addr', or an access of the kinds in
+    // 'kinds' (AccessKind) to any byte of [addr, addr + size).
+    struct Breakpoint
+    {
+        ea_t     addr  = BADADDR;
+        uint64_t size  = 1;
+        uint8_t  kinds = ACCESS_EXEC;
+        bool operator==(const Breakpoint &o) const
+        { return addr == o.addr && size == o.size && kinds == o.kinds; }
+        bool operator<(const Breakpoint &o) const
+        {
+            if ( addr != o.addr ) return addr < o.addr;
+            if ( size != o.size ) return size < o.size;
+            return kinds < o.kinds;
+        }
     };
 
     using CursorPtr = std::unique_ptr<ITraceCursor>;
@@ -271,10 +297,11 @@ namespace idattd
         virtual StopReason run_to(ea_t addr, bool forward) = 0;
         virtual StopReason seek_to(Position p) = 0;
 
-        // Execute breakpoints, as the whole set rather than one at a time: both
+        // Breakpoints, as the whole set rather than one at a time: both
         // backends key them by address and replacing the set is cheaper and
-        // harder to get wrong than reconciling adds and deletes.
-        virtual void set_breakpoints(const std::vector<ea_t> &addrs) = 0;
+        // harder to get wrong than reconciling adds and deletes. A data
+        // breakpoint stops at the instruction that made the access.
+        virtual void set_breakpoints(const std::vector<Breakpoint> &bpts) = 0;
     };
 
     // ------------------------------------------------------------ the backend
@@ -382,6 +409,18 @@ namespace idattd
                                                   ProgressSink *progress)
         {
             qnotused(out); qnotused(files); qnotused(progress);
+            return QueryResult{};
+        }
+
+        // The instructions executed within 'when', in order, on thread 'tid'
+        // (0: every thread): at most 'max' of them, as ACCESS_EXEC accesses
+        // whose pc is the instruction. 'truncated' says the range held more.
+        // What lays out runtime-only code and finds where a function began, so
+        // callers keep 'when' short.
+        virtual QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
+                                               std::vector<Access> *out, ProgressSink *progress)
+        {
+            qnotused(when); qnotused(tid); qnotused(max); qnotused(out); qnotused(progress);
             return QueryResult{};
         }
 
