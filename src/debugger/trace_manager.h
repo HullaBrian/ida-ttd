@@ -2,6 +2,7 @@
 
 #include "common/pch.h"
 #include "core/position.h"
+#include "core/backend.h"
 #include "debugger/event_queue.h"
 #include "debugger/module_registry.h"
 #include "debugger/memory_reader.h"
@@ -20,9 +21,13 @@ namespace idattd
         std::function<void()> on_end;     // the trace is closing: tear it down
     };
 
-    // Owns the TTD replay engine + cursor and translates IDA debugger events
-    // (ev_*) into trace navigation, register/memory queries and IDA debug
-    // events. One instance lives for the lifetime of the plugin.
+    // The debugger session: translates IDA debugger events (ev_*) into
+    // movement through a recording, register and memory reads, and IDA debug
+    // events, through whichever backend reads the recording (core/backend.h)
+    // -- Microsoft TTD for a .run, Sogen for a .sogttd. It owns the backend's
+    // playhead cursor and navigator; everything it does with them is the
+    // interface's, so nothing here knows which engine is underneath. One
+    // instance lives for the lifetime of the plugin.
     class TraceManager
     {
     public:
@@ -130,10 +135,17 @@ namespace idattd
         Position                   last_position() const;
         std::vector<NamedPosition> collect_positions() const;
 
-        // Create a fresh cursor over the loaded trace (empty if no trace). Used
-        // by the function tracer for independent sweeps.
+        // A Microsoft TTD engine cursor over the loaded trace: empty with no
+        // trace, and with any other backend. For the analyses that still drive
+        // the Microsoft engine themselves until they become queries (step 5 of
+        // docs/modular-backends.md); they say so and stop when it is empty.
         TTD::Replay::UniqueCursor  make_cursor();
         bool                       is64() const { return m_is64; }
+
+        // The backend reading the open recording, and the playhead cursor.
+        // Null with no session.
+        ITraceBackend             *backend() const { return m_backend; }
+        ITraceCursor              *cursor() const  { return m_cursor.get(); }
 
         // Called once per stop (from HT_DBG dbg_suspend_process), when the
         // debugger memory cache is valid for the new position: name exports for
@@ -147,151 +159,66 @@ namespace idattd
         void                       analyze_whole_function();
 
     private:
-        // Drop everything that belongs to one trace: cursors, caches, queued
-        // events and pending navigation. Called when a session ends and again
-        // when one starts, so a second trace cannot inherit the first's
-        // reconstructed bytes or module tables.
         void   reset_session_state();
-        thid_t                     current_tid() const;
-        ea_t                       program_counter() const;
-        std::map<uint32_t, thid_t> snapshot_threads() const;
-        std::set<const TTD::Replay::Module *> snapshot_modules() const;
-        TTD::Replay::EventType navigate_steps(bool forward, TTD::Replay::StepCount steps);
-        // Forward step-over (step_out=false) / step-out (step_out=true), honoring
-        // user breakpoints. Returns EventType::MemoryWatchpoint if a breakpoint
-        // was hit during the run, otherwise a normal-stop reason.
-        TTD::Replay::EventType navigate_over(bool step_out);
-        // Backward step-over: one backward step, and if that landed us inside a
-        // callee that had just returned (deeper frame on the same thread), rewind
-        // on out to the call that entered it. IDA has no RESMOD_BACKOVER -- it
-        // sends ev_set_backwards plus RESMOD_OVER.
-        TTD::Replay::EventType navigate_over_backward();
-        // Run backward until the current function is exited (we reach the call
-        // that entered this frame), honoring user breakpoints.
-        TTD::Replay::EventType navigate_out_backward();
-        // Position of the CALL that entered the frame the cursor is currently in.
-        //
-        // Found by replaying forward from a look-back start up to the playhead
-        // while tracking a per-thread frame stack, which is one bulk engine call
-        // per attempt. Not a backward single-step loop counting call/ret depth:
-        // every backward step re-seeks a keyframe, which makes that approach
-        // O(n x keyframe distance).
-        //
-        // The look-back widens across sequences until the entering call is
-        // captured; 'cancelled' distinguishes "the user gave up" from "the call is
-        // further back than we are willing to search".
-        bool  find_frame_entry_position(TTD::Replay::Position &out, bool &cancelled);
-        // Scratch cursor for the frame search above, created on first use.
-        // Sequential, unfiltered replay: the search's call/return callback
-        // mutates an unsynchronized map, and the engine's default dispatches
-        // callbacks from several segment threads at once.
-        //
-        // CodeAnalyzer keeps one of its own for the same reason. One cursor
-        // shared between the two would be a mutable resource two unrelated
-        // concerns both install callbacks on; a cursor is cheap, and the
-        // engine is built to hand out several.
-        TTD::Replay::ICursorView *frame_cursor();
-        // Seek the main cursor backward to 'p' in one engine call, with user
-        // breakpoints still armed so anything in between still stops us.
-        TTD::Replay::EventType rewind_to(const TTD::Replay::Position &p);
-        // Run backward to 'addr' (a temporary Execute watchpoint + ReplayBackward),
-        // stopping at the first earlier execution of 'addr' or any user breakpoint.
-        // One ReplayBackward call (the engine seeks to the hit), so it is cheap --
-        // unlike a backward single-step loop.
-        TTD::Replay::EventType navigate_backward_to(ea_t addr);
-        // Run forward to 'addr' (a temporary Execute watchpoint + ReplayForward),
-        // stopping at the next execution of 'addr' or any user breakpoint. If the
-        // cursor is already sitting on 'addr', a single step is taken first so we
-        // advance to the next occurrence rather than matching the current one.
-        TTD::Replay::EventType navigate_forward_to(ea_t addr);
-        // After a navigation that stopped on its own (not at a user breakpoint),
-        // flag a pending "start/end of the trace" notice if the cursor came to rest
-        // on the trace's first/last position. Shown (once) from on_suspended, where
-        // a modal popup is safe -- not from inside the resume handler.
-        void  settle_after_navigation(TTD::Replay::EventType sr, bool forward);
-        // Pull the cursor back inside [GetFirstPosition(), GetLastPosition()].
-        //
-        // A forward run to the end does not leave the cursor on the last recorded
-        // instruction -- it leaves it past the end, at the Position::Max sentinel
-        // the replay was limited by. Every subsequent operation then works from a
-        // position that does not exist in the trace: a single backward step ran to
-        // the very beginning instead of moving one instruction, and the frame
-        // search subtracted its look-back window from a sequence number far beyond
-        // the trace, so every window landed past the end and found nothing.
-        // Clamping after each navigation keeps the playhead on a real position.
-        void  clamp_to_trace();
-        // How a guarded forward run ended.
-        enum class RunStop
-        {
-            Reached,        // execution came back to the address asked for
-            Breakpoint,     // a user breakpoint stopped it first
-            TraceBoundary,  // the recording ended first
-        };
-        // Run forward to 'addr' on thread 'utid' with SP >= min_sp (so deeper
-        // recursion through the same address is skipped); also stops on any user
-        // breakpoint.
-        RunStop run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid);
-        // Install a temporary 1-byte Execute watchpoint at 'addr' for a step/run
-        // operation, filling 'wp'. TTD keys watchpoints by (address, size, mask,
-        // thread), so an identical user breakpoint is the same watchpoint: adding
-        // and then removing ours would delete theirs. Returns true only when we
-        // actually created one -- i.e. when the caller owns its removal.
-        bool  add_temp_exec_watchpoint(ea_t addr, TTD::Replay::MemoryWatchpointData &wp);
-        // Counterpart to add_temp_exec_watchpoint: removes 'wp' only if we own it.
-        void  drop_temp_exec_watchpoint(const TTD::Replay::MemoryWatchpointData &wp, bool owned);
-        void  navigate_to(const TTD::Replay::Position &p);
-        // Record a stop (breakpoint when !is_step, single-step otherwise) at the
-        // cursor's current PC, and queue code creation there so runtime-revealed
-        // code is disassembled as a whole block rather than one insn at a time.
+
+        thid_t current_tid() const;
+        ea_t   program_counter() const;
+
+        // What the playhead sees, to tell IDA about the threads and modules
+        // that a movement started or ended.
+        std::set<uint32_t>                          snapshot_threads() const;
+        std::map<std::pair<ea_t, Position>, const ModuleInfo *> snapshot_modules() const;
+        void  apply_differences(const std::set<uint32_t> &threads_before,
+                                const std::set<uint32_t> &threads_after,
+                                const std::map<std::pair<ea_t, Position>, const ModuleInfo *> &mods_before,
+                                const std::map<std::pair<ea_t, Position>, const ModuleInfo *> &mods_after);
+        bool  is_target_module(const ModuleInfo &m) const;
+        void  emit_module_load(const ModuleInfo &m);
+
+        // One movement through the navigator, with everything around it:
+        // the thread and module events it caused, the boundary the user is
+        // told about, and any notice the navigator left. 'move' does the
+        // movement and says why it stopped.
+        StopReason navigate(bool forward, const std::function<StopReason()> &move);
+        void  navigate_to(Position p);
         void  emit_stop(bool is_step);
-        void  apply_differences(const std::map<uint32_t, thid_t> &threads_before,
-                                const std::map<uint32_t, thid_t> &threads_after,
-                                const std::set<const TTD::Replay::Module *> &mods_before,
-                                const std::set<const TTD::Replay::Module *> &mods_after);
-        bool  is_target_module(const TTD::Replay::Module &m) const;
-        void  emit_module_load(const TTD::Replay::Module &m);
+
     private:
         SessionHooks      m_hooks;
         ModuleRegistry    m_modules;
         MemoryReader      m_memory;
         CodeAnalyzer      m_code;
         SegmentLayout     m_layout;
-        IdaErrorReporting m_err;
 
-        TTD::Replay::UniqueReplayEngine m_engine;
-        TTD::Replay::UniqueCursor       m_cursor;
-        TTD::Replay::UniqueCursor       m_frameCursor;  // see frame_cursor()
+        ITraceBackend              *m_backend = nullptr;
+        CursorPtr                   m_cursor;       // the playhead
+        std::unique_ptr<INavigator> m_nav;          // moves m_cursor
+        std::vector<Breakpoint>     m_bpts;         // what IDA has set
 
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
+
         EventQueue   m_events;
         bool         m_is64 = false;
-        bool         m_isForward = true;
+
+        bool          m_isForward = true;
         resume_mode_t m_resumeMode = RESMOD_NONE;
-        int          m_activeBpts = 0;
-        // Watchpoints registered on behalf of user breakpoints. Temporary
-        // step/run watchpoints check this so their cleanup can never remove a
-        // user breakpoint that happens to sit at the same address.
-        std::set<TTD::Replay::MemoryWatchpointData> m_userWatchpoints;
-        // Pending "edge of trace" notice (shown from on_suspended): 0 none,
-        // 1 start of trace, 2 end of trace.
+
+        // The edge of the recording a movement ran into, reported once the
+        // stop is shown (a modal box inside ev_resume would be unsafe).
         enum { BOUNDARY_NONE = 0, BOUNDARY_START, BOUNDARY_END };
         int          m_pendingBoundary = BOUNDARY_NONE;
-        // Free-form notice queued from inside a navigation and shown from
-        // on_suspended, for the same reason as m_pendingBoundary: a modal popup
-        // raised while handling ev_resume is not safe.
         qstring      m_pendingNotice;
 
         pid_t         m_pid = 1;
 
-        // The one queued request; see Request above. Only the fields its kind
-        // names are meaningful.
+        // The movement the UI asked for, carried out by the next ev_resume.
         struct PendingRequest
         {
-            Request               kind    = Request::None;
-            bool                  forward = true;
-            ea_t                  address = BADADDR;    // RunToCursor
-            TTD::Replay::Position position;             // GotoPosition
+            Request  kind    = Request::None;
+            bool     forward = true;
+            ea_t     address = BADADDR;      // RunToCursor
+            Position position;               // GotoPosition
         };
         PendingRequest m_pending;
 

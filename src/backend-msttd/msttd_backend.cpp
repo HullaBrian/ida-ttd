@@ -114,6 +114,7 @@ namespace idattd
     {
         // Cursors before the engine they belong to.
         m_frameScratch.reset();
+        m_insnScratch.reset();
         m_engine.reset();
         m_info = TraceInfo{};
         m_caps = Capabilities{};
@@ -356,18 +357,26 @@ namespace idattd
         QueryResult r;
         if ( !m_engine || out == nullptr || max == 0 )
             return r;
-        UniqueCursor c = new_engine_cursor();
-        if ( !c )
-            return r;
+        // One scratch cursor for every call: this runs on every stop in code
+        // without a module, and making a cursor each time is not free.
+        if ( !m_insnScratch )
+        {
+            m_insnScratch = new_engine_cursor();
+            if ( !m_insnScratch )
+                return r;
+            m_insnScratch->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
+                                        | ReplayFlags::ReplaySegmentsSequentially);
+        }
+        ICursorView *c = m_insnScratch.get();
         r.ran = true;
-        c->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                        | ReplayFlags::ReplaySegmentsSequentially);
         c->SetPosition(from_core(when.first == Position::begin() ? m_info.first : when.first));
         const Position last = when.last == Position::end() ? m_info.last : when.last;
 
         // A thread can be idle for a long stretch, so the walk is bounded in
-        // steps as well as in instructions found.
-        const size_t kMaxSteps = max * 64 + 4096;
+        // steps as well as in instructions found: about four steps of any
+        // thread per instruction asked for, which is the budget the code
+        // analyzer's window has always had.
+        const size_t kMaxSteps = max * 4 + 256;
         Position prev = Position::none();
         for ( size_t steps = 0; steps < kMaxSteps; steps++ )
         {
@@ -560,6 +569,14 @@ namespace idattd
         return true;
     }
 
+    bool MsTtdCursor::read_thread_registers(uint32_t tid, ittd_regs *out) const
+    {
+        if ( out == nullptr )
+            return false;
+        regs_from_context(m_exec->GetCrossPlatformContext((ThreadId)tid), m_owner->is64(), out);
+        return true;
+    }
+
     std::vector<ThreadInfo> MsTtdCursor::live_threads() const
     {
         std::vector<ThreadInfo> out;
@@ -679,13 +696,14 @@ namespace idattd
         return n;
     }
 
-    size_t MsTtdCursor::rebuild_range(ea_t lo, ea_t hi)
+    size_t MsTtdCursor::rebuild_range(ea_t lo, ea_t hi, bool replace)
     {
         if ( lo >= hi )
             return 0;
-        m_rebuilt.erase(std::remove_if(m_rebuilt.begin(), m_rebuilt.end(),
-                                       [lo, hi](const Rebuilt &r) { return r.lo < hi && lo < r.hi; }),
-                        m_rebuilt.end());
+        if ( replace )
+            m_rebuilt.erase(std::remove_if(m_rebuilt.begin(), m_rebuilt.end(),
+                                           [lo, hi](const Rebuilt &r) { return r.lo < hi && lo < r.hi; }),
+                            m_rebuilt.end());
         size_t recovered = 0;
         if ( rebuild(lo, hi) )
         {
@@ -693,9 +711,12 @@ namespace idattd
             {
                 if ( r.lo >= hi || lo >= r.hi )
                     continue;
-                for ( bool b : r.known )
-                    if ( b )
+                for ( size_t i = 0; i < r.known.size(); i++ )
+                {
+                    ea_t a = r.lo + (ea_t)i;
+                    if ( r.known[i] && a >= lo && a < hi )
                         recovered++;
+                }
             }
         }
         return recovered;

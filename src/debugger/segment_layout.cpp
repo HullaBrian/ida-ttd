@@ -1,8 +1,4 @@
 #include "debugger/segment_layout.h"
-#include "debugger/msttd_position.h"
-
-using namespace TTD;
-using namespace TTD::Replay;
 
 namespace idattd
 {
@@ -24,7 +20,7 @@ namespace idattd
         m_foldConst  = false;
     }
 
-    void SegmentLayout::build(ICursorView *playhead, meminfo_vec_t *out) const
+    void SegmentLayout::build(Position now, meminfo_vec_t *out) const
     {
         // Start above the Windows null page (the low 64 KiB is always reserved /
         // unmapped). Excluding it stops IDA from treating small integers (0, 1, ...)
@@ -34,8 +30,6 @@ namespace idattd
         const ea_t  HI   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
         const uchar BITS = m_is64 ? 2 : 1;
 
-        TtdPosition now = playhead != nullptr ? playhead->GetPosition()
-                                                      : TtdPosition::Invalid;
         if ( m_foldValid && (m_foldConst || now == m_foldPos) )
         {
             *out = m_foldLayout;
@@ -64,8 +58,8 @@ namespace idattd
         // memory a module does not cover, which is where an RWX allocation or a
         // manually mapped payload lives.
         std::vector<Region> regs;
-        if ( !m_map.empty() && playhead != nullptr )
-            m_map.state_at(to_core(now), regs);
+        if ( !m_map.empty() && now.is_valid() )
+            m_map.state_at(now, regs);
 
         for ( const Region &r : regs )
         {
@@ -217,10 +211,10 @@ namespace idattd
         m_foldConst  = m_map.empty();
     }
 
-    ssize_t SegmentLayout::on_get_memory_info(ICursorView *playhead, meminfo_vec_t *ranges)
+    ssize_t SegmentLayout::on_get_memory_info(Position now, meminfo_vec_t *ranges)
     {
         meminfo_vec_t layout;
-        build(playhead, &layout);
+        build(now, &layout);
 
         // Rebuilding IDA's debugger segments is not cheap, and stepping inside
         // one region changes nothing about the layout. Say so.
@@ -240,16 +234,16 @@ namespace idattd
         return DRC_OK;
     }
 
-    void SegmentLayout::refresh(ICursorView *playhead)
+    void SegmentLayout::refresh(Position now)
     {
         // Without a memory map the layout is the same at every position (the
         // modules come from the whole recording) and build() answers from its
         // cache. With one, time travel can cross an allocation or a free.
         if ( !m_haveLayout )
             return;
-        meminfo_vec_t now;
-        build(playhead, &now);
-        if ( now == m_lastLayout )
+        meminfo_vec_t layout;
+        build(now, &layout);
+        if ( layout == m_lastLayout )
             return;
         // Documented as slow, which is exactly why it is behind the comparison
         // rather than called on every stop.

@@ -82,6 +82,7 @@ namespace idattd
         // mutates an unsynchronized map, and the engine's default parallel
         // replay would dispatch it from several threads at once.
         TTD::Replay::UniqueCursor       m_frameScratch;
+        TTD::Replay::UniqueCursor       m_insnScratch;     // query_instructions, likewise
         TraceInfo                       m_info;
         Capabilities                    m_caps;
     };
@@ -102,9 +103,10 @@ namespace idattd
         ea_t     program_counter() const override;
         uint64_t stack_pointer() const override;
         bool     read_registers(ittd_regs *out) const override;
+        bool     read_thread_registers(uint32_t tid, ittd_regs *out) const override;
         size_t   read_memory(ea_t ea, void *buf, size_t size, std::vector<uint8_t> *known) override;
         std::vector<ThreadInfo> live_threads() const override;
-        size_t   rebuild_range(ea_t lo, ea_t hi) override;
+        size_t   rebuild_range(ea_t lo, ea_t hi, bool replace) override;
 
         // Keep the playhead on a recorded position: the engine's Min/Max are
         // sentinels, and stepping from one does not move by one instruction.

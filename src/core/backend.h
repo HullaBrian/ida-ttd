@@ -229,6 +229,14 @@ namespace idattd
         // so neither pays much to produce it.
         virtual bool     read_registers(ittd_regs *out) const = 0;
 
+        // The registers of another thread at this position, for IDA's thread
+        // list. False when the backend can only show the current thread's.
+        virtual bool     read_thread_registers(uint32_t tid, ittd_regs *out) const
+        {
+            qnotused(tid); qnotused(out);
+            return false;
+        }
+
         // Bytes as the recording has them at this position.
         //
         // 'known' is resized to 'size' and marks each byte ITTD_KNOWN_*: the
@@ -247,10 +255,16 @@ namespace idattd
 
         // Rebuild [lo, hi) as of this position from the recording's own
         // writes, for memory the position query cannot answer (an unpacker's
-        // output before it runs), and serve it from then on; anything rebuilt
-        // for the range before is replaced. Returns the bytes recovered. A
-        // backend whose reads are already complete has nothing to do: 0.
-        virtual size_t   rebuild_range(ea_t lo, ea_t hi) { qnotused(lo); qnotused(hi); return 0; }
+        // output before it runs), and serve it from then on. With 'replace',
+        // anything rebuilt for the range before is thrown away first (a
+        // re-read); without, a range already rebuilt is reused (the per-stop
+        // path). Returns the bytes recovered in the range. A backend whose
+        // reads are already complete has nothing to do: 0.
+        virtual size_t   rebuild_range(ea_t lo, ea_t hi, bool replace)
+        {
+            qnotused(lo); qnotused(hi); qnotused(replace);
+            return 0;
+        }
     };
 
     // One breakpoint: an execution of 'addr', or an access of the kinds in

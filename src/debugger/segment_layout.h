@@ -41,19 +41,18 @@ namespace idattd
         // stale -- doing it here means no call site can forget.
         MemoryMap &map_for_update() { m_foldValid = false; m_foldConst = false; return m_map; }
 
-        // ev_get_memory_info: the layout at 'playhead''s position, or DRC_NOCHG
-        // when it is the one IDA already has.
-        ssize_t on_get_memory_info(TTD::Replay::ICursorView *playhead,
-                                   meminfo_vec_t *ranges);
+        // ev_get_memory_info: the layout at 'now', or DRC_NOCHG when it is the
+        // one IDA already has.
+        ssize_t on_get_memory_info(Position now, meminfo_vec_t *ranges);
 
         // Tell IDA to re-read the layout if the regions in force at
-        // 'playhead''s position differ from the ones it was last given. Called
+        // 'now' differ from the ones it was last given. Called
         // on every stop, which is why it compares before it invalidates.
-        void refresh(TTD::Replay::ICursorView *playhead);
+        void refresh(Position now);
 
     private:
-        // Compose the layout IDA should see at 'playhead''s position.
-        void build(TTD::Replay::ICursorView *playhead, meminfo_vec_t *out) const;
+        // Compose the layout IDA should see at 'now'.
+        void build(Position now, meminfo_vec_t *out) const;
 
         ModuleRegistry *m_modules = nullptr;
         bool            m_is64    = false;
@@ -70,7 +69,7 @@ namespace idattd
         // modules come from the whole recording rather than the position. The
         // whole session then reuses one fold.
         mutable meminfo_vec_t         m_foldLayout;
-        mutable TTD::Replay::Position m_foldPos;
+        mutable Position              m_foldPos;
         mutable bool                  m_foldValid = false;
         mutable bool                  m_foldConst = false;
     };

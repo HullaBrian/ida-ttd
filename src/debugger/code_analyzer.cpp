@@ -1,16 +1,13 @@
 #include "debugger/code_analyzer.h"
-#include "debugger/msttd_position.h"
 
-using namespace TTD;
-using namespace TTD::Replay;
 
 namespace idattd
 {
-    void CodeAnalyzer::bind(IReplayEngine *engine, ModuleRegistry *modules,
+    void CodeAnalyzer::bind(ITraceBackend *backend, ModuleRegistry *modules,
                             MemoryReader *memory, bool is64)
     {
         reset();
-        m_engine  = engine;
+        m_backend = backend;
         m_modules = modules;
         m_memory  = memory;
         m_is64    = is64;
@@ -18,10 +15,9 @@ namespace idattd
 
     void CodeAnalyzer::reset()
     {
-        m_engine  = nullptr;
+        m_backend = nullptr;
         m_modules = nullptr;
         m_memory  = nullptr;
-        m_scratch.reset();
         m_winLo          = BADADDR;
         m_winHi          = 0;
         m_calleeScanFunc = BADADDR;
@@ -29,38 +25,9 @@ namespace idattd
         m_dynFuncBytes.clear();
     }
 
-    void CodeAnalyzer::on_stop(ICursorView *playhead, ea_t pc)
+    void CodeAnalyzer::on_stop(ITraceCursor *playhead, ea_t pc)
     {
         analyze_current_function(playhead, pc);
-    }
-
-    ICursorView *CodeAnalyzer::scratch()
-    {
-        if ( m_engine == nullptr )
-            return nullptr;
-        if ( !m_scratch )
-        {
-            m_scratch = UniqueCursor{ m_engine->NewCursor() };
-            if ( m_scratch )
-            {
-                // must be sequential. The engine's default is to replay several
-                // segments in parallel and dispatch callbacks from all of those
-                // threads at once; find_dynamic_function_entry's call/return
-                // callback mutates an unsynchronized std::map, so the default
-                // would corrupt the heap. Sequential replay keeps the callback
-                // single-threaded (and chronological, which that walk also needs).
-                //
-                // ReplayAllSegmentsWithoutFiltering matches the whole-trace sweep
-                // in tracer.cpp. Every user of this cursor wants a call/return
-                // callback, which is not a maskable event, so the segment filter
-                // has nothing to work with and costs ~2% either way; setting it
-                // removes any question of a bounded replay skipping ahead through
-                // the index and dispatching no callbacks at all.
-                m_scratch->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                                          | ReplayFlags::ReplaySegmentsSequentially);
-            }
-        }
-        return m_scratch.get();
     }
 
     // Define an instruction at the exact address 'ea'. Addresses passed here come
@@ -93,7 +60,7 @@ namespace idattd
         return h;
     }
 
-    ea_t CodeAnalyzer::call_target_of(ICursorView *playhead, const insn_t &insn, ea_t &slot_out)
+    ea_t CodeAnalyzer::call_target_of(ITraceCursor *playhead, const insn_t &insn, ea_t &slot_out)
     {
         slot_out = BADADDR;
         const op_t &op = insn.ops[0];
@@ -171,7 +138,7 @@ namespace idattd
         }
     }
 
-    void CodeAnalyzer::define_callees(ICursorView *playhead, ea_t lo, ea_t hi)
+    void CodeAnalyzer::define_callees(ITraceCursor *playhead, ea_t lo, ea_t hi)
     {
         if ( lo == BADADDR || hi <= lo )
             return;
@@ -287,7 +254,7 @@ namespace idattd
         }
     }
 
-    void CodeAnalyzer::analyze_current_function(ICursorView *playhead, ea_t pc)
+    void CodeAnalyzer::analyze_current_function(ITraceCursor *playhead, ea_t pc)
     {
         segment_info_t seg;
         if ( !get_segment_info(&seg, pc) )
@@ -353,13 +320,8 @@ namespace idattd
             // Library (non-target) module code: mark it FUNC_LIB so it renders as
             // <name>+offset and is de-emphasized. The analyzed binary (module 0) is
             // the user's own code, so leave its functions normal.
-            bool main_mod = false;
-            if ( m_engine && m_engine->GetModuleCount() > 0 )
-            {
-                const Module &m0 = m_engine->GetModuleList()[0];
-                ea_t b = (ea_t)(uint64_t)m0.Address;
-                main_mod = pc >= b && pc < b + (ea_t)m0.Size;
-            }
+            bool main_mod = m_modules->index_at(pc) != (size_t)-1
+                         && !m_modules->is_library_address(pc);
             if ( !main_mod && get_func_start(fstart) == fstart
               && (get_func_flags(fstart) & FUNC_LIB) == 0 )
             {
@@ -433,47 +395,32 @@ namespace idattd
         }
     }
 
-    void CodeAnalyzer::collect_window_pcs(ICursorView *playhead, ea_t pc, std::set<ea_t> &pcs)
+    void CodeAnalyzer::collect_window_pcs(ITraceCursor *playhead, ea_t pc, std::set<ea_t> &pcs)
     {
         pcs.clear();
-        if ( !m_engine || playhead == nullptr )
-            return;
-        if ( scratch() == nullptr )
+        if ( m_backend == nullptr || playhead == nullptr )
             return;
 
-        const uint64_t BEFORE = 64;     // instructions of context before PC
-        const uint64_t AFTER  = 192;    // instructions after PC
-        const ea_t     W      = 0x2000; // only collect addresses within +/-W of PC
+        const int64_t BEFORE = 64;      // instructions of context before PC
+        const size_t  AFTER  = 192;     // ...and after
+        const ea_t    W      = 0x2000;  // only collect addresses within +/-W of PC
 
-        TtdPosition cur = playhead->GetPosition();
-        uint32_t tid = (uint32_t)playhead->GetThreadInfo().UniqueId;
-
-        // Seek a little before the current position, then replay forward (cheap --
-        // no per-step keyframe re-seek like going backward).
-        TtdPosition start = cur;
-        start.Steps = (StepCount)((uint64_t)cur.Steps > BEFORE ? (uint64_t)cur.Steps - BEFORE : 0);
-        m_scratch->SetPosition(start);
-
-        int budget = (int)((BEFORE + AFTER) * 3) + 256;  // extra for thread interleaving
-        TtdPosition prev = m_scratch->GetPosition();
-        for ( int i = 0; i < budget; i++ )
+        // From a little before the current position, this thread's instruction
+        // stream forward: a window, read by the backend without moving the
+        // playhead.
+        Position from = m_backend->position_add(playhead->position(), -BEFORE);
+        std::vector<Access> v;
+        m_backend->query_instructions(PositionRange{ from, Position::end() }, playhead->thread_id(),
+                                      (size_t)BEFORE + AFTER, &v, nullptr);
+        for ( const Access &a : v )
         {
-            if ( (uint32_t)m_scratch->GetThreadInfo().UniqueId == tid )
-            {
-                ea_t a = (ea_t)(uint64_t)m_scratch->GetProgramCounter();
-                ea_t d = a > pc ? a - pc : pc - a;
-                if ( d <= W )
-                    pcs.insert(a);
-            }
-            m_scratch->ReplayForward(TtdPosition::Max, StepCount{ 1 });
-            TtdPosition now = m_scratch->GetPosition();
-            if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
-                break;                  // reached the end of the trace
-            prev = now;
+            ea_t d = a.pc > pc ? a.pc - pc : pc - a.pc;
+            if ( d <= W )
+                pcs.insert(a.pc);
         }
     }
 
-    ea_t CodeAnalyzer::find_dynamic_start(ICursorView *playhead, ea_t pc)
+    ea_t CodeAnalyzer::find_dynamic_start(ITraceCursor *playhead, ea_t pc)
     {
         std::set<ea_t> pcs;
         collect_window_pcs(playhead, pc, pcs);
@@ -500,82 +447,26 @@ namespace idattd
         return lo;
     }
 
-    // Recover the head of the current frame's function from the trace itself.
-    // We replay forward from a position a little before the playhead up to the
-    // playhead, watching the call/return structure via the engine's CallReturn
-    // callback (the same primitive the tracer uses): a CALL pushes (callee,
-    // return-addr) onto a per-thread frame stack, a RET pops it. When we reach
-    // the current position the top of the current thread's stack is the call
-    // that entered this frame, so its target is the function head -- this is the
-    // "change in the callstack" boundary, the dynamic-code analogue of the
-    // .pdata bounds used for module code.
-    //
-    // The look-back is widened until that entering CALL is captured. Each attempt
-    // is one SetPosition + forward replay, which is cheap; we deliberately never
-    // single-step backward (that re-seeks a keyframe per step and freezes the UI).
-    ea_t CodeAnalyzer::find_dynamic_function_entry(ICursorView *playhead, ea_t pc)
+    // Recover the head of the current frame's function from the trace itself:
+    // the call that entered this frame went to it. This is the "change in the
+    // callstack" boundary, the dynamic-code analogue of the .pdata bounds used
+    // for module code. Bounded, because it runs on every stop in such code.
+    ea_t CodeAnalyzer::find_dynamic_function_entry(ITraceCursor *playhead, ea_t pc)
     {
         // The head comes from the cursor's own position, not from 'pc'.
         qnotused(pc);
-        if ( !m_engine || playhead == nullptr )
+        if ( m_backend == nullptr || playhead == nullptr )
             return BADADDR;
-        // scratch() replays segments SEQUENTIALLY. That is load-bearing here:
-        // with the engine's default parallel replay the callback below fires from
-        // several threads at once and 'stacks' is not synchronized.
-        if ( scratch() == nullptr )
-            return BADADDR;
-
-        const TtdPosition cur = playhead->GetPosition();
-        const uint32_t tid = (uint32_t)playhead->GetThreadInfo().UniqueId;
-
-        struct Frame { ea_t entry; uint64_t ret; };
-        std::map<uint32_t, std::vector<Frame>> stacks;
-
-        // CALL: instr == callee (function head), fall_through == return address.
-        // RET:  fall_through == 0; pop the innermost open frame on that thread.
-        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
-                               IThreadView const *t) noexcept
-        {
-            uint32_t utid = (uint32_t)t->GetThreadInfo().UniqueId;
-            if ( (uint64_t)fall_through != 0 )
-            {
-                stacks[utid].push_back(Frame{ (ea_t)(uint64_t)instr, (uint64_t)fall_through });
-            }
-            else
-            {
-                auto it = stacks.find(utid);
-                if ( it != stacks.end() && !it->second.empty() )
-                    it->second.pop_back();
-            }
-        };
-
-        static const uint64_t kWindows[] = { 1024, 8192, 65536 };
         ea_t entry = BADADDR;
-        for ( uint64_t back : kWindows )
-        {
-            stacks.clear();
-            TtdPosition s = cur;
-            s.Steps = (StepCount)((uint64_t)cur.Steps > back ? (uint64_t)cur.Steps - back : 0);
-            m_scratch->SetPosition(s);
-            m_scratch->SetCallReturnCallback(on_call_ret);
-            m_scratch->ReplayForward(cur);                 // stop AT the playhead
-            m_scratch->SetCallReturnCallback(nullptr, 0);  // detach the local lambda
-
-            auto it = stacks.find(tid);
-            if ( it != stacks.end() && !it->second.empty() )
-            {
-                entry = it->second.back().entry;
-                break;
-            }
-            if ( (uint64_t)cur.Steps <= back )
-                break;       // the window already reached the start of the sequence
-        }
+        if ( !m_backend->query_frame_entry(playhead->position(), playhead->thread_id(), 65536,
+                                           nullptr, &entry) )
+            return BADADDR;
         return entry;
     }
 
-    void CodeAnalyzer::lay_out_window(ICursorView *playhead, ea_t pc)
+    void CodeAnalyzer::lay_out_window(ITraceCursor *playhead, ea_t pc)
     {
-        if ( !m_engine || playhead == nullptr )
+        if ( m_backend == nullptr || playhead == nullptr )
             return;
 
         // Already have a laid-out window comfortably surrounding PC? Skip the
@@ -625,19 +516,34 @@ namespace idattd
         m_winHi = ip > *pcs.rbegin() ? ip : *pcs.rbegin();
     }
 
-    // Deep, on-demand analysis: reconstruct the current thread's call structure by
-    // walking the trace backward (stepping over nested calls via a call-depth
-    // counter) to find the enclosing function's entry, then define it. This is the
-    // expensive path the per-stop handler intentionally avoids, so it runs on a
-    // private cursor behind a cancellable wait box.
-    void CodeAnalyzer::analyze_whole_function(ICursorView *playhead)
+    // A wait box as the queries' ProgressSink. Main thread only.
+    class WaitBoxProgress : public ProgressSink
     {
-        if ( playhead == nullptr || !m_engine )
+    public:
+        explicit WaitBoxProgress(const char *what) : m_what(what) {}
+        void report(uint32_t percent) override
+        {
+            replace_wait_box("%s (Cancel to stop)... %u%%", m_what, percent);
+        }
+        bool cancelled() override { return user_cancelled(); }
+
+    private:
+        const char *m_what;
+    };
+
+    // Deep, on-demand analysis: find the call that entered the current frame,
+    // then lay out every instruction this frame executed from there to here --
+    // the frame's own, not those of the calls it made -- and define the
+    // function. The expensive path the per-stop handler avoids, so it runs
+    // behind a cancellable wait box.
+    void CodeAnalyzer::analyze_whole_function(ITraceCursor *playhead)
+    {
+        if ( playhead == nullptr || m_backend == nullptr )
         {
             warning("Analysis is only available while replaying a trace.");
             return;
         }
-        ea_t pc = (ea_t)(uint64_t)playhead->GetProgramCounter();
+        ea_t pc = playhead->program_counter();
         if ( get_segment_ea(pc) == BADADDR )
             return;
         if ( get_func_start(pc) != BADADDR )
@@ -646,68 +552,52 @@ namespace idattd
             return;
         }
 
-        UniqueCursor cur{ m_engine->NewCursor() };
-        if ( !cur )
-            return;
-        cur->SetPosition(playhead->GetPosition());
-        uint32_t target_tid = (uint32_t)cur->GetThreadInfo().Id;
+        const uint64_t MAX_INSN = 50000;
+        const Position here = playhead->position();
+        const uint32_t tid  = playhead->thread_id();
 
+        show_wait_box("Analyzing function from the trace (Cancel to stop)...");
+        Position call_pos;
+        ea_t     entry = BADADDR;
+        bool found = m_backend->query_frame_entry(here, tid, MAX_INSN, &call_pos, &entry);
+
+        // This thread's instructions from the call to here, at depth zero:
+        // a call nested in between is counted in and its return out, so only
+        // the frame's own instructions are laid out.
         std::vector<ea_t> frame_pcs;
         std::set<ea_t>    seen;
         frame_pcs.push_back(pc);
         seen.insert(pc);
-        ea_t entry   = BADADDR;
-        ea_t last_pc = pc;
-        int  depth   = 0;
-
-        const int MAX_INSN = 50000;
-        const int MAX_STEP = 1000000;
-        int examined = 0, steps = 0;
         bool cancelled = false;
-        TtdPosition prev = cur->GetPosition();
-
-        show_wait_box("Analyzing function from the trace (Cancel to stop)...");
-        while ( examined < MAX_INSN && steps < MAX_STEP )
+        size_t examined = 0;
+        if ( found )
         {
-            if ( (steps & 0x3FF) == 0 )
+            WaitBoxProgress wb("Analyzing function");
+            std::vector<Access> v;
+            QueryResult r = m_backend->query_instructions(PositionRange{ call_pos, here }, tid,
+                                                          (size_t)MAX_INSN, &v, &wb);
+            cancelled = r.cancelled;
+            examined  = v.size();
+            int depth = 0;
+            // v[0] is the entering call itself: start after it.
+            for ( size_t i = 1; i < v.size(); i++ )
             {
-                replace_wait_box("Analyzing function: %d instructions examined...", examined);
-                if ( user_cancelled() ) { cancelled = true; break; }
+                ea_t a = v[i].pc;
+                if ( depth == 0 && seen.insert(a).second )
+                    frame_pcs.push_back(a);
+                insn_t insn;
+                if ( decode_insn(&insn, a) > 0 )
+                {
+                    if ( is_call_insn(insn) )
+                        depth++;
+                    else if ( is_ret_insn(insn) && depth > 0 )
+                        depth--;
+                }
             }
-
-            cur->ReplayBackward(TtdPosition::Min, StepCount{ 1 });
-            steps++;
-            TtdPosition now = cur->GetPosition();
-            if ( now.Sequence == prev.Sequence && now.Steps == prev.Steps )
-                break;                              // reached the start of the trace
-            prev = now;
-
-            if ( (uint32_t)cur->GetThreadInfo().Id != target_tid )
-                continue;
-            examined++;
-
-            ea_t   npc = (ea_t)(uint64_t)cur->GetProgramCounter();
-            insn_t insn;
-            bool   call = false, ret = false;
-            if ( decode_insn(&insn, npc) > 0 )
-            {
-                call = is_call_insn(insn);
-                ret  = is_ret_insn(insn);
-            }
-
-            if ( call )
-            {
-                if ( depth == 0 ) { entry = last_pc; break; }
-                depth--;
-            }
-            else if ( ret )
-            {
-                depth++;
-            }
-
-            if ( depth == 0 && seen.insert(npc).second )
-                frame_pcs.push_back(npc);
-            last_pc = npc;
+        }
+        else
+        {
+            cancelled = user_cancelled();
         }
         hide_wait_box();
 
@@ -718,21 +608,21 @@ namespace idattd
         if ( cancelled )
         {
             msg("[ida-ttd] function analysis cancelled (%d instructions, %d defined).\n",
-                examined, (int)frame_pcs.size());
+                (int)examined, (int)frame_pcs.size());
         }
-        else if ( entry != BADADDR )
+        else if ( found && entry != BADADDR )
         {
             force_insn(entry);
             add_func(entry);
-            msg("[ida-ttd] defined function at 0x%llX (entry of the call at the "
-                "current position; %d instructions).\n", (uint64_t)entry, examined);
+            msg("[ida-ttd] defined function at 0x%llX (entry of the call that entered "
+                "this frame; %d instructions).\n", (uint64_t)entry, (int)examined);
             jumpto(entry);
         }
         else
         {
             warning("Could not find the function entry within %d instructions.\n"
                     "Laid out the %d instruction(s) found in this frame.",
-                    examined, (int)frame_pcs.size());
+                    (int)MAX_INSN, (int)frame_pcs.size());
         }
     }
 
