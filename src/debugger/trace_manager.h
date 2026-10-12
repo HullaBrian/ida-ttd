@@ -56,6 +56,17 @@ namespace idattd
         ssize_t on_resume(debug_event_t *event);
         const qstring &last_resume() const { return m_lastResume; }
         const std::deque<qstring> &event_log() const { return m_eventLog; }
+
+        // When the thread and module changes a movement caused are reported,
+        // relative to its stop. Under IDA's own step modes an event that is not
+        // the step ends the step there, with the step's own event left queued,
+        // so the order matters. Experimental, set from the script API:
+        //   0  changes, then the stop
+        //   1  the stop, then the changes
+        //   2  as 0, but during IDA's step modes the changes are held back and
+        //      reported with the next stop outside one
+        void set_event_order(int order) { m_eventOrder = order; }
+        int  event_order() const        { return m_eventOrder; }
         ssize_t on_set_backwards(bool backwards);
         ssize_t on_set_resume_mode(thid_t tid, resume_mode_t resmod);
         ssize_t on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel);
@@ -179,6 +190,9 @@ namespace idattd
         StopReason navigate(bool forward, const std::function<StopReason()> &move);
         void  navigate_to(Position p);
         void  emit_stop(bool is_step);
+        // Report the threads and modules that differ from what IDA was last
+        // told, and remember the new state as told.
+        void  report_differences();
 
     private:
         SessionHooks      m_hooks;
@@ -203,6 +217,11 @@ namespace idattd
         // What the last ev_resume carried, for the script API's 'state': which
         // movement IDA actually asked for is otherwise invisible.
         qstring       m_lastResume;
+        // The threads and modules IDA has been told about.
+        std::set<uint32_t> m_toldThreads;
+        std::map<std::pair<ea_t, Position>, const ModuleInfo *> m_toldMods;
+        int           m_eventOrder = 2;
+        bool          m_stepMode   = false;   // this resume is one of IDA's step modes
         // The last few events handed to IDA and resumes received, oldest
         // first, for the same reason.
         std::deque<qstring> m_eventLog;

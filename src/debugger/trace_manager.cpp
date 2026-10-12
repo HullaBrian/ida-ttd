@@ -124,6 +124,9 @@ namespace idattd
         m_pending         = PendingRequest{};
         m_pendingBoundary = BOUNDARY_NONE;
         m_pendingNotice.clear();
+        m_toldThreads.clear();
+        m_toldMods.clear();
+        m_stepMode = false;
     }
 
     ssize_t TraceManager::on_get_processes(procinfo_vec_t *procs)
@@ -269,6 +272,9 @@ namespace idattd
         for ( const auto &kv : snapshot_modules() )
             if ( kv.second->base != mainBase )
                 emit_module_load(*kv.second);
+
+        m_toldThreads = snapshot_threads();
+        m_toldMods    = snapshot_modules();
 
         // Finally, suspend at the entry position.
         emit_stop(false);
@@ -437,14 +443,9 @@ namespace idattd
 
     StopReason TraceManager::navigate(bool forward, const std::function<StopReason()> &move)
     {
-        auto threads_before = snapshot_threads();
-        auto mods_before    = snapshot_modules();
-
+        // The thread and module changes are reported with the stop, against
+        // what IDA was last told (emit_stop).
         StopReason sr = move();
-
-        auto threads_after = snapshot_threads();
-        auto mods_after    = snapshot_modules();
-        apply_differences(threads_before, threads_after, mods_before, mods_after);
 
         if ( sr == StopReason::TraceBoundary )
             m_pendingBoundary = forward ? BOUNDARY_END : BOUNDARY_START;
@@ -528,10 +529,31 @@ namespace idattd
         // invalidation and disassembly/symbol work happen in on_suspended(), once
         // the process is actually in the stopped state.
         ea_t pc = program_counter();
-        if ( is_step )
-            m_events.add_step(m_pid, current_tid(), pc);
-        else
-            m_events.add_breakpoint(m_pid, current_tid(), pc);
+        auto stop = [&]()
+        {
+            if ( is_step )
+                m_events.add_step(m_pid, current_tid(), pc);
+            else
+                m_events.add_breakpoint(m_pid, current_tid(), pc);
+        };
+        if ( m_eventOrder == 1 )
+        {
+            stop();
+            report_differences();
+            return;
+        }
+        if ( !(m_eventOrder == 2 && m_stepMode) )
+            report_differences();
+        stop();
+    }
+
+    void TraceManager::report_differences()
+    {
+        std::set<uint32_t> threads = snapshot_threads();
+        auto mods = snapshot_modules();
+        apply_differences(m_toldThreads, threads, m_toldMods, mods);
+        m_toldThreads = std::move(threads);
+        m_toldMods    = std::move(mods);
     }
 
     void TraceManager::apply_differences(
@@ -579,6 +601,9 @@ namespace idattd
         // These navigations show wait boxes, which pump the message loop, so a
         // second ev_resume can arrive in the middle of one -- and a request
         // still set would be performed twice.
+        // IDA's own step modes, as opposed to a run or one of our requests.
+        m_stepMode = m_pending.kind == Request::None && m_resumeMode != RESMOD_NONE;
+
         if ( m_pending.kind != Request::None )
         {
             const PendingRequest req = m_pending;
