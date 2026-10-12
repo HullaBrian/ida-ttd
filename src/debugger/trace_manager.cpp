@@ -334,6 +334,32 @@ namespace idattd
         return m_memory.read(m_cursor.get(), nbytes, ea, buffer, size);
     }
 
+    size_t TraceManager::reread_range(ea_t lo, ea_t hi)
+    {
+        if ( !m_cursor || lo >= hi )
+            return 0;
+
+        // A range this large is a mis-click, not a request: reconstruction
+        // allocates a buffer of the whole span.
+        static const uint64_t kMaxReread = 64u * 1024 * 1024;
+        if ( (uint64_t)(hi - lo) > kMaxReread )
+        {
+            warning("That range is %llu MB. Select at most %llu MB to re-read.",
+                    (uint64_t)(hi - lo) >> 20, kMaxReread >> 20);
+            return 0;
+        }
+
+        size_t recovered = m_memory.reread(m_cursor.get(), lo, hi);
+
+        // Flush IDA's cache for the range so the next read goes through
+        // on_read_memory again, then re-analyze what came back.
+        invalidate_dbgmem_contents(lo, hi - lo);
+        del_items(lo, DELIT_SIMPLE, (asize_t)(hi - lo));
+        plan_range(lo, hi);
+        auto_wait();
+        return recovered;
+    }
+
     ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
     {
         return m_layout.on_get_memory_info(m_cursor.get(), ranges);

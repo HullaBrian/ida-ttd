@@ -80,7 +80,7 @@ namespace idattd
     };
 
     // Results of the call-trace sweep: one row per recorded call. Holds its own
-    // snapshot of the events so several "Tracing events" tabs can coexist, each
+    // snapshot of the calls so several "TTD calls" tabs can coexist, each
     // frozen at the moment it was opened. Double-clicking a row time-travels the
     // debugger to that call's position.
     class TraceEventsChooser : public EventColumns, public chooser_t
@@ -288,6 +288,11 @@ namespace idattd
     struct MemSearchHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
+    // Re-read a range of memory from the recording and disassemble it again.
+    // Uses the current selection when there is one, otherwise asks for a range.
+    struct RereadHandler : public TtdAction
+    { int idaapi activate(action_activation_ctx_t *) override; };
+
     // Record where every indirect call actually went, as comments and xrefs.
     struct IndirectCallsHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
@@ -308,6 +313,16 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
+    // Turn the automatic replay start for this database on or off. A database
+    // made from a .run starts replaying as soon as it is opened, which is what
+    // opening a recording is for; this is how that is switched off. Lives on
+    // the Debugger menu beside AttachTraceHandler, for the same reason.
+    struct AutoStartHandler : public action_handler_t
+    {
+        int  idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     // Action identifiers, used for registration and for menu and popup attach.
     namespace actions
     {
@@ -319,6 +334,7 @@ namespace idattd
         constexpr const char *MEM_SEARCH    = "idattd:mem_search";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
+        constexpr const char *REREAD        = "idattd:reread_memory";
         constexpr const char *INDIRECT      = "idattd:indirect_calls";
         constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";
         constexpr const char *RUN_BACK     = "idattd:run_back";
@@ -335,5 +351,6 @@ namespace idattd
         constexpr const char *OPEN_EVENTS  = "idattd:open_events";
         constexpr const char *RUN_TRACE    = "idattd:run_trace";
         constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
+        constexpr const char *AUTO_START   = "idattd:auto_start";
     }
 }

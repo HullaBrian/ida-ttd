@@ -97,4 +97,37 @@ namespace idattd
         netnode nn(TL_NODE, 0, true);
         nn.altset(N_AUTOSTART, (nodeidx_t)v, TL_NUM);
     }
+
+    // Settings subkey and value name for the start mark. One value per database,
+    // so a database that fails does not stop any other one from starting.
+    static const char TL_REGKEY[] = "ida-ttd";
+
+    static qstring start_mark_name()
+    {
+        const char *path = get_path(PATH_TYPE_IDB);
+        if ( path == nullptr || path[0] == 0 )
+            path = get_path(PATH_TYPE_CMD);
+        if ( path == nullptr || path[0] == 0 )
+            return qstring();
+        qstring name = "starting:";
+        name.append(path);
+        return name;
+    }
+
+    bool trace_link_start_marked()
+    {
+        qstring name = start_mark_name();
+        return !name.empty() && reg_read_int(name.c_str(), 0, TL_REGKEY) != 0;
+    }
+
+    void trace_link_mark_start(bool pending)
+    {
+        qstring name = start_mark_name();
+        if ( name.empty() )
+            return;
+        if ( pending )
+            reg_write_int(name.c_str(), 1, TL_REGKEY);
+        else
+            reg_delete(name.c_str(), TL_REGKEY);
+    }
 }

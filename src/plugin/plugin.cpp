@@ -123,6 +123,8 @@ namespace idattd
         {
             detach_action_from_menu("Debugger/", actions::ATTACH_TRACE);
             unregister_action(actions::ATTACH_TRACE);
+            detach_action_from_menu("Debugger/", actions::AUTO_START);
+            unregister_action(actions::AUTO_START);
             m_attachRegistered = false;
         }
         for ( int ic : m_icons )
@@ -147,6 +149,8 @@ namespace idattd
         m_icons[ICO_TIMELINE]        = svg(icons_timeline_svg,        sizeof(icons_timeline_svg) - 1);
         m_icons[ICO_GOTO]            = svg(icons_goto_time_svg,       sizeof(icons_goto_time_svg) - 1);
         m_icons[ICO_FUNC_SEARCH]     = svg(icons_function_search_svg, sizeof(icons_function_search_svg) - 1);
+        m_icons[ICO_BOOKMARK_ADD]    = svg(icons_bookmark_add_svg,    sizeof(icons_bookmark_add_svg) - 1);
+        m_icons[ICO_BOOKMARKS]       = svg(icons_bookmarks_svg,       sizeof(icons_bookmarks_svg) - 1);
     }
 
     // Every TTD command, in the order it appears on the TTD menu. Adding one
@@ -169,41 +173,38 @@ namespace idattd
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
               "Bookmark this position: save the current trace position, with a name "
               "and a note, in the database",
-              NO_ICON, GROUP, MENU },
+              m_icons[ICO_BOOKMARK_ADD], GROUP, MENU },
             { actions::BOOKMARKS, "Bookmarks...", &m_bookmarksView, nullptr,
               "Bookmarks: the saved trace positions for this database",
-              NO_ICON, ITEM, MENU },
+              m_icons[ICO_BOOKMARKS], ITEM, MENU },
 
-            { actions::RUN_BACK, "Continue backwards", &m_runBack, nullptr,
-              "Continue backwards: run backward to the previous breakpoint or the "
-              "start of the trace",
-              m_icons[ICO_REV_CONTINUE], GROUP, MENU },
-            { actions::STEP_OUT_BACK, "Step out backwards", &m_stepOutBack, nullptr,
-              "Step out backwards: run backward out of the current function to the "
-              "call that entered it",
-              m_icons[ICO_STEP_OUT_BACK], ITEM, MENU },
-            { actions::RUN_TO_CUR_FWD, "Run to cursor", &m_runToCurFwd, nullptr,
-              "Run to cursor: run forward until execution reaches the cursor address",
-              m_icons[ICO_RUN_TO_CUR], ITEM, MENU },
-            { actions::RUN_TO_CUR_BACK, "Run to cursor backwards", &m_runToCurBack, nullptr,
-              "Run to cursor backwards: run backward until execution reaches the "
-              "cursor address",
-              m_icons[ICO_RUN_TO_CUR_BACK], ITEM, MENU },
-
+            // Code analysis: what the recording says about the code in front of
+            // you.
             { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
               "Analyze whole function: walk the trace backward to find the enclosing "
               "function's entry and define it (runs behind a cancellable wait box)",
               NO_ICON, GROUP, MENU },
+            { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
+              "Highlight executed code: replay the recording and color every "
+              "instruction in the chosen scope that actually ran",
+              NO_ICON, ITEM, MENU },
+            { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
+              "Resolve indirect calls: record where each one actually went, as a "
+              "comment and a cross-reference",
+              NO_ICON, ITEM, MENU },
+
+            // Call tracing.
             { actions::TRACE_FUNC, "Find all calls to this function", &m_traceFunc, "Ctrl+Shift+C",
               "Find all calls to this function: sweep the whole trace and list every "
               "call with its arguments and return value",
-              NO_ICON, ITEM, MENU },
+              NO_ICON, GROUP, MENU },
             { actions::TRACE_PAT, "Find calls by name/pattern...", &m_tracePat, "Ctrl+Shift+F",
               "Find calls by name/pattern: trace every function matching a wildcard "
               "like 'kernel32!Virtual*' in one sweep",
               m_icons[ICO_FUNC_SEARCH], ITEM, MENU },
-            { actions::OPEN_EVENTS, "Trace events...", &m_openEvents, nullptr,
-              "Trace events: open the recorded calls (arguments and return values)",
+            { actions::OPEN_EVENTS, "Recorded calls...", &m_openEvents, nullptr,
+              "Recorded calls: the calls found by the sweeps above, with their "
+              "arguments and return values",
               NO_ICON, ITEM, MENU },
             { actions::OPEN_TRACED, "Traced functions...", &m_openTraced, nullptr,
               "Traced functions: manage the list of functions selected for call tracing",
@@ -212,19 +213,7 @@ namespace idattd
               "Re-run trace: re-sweep the trace for all currently traced functions",
               NO_ICON, ITEM, MENU },
 
-            { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
-              "Highlight executed code: replay the recording and colour every "
-              "instruction in the chosen scope that actually ran",
-              NO_ICON, GROUP, MENU },
-            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
-              "Clear execution highlight: remove the coverage colour from the whole "
-              "database",
-              NO_ICON, ITEM, MENU },
-            { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
-              "Highlight functions automatically: measure and colour each function "
-              "the first time you stop in it",
-              NO_ICON, ITEM, MENU },
-
+            // Memory.
             { actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, "Ctrl+Shift+M",
               "Find memory accesses: every read, write or execute of an address "
               "anywhere in the recording",
@@ -233,18 +222,51 @@ namespace idattd
               "Memory map: every allocation, protection change and free the recording "
               "made, with each live region as a segment",
               NO_ICON, ITEM, MENU },
-            { actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, nullptr,
-              "Clear memory map: forget the reconstructed regions and go back to one "
-              "range over user space",
+            { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
+              "Re-read memory: discard what IDA cached for the selected range, rebuild "
+              "it from the recording and disassemble it again",
               NO_ICON, ITEM, MENU },
-            { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
-              "Resolve indirect calls: record where each one actually went, as a "
-              "comment and a cross-reference",
-              NO_ICON, ITEM, MENU },
+
+            // The one automatic behavior.
+            { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
+              "Highlight functions automatically: measure and color each function "
+              "the first time you stop in it",
+              NO_ICON, GROUP, MENU },
+
+            // Undoing what the groups above wrote into the database.
+            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
+              "Clear execution highlight: remove the coverage color from the whole "
+              "database",
+              NO_ICON, GROUP, MENU },
             { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
               "Clear resolved indirect calls: remove the comments and cross-references "
               "a previous run added",
               NO_ICON, ITEM, MENU },
+            { actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, nullptr,
+              "Clear memory map: forget the reconstructed regions and go back to one "
+              "range over user space",
+              NO_ICON, ITEM, MENU },
+
+            // Toolbar only. The backward movement and run-to-cursor actions sit
+            // on the TTD toolbar beside their forward counterparts, which is
+            // where a debugger's movement controls belong; four of the ten on
+            // the menu read as an arbitrary subset. They stay registered, so
+            // their shortcuts and buttons work as before.
+            { actions::RUN_BACK, "Continue backwards", &m_runBack, nullptr,
+              "Continue backwards: run backward to the previous breakpoint or the "
+              "start of the trace",
+              m_icons[ICO_REV_CONTINUE], ITEM, TOOLBAR_ONLY },
+            { actions::STEP_OUT_BACK, "Step out backwards", &m_stepOutBack, nullptr,
+              "Step out backwards: run backward out of the current function to the "
+              "call that entered it",
+              m_icons[ICO_STEP_OUT_BACK], ITEM, TOOLBAR_ONLY },
+            { actions::RUN_TO_CUR_FWD, "Run to cursor", &m_runToCurFwd, nullptr,
+              "Run to cursor: run forward until execution reaches the cursor address",
+              m_icons[ICO_RUN_TO_CUR], ITEM, TOOLBAR_ONLY },
+            { actions::RUN_TO_CUR_BACK, "Run to cursor backwards", &m_runToCurBack, nullptr,
+              "Run to cursor backwards: run backward until execution reaches the "
+              "cursor address",
+              m_icons[ICO_RUN_TO_CUR_BACK], ITEM, TOOLBAR_ONLY },
 
             // The live position readout: a text-only toolbar button, not a menu
             // entry -- it is a display that happens to be clickable.
@@ -283,6 +305,7 @@ namespace idattd
         TraceLink link;
         if ( !trace_link_read(&link) )
         {
+            trace_link_mark_start(false);
             warning("This database was not created from a TTD trace, so there is "
                     "nothing to replay.\n\nUse Debugger > Switch debugger to attach "
                     "a trace to it instead.");
@@ -290,6 +313,7 @@ namespace idattd
         }
         if ( get_process_state() != DSTATE_NOTASK )
         {
+            trace_link_mark_start(false);
             warning("A debugging session is already running.");
             return;
         }
@@ -304,13 +328,19 @@ namespace idattd
                          link.trace_path.c_str());
             const char *chosen = ask_file(false, link.trace_path.c_str(), "%s", prompt.c_str());
             if ( chosen == nullptr )
+            {
+                trace_link_mark_start(false);   // the user declined, nothing broke
                 return;
+            }
             link.trace_path = chosen;
             trace_link_set_path(chosen);
         }
 
         if ( !select_trace_debugger(link.trace_path.c_str()) )
+        {
+            trace_link_mark_start(false);       // reported already, nothing broke
             return;
+        }
         start_process(link.trace_path.c_str(), "", "");
     }
 
@@ -385,6 +415,21 @@ namespace idattd
         return true;
     }
 
+    // Runs from IDA's request queue, which is dispatched on the main thread when
+    // IDA is idle. Starting a debugger session rebases the program and replaces
+    // the loader's segments, so it must not happen from inside a timer callback
+    // partway through the kernel's own work.
+    struct start_request_t : public ui_request_t
+    {
+        Plugin *p;
+        explicit start_request_t(Plugin *plugin) : p(plugin) {}
+        bool idaapi run() override
+        {
+            p->offer_trace_session();
+            return false;               // one-shot; IDA deletes the request
+        }
+    };
+
     int idaapi Plugin::attach_cb(void *ud)
     {
         Plugin *p = static_cast<Plugin *>(ud);
@@ -395,7 +440,7 @@ namespace idattd
         if ( !auto_is_ok() )
             return ATTACH_POLL_MS;      // not yet; ask again
         p->m_attachTimer.fired();
-        p->offer_trace_session();
+        execute_ui_requests(new start_request_t(p), nullptr);
         return -1;
     }
 
@@ -413,44 +458,56 @@ namespace idattd
         if ( !trace_link_read(&link) )
             return;
 
-        // The action goes on the Debugger menu rather than the TTD menu: the TTD
-        // menu only exists while a session is running, and this is the thing that
-        // starts one. Registered here rather than in the constructor because it
-        // is only meaningful for a database that came from a recording.
+        // Both actions go on the Debugger menu rather than the TTD menu: the TTD
+        // menu only exists while a session is running, and these are what start
+        // one. Registered here rather than in the constructor because they are
+        // only meaningful for a database that came from a recording.
         if ( !m_attachRegistered )
         {
+            m_attachRegistered = true;      // one attempt, whatever it yields
             if ( register_action(ACTION_DESC_LITERAL_PLUGMOD(
                      actions::ATTACH_TRACE, "Start the TTD replay for this database",
                      &m_attachTrace, this, nullptr, nullptr, -1)) )
             {
                 attach_action_to_menu("Debugger/", actions::ATTACH_TRACE, SETMENU_APP);
-                m_attachRegistered = true;
+            }
+            if ( register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                     actions::AUTO_START, "Replay the TTD trace when this database opens",
+                     &m_autoStart, this, nullptr, nullptr, -1)) )
+            {
+                attach_action_to_menu("Debugger/", actions::AUTO_START, SETMENU_APP);
+                update_action_checkable(actions::AUTO_START, true);
+                update_action_checked(actions::AUTO_START,
+                                      trace_link_autostart() != TL_NO);
             }
         }
 
-        // Do this before asking, not after: whatever the answer, the database
-        // should already be pointed at the right backend with the right trace
-        // path, so Debugger > Process options and Start process just work.
+        // Do this first: whether or not the replay starts, the database should be
+        // pointed at the right backend with the right trace path, so Debugger >
+        // Process options and Start process just work.
         if ( qfileexist(link.trace_path.c_str()) )
             select_trace_debugger(link.trace_path.c_str(), true);
 
-        int pref = trace_link_autostart();
-        if ( pref == TL_NO )
-            return;                 // asked before, told no; the menu item remains
-        if ( pref == TL_ASK )
+        // Opening a recording is a request to replay it, so nothing is asked
+        // here. The Debugger menu carries a toggle for anyone who wants to open
+        // the database without starting a session.
+        if ( trace_link_autostart() == TL_NO )
+            return;
+
+        // A mark left over from last time means the previous automatic start did
+        // not get as far as a running session. Clear it and stay put, so this
+        // database can at least be opened and the automatic start switched off.
+        if ( trace_link_start_marked() )
         {
-            int r = ask_yn(ASKBTN_YES,
-                           "This database was created from a TTD trace:\n\n  %s\n\n"
-                           "Start replaying it now?\n\n"
-                           "(You can start it later from Debugger > Start the TTD "
-                           "replay for this database.)",
-                           link.trace_path.c_str());
-            if ( r == ASKBTN_CANCEL )
-                return;             // undecided: ask again next time
-            trace_link_set_autostart(r == ASKBTN_YES ? TL_YES : TL_NO);
-            if ( r != ASKBTN_YES )
-                return;
+            trace_link_mark_start(false);
+            msg("[ida-ttd] the last automatic replay start for this database did "
+                "not finish, so it was not repeated. Start it by hand from "
+                "Debugger > Start the TTD replay for this database, or leave it "
+                "off with the toggle beside it.\n");
+            return;
         }
+
+        trace_link_mark_start(true);
         start_trace_session();
     }
 
@@ -583,6 +640,9 @@ namespace idattd
         // Live position readout, then all forward buttons, then all backward
         // buttons, then the TTD extras.
         attach_action_to_toolbar(TTD_TOOLBAR, actions::POS_LABEL);
+        // --- bookmarks, next to the position they record ---
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::ADD_BOOKMARK);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::BOOKMARKS);
         // --- forward ---
         attach_action_to_toolbar(TTD_TOOLBAR, "ProcessStart");           // Continue
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepInto");         // Step into
@@ -600,8 +660,6 @@ namespace idattd
         attach_action_to_toolbar(TTD_TOOLBAR, actions::GOTO_POS);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TRACE_PAT);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::OPEN_EVENTS);
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::ADD_BOOKMARK);
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::BOOKMARKS);
 
         reskin_actions();
         update_position_label();
@@ -807,7 +865,10 @@ namespace idattd
                     p->manager().modules().load_pdb((ea_t)mi.base);  // silent PDB symbols
                 }
                 if ( code == dbg_process_start )
+                {
+                    trace_link_mark_start(false);   // the start survived
                     p->show_actions();   // (re)build the toolbar inside the now-active debugger desktop
+                }
                 p->update_position_label();
                 break;
             }
@@ -883,6 +944,7 @@ namespace idattd
                     attach_action_to_popup(widget, popup, actions::TRACE_FUNC, "TTD/");
                     attach_action_to_popup(widget, popup, actions::COVERAGE, "TTD/");
                     attach_action_to_popup(widget, popup, actions::MEM_SEARCH, "TTD/");
+                    attach_action_to_popup(widget, popup, actions::REREAD, "TTD/");
                 }
                 break;
             }

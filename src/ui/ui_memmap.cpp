@@ -104,6 +104,71 @@ namespace idattd
     }
 
     //=======================================================================
+    // Re-read memory from the recording
+    //=======================================================================
+    int idaapi RereadHandler::activate(action_activation_ctx_t *)
+    {
+        if ( mgr() == nullptr || !mgr()->is_active() )
+        {
+            warning("Re-reading memory is only possible while replaying a trace.");
+            return 1;
+        }
+
+        // A selection in the disassembly is the common case; fall back to asking
+        // so the command is usable from the menu with nothing selected.
+        ea_t lo = BADADDR, hi = BADADDR;
+        if ( !read_range_selection(nullptr, &lo, &hi) || lo >= hi )
+        {
+            ea_t here = get_screen_ea();
+            if ( here == BADADDR )
+            {
+                warning("Put the cursor on an address, or select a range, first.");
+                return 1;
+            }
+            // Default to the enclosing function, else a page, kept inside the
+            // segment the cursor is in.
+            lo = here;
+            hi = here + 0x1000;
+            segment_info_t si;
+            if ( get_segment_info(&si, here) )
+            {
+                func_entry_info_t fi;
+                if ( get_func_entry_info(&fi, here) && fi.end_ea > fi.start_ea )
+                {
+                    lo = fi.start_ea;
+                    hi = fi.end_ea;
+                }
+                if ( hi > si.end_ea )
+                    hi = si.end_ea;
+            }
+
+            static const char form[] =
+                "TTD re-read memory\n"
+                "\n"
+                "Discard what IDA has cached for this range, rebuild it from the\n"
+                "recording, and disassemble it again.\n"
+                "\n"
+                "  <~S~tart:$::16::>\n"
+                "  <~E~nd:$::16::>\n"
+                "\n";
+            if ( !ask_form(form, &lo, &hi) )
+                return 1;
+        }
+
+        if ( lo >= hi )
+        {
+            warning("The end address must be above the start address.");
+            return 1;
+        }
+
+        size_t got = mgr()->reread_range(lo, hi);
+        msg("[ida-ttd] re-read %a..%a: %d byte(s) recovered from recorded "
+            "writes.\n", lo, hi, (int)got);
+        refresh_idaview_anyway();
+        return 1;
+    }
+
+    //=======================================================================
     // Memory map actions
     //=======================================================================
     int idaapi MemoryMapHandler::activate(action_activation_ctx_t *)

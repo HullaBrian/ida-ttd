@@ -168,6 +168,7 @@ namespace idattd
         OpenEventsHandler   m_openEvents;
         RunTraceHandler     m_runTrace;
         AttachTraceHandler  m_attachTrace;
+        AutoStartHandler    m_autoStart;
         // Bookmarks + execution coverage
         AddBookmarkHandler   m_addBookmark;
         OpenBookmarksHandler m_bookmarksView;
@@ -176,6 +177,7 @@ namespace idattd
         AutoCoverageHandler  m_coverageAuto;
         // Memory access search + indirect call annotation
         MemSearchHandler          m_memSearch;
+        RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
         ClearMemoryMapHandler     m_memMapClear;
         IndirectCallsHandler      m_indirect;
@@ -205,6 +207,8 @@ namespace idattd
             ICO_TIMELINE,
             ICO_GOTO,
             ICO_FUNC_SEARCH,
+            ICO_BOOKMARK_ADD,
+            ICO_BOOKMARKS,
             ICO_COUNT
         };
         // One array rather than 13 handles, so the destructor frees them all

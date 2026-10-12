@@ -29,13 +29,13 @@ namespace idattd
             "\n"
             "<~S~cope:b:0:40::>\n"
             "\n";
+        ea_t ea = scope_anchor(mgr(), ctx);
         qstrvec_t items;
-        scope_items(&items);
-        static int sel = SCOPE_FUNCTION;   // the function you are looking at
+        scope_items(mgr(), ea, &items);
+        static int sel = SCOPE_FUNCTION;   // the function the cursor is stopped in
         if ( ask_form(form, &items, &sel) <= 0 )
             return 1;
 
-        ea_t ea = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
         std::vector<std::pair<ea_t, ea_t>> ranges;
         if ( !scope_ranges(mgr(), ea, sel, "annotate", ranges) )
             return 1;

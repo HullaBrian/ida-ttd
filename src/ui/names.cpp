@@ -21,6 +21,17 @@ namespace idattd
     // it, when there is no exception table to settle the question.
     static const ea_t MAX_NAME_OFFSET = 0x1000;
 
+    // "name+0x10". Callers must pass an anchor at or below the address; an
+    // anchor above it would mean the name belongs to something the address is
+    // not part of, so the offset is dropped rather than rendered backwards.
+    static qstring name_with_offset(const qstring &name, ea_t ea, ea_t anchor)
+    {
+        qstring out = name;
+        if ( ea > anchor )
+            out.cat_sprnt("+0x%llX", (uint64_t)(ea - anchor));
+        return out;
+    }
+
     qstring describe_address(TraceManager *mgr, ea_t ea)
     {
         qstring out;
@@ -38,18 +49,31 @@ namespace idattd
             return r;
         };
 
-        // 1. Inside a function IDA has actually defined.
+        // 1. Inside a function IDA has actually defined. Let IDA render it:
+        //    a function can own chunks placed anywhere, including below its
+        //    entry, and only IDA knows how it names an address in one. Measuring
+        //    from the entry ourselves would report an address inside a function
+        //    as an offset before it.
+        //
+        //    GNCN_REQFUNC makes this answer only for an address that really is
+        //    in a function, which is what keeps it from borrowing the nearest
+        //    unrelated name the way the fallbacks below have to guard against.
+        qstring nice;
+        if ( get_nice_colored_name(&nice, ea, GNCN_NOSEG | GNCN_NOCOLOR | GNCN_REQFUNC) > 0
+          && !nice.empty() )
+        {
+            return qualify(nice);
+        }
+
         func_entry_info_t fi;
         if ( get_func_entry_info(&fi, ea) )
         {
+            // In a function, but IDA had no name for the address. Name the
+            // function and leave the offset out rather than measure from an
+            // entry chunk the address may sit below.
             qstring fn = func_display_name(fi.start_ea);
             if ( !fn.empty() )
-            {
-                qstring what = fn;
-                if ( ea != fi.start_ea )
-                    what.cat_sprnt("+0x%llX", (uint64_t)(ea - fi.start_ea));
-                return qualify(what);
-            }
+                return qualify(name_with_offset(fn, ea, fi.start_ea));
         }
 
         // 2. The exception table of the address's module knows exactly where its
@@ -82,12 +106,7 @@ namespace idattd
             if ( usable )
                 usable = have_fn ? at >= fnstart : (ea - at <= MAX_NAME_OFFSET);
             if ( usable )
-            {
-                qstring what = nm;
-                if ( ea != at )
-                    what.cat_sprnt("+0x%llX", (uint64_t)(ea - at));
-                return qualify(what);
-            }
+                return qualify(name_with_offset(qstring(nm), ea, at));
         }
 
         // 4. No name inside the function, but we do know where it starts. Name it
@@ -97,9 +116,7 @@ namespace idattd
         {
             qstring what;
             what.sprnt("sub_%llX", (uint64_t)fnstart);
-            if ( ea != fnstart )
-                what.cat_sprnt("+0x%llX", (uint64_t)(ea - fnstart));
-            return qualify(what);
+            return qualify(name_with_offset(what, ea, fnstart));
         }
 
         // 5. Relative to the module, which is unambiguous even with no symbols.

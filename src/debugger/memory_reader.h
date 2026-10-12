@@ -54,6 +54,12 @@ namespace idattd
         // recovered.
         bool reconstruct(TTD::Replay::ICursorView *playhead, ea_t lo, ea_t hi);
 
+        // reconstruct(), after throwing away anything already rebuilt for
+        // [lo, hi): that was built from the writes known at the time, and is
+        // what a re-read is trying to replace. Returns the number of bytes in
+        // the range recovered from recorded writes.
+        size_t reread(TTD::Replay::ICursorView *playhead, ea_t lo, ea_t hi);
+
     private:
         TTD::Replay::IReplayEngine *m_engine  = nullptr;
         ModuleRegistry             *m_modules = nullptr;

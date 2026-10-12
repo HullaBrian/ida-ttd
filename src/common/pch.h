@@ -48,6 +48,7 @@
 #include <typeinf.hpp>
 #include <ua.hpp>
 #include <auto.hpp>
+#include <registry.hpp>
 
 // ---------------------------------------------------------------------------
 // Microsoft TTD Replay SDK

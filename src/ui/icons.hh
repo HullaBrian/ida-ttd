@@ -58,6 +58,14 @@ namespace idattd
     static const char icons_function_search_svg[] =
         R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#e3e3e3" xmlns="http://www.w3.org/2000/svg"><path d="M203-480h117q11 0 21 5.5t15 16.5l44 88 124-248q11-23 36-23t36 23l69 138h92q-15-102-93-171t-184-69q-106 0-184 69t-93 171Zm461 251q78-69 93-171H640q-11 0-21-5.5T604-422l-44-88-124 248q-11 23-36 23t-36-23l-69-138h-92q15 102 93 171t184 69q106 0 184-69ZM340.5-108.5Q275-137 226-186t-77.5-114.5Q120-366 120-440h80q0 116 82 198t198 82q116 0 198-82t82-198h80q0 74-28.5 139.5T734-186q-49 49-114.5 77.5T480-80q-74 0-139.5-28.5ZM120-440q0-74 28.5-139.5T226-694q49-49 114.5-77.5T480-800q62 0 119 20t107 58l56-56 56 56-56 56q38 50 58 107t20 119h-80q0-116-82-198t-198-82q-116 0-198 82t-82 198h-80Zm240-400v-80h240v80H360Zm-78 598q-82-82-82-198t82-198q82-82 198-82t198 82q82 82 82 198t-82 198q-82 82-198 82t-198-82Zm198-198Z"/></svg>)SVG";
 
+    // Bookmark the current position (a bookmark with a plus)
+    static const char icons_bookmark_add_svg[] =
+        R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#E5342C" xmlns="http://www.w3.org/2000/svg"><path d="M200-120v-640q0-33 23.5-56.5T280-840h240v80H280v518l200-86 200 86v-278h80v400L480-240 200-120Zm480-560v-80h-80v-80h80v-80h80v80h80v80h-80v80h-80Z"/></svg>)SVG";
+
+    // The saved bookmarks for this database
+    static const char icons_bookmarks_svg[] =
+        R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#E5342C" xmlns="http://www.w3.org/2000/svg"><path d="M120-40v-600q0-33 23.5-56.5T200-720h280q33 0 56.5 23.5T560-640v600L340-134 120-40Zm80-122 140-60 140 60v-478H200v478Zm600-38v-680H280v-80h520q33 0 56.5 23.5T880-880v680h-80Z"/></svg>)SVG";
+
     // Go to position by timestamp
     static const char icons_goto_time_svg[] =
         R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#e3e3e3" xmlns="http://www.w3.org/2000/svg"><path d="M600-160q-134 0-227-93t-93-227q0-133 93-226.5T600-800q133 0 226.5 93.5T920-480q0 134-93.5 227T600-160Zm0-80q100 0 170-70t70-170q0-100-70-170t-170-70q-100 0-170 70t-70 170q0 100 70 170t170 70Zm91-91 57-57-108-108v-144h-80v177l131 132ZM80-600v-80h160v80H80ZM40-440v-80h200v80H40Zm40 160v-80h160v80H80Zm520-200Z"/></svg>)SVG";

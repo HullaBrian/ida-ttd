@@ -15,7 +15,8 @@ namespace idattd
     // The colour has to be asked for too. IDA has no API for "is the theme
     // dark", and a shade that reads on a light theme is nearly invisible on a
     // dark one, so the only honest default is the last one this database used.
-    static bool ask_coverage_options(int &scope, bgcolor_t &color)
+    static bool ask_coverage_options(TraceManager *mgr, ea_t ea,
+                                     int &scope, bgcolor_t &color)
     {
         static const char form[] =
             "TTD execution coverage\n"
@@ -28,7 +29,7 @@ namespace idattd
             "<~C~olour:K::6::>\n"
             "\n";
         qstrvec_t items;
-        scope_items(&items);
+        scope_items(mgr, ea, &items);
         static int sel = SCOPE_FUNCTION;   // the last choice within this session
         color = coverage_color();
         if ( ask_form(form, &items, &sel, &color) <= 0 )
@@ -45,12 +46,12 @@ namespace idattd
             return 1;
         }
 
+        ea_t      ea    = scope_anchor(mgr(), ctx);
         int       scope = SCOPE_FUNCTION;
         bgcolor_t color = COVERAGE_DEFAULT_COLOR;
-        if ( !ask_coverage_options(scope, color) )
+        if ( !ask_coverage_options(mgr(), ea, scope, color) )
             return 1;
 
-        ea_t ea = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
         std::vector<std::pair<ea_t, ea_t>> ranges;
         if ( !scope_ranges(mgr(), ea, scope, "measure", ranges) )
             return 1;

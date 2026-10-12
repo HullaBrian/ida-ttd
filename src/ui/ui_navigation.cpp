@@ -146,4 +146,19 @@ namespace idattd
             return AST_DISABLE;
         return AST_ENABLE_ALWAYS;
     }
+
+    int idaapi AutoStartHandler::activate(action_activation_ctx_t *)
+    {
+        bool on = trace_link_autostart() != TL_NO;
+        trace_link_set_autostart(on ? TL_NO : TL_YES);
+        update_action_checked(actions::AUTO_START, !on);
+        return 1;
+    }
+
+    action_state_t idaapi AutoStartHandler::update(action_update_ctx_t *)
+    {
+        if ( !trace_link_present() )
+            return AST_DISABLE;
+        return AST_ENABLE_ALWAYS;
+    }
 }

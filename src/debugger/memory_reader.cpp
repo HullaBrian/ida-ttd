@@ -354,4 +354,30 @@ namespace idattd
         m_regions.push_back(std::move(reg));
         return true;
     }
+
+    size_t MemoryReader::reread(ICursorView *playhead, ea_t lo, ea_t hi)
+    {
+        if ( playhead == nullptr || lo >= hi )
+            return 0;
+
+        m_regions.erase(
+            std::remove_if(m_regions.begin(), m_regions.end(),
+                           [lo, hi](const ReconRegion &r)
+                           { return r.lo < hi && lo < r.hi; }),
+            m_regions.end());
+
+        size_t recovered = 0;
+        if ( reconstruct(playhead, lo, hi) )
+        {
+            for ( const ReconRegion &r : m_regions )
+            {
+                if ( r.lo >= hi || lo >= r.hi )
+                    continue;
+                for ( size_t i = 0; i < r.known.size(); i++ )
+                    if ( r.known[i] )
+                        recovered++;
+            }
+        }
+        return recovered;
+    }
 }

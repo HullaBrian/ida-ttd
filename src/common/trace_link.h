@@ -36,4 +36,17 @@ namespace idattd
     enum { TL_ASK = 0, TL_NO = 1, TL_YES = 2 };
     int  trace_link_autostart();
     void trace_link_set_autostart(int v);
+
+    // Crash guard for the automatic start.
+    //
+    // The mark is set just before a replay is started on its own and cleared as
+    // soon as the session is up. Finding it still set at the next open means the
+    // last automatic start did not survive, so that open does not try again --
+    // otherwise a database that takes IDA down on start could never be opened at
+    // all, not even to switch the automatic start off.
+    //
+    // It lives in IDA's own settings rather than in the database, because a
+    // database that was never saved cannot remember anything.
+    bool trace_link_start_marked();
+    void trace_link_mark_start(bool pending);
 }

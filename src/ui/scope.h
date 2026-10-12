@@ -16,8 +16,19 @@ namespace idattd
         SCOPE_ALL_MODULES,
     };
 
-    // The radio items for a scope field, in Scope order.
-    void scope_items(qstrvec_t *out);
+    // Where a "current function" or "current module" scope is measured from.
+    //
+    // The view wins when it points at a function, because right-clicking one is
+    // how you scope to a function you navigated to deliberately. Otherwise the
+    // replay position does: IDA's view does not always follow a time-travel
+    // jump, and scoping to a stale address fails with "no function there" when
+    // the command would have worked at the position the cursor is stopped at.
+    ea_t scope_anchor(TraceManager *mgr, action_activation_ctx_t *ctx);
+
+    // The radio items for a scope field around 'ea', in Scope order. They name
+    // the function and module, so whichever address scope_anchor() picked is
+    // visible before anything runs.
+    void scope_items(TraceManager *mgr, ea_t ea, qstrvec_t *out);
 
     // Turn a scope choice around 'ea' into the [lo, hi) ranges it means.
     //

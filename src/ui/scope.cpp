@@ -3,13 +3,49 @@
 
 namespace idattd
 {
-    void scope_items(qstrvec_t *out)
+    ea_t scope_anchor(TraceManager *mgr, action_activation_ctx_t *ctx)
+    {
+        ea_t view = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea
+                                                            : get_screen_ea();
+        func_entry_info_t fi;
+        if ( view != BADADDR && get_func_entry_info(&fi, view) )
+            return view;
+
+        if ( mgr != nullptr && mgr->is_active() )
+        {
+            ea_t pc = mgr->current_pc_ea();
+            if ( pc != BADADDR )
+                return pc;
+        }
+        return view;
+    }
+
+    void scope_items(TraceManager *mgr, ea_t ea, qstrvec_t *out)
     {
         if ( out == nullptr )
             return;
         out->clear();
-        out->push_back("Function under the cursor");
-        out->push_back("Module under the cursor");
+
+        qstring where;
+        func_entry_info_t fi;
+        if ( get_func_entry_info(&fi, ea) )
+        {
+            qstring fn;
+            if ( get_func_name(&fn, fi.start_ea) > 0 && !fn.empty() )
+                where.sprnt("Function %s", fn.c_str());
+        }
+        if ( where.empty() )
+            where.sprnt("Function containing 0x%llX", (uint64_t)ea);
+
+        qstring mod = mgr != nullptr ? mgr->modules().name_at(ea) : qstring();
+        qstring modline;
+        if ( !mod.empty() )
+            modline.sprnt("Module %s", mod.c_str());
+        else
+            modline.sprnt("Module containing 0x%llX", (uint64_t)ea);
+
+        out->push_back(where);
+        out->push_back(modline);
         out->push_back("All loaded modules");
     }
 

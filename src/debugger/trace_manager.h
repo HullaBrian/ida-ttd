@@ -95,6 +95,17 @@ namespace idattd
         // list can show where each mark is without seeking to every row.
         ea_t                       current_pc_ea() const;
 
+        // Re-read [lo, hi) from the recording and re-analyze it.
+        //
+        // The bytes IDA shows come from a cache that is filled the first time an
+        // address is displayed. A range read before its module was mapped, or
+        // before the write that produced its contents was replayed, keeps the
+        // answer it was first given. This throws that away, rebuilds the range
+        // from the recording's writes, and lets IDA disassemble it again.
+        //
+        // Returns the number of bytes recovered from recorded writes.
+        size_t                     reread_range(ea_t lo, ea_t hi);
+
         // What the plugin knows about the modules the recording loaded: where
         // they are, what they are called, where their functions start, which of
         // their addresses have names, and their on-disk images. This class only
