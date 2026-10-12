@@ -50,7 +50,7 @@ namespace idattd
         QueryResult query_accesses(ea_t lo, ea_t hi, uint8_t kinds, PositionRange when,
                                    std::vector<Access> *out, ProgressSink *progress) override;
         QueryResult query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
-                                   std::set<ea_t> *out, ProgressSink *progress) override;
+                                   std::vector<ea_t> *out, ProgressSink *progress) override;
         QueryResult query_calls(const std::vector<ea_t> &targets, PositionRange when,
                                 std::vector<CallEvent> *out, ProgressSink *progress) override;
         QueryResult query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &ranges,

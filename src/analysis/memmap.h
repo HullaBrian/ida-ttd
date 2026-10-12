@@ -24,6 +24,10 @@ namespace idattd
         RC_FREE,          // NtFreeVirtualMemory
         RC_MAPVIEW,       // NtMapViewOfSection
         RC_UNMAPVIEW,     // NtUnmapViewOfSection
+        // Not a call but its outcome, as a backend that records the region
+        // bookkeeping reports it (Sogen): [base, base + size) is now in
+        // 'state' with 'protect'. Folding it overwrites the range.
+        RC_STATE,
         RC_COUNT
     };
     const char *change_name(uint8_t kind);
@@ -76,6 +80,11 @@ namespace idattd
         // for RC_PROTECT, where it decides whether a protection change with no
         // matching allocation may invent a region of its own.
         bool     in_module = false;
+        // For RC_STATE: MEM_COMMIT, MEM_RESERVE or MEM_FREE; the ITTD_REGION_*
+        // kind of memory; and the allocation's base. Zero for the others.
+        uint32_t state = 0;
+        uint32_t region_type = 0;
+        ea_t     alloc_base = 0;
     };
 
     // One region as it stands at some position.
@@ -129,16 +138,13 @@ namespace idattd
         mutable bool                   m_liveValid = false;
     };
 
-    // Replay the whole recording and record every allocation, protection change
-    // and free it made.
-    //
-    // Watches ntdll's NtAllocateVirtualMemory, NtProtectVirtualMemory,
-    // NtFreeVirtualMemory, NtMapViewOfSection and NtUnmapViewOfSection -- in
-    // every ntdll the trace loaded, because a WoW64 recording has two with
-    // different calling conventions.
+    // Ask the recording's backend for every allocation, protection change and
+    // free (ITraceBackend::query_mapping_changes): Microsoft TTD reconstructs
+    // them by replaying with ntdll's memory syscalls watched, Sogen reads the
+    // map it recorded.
     //
     // Shows a cancellable progress box; safe to call from a UI action. Returns
-    // false when there is no trace or nothing could be watched.
+    // false when there is no trace or the backend could not answer.
     //
     // Modifies the database: applies export names, and loads the PDB, for every
     // module the recorded call chains pass through, so the listing can name the

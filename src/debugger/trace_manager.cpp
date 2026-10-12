@@ -1,6 +1,5 @@
 #include "debugger/trace_manager.h"
 #include "analysis/trace_store.h"
-#include "backend-msttd/msttd_backend.h"
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
 #include "debugger/registers.h"
@@ -762,12 +761,6 @@ namespace idattd
         m_pending.address = addr;
         request_continue_process();
         run_requests();
-    }
-
-    TTD::Replay::UniqueCursor TraceManager::make_cursor()
-    {
-        MsTtdBackend *ms = dynamic_cast<MsTtdBackend *>(m_backend);
-        return ms != nullptr ? ms->new_engine_cursor() : TTD::Replay::UniqueCursor{};
     }
 
     ea_t TraceManager::current_pc_ea() const

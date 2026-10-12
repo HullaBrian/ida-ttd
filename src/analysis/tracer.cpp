@@ -1,12 +1,7 @@
 #include "analysis/tracer.h"
 #include "debugger/callconv.h"
-#include "debugger/msttd_guest.h"
-#include "analysis/sweep.h"
-#include "debugger/msttd_position.h"
+#include "analysis/query_runner.h"
 #include "debugger/trace_manager.h"
-
-using namespace TTD;
-using namespace TTD::Replay;
 
 namespace idattd
 {
@@ -310,114 +305,46 @@ namespace idattd
             return;
         }
 
-        UniqueCursor sweep = m_mgr->make_cursor();
-        if ( !sweep )
+        ITraceBackend *backend = m_mgr->backend();
+        if ( !m_mgr->is_active() || backend == nullptr )
         {
             warning("Tracing is only available while replaying a trace.");
             return;
         }
 
-        struct Rec
+        std::vector<ea_t> targets;
+        targets.reserve(tgt2disp.size());
+        for ( const auto &kv : tgt2disp )
+            targets.push_back(kv.first);
+
+        // Phase 1: the backend finds every call to one of the targets.
+        std::vector<CallEvent> calls;
+        QueryResult qr = run_query("Tracing function calls across the whole trace",
+                                   [&](ProgressSink *p)
         {
-            ea_t     disp;
-            uint32_t tid;
-            TtdPosition callPos;
-            uint64_t retAddr;
-            TtdPosition retPos;
-            bool     hasRet;
-        };
-        std::vector<Rec> recs;
-        std::map<uint32_t, std::vector<size_t>> inflight; // per-thread call stack
-
-        // Cap the recording. A broad pattern over a long trace produces tens of
-        // millions of hits, and an unbounded vector grown inside the engine's
-        // noexcept callback turns bad_alloc into std::terminate.
-        static const size_t kMaxRecords = 2000000;
-        bool truncated = false;
-
-        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
-                               IThreadView const *t) noexcept
+            return backend->query_calls(targets, PositionRange{}, &calls, p);
+        });
+        if ( !qr.ran )
         {
-            uint32_t utid = (uint32_t)t->GetThreadInfo().UniqueId;
-            if ( (uint64_t)fall_through != 0 )
-            {
-                // CALL: instr == callee.
-                auto it = tgt2disp.find((ea_t)(uint64_t)instr);
-                if ( it != tgt2disp.end() )
-                {
-                    if ( recs.size() >= kMaxRecords )
-                    {
-                        truncated = true;
-                        return;
-                    }
-                    Rec r{};
-                    r.disp    = it->second;
-                    r.tid     = utid;
-                    r.callPos = t->GetPosition();
-                    r.retAddr = (uint64_t)fall_through;
-                    r.hasRet  = false;
-                    // Belt and braces: we are inside a noexcept callback, so an
-                    // allocation failure here would terminate the process rather
-                    // than surface as an error. Swallow it and stop recording.
-                    try
-                    {
-                        inflight[utid].push_back(recs.size());
-                        recs.push_back(r);
-                    }
-                    catch ( ... )
-                    {
-                        truncated = true;
-                    }
-                }
-            }
-            else
-            {
-                // RET: instr == address being returned to. Pair with the most
-                // recent in-flight call on this thread whose return address matches.
-                auto it = inflight.find(utid);
-                if ( it != inflight.end() && !it->second.empty() )
-                {
-                    size_t idx = it->second.back();
-                    if ( (uint64_t)instr == recs[idx].retAddr )
-                    {
-                        recs[idx].retPos = t->GetPosition();
-                        recs[idx].hasRet = true;
-                        it->second.pop_back();
-                    }
-                }
-            }
-        };
-
-        // Phase 1 replays the whole trace (see run_replay_sweep). on_call_ret
-        // is dispatched by the engine, so it may not touch IDA and only writes
-        // plain memory. ReplaySegmentsSequentially keeps it single-threaded;
-        // without it segments replay in parallel and 'recs' would be written
-        // from several threads at once.
-        sweep->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                            | ReplayFlags::ReplaySegmentsSequentially);
-        sweep->SetCallReturnCallback(on_call_ret);
-
-        SweepOutcome swept = run_replay_sweep(
-            m_mgr, sweep.get(), "Tracing function calls across the whole trace");
-
-        sweep->SetCallReturnCallback(nullptr, 0);
-        sweep.reset();
-
-        if ( truncated )
-            msg("[ida-ttd] tracer: hit the %d-call recording limit; results are "
-                "truncated. Narrow the pattern to see the rest.\n", (int)kMaxRecords);
+            warning("This recording's backend could not search for calls.");
+            return;
+        }
+        if ( qr.truncated )
+            msg("[ida-ttd] tracer: hit the backend's call limit; results are "
+                "truncated. Narrow the pattern to see the rest.\n");
 
         // Phase 2 runs on the main thread, so it has real progress and a
         // working Cancel.
-        UniqueCursor cur = m_mgr->make_cursor();
+        CursorPtr cur = backend->make_cursor();
         std::vector<FunctionInvocation> built;
-        built.reserve(recs.size());
-        bool cancelled = swept.cancelled;
-        show_wait_box("Resolving %d call(s)... (Cancel to stop)", (int)recs.size());
+        built.reserve(calls.size());
+        bool cancelled = qr.cancelled;
+        const uint64_t ptr = m_is64 ? 8 : 4;
+        show_wait_box("Resolving %d call(s)... (Cancel to stop)", (int)calls.size());
         if ( cur )
         {
             size_t resolved = 0;
-            for ( const Rec &rec : recs )
+            for ( const CallEvent &c : calls )
             {
                 if ( user_cancelled() )
                 {
@@ -426,20 +353,45 @@ namespace idattd
                 }
                 if ( (resolved & 0x3F) == 0 )
                     replace_wait_box("Resolving call %d of %d... (Cancel to stop)",
-                                     (int)resolved + 1, (int)recs.size());
+                                     (int)resolved + 1, (int)calls.size());
                 resolved++;
 
-                cur->SetPosition(rec.callPos);
+                auto disp = tgt2disp.find(c.target);
+                if ( disp == tgt2disp.end() )
+                    continue;
+
                 FunctionInvocation ev;
-                ev.func_ea = rec.disp;
-                ev.pos     = to_core(rec.callPos);
-                ev.tid     = rec.tid;
-                extract_args(msttd_view(cur.get(), m_is64), rec.disp, m_is64, ev.args);
-                if ( rec.hasRet )
+                ev.func_ea = disp->second;
+                ev.tid     = c.tid;
+
+                // The arguments are decoded as the caller left them, just
+                // before the call. Without a call -- the thread began in the
+                // callee, or a jump got there -- read them at the entry
+                // instead, where the return address is already on the stack:
+                // step the stack pointer back over it so the stack arguments
+                // are where a call site would have them.
+                bool at_call = c.is_call && c.pos.is_valid();
+                Position where = at_call ? c.pos : c.entry_pos;
+                if ( !where.is_valid() || !cur->seek(where) )
+                    continue;
+                ev.pos = where;
+                GuestView view = guest_view(cur.get());
+                if ( !at_call )
                 {
-                    cur->SetPosition(rec.retPos);
-                    ev.end_pos = to_core(rec.retPos);
-                    ev.retval  = render_return(msttd_view(cur.get(), m_is64), rec.disp, m_is64);
+                    auto regs = view.regs;
+                    view.regs = [regs, ptr](ittd_regs *r)
+                    {
+                        if ( !regs || !regs(r) )
+                            return false;
+                        r->gp[ITTD_REG_RSP] += ptr;
+                        return true;
+                    };
+                }
+                extract_args(view, ev.func_ea, m_is64, ev.args);
+                if ( c.ret_pos.is_valid() && cur->seek(c.ret_pos) )
+                {
+                    ev.end_pos = c.ret_pos;
+                    ev.retval  = render_return(guest_view(cur.get()), ev.func_ea, m_is64);
                     ev.has_ret = true;
                 }
                 built.push_back(std::move(ev));
@@ -460,8 +412,8 @@ namespace idattd
         // was opened, and a later sweep must not rewrite it.
         if ( cancelled )
             msg("[ida-ttd] tracer: cancelled - showing %d of %d recorded call(s).\n",
-                (int)nbuilt, (int)recs.size());
+                (int)nbuilt, (int)calls.size());
         else
-            msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)recs.size());
+            msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)built.size());
     }
 }

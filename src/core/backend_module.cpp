@@ -500,7 +500,7 @@ namespace idattd
     }
 
     QueryResult BackendModule::query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
-                                              std::set<ea_t> *out, ProgressSink *progress)
+                                              std::vector<ea_t> *out, ProgressSink *progress)
     {
         if ( m_handle == nullptr || m_api->query_executed == nullptr || out == nullptr )
             return QueryResult{};
@@ -514,8 +514,9 @@ namespace idattd
         {
             return m_api->query_executed(m_handle, r.data(), r.size(), b, cap, n, &trunc, pb.get());
         });
+        // The ABI's answer is already sorted and distinct.
         for ( uint64_t a : v )
-            out->insert((ea_t)a);
+            out->push_back((ea_t)a);
         return result_of(rc, trunc);
     }
 

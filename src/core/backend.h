@@ -403,8 +403,10 @@ namespace idattd
         // A separate entry point from query_accesses because coverage wants a
         // set of addresses, not millions of individual events, and both
         // backends have a much cheaper way to produce one.
+        // Appends to 'out' in ascending order, each address once: a vector
+        // rather than a set, because a module's worth is millions of entries.
         virtual QueryResult query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
-                                           std::set<ea_t> *out,
+                                           std::vector<ea_t> *out,
                                            ProgressSink *progress) = 0;
 
         // Every call, within 'when', whose target is one of 'targets' (empty

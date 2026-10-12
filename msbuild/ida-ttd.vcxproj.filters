@@ -115,8 +115,11 @@
     <ClInclude Include="$(SrcDir)\analysis\memsearch.h">
       <Filter>analysis</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\analysis\sweep.h">
+    <ClInclude Include="$(SrcDir)\analysis\query_runner.h">
       <Filter>analysis</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h">
+      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\trace_store.h">
       <Filter>analysis</Filter>
@@ -231,8 +234,17 @@
     <ClCompile Include="$(SrcDir)\analysis\memsearch.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
-    <ClCompile Include="$(SrcDir)\analysis\sweep.cpp">
+    <ClCompile Include="$(SrcDir)\analysis\query_runner.cpp">
       <Filter>analysis</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_queries.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp">
+      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\trace_store.cpp">
       <Filter>analysis</Filter>

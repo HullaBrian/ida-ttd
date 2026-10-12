@@ -1,10 +1,7 @@
 #include "analysis/callsites.h"
-#include "analysis/sweep.h"
+#include "analysis/query_runner.h"
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
-
-using namespace TTD;
-using namespace TTD::Replay;
 
 namespace idattd
 {
@@ -78,13 +75,13 @@ namespace idattd
         CallSiteResult res;
         if ( out != nullptr )
             *out = res;
-        if ( mgr == nullptr || !mgr->is_active() )
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
         {
             warning("This is only available while replaying a trace.");
             return false;
         }
 
-        // Sorted, merged scope so the callback's lookup is a binary search.
+        // Sorted scope, as the backend is handed it.
         std::vector<std::pair<ea_t, ea_t>> spans;
         for ( const auto &r : ranges )
             if ( r.first < r.second )
@@ -93,13 +90,6 @@ namespace idattd
         if ( spans.empty() )
         {
             warning("Nothing to annotate: the chosen scope covers no addresses.");
-            return false;
-        }
-
-        UniqueCursor cur = mgr->make_cursor();
-        if ( !cur )
-        {
-            warning("Could not create a replay cursor for the sweep.");
             return false;
         }
 
@@ -119,71 +109,46 @@ namespace idattd
             }
         }
 
+        ITraceBackend *backend = mgr->backend();
+        std::map<ea_t, std::vector<IndirectTarget>> found;
+        QueryResult qr = run_query("Watching where indirect calls go", [&](ProgressSink *p)
+        {
+            return backend->query_indirect_targets(spans, false, &found, p);
+        });
+        if ( !qr.ran )
+        {
+            warning("This recording's backend could not report indirect call targets.");
+            return false;
+        }
+
+        // A backend may report direct calls too (the decode below drops them),
+        // so the caps apply to what survives that.
         std::map<ea_t, std::set<ea_t>> seen;   // call site -> targets it reached
-        bool hit_cap = false;
-
-        auto in_scope = [&spans](ea_t a) noexcept -> bool
+        bool hit_cap = qr.truncated;
+        for ( const auto &kv : found )
         {
-            size_t lo = 0, hi = spans.size();
-            while ( lo < hi )
+            if ( seen.size() >= kMaxSites )
             {
-                size_t mid = lo + (hi - lo) / 2;
-                if ( a < spans[mid].first )
-                    hi = mid;
-                else
-                    lo = mid + 1;
+                hit_cap = true;
+                break;
             }
-            return lo != 0 && a < spans[lo - 1].second;
-        };
-
-        auto on_call_ret = [&seen, &hit_cap, &in_scope](
-                GuestAddress target, GuestAddress fall_through,
-                IThreadView const *t) noexcept
-        {
-            if ( (uint64_t)fall_through == 0 )
-                return;                         // a return, not a call
-            // The callback fires on the call instruction, so the thread's program
-            // counter is the call site and the first argument is where it went.
-            ea_t site = (ea_t)(uint64_t)t->GetProgramCounter();
-            if ( !in_scope(site) )
-                return;
-            try
+            insn_t insn;
+            if ( decode_insn(&insn, kv.first) <= 0 || !is_indirect_call(insn) )
+                continue;
+            // A site that reaches a great many targets is a dispatcher, and
+            // listing hundreds of them helps nobody. Keep the most frequent few.
+            std::vector<IndirectTarget> v = kv.second;
+            std::stable_sort(v.begin(), v.end(), [](const IndirectTarget &x, const IndirectTarget &y)
+                             { return x.hits > y.hits; });
+            std::set<ea_t> &dst = seen[kv.first];
+            for ( const IndirectTarget &t : v )
             {
-                auto it = seen.find(site);
-                if ( it == seen.end() )
-                {
-                    if ( seen.size() >= kMaxSites )
-                    {
-                        hit_cap = true;
-                        return;
-                    }
-                    it = seen.emplace(site, std::set<ea_t>()).first;
-                }
-                // A site that reaches a great many targets is a dispatcher, and
-                // listing hundreds of them helps nobody. Keep the first few.
-                if ( it->second.size() < kMaxTargetsPerSite )
-                    it->second.insert((ea_t)(uint64_t)target);
+                if ( dst.size() >= kMaxTargetsPerSite )
+                    break;
+                if ( t.is_call && t.target != BADADDR )
+                    dst.insert(t.target);
             }
-            catch ( ... )
-            {
-            }
-        };
-
-        // Sequential replay keeps the callback single-threaded: 'seen' is an
-        // unsynchronized map and the engine's default is to replay several
-        // segments in parallel. ReplayAllSegmentsWithoutFiltering because a
-        // call/return callback is not a maskable event, so there is nothing for
-        // segment filtering to work with -- the same pair the whole-trace call
-        // sweep in tracer.cpp uses.
-        cur->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                          | ReplayFlags::ReplaySegmentsSequentially);
-        cur->SetCallReturnCallback(on_call_ret);
-
-        SweepOutcome swept = run_replay_sweep(mgr, cur.get(),
-                                              "Watching where indirect calls go");
-
-        cur->SetCallReturnCallback(nullptr, 0);
-        cur.reset();
+        }
 
         // ---- write the answers into the database ----
         show_wait_box("HIDECANCEL\nAnnotating call sites...");
@@ -243,7 +208,7 @@ namespace idattd
         hide_wait_box();
 
         res.truncated = hit_cap;
-        res.cancelled = swept.cancelled;
+        res.cancelled = qr.cancelled;
         if ( out != nullptr )
             *out = res;
         return true;

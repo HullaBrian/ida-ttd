@@ -1,26 +1,13 @@
 #include "analysis/coverage.h"
-#include "analysis/sweep.h"
+#include "analysis/query_runner.h"
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
 
-using namespace TTD;
-using namespace TTD::Replay;
-
 namespace idattd
 {
-    // One watched span plus a bit per byte of it. A bitmap rather than a set of
-    // addresses because this is written from inside a replay callback that runs
-    // once per executed instruction: it must not allocate, and on a long
-    // recording a container of distinct addresses would dwarf the trace itself.
-    struct Bin
-    {
-        ea_t                 lo = 0;
-        ea_t                 hi = 0;
-        std::vector<uint8_t> bits;
-    };
-
-    // Ceiling on how much address space one sweep may cover. The bitmap is one
-    // eighth of this, so the cap is really "do not quietly allocate 64 MiB".
+    // Ceiling on how much address space one sweep may cover. A backend keeps
+    // a bit per byte of scope while it sweeps, so the cap is really "do not
+    // quietly allocate 64 MiB".
     static const uint64_t kMaxCoverageBytes = 512ull << 20;
 
     // Which colours has this database been painted with?
@@ -180,7 +167,7 @@ namespace idattd
         CoverageResult res;
         if ( out != nullptr )
             *out = res;
-        if ( mgr == nullptr || !mgr->is_active() )
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
         {
             warning("Execution coverage is only available while replaying a trace.");
             return false;
@@ -205,81 +192,18 @@ namespace idattd
             return false;
         }
 
-        UniqueCursor cur = mgr->make_cursor();
-        if ( !cur )
+        ITraceBackend *backend = mgr->backend();
+        std::vector<ea_t> executed;
+        QueryResult qr = run_query("Measuring execution coverage", [&](ProgressSink *p)
         {
-            warning("Could not create a replay cursor for the coverage sweep.");
+            return backend->query_executed(spans, &executed, p);
+        });
+        if ( !qr.ran )
+        {
+            warning("This recording's backend could not measure execution coverage.");
             return false;
         }
-
-        std::vector<Bin> bins(spans.size());
-        for ( size_t i = 0; i < spans.size(); i++ )
-        {
-            bins[i].lo = spans[i].first;
-            bins[i].hi = spans[i].second;
-            bins[i].bits.assign((size_t)(((uint64_t)(spans[i].second - spans[i].first) + 7) / 8), 0);
-        }
-
-        // Cached last hit: consecutive instructions almost always land in the
-        // same span, so the binary search below is only paid at module changes.
-        Bin *cache = nullptr;
-
-        auto on_exec = [&bins, &cache](ICursorView::MemoryWatchpointResult const &w,
-                                       IThreadView const *) noexcept -> bool
-        {
-            uint64_t a = (uint64_t)w.Address;
-            Bin     *b = cache;
-            if ( b == nullptr || a < (uint64_t)b->lo || a >= (uint64_t)b->hi )
-            {
-                // Spans are sorted and disjoint: find the last one starting at or
-                // below 'a', then check it actually contains it.
-                size_t lo = 0, hi = bins.size();
-                while ( lo < hi )
-                {
-                    size_t mid = lo + (hi - lo) / 2;
-                    if ( a < (uint64_t)bins[mid].lo )
-                        hi = mid;
-                    else
-                        lo = mid + 1;
-                }
-                if ( lo == 0 )
-                    return false;
-                b = &bins[lo - 1];
-                if ( a >= (uint64_t)b->hi )
-                    return false;
-                cache = b;
-            }
-            uint64_t off = a - (uint64_t)b->lo;
-            b->bits[(size_t)(off >> 3)] |= (uint8_t)(1u << (off & 7));
-            // Reject the hit: we are counting executions, not stopping on them.
-            // Accepting would end the replay at the first instruction that ran.
-            return false;
-        };
-
-        // Sequential replay is load-bearing: the engine's default is to replay
-        // several segments in parallel and dispatch this callback from all of
-        // those threads, and a read-modify-write on a bitmap byte would then lose
-        // bits. Segment filtering is deliberately left on (no
-        // ReplayAllSegmentsWithoutFiltering): a watchpoint is a maskable event, so
-        // a narrow scope lets the engine skip the parts of the recording that
-        // never touch it -- which is the whole reason to scope this at all.
-        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        for ( const auto &r : spans )
-        {
-            MemoryWatchpointData wp{};
-            wp.Address    = GuestAddress{ (uint64_t)r.first };
-            wp.Size       = (uint64_t)(r.second - r.first);
-            wp.AccessMask = DataAccessMask::Execute;
-            cur->AddMemoryWatchpoint(wp);
-        }
-        cur->SetMemoryWatchpointCallback(on_exec);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-
-        res.cancelled = run_replay_sweep(mgr, cur.get(),
-                                         "Measuring execution coverage").cancelled;
-
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
-        cur.reset();
+        res.cancelled = qr.cancelled;
 
         // A cancelled sweep measured only part of the trace, and a partial result
         // painted into the database is indistinguishable from a complete one.
@@ -295,24 +219,18 @@ namespace idattd
         // there from a sweep would claim more than "this ran".
         show_wait_box("HIDECANCEL\nColouring executed instructions...");
         remember_color(color);
-        for ( const Bin &b : bins )
+        // 'executed' is sorted and distinct, as query_executed promises.
+        for ( ea_t ea : executed )
         {
-            uint64_t span = (uint64_t)(b.hi - b.lo);
-            for ( uint64_t off = 0; off < span; off++ )
+            res.executed++;
+            if ( is_code(get_flags(ea)) && get_item_head(ea) == ea )
             {
-                if ( (b.bits[(size_t)(off >> 3)] & (1u << (off & 7))) == 0 )
-                    continue;
-                res.executed++;
-                ea_t ea = b.lo + (ea_t)off;
-                if ( is_code(get_flags(ea)) && get_item_head(ea) == ea )
-                {
-                    set_item_color(ea, color);
-                    res.colored++;
-                }
-                else
-                {
-                    res.undefined++;
-                }
+                set_item_color(ea, color);
+                res.colored++;
+            }
+            else
+            {
+                res.undefined++;
             }
         }
         hide_wait_box();

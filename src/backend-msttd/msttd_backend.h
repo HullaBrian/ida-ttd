@@ -47,17 +47,21 @@ namespace idattd
         std::vector<ThreadInfo> threads() const override;
         std::vector<TraceEvent> timeline() const override;
 
-        // The whole-trace sweeps move here in step 5; until then these say
-        // they did not run and the analyses keep driving the engine.
-        QueryResult query_accesses(ea_t, ea_t, uint8_t, PositionRange, std::vector<Access> *,
-                                   ProgressSink *) override { return QueryResult{}; }
-        QueryResult query_executed(const std::vector<std::pair<ea_t, ea_t>> &, std::set<ea_t> *,
-                                   ProgressSink *) override { return QueryResult{}; }
-        QueryResult query_calls(const std::vector<ea_t> &, PositionRange, std::vector<CallEvent> *,
-                                ProgressSink *) override { return QueryResult{}; }
-        QueryResult query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &, bool,
-                                           std::map<ea_t, std::vector<IndirectTarget>> *,
-                                           ProgressSink *) override { return QueryResult{}; }
+        // Each a replay with a watchpoint or the call/return callback armed
+        // (msttd_queries.cpp); progress and Cancel through 'progress'.
+        QueryResult query_accesses(ea_t lo, ea_t hi, uint8_t kinds, PositionRange when,
+                                   std::vector<Access> *out, ProgressSink *progress) override;
+        QueryResult query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
+                                   std::vector<ea_t> *out, ProgressSink *progress) override;
+        QueryResult query_calls(const std::vector<ea_t> &targets, PositionRange when,
+                                std::vector<CallEvent> *out, ProgressSink *progress) override;
+        QueryResult query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &ranges, bool jumps,
+                                           std::map<ea_t, std::vector<IndirectTarget>> *out,
+                                           ProgressSink *progress) override;
+        // Reconstructed from the five memory syscalls (msttd_memmap.cpp).
+        QueryResult query_mapping_changes(std::vector<ittd_mapping_change> *out,
+                                          std::vector<qstring> *files,
+                                          ProgressSink *progress) override;
         QueryResult query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
                                        std::vector<Access> *out, ProgressSink *progress) override;

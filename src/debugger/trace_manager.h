@@ -135,11 +135,6 @@ namespace idattd
         Position                   last_position() const;
         std::vector<NamedPosition> collect_positions() const;
 
-        // A Microsoft TTD engine cursor over the loaded trace: empty with no
-        // trace, and with any other backend. For the analyses that still drive
-        // the Microsoft engine themselves until they become queries (step 5 of
-        // docs/modular-backends.md); they say so and stop when it is empty.
-        TTD::Replay::UniqueCursor  make_cursor();
         bool                       is64() const { return m_is64; }
 
         // The backend reading the open recording, and the playhead cursor.
