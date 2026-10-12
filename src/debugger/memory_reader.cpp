@@ -1,4 +1,5 @@
 #include "debugger/memory_reader.h"
+#include "core/diag.h"
 
 namespace idattd
 {
@@ -18,6 +19,9 @@ namespace idattd
 
     ssize_t MemoryReader::read(ITraceCursor *playhead, size_t *nbytes, ea_t ea, void *buffer, size_t size)
     {
+        qstring what;
+        what.sprnt("%a+%llX", ea, (uint64_t)size);
+        DiagTimer diag_timer("IDA read", what);
         *nbytes = 0;
         if ( playhead == nullptr || buffer == nullptr || size == 0 )
             return DRC_OK;

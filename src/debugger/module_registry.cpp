@@ -1,4 +1,5 @@
 #include "debugger/module_registry.h"
+#include "core/diag.h"
 #include "common/strings.h"
 #include "common/symsrv.h"
 
@@ -304,6 +305,10 @@ namespace idattd
 
     void ModuleRegistry::resolve_symbols(ea_t base)
     {
+        qstring what;
+        what.sprnt("%a", base);
+        diag("module symbols begin %s", what.c_str());
+        DiagTimer diag_timer("module symbols", what);
         if ( m_backend == nullptr || base == BADADDR )
             return;
         if ( !m_resolvedBases.insert(base).second )
@@ -424,6 +429,7 @@ namespace idattd
 
     void ModuleRegistry::apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb)
     {
+        DiagTimer diag_timer("apply PDB", qstring(pdb.name.c_str()));
         // Drive the PDB plugin with PDB_CC_USER_WITH_DATA (3): it reads the
         // load address and path from the "$ pdb" netnode and applies symbols
         // without the "load symbols?" prompt the automatic DOPT_LOAD_DINFO path

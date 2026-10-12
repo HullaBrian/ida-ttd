@@ -1,4 +1,5 @@
 #include "debugger/trace_manager.h"
+#include "core/diag.h"
 #include "common/strings.h"
 #include "analysis/query_runner.h"
 #include "analysis/trace_store.h"
@@ -149,6 +150,9 @@ namespace idattd
 
     ssize_t TraceManager::on_start_process(const char *path, const char *input_path, qstring *errbuf)
     {
+        diag_rotate();
+        diag("session start: %s", path != nullptr ? path : "(null)");
+        DiagTimer diag_timer("session start", 0);
         // A session can be torn down without its events being drained, and the
         // caches below describe the previous recording's addresses.
         reset_session_state();
@@ -490,6 +494,8 @@ namespace idattd
 
     void TraceManager::on_suspended()
     {
+        diag("on_suspended begin");
+        DiagTimer diag_timer("on_suspended");
         if ( !m_cursor )
             return;
 
@@ -511,17 +517,29 @@ namespace idattd
         // Time travel can move us across an allocation, a protection change or a
         // free, so the regions in force here may not be the ones IDA was last
         // given. This is a no-op unless a memory map has been built.
-        m_layout.refresh(m_cursor->position());
+        {
+            DiagTimer t("stop: memory layout");
+            m_layout.refresh(m_cursor->position());
+        }
 
         // Apply any PDB that finished downloading since the last stop. This is
         // the main thread, which is the only place IDA's symbol machinery may be
         // driven from.
-        m_modules.apply_finished_pdbs();
+        {
+            DiagTimer t("stop: finished PDBs");
+            m_modules.apply_finished_pdbs();
+        }
 
         // Name exports of any module loaded at this position first, so a call to a
         // freshly-revealed export renders with its name rather than loc_/sub_.
-        m_modules.resolve_loaded(m_cursor->position());
-        m_code.on_stop(m_cursor.get(), program_counter());
+        {
+            DiagTimer t("stop: module symbols");
+            m_modules.resolve_loaded(m_cursor->position());
+        }
+        {
+            DiagTimer t("stop: code layout");
+            m_code.on_stop(m_cursor.get(), program_counter());
+        }
 
         // If the last navigation came to rest on the very first/last position of
         // the trace, tell the user. Done here (after the stop is fully processed)
@@ -600,6 +618,8 @@ namespace idattd
 
     ssize_t TraceManager::on_resume(debug_event_t *event)
     {
+        diag("resume begin: event %d, mode %d", (int)event->eid(), (int)m_resumeMode);
+        DiagTimer diag_timer("resume");
         m_lastResume.sprnt("event %d, resume mode %d, %s, request %d",
                            (int)event->eid(), (int)m_resumeMode,
                            m_isForward ? "forward" : "backward", (int)m_pending.kind);

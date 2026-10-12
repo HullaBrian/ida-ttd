@@ -1,5 +1,6 @@
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
+#include "core/diag.h"
 
 #include <diskio.hpp>   // idadir, get_user_idadir
 
@@ -111,6 +112,7 @@ namespace idattd
 
         bool seek(Position p) override
         {
+            DiagTimer diag_timer("cursor.seek");
             return m_api->cursor_seek != nullptr && m_api->cursor_seek(m_c, to_abi(p)) == ITTD_OK;
         }
 
@@ -136,6 +138,7 @@ namespace idattd
 
         bool read_registers(ittd_regs *out) const override
         {
+            DiagTimer diag_timer("cursor.read_registers");
             if ( out == nullptr || m_api->cursor_regs == nullptr )
                 return false;
             *out = ittd_regs{};
@@ -144,6 +147,9 @@ namespace idattd
 
         size_t read_memory(ea_t ea, void *buf, size_t size, std::vector<uint8_t> *known) override
         {
+            qstring what;
+            what.sprnt("%llX+%llX", (uint64_t)ea, (uint64_t)size);
+            DiagTimer diag_timer("cursor.read_memory", what);
             if ( m_api->cursor_read_memory == nullptr || buf == nullptr || size == 0 )
                 return 0;
             std::vector<uint8_t> local;
@@ -223,6 +229,7 @@ namespace idattd
 
         StopReason run_to(ea_t addr, bool forward) override
         {
+            DiagTimer diag_timer("nav.run_to");
             int stop = ITTD_STOP_FAILED;
             if ( m_api->nav_run_to == nullptr
               || m_api->nav_run_to(m_c, (uint64_t)addr, forward ? 1 : 0, &stop) != ITTD_OK )
@@ -283,6 +290,7 @@ namespace idattd
 
         StopReason go(NavFn fn, bool forward)
         {
+            DiagTimer diag_timer(forward ? "nav.forward" : "nav.backward");
             int stop = ITTD_STOP_FAILED;
             // NULL, or a direction the backend does not do (ITTD_E_UNSUPPORTED),
             // is a movement that did not happen.
@@ -342,6 +350,7 @@ namespace idattd
 
     bool BackendModule::open(const char *path, qstring *errbuf)
     {
+        DiagTimer diag_timer("backend.open");
         close();
         if ( m_api->open == nullptr || m_api->info == nullptr )
         {
@@ -387,6 +396,7 @@ namespace idattd
 
     void BackendModule::close()
     {
+        DiagTimer diag_timer("backend.close");
         if ( m_handle != nullptr && m_api->close != nullptr )
             m_api->close(m_handle);
         m_handle   = nullptr;
@@ -397,6 +407,7 @@ namespace idattd
 
     bool BackendModule::prepare(ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.prepare");
         if ( m_handle == nullptr || m_api->prepare == nullptr )
             return true;
         ProgressBridge pb(progress);
@@ -445,6 +456,7 @@ namespace idattd
 
     CursorPtr BackendModule::make_cursor()
     {
+        DiagTimer diag_timer("backend.make_cursor");
         if ( m_handle == nullptr || m_api->cursor_open == nullptr )
             return nullptr;
         ittd_cursor *c = m_api->cursor_open(m_handle);
@@ -455,6 +467,7 @@ namespace idattd
 
     std::unique_ptr<INavigator> BackendModule::make_navigator(ITraceCursor *cursor)
     {
+        DiagTimer diag_timer("backend.make_navigator");
         // Only a cursor this module made has a handle the DLL knows.
         ModuleCursor *mc = dynamic_cast<ModuleCursor *>(cursor);
         if ( mc == nullptr )
@@ -464,6 +477,7 @@ namespace idattd
 
     std::vector<ModuleInfo> BackendModule::modules() const
     {
+        DiagTimer diag_timer("backend.modules");
         std::vector<ModuleInfo> out;
         std::vector<ittd_module> v;
         if ( m_handle == nullptr || m_api->modules == nullptr
@@ -489,6 +503,7 @@ namespace idattd
 
     std::vector<ThreadInfo> BackendModule::threads() const
     {
+        DiagTimer diag_timer("backend.threads");
         std::vector<ThreadInfo> out;
         std::vector<ittd_thread> v;
         if ( m_handle == nullptr || m_api->threads == nullptr
@@ -502,6 +517,7 @@ namespace idattd
 
     std::vector<TraceEvent> BackendModule::timeline() const
     {
+        DiagTimer diag_timer("backend.timeline");
         std::vector<TraceEvent> out;
         std::vector<ittd_trace_event> v;
         if ( m_handle == nullptr || m_api->timeline == nullptr
@@ -524,6 +540,7 @@ namespace idattd
     QueryResult BackendModule::query_accesses(ea_t lo, ea_t hi, uint8_t kinds, PositionRange when,
                                               std::vector<Access> *out, ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_accesses");
         if ( m_handle == nullptr || m_api->query_accesses == nullptr || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -555,6 +572,7 @@ namespace idattd
     QueryResult BackendModule::query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                               std::vector<ea_t> *out, ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_executed");
         if ( m_handle == nullptr || m_api->query_executed == nullptr || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -576,6 +594,7 @@ namespace idattd
     QueryResult BackendModule::query_calls(const std::vector<ea_t> &targets, PositionRange when,
                                            std::vector<CallEvent> *out, ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_calls");
         if ( m_handle == nullptr || m_api->query_calls == nullptr || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -607,6 +626,7 @@ namespace idattd
                                                       std::map<ea_t, std::vector<IndirectTarget>> *out,
                                                       ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_indirect_targets");
         if ( m_handle == nullptr || m_api->query_indirect == nullptr || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -634,6 +654,7 @@ namespace idattd
 
     QueryResult BackendModule::query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_exceptions");
         if ( m_handle == nullptr || m_api->query_exceptions == nullptr || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -663,6 +684,7 @@ namespace idattd
                                                      std::vector<qstring> *files,
                                                      ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_mapping_changes");
         if ( m_handle == nullptr || m_api->query_mapping_changes == nullptr || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -684,6 +706,7 @@ namespace idattd
 
     Position BackendModule::position_add(Position p, int64_t delta) const
     {
+        DiagTimer diag_timer("backend.position_add");
         ittd_position out{};
         if ( m_handle == nullptr || m_api->position_add == nullptr
           || m_api->position_add(m_handle, to_abi(p), delta, &out) != ITTD_OK )
@@ -694,6 +717,7 @@ namespace idattd
     bool BackendModule::query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
                                           Position *call_pos, ea_t *entry)
     {
+        DiagTimer diag_timer("backend.query_frame_entry");
         ittd_position cp{};
         uint64_t e = 0;
         if ( m_handle == nullptr || m_api->query_frame_entry == nullptr
@@ -709,6 +733,7 @@ namespace idattd
     QueryResult BackendModule::query_instructions(PositionRange when, uint32_t tid, size_t max,
                                                   std::vector<Access> *out, ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.query_instructions");
         if ( m_handle == nullptr || m_api->query_instructions == nullptr || out == nullptr || max == 0 )
             return QueryResult{};
         // One call into a buffer of 'max': this query is capped, not counted
@@ -739,6 +764,7 @@ namespace idattd
     QueryResult BackendModule::registers_at(const std::vector<Position> &positions,
                                             std::vector<ittd_regs> *out, ProgressSink *progress)
     {
+        DiagTimer diag_timer("backend.registers_at");
         // A backend without the batch gets the cursor-per-position default.
         if ( m_handle == nullptr || m_api->regs_at == nullptr )
             return ITraceBackend::registers_at(positions, out, progress);
@@ -754,6 +780,7 @@ namespace idattd
 
     std::vector<ITraceBackend::Symbol> BackendModule::module_symbols(ea_t base)
     {
+        DiagTimer diag_timer("backend.module_symbols");
         std::vector<Symbol> out;
         std::vector<ittd_symbol> v;
         if ( m_handle == nullptr || m_api->module_symbols == nullptr
@@ -773,6 +800,7 @@ namespace idattd
 
     std::vector<std::pair<ea_t, ea_t>> BackendModule::module_functions(ea_t base)
     {
+        DiagTimer diag_timer("backend.module_functions");
         std::vector<std::pair<ea_t, ea_t>> out;
         std::vector<ittd_range> v;
         if ( m_handle == nullptr || m_api->module_functions == nullptr

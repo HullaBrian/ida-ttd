@@ -56,6 +56,7 @@
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h" />
     <ClInclude Include="$(SrcDir)\common\pch.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />
+    <ClInclude Include="$(SrcDir)\core\diag.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend_module.h" />
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
@@ -67,6 +68,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="$(SrcDir)\core\position.cpp" />
+    <ClCompile Include="$(SrcDir)\core\diag.cpp" />
     <ClCompile Include="$(SrcDir)\core\backend_module.cpp" />
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp" />
     <ClCompile Include="$(SrcDir)\core\guest_view.cpp" />

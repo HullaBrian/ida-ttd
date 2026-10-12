@@ -545,6 +545,32 @@ int main(int argc, char **argv)
                    pos_text(mid), nk, now_ms() - t0);
         }
 
+        /* What naming a module costs: the core reads each one's headers where
+           it was mapped. The first page of every module, at its load. */
+        {
+            double all = 0, worst = 0;
+            const char *worst_name = "";
+            for ( i = 0; i < nmods; i++ )
+            {
+                ittd_position at = mods[i].loaded;
+                double t1;
+                if ( is_none(at) )
+                    at = info.first;
+                api->cursor_seek(c, at);
+                t1 = now_ms();
+                api->cursor_read_memory(c, mods[i].base, page, known, sizeof(page), &nk);
+                t1 = now_ms() - t1;
+                all += t1;
+                if ( t1 > worst )
+                {
+                    worst = t1;
+                    worst_name = mods[i].name;
+                }
+            }
+            printf("module headers at load: %zu modules, %.1f ms in all, worst %.1f ms (%s)\n",
+                   nmods, all, worst, worst_name);
+        }
+
         /* What IDA's analysis costs: it reads a module's code page by page,
            and again after every stop. ntdll's first 64 KiB, twice. */
         for ( i = 0; i < nmods; i++ )

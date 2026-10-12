@@ -25,6 +25,9 @@
     <ClInclude Include="$(SrcDir)\core\position.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\diag.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\core\backend.h">
       <Filter>core</Filter>
     </ClInclude>
@@ -52,6 +55,9 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="$(SrcDir)\core\position.cpp">
+      <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\core\diag.cpp">
       <Filter>core</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\backend_module.cpp">
