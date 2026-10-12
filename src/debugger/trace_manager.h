@@ -222,8 +222,8 @@ namespace idattd
         std::map<std::pair<ea_t, Position>, const ModuleInfo *> m_toldMods;
         int           m_eventOrder = 2;
         bool          m_stepMode   = false;   // this resume is one of IDA's step modes
-        // The last few events handed to IDA and resumes received, oldest
-        // first, for the same reason.
+        // The last few events handed to IDA, resumes received and breakpoint
+        // updates, oldest first, for the same reason.
         std::deque<qstring> m_eventLog;
         void log_event(const qstring &line);
 

@@ -297,7 +297,7 @@ namespace idattd
 
     void TraceManager::log_event(const qstring &line)
     {
-        if ( m_eventLog.size() >= 16 )
+        if ( m_eventLog.size() >= 48 )
             m_eventLog.pop_front();
         m_eventLog.push_back(line);
     }
@@ -392,6 +392,13 @@ namespace idattd
         *nbpts = 0;
         if ( !m_nav )
             return DRC_FAILED;
+        for ( int i = 0; i < nadd + ndel; i++ )
+        {
+            qstring line;
+            line.sprnt("bpt %s %a type %d size %d", i < nadd ? "add" : "del",
+                       bpts[i].ea, (int)bpts[i].type, (int)bpts[i].size);
+            log_event(line);
+        }
 
         for ( int i = 0; i < ndel; i++ )
         {
