@@ -748,6 +748,90 @@ namespace
         return false;
     }
 
+    // Whether the instruction bytes of an execute event are a return: C3, C2
+    // imm16, or the far forms, after any prefixes ("rep ret" included).
+    bool is_ret_insn(const ttd::access_event &e)
+    {
+        size_t n = (size_t)std::min<uint64_t>(e.size, e.payload.size());
+        size_t i = 0;
+        for ( ; i < n; i++ )
+        {
+            uint8_t b = e.payload[i];
+            bool prefix = b == 0x66 || b == 0x67 || b == 0xF2 || b == 0xF3 || (b & 0xF0) == 0x40;
+            if ( !prefix )
+                break;
+        }
+        if ( i >= n )
+            return false;
+        uint8_t op = e.payload[i];
+        return op == 0xC3 || op == 0xC2 || op == 0xCB || op == 0xCA;
+    }
+
+    int position_add(ittd_backend *hb, ittd_position p, int64_t delta, ittd_position *out)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr || out == nullptr )
+            return ITTD_E_BAD_ARG;
+        uint64_t pos = 0;
+        if ( !resolve(*b->trace, p, &pos) )
+            return ITTD_E_NO_POSITION;
+        uint64_t lo = first_position(*b->trace), hi = last_position(*b->trace);
+        if ( delta < 0 )
+            pos = pos - lo > (uint64_t)(-delta) ? pos - (uint64_t)(-delta) : lo;
+        else
+            pos = hi - pos > (uint64_t)delta ? pos + (uint64_t)delta : hi;
+        *out = at(pos);
+        return ITTD_OK;
+    }
+
+    // Walk the thread's instructions backward from the one about to run,
+    // counting returns in and calls out: the first call met at depth zero
+    // entered this frame. Each step is a lookup in the thread's runs, so a
+    // short walk is cheap enough for every stop.
+    int query_frame_entry(ittd_backend *hb, ittd_position where, uint32_t tid, uint64_t max_back,
+                          ittd_position *out_call, uint64_t *out_entry)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            ttd::trace &t = *b->trace;
+            uint64_t pos = 0;
+            if ( !resolve(t, where, &pos) )
+                return ITTD_E_NO_POSITION;
+            uint64_t s = pos + 1;           // the instruction about to run
+            int64_t depth = 0;
+            for ( uint64_t n = 0; n < max_back; n++ )
+            {
+                std::optional<ttd::access_event> ev = t.previous_instruction(s, tid);
+                if ( !ev )
+                    break;
+                s = ev->step;
+                if ( is_ret_insn(*ev) )
+                {
+                    depth++;
+                }
+                else if ( is_call_insn(*ev) )
+                {
+                    if ( depth == 0 )
+                    {
+                        std::optional<ttd::access_event> entry = t.next_instruction(ev->step, tid);
+                        if ( out_call != nullptr )
+                            *out_call = before_step(ev->step);
+                        if ( out_entry != nullptr )
+                            *out_entry = entry ? entry->ip : 0;
+                        return ITTD_OK;
+                    }
+                    depth--;
+                }
+            }
+            b->error = "no entering call within the search bound";
+            return ITTD_E_FAILED;
+        });
+    }
+
     // Forward step over: run the instruction about to execute on this thread,
     // and if it is a call, the whole call. The return comes from calls_to,
     // which pairs a call with its ret through the stack slot the return
@@ -1383,6 +1467,8 @@ namespace
         a.query_exceptions   = query_exceptions;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;
+        a.position_add       = position_add;
+        a.query_frame_entry  = query_frame_entry;
         a.query_mapping_files = query_mapping_files;
         return a;
     }();

@@ -61,6 +61,9 @@ namespace idattd
         QueryResult query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
                                        std::vector<Access> *out, ProgressSink *progress) override;
+        Position position_add(Position p, int64_t delta) const override;
+        bool query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
+                               Position *call_pos, ea_t *entry) override;
 
         // The engine records neither, and the core parses exports and .pdata
         // out of guest memory or the file itself.
@@ -75,6 +78,10 @@ namespace idattd
     private:
         TTD::Replay::UniqueReplayEngine m_engine;
         IdaErrorReporting               m_err;
+        // Sequential, unfiltered: query_frame_entry's call/return callback
+        // mutates an unsynchronized map, and the engine's default parallel
+        // replay would dispatch it from several threads at once.
+        TTD::Replay::UniqueCursor       m_frameScratch;
         TraceInfo                       m_info;
         Capabilities                    m_caps;
     };

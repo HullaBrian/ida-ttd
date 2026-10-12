@@ -434,6 +434,24 @@ namespace idattd
             return QueryResult{};
         }
 
+        // A position about 'delta' instructions from 'p', without seeking;
+        // see ittd_backend_api::position_add. The default does not move.
+        virtual Position position_add(Position p, int64_t delta) const
+        {
+            qnotused(delta);
+            return p;
+        }
+
+        // The call that entered thread 'tid''s frame at 'at', searching back at
+        // most about 'max_back' instructions: its position and the function
+        // entry it went to. False when not found within the bound.
+        virtual bool query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
+                                       Position *call_pos, ea_t *entry)
+        {
+            qnotused(at); qnotused(tid); qnotused(max_back); qnotused(call_pos); qnotused(entry);
+            return false;
+        }
+
         // The registers at each of 'positions', in the same order; an entry
         // whose 'have' is 0 could not be reconstructed. A batch because
         // neighbouring positions share work -- see ittd_backend_api::regs_at.

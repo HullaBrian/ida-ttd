@@ -112,6 +112,8 @@ namespace idattd
 
     void MsTtdBackend::close()
     {
+        // Cursors before the engine they belong to.
+        m_frameScratch.reset();
         m_engine.reset();
         m_info = TraceInfo{};
         m_caps = Capabilities{};
@@ -393,6 +395,100 @@ namespace idattd
             c->ReplayForward(TtdPosition::Max, StepCount{ 1 });
         }
         return r;
+    }
+
+    // Within the position's own sequence, the way the analyzer has always
+    // opened its context window: Steps is cheap to move and needs no seek.
+    Position MsTtdBackend::position_add(Position p, int64_t delta) const
+    {
+        if ( !m_engine || !p.is_valid() || p.is_sentinel() )
+            return p;
+        TtdPosition t = from_core(p);
+        uint64_t st = (uint64_t)t.Steps;
+        if ( delta < 0 )
+            st = st > (uint64_t)(-delta) ? st - (uint64_t)(-delta) : 0;
+        else
+            st += (uint64_t)delta;
+        t.Steps = (StepCount)st;
+        TtdPosition last = m_engine->GetLastPosition();
+        if ( last.IsValid() && t > last )
+            t = last;
+        return to_core(t);
+    }
+
+    // Replay forward from a little before 'at' up to it with the call/return
+    // callback: a CALL pushes its target, a RET pops, and at 'at' the top of
+    // the thread's stack is the call that entered the frame. The look-back
+    // widens until the call is captured, up to 'max_back' steps; each attempt
+    // is one SetPosition plus one forward replay. Never single-steps backward,
+    // which re-seeks a keyframe per step.
+    bool MsTtdBackend::query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
+                                         Position *call_pos, ea_t *entry)
+    {
+        if ( !m_engine || !at.is_valid() )
+            return false;
+        if ( !m_frameScratch )
+        {
+            m_frameScratch = new_engine_cursor();
+            if ( !m_frameScratch )
+                return false;
+            m_frameScratch->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
+                                         | ReplayFlags::ReplaySegmentsSequentially);
+        }
+
+        const TtdPosition cur = from_core(at);
+        struct Frame { ea_t entry; TtdPosition pos; };
+        std::map<uint32_t, std::vector<Frame>> stacks;
+        // CALL: instr == callee (the function head), fall_through == return
+        // address. RET: fall_through == 0; pop the innermost open frame.
+        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
+                               IThreadView const *t) noexcept
+        {
+            uint32_t utid = (uint32_t)t->GetThreadInfo().Id;
+            try
+            {
+                if ( (uint64_t)fall_through != 0 )
+                {
+                    stacks[utid].push_back(Frame{ (ea_t)(uint64_t)instr, t->GetPosition() });
+                }
+                else
+                {
+                    auto it = stacks.find(utid);
+                    if ( it != stacks.end() && !it->second.empty() )
+                        it->second.pop_back();
+                }
+            }
+            catch ( ... )
+            {
+            }
+        };
+
+        static const uint64_t kWindows[] = { 1024, 8192, 65536 };
+        for ( uint64_t back : kWindows )
+        {
+            if ( back > max_back && back != kWindows[0] )
+                break;
+            stacks.clear();
+            TtdPosition s = cur;
+            s.Steps = (StepCount)((uint64_t)cur.Steps > back ? (uint64_t)cur.Steps - back : 0);
+            m_frameScratch->SetPosition(s);
+            m_frameScratch->SetCallReturnCallback(on_call_ret);
+            m_frameScratch->ReplayForward(cur);                 // stop AT the position
+            m_frameScratch->SetCallReturnCallback(nullptr, 0);
+
+            auto it = stacks.find(tid);
+            if ( it != stacks.end() && !it->second.empty() )
+            {
+                if ( entry != nullptr )
+                    *entry = it->second.back().entry;
+                if ( call_pos != nullptr )
+                    *call_pos = to_core(it->second.back().pos);
+                return true;
+            }
+            if ( (uint64_t)cur.Steps <= back )
+                break;       // the window already reached the start of the sequence
+        }
+        return false;
     }
 
     REGISTER_TTD_BACKEND(MsTtdBackend);

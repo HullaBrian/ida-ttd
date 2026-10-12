@@ -714,6 +714,24 @@ typedef struct ittd_backend_api
     int (*query_instructions)(ittd_backend *b, ittd_position_range when, uint32_t tid,
                               ittd_access *buf, size_t cap, size_t *out_count,
                               int *out_truncated, const ittd_progress *progress);
+
+    /* A position about 'delta' instructions from 'p' (negative: earlier),
+     * worked out without seeking and clamped to the recording. "About"
+     * because instructions of every thread count. For opening a window of
+     * context around the playhead. */
+    int (*position_add)(ittd_backend *b, ittd_position p, int64_t delta, ittd_position *out);
+
+    /*
+     * The call that entered the frame thread 'tid' is in at 'at': the position
+     * of that call instruction, and the address it went to (the function's
+     * entry). Searches back at most about 'max_back' instructions and returns
+     * ITTD_E_FAILED when the call is further back, or the thread is in its
+     * outermost frame. A call is matched with returns, so a frame entered and
+     * left in between does not count. Runs on every stop in code without a
+     * module, so a backend keeps it cheap for small 'max_back'.
+     */
+    int (*query_frame_entry)(ittd_backend *b, ittd_position at, uint32_t tid, uint64_t max_back,
+                             ittd_position *out_call, uint64_t *out_entry);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

@@ -628,6 +628,30 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
+    Position BackendModule::position_add(Position p, int64_t delta) const
+    {
+        ittd_position out{};
+        if ( m_handle == nullptr || m_api->position_add == nullptr
+          || m_api->position_add(m_handle, to_abi(p), delta, &out) != ITTD_OK )
+            return p;
+        return from_abi(out);
+    }
+
+    bool BackendModule::query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
+                                          Position *call_pos, ea_t *entry)
+    {
+        ittd_position cp{};
+        uint64_t e = 0;
+        if ( m_handle == nullptr || m_api->query_frame_entry == nullptr
+          || m_api->query_frame_entry(m_handle, to_abi(at), tid, max_back, &cp, &e) != ITTD_OK )
+            return false;
+        if ( call_pos != nullptr )
+            *call_pos = from_abi(cp);
+        if ( entry != nullptr )
+            *entry = (ea_t)e;
+        return true;
+    }
+
     QueryResult BackendModule::query_instructions(PositionRange when, uint32_t tid, size_t max,
                                                   std::vector<Access> *out, ProgressSink *progress)
     {

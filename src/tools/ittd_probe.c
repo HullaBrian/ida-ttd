@@ -311,6 +311,18 @@ int main(int argc, char **argv)
             if ( !is_none(e->pos) )
                 check(at_pos == e->site, "  rip at pos is the call site");
             check(at_entry == e->target, "  rip at entry_pos is the target");
+            /* At the callee's first instruction, the frame was entered by this
+               very call. */
+            if ( k == 0 && !is_none(e->pos) && api->query_frame_entry != NULL )
+            {
+                ittd_position fc;
+                uint64_t fe = 0;
+                int rc = api->query_frame_entry(B, e->entry_pos, e->tid, 0x10000, &fc, &fe);
+                printf("    frame entry from entry_pos: rc %d, call at %s, entry %llx\n",
+                       rc, pos_text(fc), (unsigned long long)fe);
+                check(rc == ITTD_OK && fc.lo == e->pos.lo && fe == e->target,
+                      "  the frame at entry_pos was entered by this call");
+            }
             /* A write breakpoint on the slot the call pushes its return address
                into stops at the call, run forward from just before it. */
             if ( k == 0 && !is_none(e->pos) && e->pos.lo > 0 && api->nav_breakpoints != NULL )
