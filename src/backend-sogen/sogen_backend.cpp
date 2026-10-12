@@ -784,10 +784,36 @@ namespace
         return ITTD_OK;
     }
 
-    // Walk the thread's instructions backward from the one about to run,
-    // counting returns in and calls out: the first call met at depth zero
-    // entered this frame. Each step is a lookup in the thread's runs, so a
-    // short walk is cheap enough for every stop.
+    // The call that entered the frame thread 'tid' stands in at cursor
+    // position 'pos'. Walk the thread's instructions backward from the one
+    // about to run, counting returns in and calls out: the first call met at
+    // depth zero entered this frame. Each step is a lookup in the thread's
+    // runs, so a short walk is cheap enough for every stop.
+    std::optional<ttd::access_event> entering_call(ttd::trace &t, uint64_t pos, uint32_t tid,
+                                                   uint64_t max_back)
+    {
+        uint64_t s = pos + 1;               // the instruction about to run
+        int64_t depth = 0;
+        for ( uint64_t n = 0; n < max_back; n++ )
+        {
+            std::optional<ttd::access_event> ev = t.previous_instruction(s, tid);
+            if ( !ev )
+                break;
+            s = ev->step;
+            if ( is_ret_insn(*ev) )
+            {
+                depth++;
+            }
+            else if ( is_call_insn(*ev) )
+            {
+                if ( depth == 0 )
+                    return ev;
+                depth--;
+            }
+        }
+        return std::nullopt;
+    }
+
     int query_frame_entry(ittd_backend *hb, ittd_position where, uint32_t tid, uint64_t max_back,
                           ittd_position *out_call, uint64_t *out_entry)
     {
@@ -801,35 +827,53 @@ namespace
             uint64_t pos = 0;
             if ( !resolve(t, where, &pos) )
                 return ITTD_E_NO_POSITION;
-            uint64_t s = pos + 1;           // the instruction about to run
-            int64_t depth = 0;
-            for ( uint64_t n = 0; n < max_back; n++ )
+            std::optional<ttd::access_event> call = entering_call(t, pos, tid, max_back);
+            if ( !call )
             {
-                std::optional<ttd::access_event> ev = t.previous_instruction(s, tid);
-                if ( !ev )
-                    break;
-                s = ev->step;
-                if ( is_ret_insn(*ev) )
-                {
-                    depth++;
-                }
-                else if ( is_call_insn(*ev) )
-                {
-                    if ( depth == 0 )
-                    {
-                        std::optional<ttd::access_event> entry = t.next_instruction(ev->step, tid);
-                        if ( out_call != nullptr )
-                            *out_call = before_step(ev->step);
-                        if ( out_entry != nullptr )
-                            *out_entry = entry ? entry->ip : 0;
-                        return ITTD_OK;
-                    }
-                    depth--;
-                }
+                b->error = "no entering call within the search bound";
+                return ITTD_E_FAILED;
             }
-            b->error = "no entering call within the search bound";
-            return ITTD_E_FAILED;
+            std::optional<ttd::access_event> entry = t.next_instruction(call->step, tid);
+            if ( out_call != nullptr )
+                *out_call = before_step(call->step);
+            if ( out_entry != nullptr )
+                *out_entry = entry ? entry->ip : 0;
+            return ITTD_OK;
         });
+    }
+
+    // How far back the navigator looks for the call that entered a frame.
+    // Stepping out of a frame that has run for longer than this (main, say)
+    // reports that no entering call was found rather than walking forever.
+    static const uint64_t kNavFrameWalk = 1ull << 22;
+
+    // The return of the call made at step 'call_step' on 'tid', as the step of
+    // its ret, from calls_to -- which pairs a call with its ret through the
+    // stack slot the return address went to, exact under recursion.
+    std::optional<uint64_t> return_of(ttd::trace &t, uint64_t call_step, uint32_t tid)
+    {
+        std::optional<ttd::access_event> entry = t.next_instruction(call_step, tid);
+        if ( !entry )
+            return std::nullopt;
+        for ( const ttd::call_event &e : t.calls_to(entry->ip, entry->step, entry->step) )
+            if ( e.step == call_step && e.return_step != UINT64_MAX )
+                return e.return_step;
+        return std::nullopt;
+    }
+
+    // Move to 'dest', unless a breakpoint lies strictly between the cursor and
+    // it: then stop on the breakpoint, as a live process would.
+    void move_guarded(cursor_t *c, uint64_t dest, bool forward, int *stop)
+    {
+        uint64_t bp = 0;
+        size_t hit = 0;
+        if ( !c->breakpoints.empty() && nearest_hit(c, c->breakpoints, forward, &bp, &hit)
+          && (forward ? bp > c->position && bp < dest : bp < c->position && bp > dest) )
+        {
+            dest  = bp;
+            *stop = ITTD_STOP_BREAKPOINT;
+        }
+        move(c, dest);
     }
 
     // Forward step over: run the instruction about to execute on this thread,
@@ -838,16 +882,42 @@ namespace
     // address was pushed to -- exact under recursion, where "the next time
     // this thread reaches the return address" is not.
     //
-    // Backward is not offered yet: stepping back over a call means finding the
-    // call from its return, and that wants the frame's entry, which no single
-    // reader query gives.
+    // Backward: step back one instruction on this thread, and if that was a
+    // ret, on back to just before the call it returned from.
     int nav_step_over(ittd_cursor *hc, int forward, int *out_stop)
     {
         cursor_t *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
         if ( !forward )
-            return ITTD_E_UNSUPPORTED;
+        {
+            return guarded(c->owner->error, [&]()
+            {
+                ttd::trace &t = *c->trace;
+                uint32_t tid = thread_after(t, c->position);
+                int stop = ITTD_STOP_BOUNDARY;
+                uint64_t dest = first_position(t);
+                // The last instruction this thread ran.
+                std::optional<ttd::access_event> prev = t.previous_instruction(c->position + 1, tid);
+                if ( prev )
+                {
+                    dest = prev->step - 1;
+                    stop = ITTD_STOP_STEPPED;
+                    if ( is_ret_insn(*prev) )
+                    {
+                        // Standing just before the ret is standing in the callee.
+                        std::optional<ttd::access_event> call
+                            = entering_call(t, prev->step - 1, tid, kNavFrameWalk);
+                        if ( call )
+                            dest = call->step - 1;
+                    }
+                }
+                move_guarded(c, dest, false, &stop);
+                if ( out_stop != nullptr )
+                    *out_stop = stop;
+                return ITTD_OK;
+            });
+        }
         return guarded(c->owner->error, [&]()
         {
             ttd::trace &t = *c->trace;
@@ -861,14 +931,10 @@ namespace
             {
                 if ( is_call_insn(*cur) )
                 {
-                    // 'after' is the callee's first instruction.
-                    for ( const ttd::call_event &e : t.calls_to(after->ip, after->step, after->step) )
+                    if ( std::optional<uint64_t> ret = return_of(t, cur->step, tid) )
                     {
-                        if ( e.step == cur->step && e.return_step != UINT64_MAX )
-                        {
-                            dest = e.return_step;   // just after the ret
-                            stop = ITTD_STOP_STEPPED;
-                        }
+                        dest = *ret;                // just after the ret
+                        stop = ITTD_STOP_STEPPED;
                     }
                 }
                 else
@@ -889,6 +955,48 @@ namespace
                 stop = ITTD_STOP_BREAKPOINT;
             }
             move(c, dest);
+            if ( out_stop != nullptr )
+                *out_stop = stop;
+            return ITTD_OK;
+        });
+    }
+
+    // Step out: find the call that entered this frame. Backward, stand just
+    // before it; forward, just after its ret. A frame with no entering call
+    // in reach (a thread's outermost, or one older than the walk) or whose
+    // call never returns stays put and says why.
+    int nav_step_out(ittd_cursor *hc, int forward, int *out_stop)
+    {
+        cursor_t *c = C(hc);
+        if ( c == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(c->owner->error, [&]()
+        {
+            ttd::trace &t = *c->trace;
+            uint32_t tid = thread_after(t, c->position);
+            std::optional<ttd::access_event> call = entering_call(t, c->position, tid, kNavFrameWalk);
+            if ( !call )
+            {
+                c->owner->error = "no call entering this frame was found";
+                return ITTD_E_FAILED;
+            }
+            uint64_t dest = 0;
+            if ( forward )
+            {
+                std::optional<uint64_t> ret = return_of(t, call->step, tid);
+                if ( !ret )
+                {
+                    c->owner->error = "this frame does not return within the recording";
+                    return ITTD_E_FAILED;
+                }
+                dest = *ret;                // just after the ret
+            }
+            else
+            {
+                dest = call->step - 1;      // just before the call
+            }
+            int stop = ITTD_STOP_STEPPED;
+            move_guarded(c, dest, forward != 0, &stop);
             if ( out_stop != nullptr )
                 *out_stop = stop;
             return ITTD_OK;
@@ -1449,8 +1557,8 @@ namespace
         a.cursor_read_memory = cursor_read_memory;
         a.cursor_threads     = cursor_threads;
         a.nav_step           = nav_step;
-        a.nav_step_over      = nav_step_over;   // forward only, see there
-        a.nav_step_out       = nullptr;     // not yet: needs the frame's entry
+        a.nav_step_over      = nav_step_over;
+        a.nav_step_out       = nav_step_out;
         a.nav_run            = nav_run;
         a.nav_run_to         = nav_run_to;
         a.nav_breakpoints    = nav_breakpoints;

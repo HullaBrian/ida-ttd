@@ -362,6 +362,34 @@ int main(int argc, char **argv)
                            now_ms() - t0);
                     check(landed.lo == e->ret_pos.lo, "  stepping over the call lands on ret_pos");
                 }
+                if ( api->nav_step_over(c, 0, &stop) == ITTD_OK )
+                {
+                    api->cursor_position(c, &landed);
+                    printf("    step back over it: stop %d at %s\n", stop, pos_text(landed));
+                    check(landed.lo == e->pos.lo, "  stepping back over the call lands on pos");
+                }
+            }
+            if ( !is_none(e->pos) && !is_none(e->ret_pos) && !(e->flags & ITTD_CALL_F_NOT_CALL)
+              && api->nav_step_out != NULL )
+            {
+                ittd_position landed;
+                int stop = -1;
+                api->cursor_seek(c, e->entry_pos);
+                t0 = now_ms();
+                if ( api->nav_step_out(c, 1, &stop) == ITTD_OK )
+                {
+                    api->cursor_position(c, &landed);
+                    printf("    step out from entry_pos: stop %d at %s, %.1f ms\n", stop, pos_text(landed),
+                           now_ms() - t0);
+                    check(landed.lo == e->ret_pos.lo, "  stepping out of the callee lands on ret_pos");
+                }
+                api->cursor_seek(c, e->entry_pos);
+                if ( api->nav_step_out(c, 0, &stop) == ITTD_OK )
+                {
+                    api->cursor_position(c, &landed);
+                    printf("    step out backwards: stop %d at %s\n", stop, pos_text(landed));
+                    check(landed.lo == e->pos.lo, "  stepping out backwards lands on pos");
+                }
             }
             if ( !is_none(e->ret_pos) )
             {
