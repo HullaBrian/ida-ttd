@@ -62,6 +62,9 @@ extern "C" {
  * version it was built against to the entry point; a backend returns NULL if
  * it cannot speak that version, and the core then says so by name rather than
  * crashing on a mismatched table.
+ *
+ * Version 1 is not published yet. Until a backend is built outside this
+ * repository it is still being shaped, and changes in place.
  */
 #define ITTD_ABI_VERSION 1u
 
@@ -95,6 +98,13 @@ extern "C" {
  *   NONE  = { UINT64_MAX, UINT64_MAX }      "no position"
  *   BEGIN = { 0, 0 }                        "the start of the recording"
  *   END   = { UINT64_MAX, UINT64_MAX - 1 }  "the end of the recording"
+ *
+ * What a position shows is fixed, whatever the engine counts: a cursor at a
+ * position shows the state *before* the instruction at its program counter
+ * runs. That is Microsoft's own meaning. Sogen's position N is the state
+ * *after* instruction N, so its backend hands out N - 1 for "at instruction
+ * N" -- an off-by-one the backend owns so that no position the core holds
+ * ever means two different things.
  */
 typedef struct ittd_position
 {
@@ -114,12 +124,16 @@ typedef struct ittd_position_range
  * action is never registered that would only apologise for not working. */
 #define ITTD_CAP_ACCESS_QUERIES   0x0001u  /* accesses to a range can be listed */
 #define ITTD_CAP_CALL_QUERIES     0x0002u  /* calls and returns can be listed */
-#define ITTD_CAP_MAPPING_CHANGES  0x0004u  /* the recording says where memory was mapped */
+/* The recording says where memory was mapped, unmapped and reprotected, with
+ * the protection, so query_mapping_changes is a read rather than a
+ * reconstruction. Knowing *that* a range changed is not enough to set it. */
+#define ITTD_CAP_MAPPING_CHANGES  0x0004u
 #define ITTD_CAP_SYSCALLS         0x0008u  /* dispatched syscalls are recorded */
 #define ITTD_CAP_RECORDED_EXPORTS 0x0010u  /* module exports come out of the recording */
 #define ITTD_CAP_CHEAP_SEEK       0x0020u  /* seeking is cheap enough to do per listing row */
 #define ITTD_CAP_REVERSE_STEP     0x0040u  /* the recording can be stepped backwards */
 #define ITTD_CAP_PREPARE          0x0080u  /* prepare() has something to do */
+#define ITTD_CAP_EXCEPTIONS       0x0100u  /* dispatched exceptions can be listed */
 
 #define ITTD_NAME_MAX  256
 #define ITTD_PATH_MAX  520
@@ -132,7 +146,10 @@ typedef struct ittd_trace_info
      * different for a re-recording of the same program. The core writes it into
      * the database so results cached against one recording are not shown
      * against another. Zero means "the backend cannot tell", and the core then
-     * caches nothing that would be wrong if the recording changed. */
+     * caches nothing that would be wrong if the recording changed.
+     *
+     * A backend whose engine has a wider id folds it to 64 bits; Sogen's
+     * trace::id() is 128 random bits, so any 64 of them will do. */
     uint64_t      fingerprint;
     ittd_position first;            /* first recorded position */
     ittd_position last;             /* last recorded position */
@@ -146,6 +163,11 @@ typedef struct ittd_module
     uint64_t      size;
     ittd_position loaded;
     ittd_position unloaded;         /* NONE while still mapped at the end */
+    /* The PE header's machine: 0x8664 for x64 code, 0x14c for 32-bit code in a
+     * WoW64 process, where both kinds sit side by side. 0 when the recording
+     * does not say, and the core then reads the PE header itself. */
+    uint32_t      machine;
+    uint32_t      reserved;
     char          name[ITTD_NAME_MAX];   /* base name, as recorded */
     char          path[ITTD_PATH_MAX];   /* full path on the recording machine */
 } ittd_module;
@@ -156,6 +178,15 @@ typedef struct ittd_thread
     uint32_t      reserved;
     ittd_position created;
     ittd_position exited;           /* NONE if it was alive at the end */
+    /* 0 for any of these the recording does not say. teb32 is the 32-bit TEB
+     * of a WoW64 thread, whose 32-bit stack is a separate one. The stack
+     * bounds are those at creation (or at the start of the recording); a
+     * fiber switch rewrites them in the TEB, so the core reads the TEB when it
+     * wants them at a later position. */
+    uint64_t      teb;
+    uint64_t      teb32;
+    uint64_t      stack_base;       /* the top: NT_TIB.StackBase */
+    uint64_t      stack_limit;      /* the bottom: NT_TIB.StackLimit */
     char          name[ITTD_NAME_MAX];   /* empty when the recording does not say */
 } ittd_thread;
 
@@ -193,24 +224,76 @@ typedef struct ittd_access
     uint32_t      reserved;
 } ittd_access;
 
+/* Set when the callee was reached by a jump (a tail call, an import thunk) or
+ * by anything else that was not a call instruction. Such an entry has no
+ * return of its own: the function it jumped from returns for it. */
+#define ITTD_CALL_F_NOT_CALL  0x1u
+
+/*
+ * One entry into a function. Three positions, because the three questions
+ * asked of a call are answered at three different places:
+ *
+ *   pos        at the call instruction: who called, and from where.
+ *              NONE when the thread began inside the callee.
+ *   entry_pos  at the callee's first instruction: the arguments, before the
+ *              callee has touched them.
+ *   ret_pos    just after the return has executed, with the program counter
+ *              back at the return address: the return value. NONE when the
+ *              recording does not show the return (it had not returned by
+ *              the end, it unwound, it was entered by a jump, or the backend
+ *              cannot pair returns).
+ */
 typedef struct ittd_call
 {
-    ittd_position pos;              /* the call */
-    ittd_position ret_pos;          /* the matching return; NONE if unseen */
-    uint64_t      site;             /* the call instruction */
+    ittd_position pos;
+    ittd_position entry_pos;
+    ittd_position ret_pos;
+    uint64_t      site;             /* the call instruction; ITTD_BADADDR with pos NONE */
     uint64_t      target;           /* where it actually went */
     uint32_t      tid;
-    uint32_t      reserved;
+    uint32_t      flags;            /* ITTD_CALL_F_* */
 } ittd_call;
 
-/* One indirect call site and one target it reached. A site that reached
+/* One indirect branch site and one target it reached. A site that reached
  * several targets appears once per target; the core groups them. */
 typedef struct ittd_call_target
 {
-    uint64_t site;
-    uint64_t target;
-    uint64_t hits;                  /* times this site reached this target */
+    uint64_t      site;
+    uint64_t      target;
+    uint64_t      hits;             /* times this site reached this target */
+    /* The first time it did, so a listing can offer to go there. NONE when the
+     * backend does not know. */
+    ittd_position first_pos;
+    uint32_t      flags;            /* ITTD_CALL_F_NOT_CALL for a jump */
+    uint32_t      reserved;
 } ittd_call_target;
+
+/* query_indirect: also report indirect jumps -- switch tables and import
+ * thunks, which are where IDA's graph breaks as often as at a call. */
+#define ITTD_INDIRECT_JUMPS  0x1u
+
+/*
+ * An exception the system dispatched to the program: a fault, a breakpoint, a
+ * single step, or one raised through the kernel.
+ *
+ * A software exception that never leaves user mode -- a C++ throw, most
+ * RaiseException calls -- is not dispatched by the system on x64 and may be
+ * missing. A backend says nothing about those here; the core finds them as
+ * calls to ntdll!RtlRaiseException when it wants them.
+ */
+typedef struct ittd_exception
+{
+    ittd_position pos;              /* the dispatch begins */
+    ittd_position raise_pos;        /* at the instruction that raised it; NONE if unknown */
+    uint64_t      address;          /* ExceptionAddress */
+    /* ExceptionInformation[0..1]. For an access violation: 0 read, 1 write,
+     * 8 execute, then the address that was accessed. */
+    uint64_t      information[2];
+    uint32_t      code;             /* ExceptionCode; 0 when the record was not found */
+    uint32_t      flags;            /* ExceptionFlags */
+    uint32_t      tid;
+    uint32_t      reserved;
+} ittd_exception;
 
 typedef struct ittd_symbol
 {
@@ -234,10 +317,34 @@ typedef struct ittd_range
 #define ITTD_MAP_FREE       2u
 #define ITTD_MAP_MAPVIEW    3u
 #define ITTD_MAP_UNMAPVIEW  4u
+/* Not an operation but its outcome: [base, base + size) is now in 'state',
+ * with 'protect', 'alloc_base' and 'region_type'. A backend that records the
+ * region bookkeeping rather than the calls (Sogen) reports every change this
+ * way; folding it is an overwrite, which needs no knowledge of what the call
+ * was. */
+#define ITTD_MAP_STATE      5u
 
 #define ITTD_MAP_F_EXACT          0x1u  /* base/size are the kernel's own answer */
 #define ITTD_MAP_F_OTHER_PROCESS  0x2u  /* the call targeted another process */
 #define ITTD_MAP_F_IN_MODULE      0x4u  /* the range lies inside a loaded module */
+/* Part of the map as it stood when recording began, rather than a change made
+ * during it: the image, ntdll, the PEB and TEBs, the stacks. Such entries come
+ * first, at the first position, and are always ITTD_MAP_STATE. */
+#define ITTD_MAP_F_AT_START       0x8u
+
+/* ittd_mapping_change.state: as MEMORY_BASIC_INFORMATION.State. */
+#define ITTD_MEM_UNKNOWN   0u
+#define ITTD_MEM_FREE      1u
+#define ITTD_MEM_RESERVED  2u
+#define ITTD_MEM_COMMITTED 3u
+
+/* ittd_mapping_change.region_type */
+#define ITTD_REGION_UNKNOWN  0u
+#define ITTD_REGION_PRIVATE  1u
+#define ITTD_REGION_IMAGE    2u
+#define ITTD_REGION_MAPPED   3u   /* a view of a file */
+#define ITTD_REGION_SECTION  4u   /* a view of a pagefile-backed section */
+#define ITTD_REGION_MMIO     5u
 
 #define ITTD_CHAIN_MAX 8
 
@@ -258,7 +365,23 @@ typedef struct ittd_mapping_change
     uint32_t      flags;            /* ITTD_MAP_F_* */
     uint32_t      tid;
     uint32_t      reserved;
+    /* What the range looks like afterwards, as VirtualQuery would say. Zero
+     * where the backend cannot tell; required for ITTD_MAP_STATE. */
+    uint64_t      alloc_base;       /* AllocationBase; 0 if unknown */
+    uint32_t      state;            /* ITTD_MEM_* */
+    uint32_t      region_type;      /* ITTD_REGION_* */
+    /* The mapped file of a view, as an index into query_mapping_files' list
+     * plus one; 0 for none. An index rather than a name inline, because the
+     * same file is mapped and unmapped many times and a path is 520 bytes. */
+    uint32_t      file;
+    uint32_t      reserved2;
 } ittd_mapping_change;
+
+/* One entry of query_mapping_files. */
+typedef struct ittd_name
+{
+    char name[ITTD_PATH_MAX];
+} ittd_name;
 
 /* --------------------------------------------------------------- registers */
 
@@ -489,10 +612,13 @@ typedef struct ittd_backend_api
                        ittd_call *buf, size_t cap, size_t *out_count,
                        int *out_truncated, const ittd_progress *progress);
 
-    /* Where every indirect call made from inside 'ranges' actually went.
-     * Separate from query_calls because the question is about call sites and
-     * the answer is grouped by site, not by invocation. */
+    /* Where every indirect call made from inside 'ranges' actually went, and
+     * with ITTD_INDIRECT_JUMPS in 'flags' every indirect jump too. Separate
+     * from query_calls because the question is about call sites and the
+     * answer is grouped by site, not by invocation. A branch that faulted
+     * instead of reaching its target is left out. */
     int (*query_indirect)(ittd_backend *b, const ittd_range *ranges, size_t nranges,
+                          uint32_t flags,
                           ittd_call_target *buf, size_t cap, size_t *out_count,
                           int *out_truncated, const ittd_progress *progress);
 
@@ -517,6 +643,36 @@ typedef struct ittd_backend_api
                           ittd_symbol *buf, size_t cap, size_t *out_count);
     int (*module_functions)(ittd_backend *b, uint64_t base,
                             ittd_range *buf, size_t cap, size_t *out_count);
+
+    /* ---- later additions ---------------------------------------------- */
+
+    /* Every exception the system dispatched, in order. A count query. Only
+     * called when ITTD_CAP_EXCEPTIONS is set. */
+    int (*query_exceptions)(ittd_backend *b,
+                            ittd_exception *buf, size_t cap, size_t *out_count,
+                            int *out_truncated, const ittd_progress *progress);
+
+    /*
+     * The registers at each of 'count' positions, into out[0..count). For
+     * argument and return values down a call listing, which wants two
+     * positions per call and thousands of calls.
+     *
+     * A batch, rather than a cursor seek per position, because the work
+     * behind neighbouring positions is shared: Sogen measures half the time
+     * for positions in order against the same positions shuffled. So the
+     * positions may come in any order and a backend that cares sorts a copy;
+     * the core does not have to know which backends care.
+     *
+     * out[i].have is 0 for a position the backend could not reconstruct; that
+     * is not an error. NULL means the core seeks a scratch cursor instead.
+     */
+    int (*regs_at)(ittd_backend *b, const ittd_position *positions, size_t count,
+                   ittd_regs *out, const ittd_progress *progress);
+
+    /* The file names ittd_mapping_change.file refers to, in index order. A
+     * count query, valid after query_mapping_changes. */
+    int (*query_mapping_files)(ittd_backend *b, ittd_name *buf, size_t cap,
+                               size_t *out_count);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

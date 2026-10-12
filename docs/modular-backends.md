@@ -98,21 +98,28 @@ gaps.
 - **Microsoft has no recorded memory map.** The Replay SDK reports no
   protections and no region list, which is why `analysis/memmap.cpp` is 1,354
   lines of watching `NtAllocateVirtualMemory` and friends and recovering their
-  out-parameters. Sogen records every mapping change (`mapping_changes()`,
-  format section 14) and every dispatched syscall with its result. The memory
-  map *model* — the change timeline, folding it to a position, exposing live
+  out-parameters. Sogen records *that* a range was mapped or unmapped
+  (`mapping_changes()`, format section 14) and every dispatched syscall with
+  its result — but, checked against `ttd/next` at `31cfc3ea`, a
+  `mapping_change` is only `{step, event_number, address, size}`: it does not
+  say whether the range was mapped or unmapped, carries no protection, and
+  protection changes are not recorded at all. So Sogen does not yet earn
+  `ITTD_CAP_MAPPING_CHANGES`; see
+  [sogen-ttd-requests-2.md](sogen-ttd-requests-2.md) §1. The memory map
+  *model* — the change timeline, folding it to a position, exposing live
   regions as segments — is shared; only the acquisition differs.
 - **Microsoft has no recorded symbols.** `common/symbols.cpp` parses each
   module's export directory and `.pdata` out of guest memory. Sogen stores
   every module's export directory in the trace (sections 11 and 12, forwarders
   resolved) and answers `symbol_at(address, step)` directly.
-- **Sogen has no call/return callback.** Microsoft's engine reports call and
-  return pairs, which the call tracer, the indirect-call pass and the memory map
-  all use. Sogen has an execute event per instruction instead, so calls are
-  derived from the execute stream — which is *cheaper* for the indirect-call
-  question (an execute at X whose instruction is an indirect call, followed by
-  an execute at the target) but needs work for return matching, and
-  `trace::calls()` currently takes an export *name* rather than an address.
+- **Sogen has no call/return callback**, but no longer needs one. Microsoft's
+  engine reports call and return pairs, which the call tracer, the
+  indirect-call pass and the memory map all use. Sogen derives them from the
+  execute stream, and since `31cfc3ea` does so inside the library:
+  `trace::calls_to(address)` gives call site, entry and the paired `ret`
+  (exact under recursion, 0.3 ms per entry), and
+  `trace::indirect_branches(ranges)` resolves every indirect call or jump in
+  one pass with no emulator (all of test-sample in 1.0 s).
 - **Sogen cannot show bytes no access touched** (their issue #28), where
   Microsoft serves them from the module image. The core already fills such holes
   from the on-disk PE (`ModuleImage` in `common/symbols.h`); that logic is
@@ -200,22 +207,52 @@ core does not speak, is named in the output window and skipped.
 
 ### Building the Sogen backend
 
-`ida-ttd-sogen.dll` links Sogen's `windows-ttd` and nothing of ida-ttd's.
-That means a CMake build of Sogen, which today pulls in `windows-emulator` and
-therefore Unicorn, Capstone, SDL and the rest — for code that only ever reads a
-trace file.
+`ida-ttd-sogen.dll` links Sogen's trace libraries and nothing of ida-ttd's.
 
-It does not have to. The reader half of `windows-ttd` is already emulator-free
-*in implementation*: no `trace::` member function touches `windows_emulator`,
-`memory_manager`, `mapped_module` or `save_registers`. Those uses are all in
-`recorder` and the replay verifiers, which merely share the header, and the two
-emulator-dependent types the reader holds (`view_engine`, `keyframe_store`) are
-both held by `shared_ptr` — one is already forward-declared.
+Sogen split `src/windows-ttd` in answer to
+[sogen-ttd-requests.md](sogen-ttd-requests.md) §1 (`ttd/next`, `31cfc3ea`;
+the answer is [sogen-ttd-requests-response.md](sogen-ttd-requests-response.md)).
+There are now three static libraries:
 
-So the first item in [sogen-ttd-requests.md](sogen-ttd-requests.md) is a
-reader-only CMake target. With it, the backend DLL is a small link against the
-trace reader and zstd. Without it, the backend still works but is a large
-binary and a long build, which is a worse thing to ask a user to install.
+| Target | Header | Links | Gives |
+| --- | --- | --- | --- |
+| `windows-ttd-reader` | `ttd_trace.hpp` | `emulator-common` (zstd) | `ttd::trace`: accesses, `memory_at`, `calls_to`, `indirect_branches`, `exceptions`, modules, threads, syscalls, `id()` |
+| `windows-ttd-view` | `ttd_view.hpp` | reader, `emulator`, `unicorn-emulator` | `ttd::cpu_view`: the registers at a position |
+| `windows-ttd` | `ttd_record.hpp`, `ttd_session.hpp` | both, `windows-emulator` | recording, `seek`/`run_to`, keyframes |
+
+**The backend links `windows-ttd-view`, not `windows-ttd`.** The original plan
+assumed a reader alone would do, with registers from `cpu_at`. It does not:
+`cpu_at` *is* a replay (up to 25,000 instructions from the nearest register
+snapshot, on a real Unicorn CPU), and the snapshots are Unicorn's own
+`save_registers` blob, which only Unicorn can decode. So a debugger that shows
+registers needs Unicorn whatever the split. What the split does remove is
+`windows-emulator` and everything behind it — SDL, Vulkan headers, the syscall
+layer, the WHP/icicle/FEX backends. In a non-static Sogen build
+(`SOGEN_BUILD_STATIC` off) `unicorn-emulator` is a DLL that ships next to
+`ida-ttd-sogen.dll`. Unicorn is GPL-2.0 as well, so this changes nothing in §3.
+
+Consequences for the backend:
+
+- **No session, no keyframes, no `prepare`.** Everything the backend does is a
+  reader query or a `cpu_view`; `trace::keyframes()` is declared in the reader
+  header but only *defined* by `windows-ttd`, so it must not be called (it
+  would fail to link; Sogen is moving it to a free function in
+  `ttd_session.hpp`, so it will then fail to compile). `ITTD_CAP_PREPARE` stays
+  off. A cursor seek is a
+  `cpu_view` (2–6 ms) plus `memory_at` on demand, which is cheap enough for
+  `ITTD_CAP_CHEAP_SEEK`.
+- **One `trace` per cursor.** A `trace` is not thread-safe: it has one
+  `ifstream`, mutable caches and a lazily created view engine. A second one is
+  cheap, though: 21–26 ms to construct on a 189 MB trace, because it reads the
+  section tables, not the events. So the playhead and each running query get
+  their own. Each also gets its own Unicorn instance on its first `cpu_view`.
+  Sogen confirmed this and declined a cache-sharing copy until profiling asks
+  for one.
+- **Exceptions.** The reader throws `operation_cancelled` and
+  `divergence_error`, and `trace`'s constructor throws on a bad file. The C ABI
+  forbids exceptions escaping, so every entry point catches and maps them:
+  `operation_cancelled` → `ITTD_E_CANCELLED`, the rest → `ITTD_E_FAILED` with
+  `what()` in `last_error`.
 
 ## 4. The design
 
@@ -378,60 +415,116 @@ depends on Sogen being present.
 ## 6. The Sogen backend
 
 With the DLL arrangement there is no protocol and no server: the backend links
-Sogen's trace reader and calls it directly. What the backend does is translate,
-in both directions.
+Sogen's trace reader and `cpu_view` and calls them directly. What the backend
+does is translate, in both directions.
 
-### The easy direction
+Updated against `ttd/next` at `31cfc3ea`, which answered most of
+[sogen-ttd-requests.md](sogen-ttd-requests.md); see
+[sogen-ttd-requests-response.md](sogen-ttd-requests-response.md).
 
-Most of the ABI maps straight onto something Sogen already has:
+### Positions
+
+Sogen's position N is the state *after* instruction N, and an event's `step` is
+the 1-based number of the instruction doing it. The ABI's position is the state
+*before* the instruction at the program counter (Microsoft's meaning). So the
+backend hands out `step - 1` for "at the instruction whose step is N", and
+seeks `cpu_view(trace, p)` for an ABI position `p`. Concretely:
+
+| Sogen field | ABI position |
+| --- | --- |
+| `access_event::step` | `step - 1` (at the instruction that did it) |
+| `call_event::step` | `ittd_call::pos = step - 1` |
+| `call_event::entry_step` | `ittd_call::entry_pos = entry_step - 1` |
+| `call_event::return_step` | `ittd_call::ret_pos = return_step` — `cpu_at(return_step)` is the state after the `ret`, RAX holding the return value, which is exactly what `ret_pos` promises |
+| `exception_event::step` / `raise_step` | `step - 1` / `raise_step - 1` |
+| `indirect_branch::first_step` | `first_step - 1` |
+| `memory_at(position, …)` | already "before instruction position + 1", so `memory_at(p, …)` for ABI position `p` |
+| `start_position()`, `instruction_count` | `first`, `last` |
+
+`UINT64_MAX` on the Sogen side maps to `NONE`. Getting this wrong by one is
+silent — a register view one instruction off — so it is worth a test.
+
+### The direct mappings
 
 | ABI | Sogen |
 | --- | --- |
-| `cursor_read_memory` | `trace::memory_at(pos, addr, size)` — returns `vector<optional<uint8_t>>`, which is exactly the buffer-plus-known-mask shape the ABI asks for |
-| `cursor_regs` | `trace::cpu_at(pos)`, then `read_register` per register |
+| `can_open` | `ttd::is_trace_file(path)` (8 bytes, any version). Answer yes for every version, so an unreadable one reaches `open` and gets a message instead of falling through to "unknown file". |
+| `open` | `ttd::is_supported_trace_version(*trace_file_version(path))`, else fail with "Sogen trace format vN; this backend reads v`oldest_trace_version`–v`newest_trace_version`". Then construct `ttd::trace`. |
+| `info.fingerprint` | `trace::id()` folded to 64 bits: the first 16 hex digits after a leading `h` (older traces' ids are `h` + 32 hex digits, newer ones 32 random hex digits; at most 33 ASCII characters, confirmed). |
+| `info.is64`, `ittd_module::machine` | `module_entry::machine` (`0x8664` / `0x14c`); 0 on traces before section 15, and then the core reads the PE header. |
+| `cursor_read_memory` | `trace::memory_at(pos, addr, size)` — `vector<optional<uint8_t>>`, exactly the buffer-plus-known-mask shape |
+| `cursor_regs` | `ttd::cpu_view(trace, pos).cpu()`, then `read_register` per register |
+| `regs_at` | sort the positions, then `cpu_view` each — Sogen measured half the time of shuffled order (2.1–2.8 ms against 5.6–5.7 ms). Their batch API is TTD-Club/sogen#33; when it lands only this function changes. |
 | `query_accesses` | `trace::accesses(addr, size, first, last, kind_mask)` |
 | `query_executed` | the same with `kind_mask = execute` |
+| `query_calls` | `trace::calls_to(target, start, end)` per target. `is_call == false` → `ITTD_CALL_F_NOT_CALL`. |
+| `query_indirect` | `trace::indirect_branches(ranges, flags & ITTD_INDIRECT_JUMPS)` — one pass, no emulator |
+| `query_exceptions` | `trace::exceptions()`; `ITTD_CAP_EXCEPTIONS` on. Only system-dispatched ones; a C++ `throw` is `calls_to(ntdll!RtlRaiseException)`. |
+| `timeline` | `modules()` load/unload, `threads()` switches (first and last per thread), plus `exceptions()` as `ITTD_EV_EXCEPTION` |
 | `modules` | `trace::modules()` |
 | `threads` | `trace::threads()` |
 | `module_symbols` | `module_entry::exports`, already resolved, forwarders included |
-| `query_mapping_changes` | `trace::mapping_changes()` plus `trace::syscalls()` |
-| `prepare` | `prepare_keyframes` |
 | `nav_run_to` | `next_access` / `previous_access` with `execute`, then seek |
+| `nav_step` | `next_instruction` / `previous_instruction(step, thread)` |
 | `format_position` | the instruction counter in decimal |
+| progress sink | `ttd::operation_control{ interrupted = sink->cancelled, progress = report(done * 1000 / total) }`; catch `operation_cancelled` → `ITTD_E_CANCELLED`. Both callbacks run on the calling thread, which the sink allows. |
 
-`query_mapping_changes` deserves a note: this is the one where Sogen replaces
-1,354 lines of watching `NtAllocateVirtualMemory` and recovering its
-out-parameters with a table read. The memory-map *model* — the change
-timeline, folding it to a position, exposing live regions as segments — stays
-in the core and is shared.
+### What is still missing
 
-### The parts that need work
+All four are agreed in
+[sogen-ttd-requests-2-response.md](sogen-ttd-requests-2-response.md) and none is
+implemented yet. Their order: the small fixes, then the thread section, then
+the region section, then the checkpoint memory.
 
-- **`query_calls` and `query_indirect`.** `trace::calls()` takes an export
-  *name* and returns the callee's first instruction, so neither the call site
-  nor the matching return comes with it. Both are requested in
-  [sogen-ttd-requests.md](sogen-ttd-requests.md) §3 and §4; until they land the
-  backend derives them from the execute stream itself, or reports the
-  capability as absent and the core greys the commands out. §4 argues this is
-  the query where Sogen should beat Microsoft TTD by the widest margin, so it
-  is worth having properly rather than approximated.
-- **Argument and return values.** `cpu_at` is 6 ms, which is fine once and
-  expensive 5,000 times over a call listing. Requests §7 asks for a batch form.
-- **Holes in memory reads.** Sogen cannot show bytes no access touched (their
-  issue #28); the core's module-image fill covers the image-backed ones, and
-  the rest render as unknown.
-- **Cancellation.** None of Sogen's long calls can be interrupted today
-  (requests §2). Until they can, the backend has to either block without a
-  working Cancel or bound the work it asks for.
+- **The memory map.** Today `mapping_changes()` only says *that* a range
+  changed. Sogen will record the region bookkeeping (`reserved_regions_`, what
+  VirtualQuery shows) in a new optional section, with two parts:
+  - the map at the start of the recording;
+  - a log of each change's outcome: state, NT protection including guard,
+    allocation base, region type, and the file name of a view;
+  - on top of that, a `memory_regions_at(step)` reader call.
+
+  They chose this over the backend-level map calls we proposed, because those
+  carry *effective* permissions: a guard page reads as no access, and with DEP
+  off every page reads as executable.
+
+  The ABI already takes this shape: `ITTD_MAP_STATE` entries,
+  `ITTD_MAP_F_AT_START` for the initial map, `alloc_base`, `state`,
+  `region_type`, and `file` with `query_mapping_files`. What waits for the
+  backend is the core: `RegionChange`/`Region` in `analysis/memmap.h` need the
+  same fields, and `MemoryMap::state_at` needs a fold for `ITTD_MAP_STATE`,
+  which is an overwrite of the range. The listing's attribution is the
+  backend's job:
+  - `call_pos` and `api` come from the `syscalls()` entry at that step;
+  - `chain_n` stays 0 unless the backend walks the stack.
+
+  Until the section lands, `ITTD_CAP_MAPPING_CHANGES` stays off.
+- **Holes in memory reads (#28).** Sogen will parse only the memory part of a
+  checkpoint in the reader, using a new per-checkpoint offset section, and fill
+  `memory_at`'s holes from it. No change on our side: the bytes simply come
+  back known. Three things to expect:
+  - Older traces keep their holes.
+  - The first hole read in a new checkpoint interval decodes that checkpoint's
+    whole state, so a `cursor_read_memory` can be slow once per interval. That
+    argues for reading the stack and memory views off the UI thread, which is
+    true for Microsoft too.
+  - Host-aliased (GPU bridge) memory is exact only at checkpoints.
+- **Thread stack bounds (#34).** Sogen will add a per-thread section: TEB,
+  32-bit TEB, stack base and limit, first and last step. Stacks are fully
+  committed at creation in Sogen and never grow, so the bounds only change on
+  fiber switches; the current ones are then `memory_at(teb + 8 / teb + 0x10)`.
+  The ABI's `ittd_thread` has the fields. The core does not use them yet; the
+  stack view is where they would go.
+- **Batch registers (#33).** Unchanged: sorted `cpu_view` behind `regs_at`.
 
 ### Order of work
 
 `open` / `info` / `modules` / `cursor_seek` / `cursor_regs` /
 `cursor_read_memory` gives a working read-only debugger — stepping by seek, a
 disassembly, registers and memory. `query_accesses` then lights up memory
-search and coverage at once, because both go through it. `query_mapping_changes`
-gives the memory map with none of the syscall-watching code. The call queries
-come last, and are where the SDK requests matter.
+search and coverage at once, because both go through it. `query_calls`,
+`query_indirect` and `query_exceptions` are now direct calls and can come
+straight after. The memory map waits for Sogen's region section.
 
 ## 7. Phases
 
@@ -489,6 +582,10 @@ order given in §6. The ABI having been exercised by the Microsoft backend
 through phase 4 is the point: by the time Sogen arrives, the boundary has
 already been proven by one implementation.
 
+No longer blocked on Sogen: §1–§6 of the requests landed on `ttd/next` at
+`31cfc3ea`. What is still missing there (the memory map, #28, #33, #34) costs
+one feature each, not the backend.
+
 **Phase 6 — what only one backend can do.** Sogen's recorded syscall list,
 `self_modifying_code()`, and its replay scans for strings and buffers have no
 Microsoft equivalent and want UI of their own, gated on the capability flags.
@@ -530,11 +627,12 @@ the open items of the existing code review.
    own source link. The alternatives are a separate repository, or a target in
    the Sogen tree. Something has to be decided before the first release that
    includes it; nothing before then.
-2. **The SDK requests.** [sogen-ttd-requests.md](sogen-ttd-requests.md) is
-   written to be handed over as-is. §1 (a reader-only target) is the one that
-   decides whether the backend is a reasonable thing to ship; the rest are
-   improvements. Worth sending early, since §1 is a header reshuffle and the
-   answer shapes phase 5.
+2. ~~**The SDK requests.**~~ Answered in
+   [sogen-ttd-requests-response.md](sogen-ttd-requests-response.md): §1–§6
+   done, §7 and three of the §8 items not yet. The ABI was reshaped to match
+   (three call positions, indirect jumps, exceptions, module machine, batch
+   registers). The follow-ups are in
+   [sogen-ttd-requests-2.md](sogen-ttd-requests-2.md), mainly the memory map.
 3. **One plugin or several?** This plan has one `ida-ttd.dll` that picks a
    backend from the file, so there is one `debugger_t`, one action set and one
    toolbar however many backends are installed. The alternative — one plugin
@@ -574,3 +672,26 @@ Phases 1 and 2a are landed on top of them:
   are four of the six classes `TraceManager` becomes.
 
 Release and Debug both build clean at every commit.
+
+After Sogen's answer to the SDK requests (`ttd/next`, `31cfc3ea`):
+
+- The ABI and `core/backend.h` were reshaped to what Sogen actually provides,
+  still as version 1 since no backend exists yet: a call carries three
+  positions (`pos`, `entry_pos`, `ret_pos`) and an `ITTD_CALL_F_NOT_CALL` flag;
+  indirect targets carry `first_pos` and can include jumps
+  (`ITTD_INDIRECT_JUMPS`); modules carry their PE `machine`; there is a
+  `query_exceptions` with `ITTD_CAP_EXCEPTIONS` and a batch `regs_at`; and the
+  position semantics are written down, so Sogen's off-by-one is the backend's
+  to translate.
+- `ITTD_CAP_MAPPING_CHANGES` now means "with protections", which Sogen does not
+  have yet.
+
+After the second round (`sogen-ttd-requests-2-response.md`, nothing implemented
+on Sogen's side yet), the ABI was extended to the shapes Sogen agreed to, so
+their sections drop in without another ABI change:
+
+- `ittd_mapping_change` gains `alloc_base`, `state`, `region_type` and `file`.
+  There is a new `ITTD_MAP_STATE` kind, an `ITTD_MAP_F_AT_START` flag for the
+  initial map, and a `query_mapping_files` call for the file names.
+- `ittd_thread` and `ThreadInfo` gain `teb`, `teb32`, `stack_base` and
+  `stack_limit`.

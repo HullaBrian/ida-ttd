@@ -45,10 +45,14 @@ namespace idattd
         bool access_queries   = false;
         // Calls and returns can be listed (the call tracer, indirect calls).
         bool call_queries     = false;
-        // The recording says where memory was mapped and unmapped, so the
-        // memory map does not have to be reconstructed from syscalls.
+        // The recording says where memory was mapped, unmapped and
+        // reprotected, with the protection, so the memory map does not have to
+        // be reconstructed from syscalls. Knowing only *that* a range changed
+        // (which is what Sogen records today) does not qualify.
         bool mapping_changes  = false;
-        // Dispatched syscalls are recorded with their arguments and results.
+        // Dispatched syscalls are recorded: which, where, and what they
+        // returned. (Not necessarily their arguments -- Sogen records the
+        // result and the host writes, not the registers going in.)
         bool syscalls         = false;
         // Module export tables come out of the recording, so the core does not
         // need to parse them out of guest memory.
@@ -61,6 +65,8 @@ namespace idattd
         // (Both backends can; a future one reading an ETW-style trace could
         // not, and the backward movement actions would then not be registered.)
         bool reverse_step     = true;
+        // Exceptions the system dispatched can be listed (query_exceptions).
+        bool exceptions       = false;
     };
 
     // ------------------------------------------------------------- the trace
@@ -88,6 +94,9 @@ namespace idattd
         // only position at which the module's own headers can be read.
         Position loaded;
         Position unloaded;        // none() while still mapped at the end
+        // IMAGE_FILE_MACHINE_*: 0x8664, or 0x14c for 32-bit code in a WoW64
+        // process. 0 when the recording does not say; read the PE header.
+        uint16_t machine = 0;
     };
 
     struct ThreadInfo
@@ -95,6 +104,10 @@ namespace idattd
         uint32_t tid = 0;
         Position created, exited;
         qstring  name;            // empty when the recording does not say
+        // 0 when the recording does not say. Bounds at creation; a fiber
+        // switch rewrites them in the TEB. See ittd_thread.
+        ea_t     teb = 0, teb32 = 0;
+        ea_t     stack_base = 0, stack_limit = 0;
     };
 
     // One thing worth putting on the timeline: a thread starting or exiting, a
@@ -122,13 +135,40 @@ namespace idattd
         uint8_t  kind = 0;          // one ACCESS_* value
     };
 
+    // One entry into a function. See ittd_call for why there are three
+    // positions: who called, the arguments, and the return value are each read
+    // at a different one.
     struct CallEvent
     {
-        Position pos;               // the call
-        Position ret_pos;           // the matching return; none() if unseen
+        Position pos;               // at the call; none() if the thread began in the callee
+        Position entry_pos;         // at the callee's first instruction
+        Position ret_pos;           // just after the return; none() if unseen
         uint32_t tid    = 0;
         ea_t     site   = BADADDR;  // the call instruction
         ea_t     target = BADADDR;  // where it actually went
+        bool     is_call = true;    // false: reached by a jump, so no return of its own
+    };
+
+    // One target an indirect branch reached.
+    struct IndirectTarget
+    {
+        ea_t     target = BADADDR;
+        uint64_t hits   = 0;
+        Position first;             // the first time; none() if the backend does not know
+        bool     is_call = true;    // false for an indirect jump
+    };
+
+    // An exception the system dispatched. See ittd_exception for which ones
+    // that leaves out.
+    struct ExceptionEvent
+    {
+        Position pos;               // the dispatch
+        Position raise_pos;         // the instruction that raised it; none() if unknown
+        uint32_t tid     = 0;
+        uint32_t code    = 0;
+        uint32_t flags   = 0;
+        ea_t     address = BADADDR;
+        uint64_t information[2] = {};
     };
 
     // Reported by a query that could not return everything it found.
@@ -317,13 +357,52 @@ namespace idattd
                                         std::vector<CallEvent> *out,
                                         ProgressSink *progress) = 0;
 
-        // Every indirect call made from inside 'ranges', with where it went.
-        // Separate from query_calls because the question is about call *sites*
-        // and the answer is grouped by site, not by invocation.
+        // Every indirect call made from inside 'ranges', with where it went,
+        // and every indirect jump too when 'jumps' is set. Separate from
+        // query_calls because the question is about call *sites* and the
+        // answer is grouped by site, not by invocation.
         virtual QueryResult query_indirect_targets(
                 const std::vector<std::pair<ea_t, ea_t>> &ranges,
-                std::map<ea_t, std::set<ea_t>> *out,
+                bool jumps,
+                std::map<ea_t, std::vector<IndirectTarget>> *out,
                 ProgressSink *progress) = 0;
+
+        // Every exception the system dispatched, in order. Requires
+        // capabilities().exceptions.
+        virtual QueryResult query_exceptions(std::vector<ExceptionEvent> *out,
+                                             ProgressSink *progress) = 0;
+
+        // The registers at each of 'positions', in the same order; an entry
+        // whose 'have' is 0 could not be reconstructed. A batch because
+        // neighbouring positions share work -- see ittd_backend_api::regs_at.
+        // The default seeks a scratch cursor per position, which is what a
+        // backend without a cheaper route would do anyway.
+        virtual QueryResult registers_at(const std::vector<Position> &positions,
+                                         std::vector<ittd_regs> *out,
+                                         ProgressSink *progress)
+        {
+            QueryResult r;
+            r.ran = true;
+            out->assign(positions.size(), ittd_regs{});
+            CursorPtr cursor = make_cursor();
+            if ( cursor == nullptr )
+                return r;
+            for ( size_t i = 0; i < positions.size(); ++i )
+            {
+                if ( progress != nullptr )
+                {
+                    if ( progress->cancelled() )
+                    {
+                        r.cancelled = true;
+                        break;
+                    }
+                    progress->report(uint32_t(i * 100 / positions.size()));
+                }
+                if ( cursor->seek(positions[i]) && !cursor->read_registers(&(*out)[i]) )
+                    (*out)[i].have = 0;
+            }
+            return r;
+        }
 
         // ---- symbols -------------------------------------------------------
         //
