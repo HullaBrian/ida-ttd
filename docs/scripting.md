@@ -98,3 +98,10 @@ has not. The plugin must be installed there, along with any backends in
 The MCP server can run on another machine than the one with the source: paths
 are the IDA machine's. A plain `idc.eval_idc('ttd("...")')` works without the
 helper module, since the plugin is loaded in the worker either way.
+
+## The self-test
+
+`scripts/selftest.py` drives a full session over the reference sample in the
+`ttd-traces` folder and checks every movement and analysis against what that
+program is known to do: 21 checks, the same for a Microsoft and a Sogen
+recording of it. Open either trace, then `exec` the file and call `run()`.
