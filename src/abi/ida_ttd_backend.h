@@ -63,10 +63,12 @@ extern "C" {
  * it cannot speak that version, and the core then says so by name rather than
  * crashing on a mismatched table.
  *
- * Version 1 is not published yet. Until a backend is built outside this
- * repository it is still being shaped, and changes in place.
+ * Not published yet, so a change still bumps it rather than keeping an old
+ * layout alive: a backend DLL from before a change is refused by name, not
+ * read with the wrong structures. 2: ittd_module gained timestamp and
+ * checksum, and the table its size and the entries after query_frame_entry.
  */
-#define ITTD_ABI_VERSION 1u
+#define ITTD_ABI_VERSION 2u
 
 #define ITTD_BADADDR 0xFFFFFFFFFFFFFFFFull
 
@@ -167,6 +169,11 @@ typedef struct ittd_module
      * WoW64 process, where both kinds sit side by side. 0 when the recording
      * does not say, and the core then reads the PE header itself. */
     uint32_t      machine;
+    /* The image's TimeDateStamp and CheckSum as the recording saw them: how a
+     * file on this machine is told apart from another build of the same DLL.
+     * 0 when the recording does not say; the core reads the headers. */
+    uint32_t      timestamp;
+    uint32_t      checksum;
     uint32_t      reserved;
     char          name[ITTD_NAME_MAX];   /* base name, as recorded */
     char          path[ITTD_PATH_MAX];   /* full path on the recording machine */
@@ -498,7 +505,10 @@ typedef struct ittd_cursor  ittd_cursor;    /* opaque */
 typedef struct ittd_backend_api
 {
     uint32_t    abi_version;        /* must equal the version asked for */
-    uint32_t    reserved;
+    /* sizeof(ittd_backend_api) as the backend was built. Entries past it are
+     * absent: the table grows at its end, and the core checks this before
+     * reaching for anything added after the first table. */
+    uint32_t    size;
 
     /* ---- identity, before anything is open ---------------------------- */
 
@@ -732,6 +742,40 @@ typedef struct ittd_backend_api
      */
     int (*query_frame_entry)(ittd_backend *b, ittd_position at, uint32_t tid, uint64_t max_back,
                              ittd_position *out_call, uint64_t *out_entry);
+
+    /* ---- added to the first table: the core checks 'size' first --------- */
+
+    /* The host's log, for diagnostics a backend would otherwise drop: one
+     * line per call, the newline included. Called once, before anything is
+     * opened, and possibly from any thread afterwards. */
+    void (*set_log)(void (*log)(void *ud, const char *line), void *ud);
+
+    /* Non-zero when prepare() has nothing left to do for the open recording:
+     * the core asks before offering a long preparation. */
+    int (*prepared)(ittd_backend *b);
+
+    /* The registers of thread 'tid' at the cursor's position, for the host's
+     * thread list. ITTD_E_UNSUPPORTED when only the current thread's are
+     * known. */
+    int (*cursor_thread_regs)(ittd_cursor *c, uint32_t tid, ittd_regs *out);
+
+    /* Rebuild [lo, hi) as of the cursor's position from the recording's own
+     * writes, for memory a position read cannot answer (an unpacker's output
+     * before it runs), and serve it from then on. With 'replace', anything
+     * rebuilt for the range before is thrown away first. *out_bytes is the
+     * number recovered; a backend whose reads are complete has none. */
+    int (*cursor_rebuild_range)(ittd_cursor *c, uint64_t lo, uint64_t hi, int replace,
+                                uint64_t *out_bytes);
+
+    /* Something the last movement on 'c' wants the user told once the stop is
+     * shown ("this frame does not return anywhere"), NUL-terminated into
+     * 'buf'; an empty string when there is nothing. Taking it clears it. */
+    int (*nav_take_notice)(ittd_cursor *c, char *buf, size_t buf_size);
+
+    /* Progress and Cancel for the movements on 'c' from now on; NULL clears
+     * it. The core sets one around each movement and clears it after, so the
+     * pointer is valid until then. Movements run on the host's main thread. */
+    int (*nav_set_progress)(ittd_cursor *c, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

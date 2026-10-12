@@ -1,5 +1,6 @@
 #include "debugger/trace_manager.h"
 #include "common/strings.h"
+#include "analysis/query_runner.h"
 #include "analysis/trace_store.h"
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
@@ -210,8 +211,7 @@ namespace idattd
         m_backend = backend;
         set_position_backend(m_backend);
         // Microsoft's memory index; returns at once when the loader built it.
-        if ( !m_backend->prepared() )
-            m_backend->prepare(nullptr);
+        prepare_backend(m_backend);
         msg("[ida-ttd] %s is a %s recording.\n", path, m_backend->display_name());
 
         m_modules.bind(m_backend, m_is64, m_targetName.c_str());
@@ -452,8 +452,16 @@ namespace idattd
     StopReason TraceManager::navigate(bool forward, const std::function<StopReason()> &move)
     {
         // The thread and module changes are reported with the stop, against
-        // what IDA was last told (emit_stop).
-        StopReason sr = move();
+        // what IDA was last told (emit_stop). A movement can replay a long
+        // stretch of the recording, so it gets a wait box with Cancel.
+        StopReason sr;
+        {
+            WaitBoxSink sink(forward ? "Moving forward through the recording"
+                                     : "Moving back through the recording");
+            m_nav->set_progress(&sink);
+            sr = move();
+            m_nav->set_progress(nullptr);
+        }
 
         if ( sr == StopReason::TraceBoundary )
             m_pendingBoundary = forward ? BOUNDARY_END : BOUNDARY_START;

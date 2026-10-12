@@ -1,6 +1,7 @@
 #pragma once
 
 #include "backend-msttd/msttd_backend.h"
+#include "backend-msttd/msttd_x86.h"
 
 namespace idattd
 {
@@ -28,6 +29,7 @@ namespace idattd
         bool set_breakpoints(const std::vector<Breakpoint> &bpts,
                              std::vector<bool> *accepted) override;
         qstring take_notice() override;
+        void set_progress(ProgressSink *progress) override { m_progress = progress; }
 
     private:
         using EventType = TTD::Replay::EventType;
@@ -51,6 +53,9 @@ namespace idattd
         bool      find_frame_entry_position(TTD::Replay::Position &out, bool &cancelled);
         TTD::Replay::ICursorView *frame_cursor();
         RunStop   run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid);
+        // The call or return at the playhead, decoded from recorded memory.
+        X86Branch branch_here();
+        bool      cancelled() const { return m_progress != nullptr && m_progress->cancelled(); }
         bool      add_temp_exec_watchpoint(ea_t addr, TTD::Replay::MemoryWatchpointData &wp);
         void      drop_temp_exec_watchpoint(const TTD::Replay::MemoryWatchpointData &wp, bool owned);
         void      restore_event_mask();
@@ -65,5 +70,6 @@ namespace idattd
         TTD::Replay::UniqueCursor m_frameCursor;   // see frame_cursor()
         std::set<TTD::Replay::MemoryWatchpointData> m_userWatchpoints;
         qstring m_notice;
+        ProgressSink *m_progress = nullptr;
     };
 }

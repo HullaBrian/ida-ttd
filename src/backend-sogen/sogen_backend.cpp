@@ -37,6 +37,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -47,12 +48,36 @@ namespace
 {
     // ------------------------------------------------------------ handles
 
+    // One page as memory_at showed it, and the positions it holds for.
+    //
+    // memory_at walks every recorded access to the page until each byte is
+    // accounted for, which on a hot code page -- ntdll's, executed millions
+    // of times -- costs tens of milliseconds. IDA reads a module's code page
+    // by page, and again after every stop, so uncached that froze it for
+    // minutes. A page only changes at a write to it or a change to its
+    // mapping, so one read answers every position between the two.
+    struct cached_page
+    {
+        uint64_t from = 0, to = 0;      // positions [from, to] it holds for
+        uint64_t used = 0;              // for eviction
+        std::vector<uint8_t> bytes, known;
+    };
+
+    struct page_cache
+    {
+        std::mutex mtx;
+        std::unordered_map<uint64_t, std::vector<cached_page>> pages;   // by page base
+        size_t   count = 0;
+        uint64_t clock = 0;
+    };
+
     struct backend_t
     {
         std::filesystem::path path;
         std::unique_ptr<ttd::trace> trace;   // for the whole-trace queries
         std::mutex mtx;                      // guards 'trace'
         std::string error;
+        page_cache pages;                    // shared by this backend's cursors
     };
 
     struct cursor_t
@@ -493,6 +518,95 @@ namespace
         });
     }
 
+    constexpr uint64_t kPage = 0x1000;
+    constexpr size_t   kMaxCachedPages = 8192;      // 64 MiB of bytes and flags
+
+    // The positions around 'position' over which the page at 'page' cannot
+    // change: from the last write to it at or before the position to just
+    // before the next one, narrowed by any change to its mapping in between
+    // (memory freed and allocated again reads as zeros with no write).
+    void stable_span(ttd::trace &t, uint64_t page, uint64_t position, uint64_t *from, uint64_t *to)
+    {
+        const uint64_t W = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+        std::optional<ttd::access_event> before = t.previous_access(page, kPage, position + 1, W);
+        std::optional<ttd::access_event> after  = t.next_access(page, kPage, position, W);
+        *from = before ? before->step : 0;
+        *to   = after ? after->step - 1 : UINT64_MAX;
+        if ( t.has_memory_regions() )
+            for ( const ttd::memory_region &r : t.memory_regions().regions )
+            {
+                if ( r.address >= page + kPage || r.address + r.size <= page )
+                    continue;
+                if ( r.step <= position && r.step > *from )
+                    *from = r.step;
+                else if ( r.step > position && r.step - 1 < *to )
+                    *to = r.step - 1;
+            }
+    }
+
+    // Drop the least recently used half once the cache is full.
+    void trim(page_cache &pc)
+    {
+        if ( pc.count <= kMaxCachedPages )
+            return;
+        std::vector<uint64_t> uses;
+        uses.reserve(pc.count);
+        for ( auto &[page, v] : pc.pages )
+            for ( const cached_page &e : v )
+                uses.push_back(e.used);
+        std::nth_element(uses.begin(), uses.begin() + uses.size() / 2, uses.end());
+        uint64_t cut = uses[uses.size() / 2];
+        for ( auto it = pc.pages.begin(); it != pc.pages.end(); )
+        {
+            auto &v = it->second;
+            size_t before = v.size();
+            v.erase(std::remove_if(v.begin(), v.end(), [cut](const cached_page &e) { return e.used < cut; }),
+                    v.end());
+            pc.count -= before - v.size();
+            it = v.empty() ? pc.pages.erase(it) : std::next(it);
+        }
+    }
+
+    // The page at 'page' as of the cursor's position, from the cache or from
+    // memory_at. 'dst' and 'kn' receive kPage bytes each.
+    void read_page(cursor_t *c, uint64_t page, uint8_t *dst, uint8_t *kn)
+    {
+        page_cache &pc = c->owner->pages;
+        {
+            std::lock_guard<std::mutex> lock(pc.mtx);
+            auto it = pc.pages.find(page);
+            if ( it != pc.pages.end() )
+                for ( cached_page &e : it->second )
+                    if ( e.from <= c->position && c->position <= e.to )
+                    {
+                        e.used = ++pc.clock;
+                        memcpy(dst, e.bytes.data(), kPage);
+                        memcpy(kn, e.known.data(), kPage);
+                        return;
+                    }
+        }
+
+        cached_page e;
+        std::vector<std::optional<uint8_t>> v = c->trace->memory_at(c->position, page, kPage);
+        e.bytes.assign(kPage, 0);
+        e.known.assign(kPage, 0);
+        for ( size_t i = 0; i < kPage && i < v.size(); i++ )
+            if ( v[i] )
+            {
+                e.bytes[i] = *v[i];
+                e.known[i] = 1;
+            }
+        stable_span(*c->trace, page, c->position, &e.from, &e.to);
+        memcpy(dst, e.bytes.data(), kPage);
+        memcpy(kn, e.known.data(), kPage);
+
+        std::lock_guard<std::mutex> lock(pc.mtx);
+        e.used = ++pc.clock;
+        pc.pages[page].push_back(std::move(e));
+        pc.count++;
+        trim(pc);
+    }
+
     int cursor_read_memory(ittd_cursor *hc, uint64_t ea, void *buf, uint8_t *known,
                            size_t size, size_t *out_known)
     {
@@ -501,18 +615,27 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(c->owner->error, [&]()
         {
-            std::vector<std::optional<uint8_t>> bytes = c->trace->memory_at(c->position, ea, size);
-            size_t n = 0;
+            uint8_t page[kPage], kn[kPage];
             uint8_t *dst = static_cast<uint8_t *>(buf);
-            for ( size_t i = 0; i < size && i < bytes.size(); i++ )
+            size_t n = 0;
+            for ( uint64_t a = ea; a < ea + size; )
             {
-                if ( bytes[i] )
+                uint64_t base = a & ~(kPage - 1);
+                uint64_t off  = a - base;
+                uint64_t take = std::min<uint64_t>(kPage - off, ea + size - a);
+                read_page(c, base, page, kn);
+                for ( uint64_t i = 0; i < take; i++ )
                 {
-                    dst[i] = *bytes[i];
-                    n++;
+                    size_t k = (size_t)(a - ea + i);
+                    if ( kn[off + i] )
+                    {
+                        dst[k] = page[off + i];
+                        n++;
+                    }
+                    if ( known != nullptr )
+                        known[k] = kn[off + i] ? 1 : 0;
                 }
-                if ( known != nullptr )
-                    known[i] = bytes[i] ? 1 : 0;
+                a += take;
             }
             if ( out_known != nullptr )
                 *out_known = n;
@@ -1563,6 +1686,7 @@ namespace
     {
         ittd_backend_api a{};
         a.abi_version        = ITTD_ABI_VERSION;
+        a.size               = sizeof(ittd_backend_api);
         a.id                 = id;
         a.display_name       = display_name;
         a.file_filter        = file_filter;

@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ida-ttd-msttd.dll: the backend for Microsoft TTD recordings (.run).
+
+  The only project that uses the TTD Replay SDK. It speaks the backend ABI
+  (src\abi\ida_ttd_backend.h) and runs without IDA: it does not link ida.lib,
+  and backend-msttd\msttd_ida_shim.cpp supplies the handful of IDA kernel
+  functions its use of qstring needs. So the probe can drive it outside IDA.
+
+  TTDReplay.dll is delay-loaded, so an install without it still loads the
+  backend; opening a recording then says what is missing.
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{6d1e8b47-3c2a-4f95-b8e1-0a7c5d9f2e63}</ProjectGuid>
+    <RootNamespace>idattdmsttd</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <CharacterSet>Unicode</CharacterSet>
+    <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup Label="BackendBuild">
+    <UseTTDReplaySdk>true</UseTTDReplaySdk>
+    <LinkIdaKernel>false</LinkIdaKernel>
+    <ExtraLinkDependencies>delayimp.lib</ExtraLinkDependencies>
+    <ExtraDelayLoadDLLs>TTDReplay.dll</ExtraDelayLoadDLLs>
+  </PropertyGroup>
+  <Import Project="common.props" />
+  <PropertyGroup>
+    <TargetName>ida-ttd-msttd</TargetName>
+    <!-- backends\ mirrors where IDA looks for them: plugins\ida-ttd-backends\. -->
+    <OutDir>$(RepoRoot)build\$(Configuration)\backends\</OutDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_pch.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_navigator.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_guest.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_position.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_trace_open.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_host.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_x86.h" />
+    <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
+    <ClInclude Include="$(SrcDir)\core\abi_export.h" />
+    <ClInclude Include="$(SrcDir)\core\backend.h" />
+    <ClInclude Include="$(SrcDir)\core\position.h" />
+    <ClInclude Include="$(SrcDir)\core\guest_view.h" />
+    <ClInclude Include="$(SrcDir)\common\pch.h" />
+    <ClInclude Include="$(SrcDir)\common\strings.h" />
+    <ClInclude Include="$(SrcDir)\common\guest_pe.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_navigator.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_queries.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_trace_open.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_host.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_x86.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_entry.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_ida_shim.cpp" />
+    <ClCompile Include="$(SrcDir)\core\abi_export.cpp" />
+    <ClCompile Include="$(SrcDir)\core\position.cpp" />
+    <ClCompile Include="$(SrcDir)\core\guest_view.cpp" />
+    <ClCompile Include="$(SrcDir)\common\strings.cpp" />
+    <ClCompile Include="$(SrcDir)\common\guest_pe.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

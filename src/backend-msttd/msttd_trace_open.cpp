@@ -1,77 +1,44 @@
 #include "backend-msttd/msttd_trace_open.h"
+#include "backend-msttd/msttd_host.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
 
 namespace idattd
 {
-    // IdaErrorReporting
-    void __fastcall IdaErrorReporting::VPrintError(char const *pFmt, va_list argList)
+    void __fastcall MsttdErrorReporting::VPrintError(char const *pFmt, va_list argList)
     {
         char buf[2048];
-        qvsnprintf(buf, sizeof(buf), pFmt, argList);
-        msg("[ida-ttd] TTD: %s\n", buf);
+        vsnprintf(buf, sizeof(buf), pFmt, argList);
+        msttd_log("[ida-ttd] TTD: %s\n", buf);
     }
 
-    // Index building
-    // Percentage published by the TTD indexing threads and rendered by the main
-    // thread's wait-box loop in build_trace_index().
-    static std::atomic<uint32_t> g_indexPct{ 0 };
-
-    // TTD invokes this from its own indexing WORKER THREADS. It must therefore not
-    // touch IDA at all: calling replace_wait_box() here deadlocked IDA outright
-    // (process alive at 0% CPU, permanently unresponsive, no window repaint) on the
-    // first load of any trace with no prebuilt .idx. Publish the percentage and
-    // return; the main thread renders it.
-    static void __stdcall index_progress(void const * /*ctx*/, IndexBuildProgressType const *d) noexcept
+    // TTD invokes this from its own indexing worker threads, with the sink as
+    // its context. A sink takes calls from any thread; this only passes the
+    // percentage on.
+    static void __stdcall index_progress(void const *ctx, IndexBuildProgressType const *d) noexcept
     {
-        if ( d != nullptr && d->KeyframeCount > 0 )
-        {
-            uint32_t pct = (uint32_t)((uint64_t)d->KeyframesProcessed * 100 / d->KeyframeCount);
-            g_indexPct.store(pct, std::memory_order_relaxed);
-        }
+        ProgressSink *sink = (ProgressSink *)ctx;
+        if ( sink != nullptr && d != nullptr && d->KeyframeCount > 0 )
+            sink->report((uint32_t)((uint64_t)d->KeyframesProcessed * 100 / d->KeyframeCount));
     }
 
-    bool build_trace_index(IReplayEngine *engine)
+    bool build_trace_index(IReplayEngine *engine, ProgressSink *progress)
     {
         if ( engine == nullptr )
             return false;
         if ( engine->GetIndexStatus() == IndexStatus::IndexFileLoaded )
             return true;
 
-        g_indexPct.store(0, std::memory_order_relaxed);
-        std::atomic<bool> done{ false };
-        IndexStatus       st = IndexStatus::IndexFileNotPresent;
-
-        std::thread worker([engine, &done, &st]()
-        {
-            // 'done' must be set on every exit path: the main thread spins on it
-            // and would otherwise wait forever behind a wait box with no Cancel.
-            try { st = engine->BuildIndex(index_progress, nullptr, IndexBuildFlags::None); }
-            catch ( ... ) {}
-            done.store(true, std::memory_order_release);
-        });
-
-        show_wait_box("HIDECANCEL\nBuilding TTD index...");
-        uint32_t shown = 101;                    // force the first repaint
-        while ( !done.load(std::memory_order_acquire) )
-        {
-            uint32_t pct = g_indexPct.load(std::memory_order_relaxed);
-            if ( pct != shown )
-            {
-                replace_wait_box("HIDECANCEL\nBuilding TTD index... %u%%", pct);
-                shown = pct;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        }
-        worker.join();
-        hide_wait_box();
+        IndexStatus st = IndexStatus::IndexFileNotPresent;
+        try { st = engine->BuildIndex(index_progress, progress, IndexBuildFlags::None); }
+        catch ( ... ) {}
 
         // IndexFileUnloadable here is normal and does not mean memory reads will
         // fail -- the engine builds and uses an in-memory index, while
         // GetIndexStatus()/this result describe the on-disk .idx file only.
         if ( st != IndexStatus::IndexFileLoaded )
-            msg("[ida-ttd] TTD index build finished with status %d (in-memory index still usable).\n", (int)st);
+            msttd_log("[ida-ttd] TTD index build finished with status %d (in-memory index still usable).\n", (int)st);
         return true;
     }
 }

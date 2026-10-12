@@ -49,6 +49,11 @@ namespace idattd
         }
     };
 
+    // Whether the table has entry 'f' and fills it: entries added after the
+    // first table sit past the 'size' of a backend built before them.
+    #define ITTD_HAS(api, f) \
+        (offsetof(ittd_backend_api, f) + sizeof((api)->f) <= (api)->size && (api)->f != nullptr)
+
     static QueryResult result_of(int rc, int truncated)
     {
         QueryResult r;
@@ -155,6 +160,23 @@ namespace idattd
 
         std::vector<ThreadInfo> live_threads() const override;
 
+        bool read_thread_registers(uint32_t tid, ittd_regs *out) const override
+        {
+            if ( out == nullptr || !ITTD_HAS(m_api, cursor_thread_regs) )
+                return false;
+            *out = ittd_regs{};
+            return m_api->cursor_thread_regs(m_c, tid, out) == ITTD_OK && (out->have & ITTD_REGS_GP) != 0;
+        }
+
+        size_t rebuild_range(ea_t lo, ea_t hi, bool replace) override
+        {
+            uint64_t n = 0;
+            if ( !ITTD_HAS(m_api, cursor_rebuild_range)
+              || m_api->cursor_rebuild_range(m_c, (uint64_t)lo, (uint64_t)hi, replace ? 1 : 0, &n) != ITTD_OK )
+                return 0;
+            return (size_t)n;
+        }
+
     private:
         const ittd_backend_api *m_api;
         ittd_cursor            *m_c;
@@ -240,6 +262,22 @@ namespace idattd
             return ok;
         }
 
+        qstring take_notice() override
+        {
+            char buf[1024] = { 0 };
+            if ( !ITTD_HAS(m_api, nav_take_notice) || m_api->nav_take_notice(m_c, buf, sizeof(buf)) != ITTD_OK )
+                return qstring();
+            return qstring(buf);
+        }
+
+        void set_progress(ProgressSink *progress) override
+        {
+            if ( !ITTD_HAS(m_api, nav_set_progress) )
+                return;
+            m_bridge = std::make_unique<ProgressBridge>(progress);
+            m_api->nav_set_progress(m_c, m_bridge->get());
+        }
+
     private:
         using NavFn = int (*)(ittd_cursor *, int, int *);
 
@@ -266,6 +304,7 @@ namespace idattd
 
         const ittd_backend_api *m_api;
         ittd_cursor            *m_c;
+        std::unique_ptr<ProgressBridge> m_bridge;   // what nav_set_progress was given
     };
 
     // ---------------------------------------------------------------- module
@@ -366,8 +405,11 @@ namespace idattd
 
     bool BackendModule::prepared() const
     {
-        // The ABI cannot be asked, so: nothing to prepare, or it ran.
-        return m_handle != nullptr && (m_api->prepare == nullptr || m_prepared);
+        if ( m_handle == nullptr )
+            return false;
+        if ( m_api->prepare == nullptr || m_prepared )
+            return true;
+        return ITTD_HAS(m_api, prepared) && m_api->prepared(m_handle) != 0;
     }
 
     qstring BackendModule::format_position(Position p) const
@@ -436,7 +478,9 @@ namespace idattd
             mi.path     = m.path;
             mi.loaded   = from_abi(m.loaded);
             mi.unloaded = from_abi(m.unloaded);
-            mi.machine  = (uint16_t)m.machine;
+            mi.machine   = (uint16_t)m.machine;
+            mi.timestamp = m.timestamp;
+            mi.checksum  = m.checksum;
             out.push_back(mi);
         }
         return out;
@@ -801,6 +845,10 @@ namespace idattd
             FreeLibrary(h);
             return;
         }
+
+        // Its diagnostics go to the output window.
+        if ( ITTD_HAS(api, set_log) )
+            api->set_log([](void *, const char *line) { msg("%s", line); }, nullptr);
 
         auto mod = std::make_unique<BackendModule>(api, path);
         if ( BackendRegistry::instance().by_id(mod->id()) != nullptr )

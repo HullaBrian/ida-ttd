@@ -102,13 +102,21 @@ namespace idattd
     {
         if ( playhead == nullptr || hi <= lo )
             return false;
-        return playhead->rebuild_range(lo, hi, false) > 0;
+        // A replay from the start of the recording on a replay engine: it can
+        // take a while, and it cannot be interrupted.
+        show_wait_box("HIDECANCEL\nReconstructing memory from recorded writes...");
+        bool got = playhead->rebuild_range(lo, hi, false) > 0;
+        hide_wait_box();
+        return got;
     }
 
     size_t MemoryReader::reread(ITraceCursor *playhead, ea_t lo, ea_t hi)
     {
         if ( playhead == nullptr || lo >= hi )
             return 0;
-        return playhead->rebuild_range(lo, hi, true);
+        show_wait_box("HIDECANCEL\nReconstructing memory from recorded writes...");
+        size_t got = playhead->rebuild_range(lo, hi, true);
+        hide_wait_box();
+        return got;
     }
 }

@@ -10,6 +10,7 @@
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
+#include "backend-msttd/msttd_host.h"
 #include "backend-msttd/msttd_guest.h"
 #include "common/symbols.h"
 
@@ -355,7 +356,7 @@ namespace idattd
         }
         if ( st.watched.empty() )
         {
-            msg("[ida-ttd] memory map: could not find ntdll's memory syscalls in this "
+            msttd_log("[ida-ttd] memory map: could not find ntdll's memory syscalls in this "
                 "recording (its export table was never read during recording).\n");
             return r;
         }
@@ -821,8 +822,16 @@ namespace idattd
             out->push_back(c);
         }
 
+        // In position order, as the ABI hands changes out: the calls were
+        // recorded as they returned, and a later out-param recovery or a
+        // second thread can leave them out of order.
+        std::stable_sort(out->begin() + (ptrdiff_t)before, out->end(),
+                         [](const ittd_mapping_change &a, const ittd_mapping_change &b)
+        {
+            return a.pos.hi != b.pos.hi ? a.pos.hi < b.pos.hi : a.pos.lo < b.pos.lo;
+        });
 
-        msg("[ida-ttd] memory map: %d change(s) from %d call(s); %d out-param(s) "
+        msttd_log("[ida-ttd] memory map: %d change(s) from %d call(s); %d out-param(s) "
             "needed a re-query, %d a replay, %d region(s) fell back to the "
             "caller's request, %d call(s) unresolved.\n",
             (int)(out->size() - before), (int)st.recs.size(),

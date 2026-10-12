@@ -8,9 +8,6 @@
     <Filter Include="analysis">
       <UniqueIdentifier>{936CFFF2-93FD-3099-474E-7E46AFFEDBFA}</UniqueIdentifier>
     </Filter>
-    <Filter Include="backend-msttd">
-      <UniqueIdentifier>{5359579A-ED70-4702-8161-04FA31B8B12E}</UniqueIdentifier>
-    </Filter>
     <Filter Include="common">
       <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
     </Filter>
@@ -49,9 +46,6 @@
     <ClInclude Include="$(SrcDir)\common\trace_link.h">
       <Filter>common</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_trace_open.h">
-      <Filter>backend-msttd</Filter>
-    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\callconv.h">
       <Filter>debugger</Filter>
     </ClInclude>
@@ -76,15 +70,6 @@
     <ClInclude Include="$(SrcDir)\core\guest_view.h">
       <Filter>core</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_pch.h">
-      <Filter>backend-msttd</Filter>
-    </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h">
-      <Filter>backend-msttd</Filter>
-    </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_navigator.h">
-      <Filter>backend-msttd</Filter>
-    </ClInclude>
     <ClInclude Include="$(SrcDir)\core\backend_module.h">
       <Filter>core</Filter>
     </ClInclude>
@@ -97,17 +82,11 @@
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h">
       <Filter>debugger</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_guest.h">
-      <Filter>backend-msttd</Filter>
-    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h">
       <Filter>debugger</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h">
       <Filter>debugger</Filter>
-    </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_position.h">
-      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h">
       <Filter>analysis</Filter>
@@ -126,9 +105,6 @@
     </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h">
       <Filter>analysis</Filter>
-    </ClInclude>
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h">
-      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\trace_store.h">
       <Filter>analysis</Filter>
@@ -186,9 +162,6 @@
     <ClCompile Include="$(SrcDir)\common\trace_link.cpp">
       <Filter>common</Filter>
     </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_trace_open.cpp">
-      <Filter>backend-msttd</Filter>
-    </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp">
       <Filter>debugger</Filter>
     </ClCompile>
@@ -197,9 +170,6 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\code_analyzer.cpp">
       <Filter>debugger</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp">
-      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp">
       <Filter>debugger</Filter>
@@ -218,12 +188,6 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\guest_view.cpp">
       <Filter>core</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp">
-      <Filter>backend-msttd</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_navigator.cpp">
-      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\backend_module.cpp">
       <Filter>core</Filter>
@@ -251,15 +215,6 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\query_runner.cpp">
       <Filter>analysis</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp">
-      <Filter>backend-msttd</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_queries.cpp">
-      <Filter>backend-msttd</Filter>
-    </ClCompile>
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp">
-      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\trace_store.cpp">
       <Filter>analysis</Filter>

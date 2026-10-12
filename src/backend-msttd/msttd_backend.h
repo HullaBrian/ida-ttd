@@ -85,7 +85,7 @@ namespace idattd
 
     private:
         TTD::Replay::UniqueReplayEngine m_engine;
-        IdaErrorReporting               m_err;
+        MsttdErrorReporting             m_err;
         // Sequential, unfiltered: query_frame_entry's call/return callback
         // mutates an unsynchronized map, and the engine's default parallel
         // replay would dispatch it from several threads at once.

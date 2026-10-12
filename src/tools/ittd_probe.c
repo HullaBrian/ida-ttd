@@ -172,6 +172,13 @@ int main(int argc, char **argv)
         printf("  %s  %s\n", pos_text(tl[i].pos), tl[i].text);
 
     /* ---- the export whose calls we list --------------------------------- */
+    /* Or an address: a backend that records no exports (Microsoft TTD) is
+       given the function to list calls to. */
+    if ( want[0] == '0' && (want[1] == 'x' || want[1] == 'X') )
+    {
+        target = strtoull(want + 2, NULL, 16);
+        printf("calls to the function at %llx\n", (unsigned long long)target);
+    }
     for ( i = 0; i < nmods && target == ITTD_BADADDR; i++ )
     {
         size_t ns = 0, k;
@@ -472,7 +479,7 @@ int main(int argc, char **argv)
     }
 
     /* ---- the memory map -------------------------------------------------------- */
-    if ( (info.capabilities & ITTD_CAP_MAPPING_CHANGES) != 0 && api->query_mapping_changes != NULL )
+    if ( api->query_mapping_changes != NULL )
     {
         ittd_mapping_change *mc;
         ittd_name *names = NULL;
@@ -513,7 +520,8 @@ int main(int argc, char **argv)
                at_start, n - at_start, nn, rwx);
         for ( k = 0; k < nn && k < 3; k++ )
             printf("  file %zu: %s\n", k + 1, names[k].name);
-        check(at_start > 0, "  the map at the start is there");
+        if ( info.capabilities & ITTD_CAP_MAPPING_CHANGES )   /* a recorded map, not a reconstruction */
+            check(at_start > 0, "  the map at the start is there");
         check(ordered, "  entries are in position order");
         check(files_ok, "  every file index names a file");
         free(mc);
@@ -536,6 +544,30 @@ int main(int argc, char **argv)
             printf("\nthe stack page above rsp at %s: %zu of 4096 bytes known, %.1f ms\n",
                    pos_text(mid), nk, now_ms() - t0);
         }
+
+        /* What IDA's analysis costs: it reads a module's code page by page,
+           and again after every stop. ntdll's first 64 KiB, twice. */
+        for ( i = 0; i < nmods; i++ )
+            if ( _stricmp(mods[i].name, "ntdll.dll") == 0 )
+            {
+                int pass;
+                for ( pass = 0; pass < 3; pass++ )
+                {
+                    /* the third pass from elsewhere in the recording, as after a stop */
+                    if ( pass == 2 )
+                        api->cursor_seek(c, info.first);
+                    size_t total = 0, pg;
+                    t0 = now_ms();
+                    for ( pg = 0; pg < 16; pg++ )
+                    {
+                        api->cursor_read_memory(c, mods[i].base + pg * 4096, page, known, sizeof(page), &nk);
+                        total += nk;
+                    }
+                    printf("ntdll's first 64 KiB, pass %d: %zu bytes known, %.1f ms (%.2f ms a page)\n",
+                           pass + 1, total, now_ms() - t0, (now_ms() - t0) / 16);
+                }
+                break;
+            }
     }
 
     /* ---- exceptions ---------------------------------------------------------- */

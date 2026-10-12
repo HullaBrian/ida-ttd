@@ -33,6 +33,7 @@
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
 #include "core/guest_view.h"
+#include "analysis/query_runner.h"
 
 using namespace idattd;
 
@@ -287,9 +288,9 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
         if ( r == ASKBTN_YES )
         {
             // loader_failure() longjmps, so nothing here may fail while a wait
-            // box is up or a worker thread is alive; prepare() returns with
-            // both gone.
-            haveIndex = backend->prepare(nullptr);
+            // box is up or a worker thread is alive; prepare_backend()
+            // returns with both gone.
+            haveIndex = prepare_backend(backend);
         }
     }
 

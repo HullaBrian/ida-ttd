@@ -50,7 +50,6 @@
     <ClInclude Include="$(SrcDir)\common\strings.h" />
     <ClInclude Include="$(SrcDir)\common\symsrv.h" />
     <ClInclude Include="$(SrcDir)\common\trace_link.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_trace_open.h" />
     <ClInclude Include="$(SrcDir)\debugger\callconv.h" />
     <ClInclude Include="$(SrcDir)\debugger\event_queue.h" />
     <ClInclude Include="$(SrcDir)\debugger\registers.h" />
@@ -59,24 +58,18 @@
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />
     <ClInclude Include="$(SrcDir)\core\guest_view.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_pch.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_navigator.h" />
     <ClInclude Include="$(SrcDir)\core\backend_module.h" />
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_guest.h" />
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h" />
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_position.h" />
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h" />
     <ClInclude Include="$(SrcDir)\analysis\callsites.h" />
     <ClInclude Include="$(SrcDir)\analysis\coverage.h" />
     <ClInclude Include="$(SrcDir)\analysis\memmap.h" />
     <ClInclude Include="$(SrcDir)\analysis\memsearch.h" />
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h" />
-    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h" />
     <ClInclude Include="$(SrcDir)\analysis\trace_store.h" />
     <ClInclude Include="$(SrcDir)\analysis\tracer.h" />
     <ClInclude Include="$(SrcDir)\ui\clipboard.h" />
@@ -98,19 +91,15 @@
     <ClCompile Include="$(SrcDir)\common\strings.cpp" />
     <ClCompile Include="$(SrcDir)\common\symsrv.cpp" />
     <ClCompile Include="$(SrcDir)\common\trace_link.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_trace_open.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\code_analyzer.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\module_registry.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\segment_layout.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\trace_manager.cpp" />
     <ClCompile Include="$(SrcDir)\core\guest_view.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_navigator.cpp" />
     <ClCompile Include="$(SrcDir)\core\backend_module.cpp" />
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp" />
     <ClCompile Include="$(SrcDir)\core\position.cpp" />
@@ -120,9 +109,6 @@
     <ClCompile Include="$(SrcDir)\analysis\memmap.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\memsearch.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\query_runner.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_queries.cpp" />
-    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\trace_store.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\tracer.cpp" />
     <ClCompile Include="$(SrcDir)\ui\clipboard.cpp" />
@@ -141,8 +127,5 @@
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="packages.config" />
-  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

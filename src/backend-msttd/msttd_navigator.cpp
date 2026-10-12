@@ -1,4 +1,5 @@
 #include "backend-msttd/msttd_navigator.h"
+#include "backend-msttd/msttd_host.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -60,7 +61,7 @@ namespace idattd
             else
             {
                 all = false;
-                msg("[ida-ttd] could not set a TTD watchpoint for the breakpoint at 0x%llX.\n",
+                msttd_log("[ida-ttd] could not set a TTD watchpoint for the breakpoint at 0x%llX.\n",
                     (uint64_t)bpts[i].addr);
             }
         }
@@ -123,7 +124,13 @@ namespace idattd
     StopReason MsTtdNavigator::run_to(ea_t addr, bool forward)
     {
         EventType sr = forward ? navigate_forward_to(addr) : navigate_backward_to(addr);
-        return settle(sr, forward);
+        StopReason r = settle(sr, forward);
+        // The target is a temporary watchpoint, so reaching it reads as a
+        // watchpoint stop; it is the movement completing, unless a user
+        // breakpoint somewhere else stopped it first.
+        if ( r == StopReason::Breakpoint && (ea_t)(uint64_t)cur()->GetProgramCounter() == addr )
+            return StopReason::Stepped;
+        return r;
     }
 
     StopReason MsTtdNavigator::seek_to(Position p)
@@ -156,7 +163,7 @@ namespace idattd
             const TtdPosition first = m_backend->engine()->GetFirstPosition();
             if ( first.IsValid() && after <= first && before.Sequence != first.Sequence )
             {
-                msg("[ida-ttd] backward step from %llX:%llX landed at the start of "
+                msttd_log("[ida-ttd] backward step from %llX:%llX landed at the start of "
                     "the trace (%llX:%llX) instead of stepping.\n",
                     (uint64_t)before.Sequence, (uint64_t)before.Steps,
                     (uint64_t)after.Sequence, (uint64_t)after.Steps);
@@ -258,27 +265,25 @@ namespace idattd
 
         // Both can run for a long time: stepping over a call that never
         // returns replays to the END of the trace, and step-out repeats that
-        // until the frame unwinds. Without a box IDA appears hung. IDA only
-        // materialises it after its grace threshold, so quick steps show
-        // nothing; keeping Cancel is the whole point.
-        show_wait_box("%s (Cancel to stop)...", step_out ? "Stepping out" : "Stepping over");
+        // until the frame unwinds. The core's progress sink is what keeps
+        // Cancel working between iterations.
         const int CAP = 100000;                 // backstop against a pathological frame
         int iters = 0;
         for ( ;; )
         {
-            if ( user_cancelled() )
+            if ( cancelled() )
                 break;
             if ( ++iters > CAP )
             {
-                msg("[ida-ttd] step out: giving up after %d iterations without unwinding the frame.\n", CAP);
+                msttd_log("[ida-ttd] step out: giving up after %d iterations without unwinding the frame.\n", CAP);
                 break;
             }
 
-            ea_t  pc = (ea_t)(uint64_t)cur()->GetProgramCounter();
-            insn_t insn;
-            int len = decode_insn(&insn, pc);
-            bool is_call = len > 0 && is_call_insn(insn);
-            bool is_ret  = len > 0 && !is_call && is_ret_insn(insn);
+            ea_t      pc = (ea_t)(uint64_t)cur()->GetProgramCounter();
+            X86Branch br = branch_here();
+            int  len     = br.len;
+            bool is_call = br.is_call;
+            bool is_ret  = br.is_ret;
 
             if ( is_call )
             {
@@ -312,7 +317,6 @@ namespace idattd
             if ( is_ret && (uint64_t)cur()->GetStackPointer() > start_sp )
                 break;
         }
-        hide_wait_box();
 
         // The recording ran out before the frame unwound: the end of the
         // recording is not an answer to "step out", so stay where we were.
@@ -434,21 +438,19 @@ namespace idattd
         // Anything below it is one of those deeper calls that never came back.
         const uint64_t here_sp = (uint64_t)cur()->GetStackPointer();
 
-        show_wait_box("Looking for the call that entered this frame (Cancel to stop)...");
         bool        found     = false;
         TtdPosition lastStart = TtdPosition::Invalid;
         TtdPosition winStart  = TtdPosition::Invalid;
         uint64_t    winInsns  = 0;
         for ( size_t i = 0; i < qnumber(kAttempts) && !found; i++ )
         {
-            if ( user_cancelled() )
+            if ( this->cancelled() )
             {
                 cancelled = true;
                 break;
             }
-            replace_wait_box("Looking for the call that entered this frame "
-                             "(Cancel to stop)...\nsearch %d of %d",
-                             (int)i + 1, (int)qnumber(kAttempts));
+            if ( m_progress != nullptr )
+                m_progress->report((uint32_t)(i * 100 / qnumber(kAttempts)));
 
             TtdPosition s = here;
             if ( kAttempts[i].by_steps )
@@ -495,12 +497,11 @@ namespace idattd
             if ( !(first < s) )
                 break;      // the window already reached the start of the trace
         }
-        hide_wait_box();
         if ( !found && !cancelled )
         {
             // A thread really in its outermost frame and a window that replayed
             // nothing look the same in the popup; say which.
-            msg("[ida-ttd] no entering call for thread %X searching back from "
+            msttd_log("[ida-ttd] no entering call for thread %X searching back from "
                 "%llX:%llX. Last window %llX:%llX replayed %llu instructions, "
                 "%llu call/ret events, %llu of them on this thread.\n",
                 tid, (uint64_t)here.Sequence, (uint64_t)here.Steps,
@@ -508,6 +509,23 @@ namespace idattd
                 winInsns, seen_all, seen_mine);
         }
         return found;
+    }
+
+    X86Branch MsTtdNavigator::branch_here()
+    {
+        uint8_t b[16] = { 0 };
+        ea_t pc = (ea_t)(uint64_t)cur()->GetProgramCounter();
+        MemoryBuffer mb = cur()->QueryMemoryBuffer(GuestAddress{ (uint64_t)pc }, BufferView{ b, sizeof(b) },
+                                                   QueryMemoryPolicy::GloballyAggressive);
+        // A 32-bit thread of a 64-bit process (WoW64) runs with CS 0x23.
+        bool is64 = m_backend->is64();
+        if ( is64 )
+        {
+            CROSS_PLATFORM_CONTEXT ctx = cur()->GetCrossPlatformContext();
+            if ( ctx.Amd64Context.SegCs == 0x23 )
+                is64 = false;
+        }
+        return x86_branch(b, (size_t)mb.Memory.Size, is64);
     }
 
     EventType MsTtdNavigator::rewind_to(const TtdPosition &p)
@@ -554,9 +572,7 @@ namespace idattd
           && (uint32_t)cur()->GetThreadInfo().UniqueId == utid
           && (uint64_t)cur()->GetStackPointer() < start_sp )
         {
-            insn_t insn;
-            deeper = decode_insn(&insn, (ea_t)(uint64_t)cur()->GetProgramCounter()) > 0
-                  && is_ret_insn(insn);
+            deeper = branch_here().is_ret;
         }
 
         if ( deeper )

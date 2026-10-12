@@ -3,6 +3,7 @@
 #include "core/backend_registry.h"
 #include "core/backend_module.h"
 #include "analysis/memsearch.h"
+#include "analysis/query_runner.h"
 #include "analysis/coverage.h"
 #include "analysis/callsites.h"
 #include "analysis/tracer.h"
@@ -289,8 +290,7 @@ namespace idattd
             fail("%s could not open %s: %s", b->id(), path.c_str(), err.c_str());
         // As a debugger session would: without it a Microsoft trace has no
         // memory index, and reads come back mostly empty.
-        if ( !b->prepared() )
-            b->prepare(nullptr);
+        prepare_backend(b);
         g_drv.backend = b;
         g_drv.path    = path;
         g_drv.cursor  = b->make_cursor();

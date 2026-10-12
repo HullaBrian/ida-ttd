@@ -9,16 +9,18 @@
     ExtraIncludeDirectories    e.g. $(IdaSdkDir)\ldr
     ExtraLinkDependencies      e.g. delayimp.lib
     ExtraDelayLoadDLLs         e.g. TTDReplay.dll
+    UseTTDReplaySdk            true for the Microsoft backend only
+    LinkIdaKernel              false for a backend DLL, which runs without IDA
 -->
 <Project>
   <!-- TTD Replay SDK: adds the SDK include dir and the x64 import-lib dir. -->
-  <Import Project="$(TTDReplaySdkProps)" Condition="Exists('$(TTDReplaySdkProps)')" />
+  <Import Project="$(TTDReplaySdkProps)" Condition="'$(UseTTDReplaySdk)' == 'true' And Exists('$(TTDReplaySdkProps)')" />
 
   <!-- The import above has to be conditional (MSBuild evaluates imports before
        any target could restore the package), so say plainly what is missing
        rather than letting the compile fail on <TTD/IReplayEngine.h>. -->
   <Target Name="RequireTTDReplaySdk" BeforeTargets="PrepareForBuild">
-    <Error Condition="!Exists('$(TTDReplaySdkProps)')"
+    <Error Condition="'$(UseTTDReplaySdk)' == 'true' And !Exists('$(TTDReplaySdkProps)')"
            Text="The TTD Replay SDK is not restored: $(TTDReplaySdkProps) does not exist. Run &quot;nuget install msbuild\packages.config -OutputDirectory packages&quot; from the repository root." />
   </Target>
 
@@ -54,7 +56,9 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableUAC>false</EnableUAC>
       <AdditionalLibraryDirectories>$(IdaSdkDir)\lib\x64_win_64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>ida.lib;TTDReplay.lib;$(ExtraLinkDependencies);%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(LinkIdaKernel)' != 'false'">ida.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(UseTTDReplaySdk)' == 'true'">TTDReplay.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(ExtraLinkDependencies);%(AdditionalDependencies)</AdditionalDependencies>
       <DelayLoadDLLs>$(ExtraDelayLoadDLLs);%(DelayLoadDLLs)</DelayLoadDLLs>
     </Link>
   </ItemDefinitionGroup>

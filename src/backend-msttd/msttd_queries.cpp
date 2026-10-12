@@ -25,6 +25,19 @@ namespace idattd
         return when.last == Position::end() ? TtdPosition::Max : from_core(when.last);
     }
 
+    // The position of the instruction after the one at 'p', on the same
+    // thread: between two sequence points the steps are one thread's, so it
+    // is one step on. Not when the instruction at 'p' is the last before a
+    // sequence point -- the next one is then in a later sequence -- which a
+    // call or a return rarely is; finding it exactly would cost a seek per
+    // call, and a query can return millions of them.
+    static Position next_on_thread(const TtdPosition &p)
+    {
+        TtdPosition n = p;
+        n.Steps = (StepCount)((uint64_t)p.Steps + 1);
+        return to_core(n);
+    }
+
     //=======================================================================
     // Accesses to a range
     //=======================================================================
@@ -398,7 +411,7 @@ namespace idattd
                 // the ABI's 'pos', where a call's arguments are read with the
                 // call-site layout of the stack.
                 rec.ev.pos       = to_core(t->GetPosition());
-                rec.ev.entry_pos = Position::none();
+                rec.ev.entry_pos = next_on_thread(t->GetPosition());
                 rec.ev.ret_pos   = Position::none();
                 rec.ev.tid       = tid;
                 rec.ev.site      = (ea_t)(uint64_t)t->GetProgramCounter();
@@ -425,7 +438,9 @@ namespace idattd
                     size_t idx = it->second.back();
                     if ( (uint64_t)instr == recs[idx].retAddr )
                     {
-                        recs[idx].ev.ret_pos = to_core(t->GetPosition());
+                        // The callback fires at the ret; ret_pos is just
+                        // after it, back at the return address.
+                        recs[idx].ev.ret_pos = next_on_thread(t->GetPosition());
                         it->second.pop_back();
                     }
                 }

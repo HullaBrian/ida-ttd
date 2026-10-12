@@ -1,0 +1,31 @@
+#pragma once
+
+#include "common/pch.h"
+#include "core/backend.h"
+
+namespace idattd
+{
+    // The C ABI for a backend written against ITraceBackend: the inverse of
+    // BackendModule. A backend DLL built from C++ exports
+    //
+    //   extern "C" __declspec(dllexport)
+    //   const ittd_backend_api *ida_ttd_backend(uint32_t abi_version)
+    //   {
+    //       return abi_version == ITTD_ABI_VERSION
+    //            ? export_backend(make_my_backend, my_set_log) : nullptr;
+    //   }
+    //
+    // and the core sees it through BackendModule like any other. Each
+    // ittd_backend handle is a fresh backend from 'factory', opened on one
+    // recording; identity questions are answered by one kept unopened.
+    //
+    // The ABI's count queries are asked twice -- once for the count, once to
+    // fill -- and a replay engine answers each by replaying the recording, so
+    // the answer is kept between the two calls rather than worked out again.
+    using BackendFactory = BackendPtr (*)();
+    using LogCallback    = void (*)(void *ud, const char *line);
+    using LogSetter      = void (*)(LogCallback log, void *ud);
+
+    // The table, built on the first call; later calls return the same one.
+    const ittd_backend_api *export_backend(BackendFactory factory, LogSetter set_log);
+}

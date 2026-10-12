@@ -1,6 +1,6 @@
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_navigator.h"
-#include "core/backend_registry.h"
+#include "backend-msttd/msttd_host.h"
 #include "backend-msttd/msttd_guest.h"
 #include "common/symbols.h"
 
@@ -32,10 +32,9 @@ namespace idattd
 
     bool MsTtdBackend::prepare(ProgressSink *progress)
     {
-        qnotused(progress);     // BuildIndex reports progress but takes no Cancel
         if ( !m_engine )
             return false;
-        m_indexed = build_trace_index(m_engine.get());
+        m_indexed = build_trace_index(m_engine.get(), progress);
         return m_indexed;
     }
 
@@ -45,6 +44,27 @@ namespace idattd
         // the status alone does not say; what this session built does.
         return m_engine && (m_indexed
                          || m_engine->GetIndexStatus() == TTD::Replay::IndexStatus::IndexFileLoaded);
+    }
+
+    // The replay runtime: wherever the process finds DLLs (next to ida.exe),
+    // or else next to this backend. Loaded by full path in the second case,
+    // with its own folder searched, so TTDReplayCPU.dll beside it is found too.
+    static bool load_ttd_runtime()
+    {
+        if ( GetModuleHandleW(L"TTDReplay.dll") != nullptr || LoadLibraryW(L"TTDReplay.dll") != nullptr )
+            return true;
+        HMODULE self = nullptr;
+        if ( !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 (LPCWSTR)(void *)&load_ttd_runtime, &self) )
+            return false;
+        wchar_t dir[MAX_PATH] = { 0 };
+        DWORD n = GetModuleFileNameW(self, dir, MAX_PATH);
+        if ( n == 0 || n >= MAX_PATH )
+            return false;
+        std::wstring p(dir, n);
+        p = p.substr(0, p.find_last_of(L"\\/") + 1) + L"TTDReplay.dll";
+        return LoadLibraryExW(p.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
     }
 
     bool MsTtdBackend::open(const char *path, qstring *errbuf)
@@ -59,6 +79,15 @@ namespace idattd
 
         if ( !can_open(path) )
             return fail("Not a valid TTD trace (bad magic): %s", path != nullptr ? path : "(null)");
+
+        // TTDReplay.dll is delay-loaded, so a missing one would surface as a
+        // fault in the first engine call. Load it here, where it can be
+        // explained.
+        if ( !load_ttd_runtime() )
+            return fail("TTDReplay.dll could not be loaded.\n\n"
+                        "Copy TTDReplay.dll and TTDReplayCPU.dll from a WinDbg installation "
+                        "(its amd64\\ttd folder) next to ida.exe, or next to this backend in "
+                        "plugins\\ida-ttd-backends.");
 
         auto made = MakeReplayEngine();
         m_engine = std::move(made.first);
@@ -116,7 +145,8 @@ namespace idattd
         m_caps = Capabilities{};
         m_caps.access_queries = true;      // by replay with watchpoints armed
         m_caps.call_queries   = true;      // by replay with the call/return callback
-        m_caps.mapping_changes = true;     // reconstructed from the memory syscalls
+        // Not mapping_changes: the map is reconstructed from the memory
+        // syscalls rather than read out of the recording (see the ABI).
         m_caps.cheap_seek     = true;
         m_caps.reverse_step   = true;
         m_caps.exceptions     = true;
@@ -528,7 +558,6 @@ namespace idattd
         return false;
     }
 
-    REGISTER_TTD_BACKEND(MsTtdBackend);
 
     //=======================================================================
     // The cursor
@@ -815,16 +844,14 @@ namespace idattd
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
         cur->SetPosition(TtdPosition::Min);
 
-        show_wait_box("HIDECANCEL\nReconstructing memory from recorded writes...");
         cur->ReplayForward(target);
-        hide_wait_box();
         cur->SetMemoryWatchpointCallback(nullptr, 0);
 
         size_t nknown = 0;
         for ( bool b : reg.known )
             if ( b )
                 nknown++;
-        msg("[ida-ttd] reconstructed 0x%llX-0x%llX: %u/%u byte(s) from %u write(s).\n",
+        msttd_log("[ida-ttd] reconstructed 0x%llX-0x%llX: %u/%u byte(s) from %u write(s).\n",
             (uint64_t)lo, (uint64_t)hi, (unsigned)nknown, (unsigned)reg.data.size(), (unsigned)hits);
         if ( nknown == 0 )
             return false;

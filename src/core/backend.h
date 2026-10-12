@@ -332,6 +332,12 @@ namespace idattd
         // shown ("this frame does not return anywhere"), or empty. Taking it
         // clears it.
         virtual qstring take_notice() { return qstring(); }
+
+        // Where a long movement reports and asks whether to stop: the core
+        // sets one around every movement and clears it after. Movements run
+        // on the main thread, so a sink's cancelled() may pump IDA's message
+        // loop. Null means no one is asking.
+        virtual void set_progress(ProgressSink *progress) { qnotused(progress); }
     };
 
     // ------------------------------------------------------------ the backend

@@ -24,8 +24,11 @@ namespace idattd
         };
     }
 
-    QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query)
+    QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
+                          bool cancellable)
     {
+        const char *hide = cancellable ? "" : "HIDECANCEL\n";
+        const char *ask  = cancellable ? " (Cancel to stop)" : "";
         AtomicSink sink;
         QueryResult result;
         std::atomic<bool> done{ false };
@@ -45,12 +48,12 @@ namespace idattd
             done.store(true, std::memory_order_release);
         });
 
-        show_wait_box("%s (Cancel to stop)...", what);
+        show_wait_box("%s%s%s...", hide, what, ask);
         uint32_t shown = 101;       // out of range, so the first poll repaints
         bool cancelled = false;
         while ( !done.load(std::memory_order_acquire) )
         {
-            if ( !cancelled && user_cancelled() )
+            if ( cancellable && !cancelled && user_cancelled() )
             {
                 cancelled = true;
                 sink.cancel();
@@ -61,7 +64,7 @@ namespace idattd
                 uint32_t now = sink.percent();
                 if ( now != shown )
                 {
-                    replace_wait_box("%s (Cancel to stop)... %u%%", what, now);
+                    replace_wait_box("%s%s%s... %u%%", hide, what, ask, now);
                     shown = now;
                 }
             }
@@ -72,5 +75,46 @@ namespace idattd
         if ( cancelled )
             result.cancelled = true;
         return result;
+    }
+
+    bool prepare_backend(ITraceBackend *backend)
+    {
+        if ( backend == nullptr )
+            return false;
+        if ( backend->prepared() )
+            return true;
+        bool ok = false;
+        run_query("Preparing the recording", [&](ProgressSink *p)
+        {
+            ok = backend->prepare(p);
+            QueryResult r;
+            r.ran = true;
+            return r;
+        }, false);
+        return ok;
+    }
+
+    WaitBoxSink::WaitBoxSink(const char *what) : m_what(what)
+    {
+        show_wait_box("%s (Cancel to stop)...", m_what.c_str());
+    }
+
+    WaitBoxSink::~WaitBoxSink()
+    {
+        hide_wait_box();
+    }
+
+    void WaitBoxSink::report(uint32_t percent)
+    {
+        if ( percent != m_shown )
+        {
+            replace_wait_box("%s (Cancel to stop)... %u%%", m_what.c_str(), percent);
+            m_shown = percent;
+        }
+    }
+
+    bool WaitBoxSink::cancelled()
+    {
+        return user_cancelled();
     }
 }
