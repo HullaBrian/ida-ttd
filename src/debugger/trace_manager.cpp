@@ -1,4 +1,5 @@
 #include "debugger/trace_manager.h"
+#include "common/strings.h"
 #include "analysis/trace_store.h"
 #include "core/backend_module.h"
 #include "core/backend_registry.h"

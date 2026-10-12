@@ -67,14 +67,17 @@
     <ClInclude Include="$(SrcDir)\core\backend_module.h" />
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
     <ClInclude Include="$(SrcDir)\core\guest_view.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_pch.h" />
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h" />
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_navigator.h" />
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h" />
-    <ClInclude Include="$(SrcDir)\debugger\msttd_guest.h" />
-    <ClInclude Include="$(SrcDir)\debugger\msttd_position.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_guest.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_position.h" />
     <ClInclude Include="$(SrcDir)\common\symbols.h" />
+    <ClInclude Include="$(SrcDir)\common\guest_pe.h" />
+    <ClInclude Include="$(SrcDir)\common\strings.h" />
     <ClInclude Include="$(SrcDir)\common\trace_link.h" />
-    <ClInclude Include="$(SrcDir)\common\trace_open.h" />
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_trace_open.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="$(SrcDir)\core\position.cpp" />
@@ -86,10 +89,12 @@
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_queries.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp" />
-    <ClCompile Include="$(SrcDir)\debugger\msttd_guest.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp" />
     <ClCompile Include="$(SrcDir)\common\symbols.cpp" />
+    <ClCompile Include="$(SrcDir)\common\guest_pe.cpp" />
+    <ClCompile Include="$(SrcDir)\common\strings.cpp" />
     <ClCompile Include="$(SrcDir)\common\trace_link.cpp" />
-    <ClCompile Include="$(SrcDir)\common\trace_open.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_trace_open.cpp" />
     <ClCompile Include="$(SrcDir)\loader\ldr_main.cpp" />
   </ItemGroup>
 

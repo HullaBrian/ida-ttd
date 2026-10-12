@@ -1,9 +1,9 @@
 #pragma once
 
-#include "common/pch.h"
-#include "common/trace_open.h"
+#include "backend-msttd/msttd_pch.h"
+#include "backend-msttd/msttd_trace_open.h"
 #include "core/backend.h"
-#include "debugger/msttd_position.h"
+#include "backend-msttd/msttd_position.h"
 
 namespace idattd
 {

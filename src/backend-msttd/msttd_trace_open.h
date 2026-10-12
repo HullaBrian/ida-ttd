@@ -1,6 +1,7 @@
 #pragma once
 
-#include "common/pch.h"
+#include "backend-msttd/msttd_pch.h"
+#include "common/strings.h"
 
 namespace idattd
 {
@@ -11,18 +12,6 @@ namespace idattd
     // create the engine, initialise it on the .run, and build the memory index if
     // the trace has none -- but it is a separate binary and cannot reach into
     // TraceManager. Everything both of them need lives here.
-
-    // String helpers
-    //
-    // The TTD engine speaks wide strings and IDA speaks UTF-8, so every module
-    // name and every trace path crosses this boundary.
-    std::string  to_utf8(const wchar_t *w, size_t len);
-    std::string  to_utf8(const wchar_t *w);
-    std::wstring to_wstring(const char *s);
-    // Everything after the last slash or backslash. Trace module names are full
-    // paths from the recording machine, so this is how a module is compared
-    // against a name the user or the database knows it by.
-    std::string  base_name(const std::string &path);
 
     // Error sink so the TTD engine can report diagnostics into IDA's output.
     class IdaErrorReporting : public TTD::ErrorReporting

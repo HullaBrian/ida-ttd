@@ -4,8 +4,6 @@
 #include "ui/scope.h"
 #include "analysis/coverage.h"
 
-using namespace TTD;
-
 namespace idattd
 {
     // Which addresses should the sweep watch? A narrower answer is not just

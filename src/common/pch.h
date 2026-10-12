@@ -1,8 +1,8 @@
 // pch.h: precompiled header for the ida-ttd plugin.
 //
 // Include ordering matters here: Windows first (with lean/nominmax so it does
-// not clobber the IDA SDK or the STL), then the IDA SDK, then the Microsoft TTD
-// Replay SDK. DBG_ASSERT must be defined before the TTD headers are pulled in.
+// not clobber the IDA SDK or the STL), then the IDA SDK. The Microsoft TTD
+// Replay SDK is the Microsoft backend's alone: backend-msttd/msttd_pch.h.
 #ifndef PCH_H
 #define PCH_H
 
@@ -49,19 +49,6 @@
 #include <ua.hpp>
 #include <auto.hpp>
 #include <registry.hpp>
-
-// ---------------------------------------------------------------------------
-// Microsoft TTD Replay SDK
-// ---------------------------------------------------------------------------
-#include <cassert>
-#ifndef DBG_ASSERT
-#define DBG_ASSERT(cond) assert(cond)
-#endif
-
-#include <TTD/IReplayEngine.h>
-#include <TTD/IReplayEngineStl.h>
-#include <TTD/IReplayEngineRegisters.h>
-#include <TTD/ErrorReporting.h>
 
 // ---------------------------------------------------------------------------
 // STL

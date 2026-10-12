@@ -4,8 +4,6 @@
 #include "ui/clipboard.h"
 #include "common/trace_link.h"
 
-using namespace TTD;
-
 namespace idattd
 {
     //=======================================================================

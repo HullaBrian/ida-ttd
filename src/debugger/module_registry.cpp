@@ -1,5 +1,5 @@
 #include "debugger/module_registry.h"
-#include "common/trace_open.h"
+#include "common/strings.h"
 #include "common/symsrv.h"
 
 namespace idattd

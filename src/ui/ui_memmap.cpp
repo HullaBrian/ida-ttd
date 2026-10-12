@@ -2,8 +2,6 @@
 #include "ui/ui.h"
 #include "ui/names.h"
 
-using namespace TTD;
-
 namespace idattd
 {
     //=======================================================================

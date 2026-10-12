@@ -1,7 +1,7 @@
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_navigator.h"
 #include "core/backend_registry.h"
-#include "debugger/msttd_guest.h"
+#include "backend-msttd/msttd_guest.h"
 #include "common/symbols.h"
 
 using namespace TTD;

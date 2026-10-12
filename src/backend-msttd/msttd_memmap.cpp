@@ -10,7 +10,7 @@
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
-#include "debugger/msttd_guest.h"
+#include "backend-msttd/msttd_guest.h"
 #include "common/symbols.h"
 
 using namespace TTD;

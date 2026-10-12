@@ -37,14 +37,20 @@
     <ClInclude Include="$(SrcDir)\common\symbols.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\guest_pe.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\strings.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\symsrv.h">
       <Filter>common</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\common\trace_link.h">
       <Filter>common</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\common\trace_open.h">
-      <Filter>common</Filter>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_trace_open.h">
+      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\callconv.h">
       <Filter>debugger</Filter>
@@ -70,6 +76,9 @@
     <ClInclude Include="$(SrcDir)\core\guest_view.h">
       <Filter>core</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_pch.h">
+      <Filter>backend-msttd</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_backend.h">
       <Filter>backend-msttd</Filter>
     </ClInclude>
@@ -88,8 +97,8 @@
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h">
       <Filter>debugger</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\debugger\msttd_guest.h">
-      <Filter>debugger</Filter>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_guest.h">
+      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h">
       <Filter>debugger</Filter>
@@ -97,8 +106,8 @@
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h">
       <Filter>debugger</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\debugger\msttd_position.h">
-      <Filter>debugger</Filter>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_position.h">
+      <Filter>backend-msttd</Filter>
     </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h">
       <Filter>analysis</Filter>
@@ -165,14 +174,20 @@
     <ClCompile Include="$(SrcDir)\common\symbols.cpp">
       <Filter>common</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\guest_pe.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\strings.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\common\symsrv.cpp">
       <Filter>common</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\common\trace_link.cpp">
       <Filter>common</Filter>
     </ClCompile>
-    <ClCompile Include="$(SrcDir)\common\trace_open.cpp">
-      <Filter>common</Filter>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_trace_open.cpp">
+      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp">
       <Filter>debugger</Filter>
@@ -183,8 +198,8 @@
     <ClCompile Include="$(SrcDir)\debugger\code_analyzer.cpp">
       <Filter>debugger</Filter>
     </ClCompile>
-    <ClCompile Include="$(SrcDir)\debugger\msttd_guest.cpp">
-      <Filter>debugger</Filter>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp">
+      <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp">
       <Filter>debugger</Filter>

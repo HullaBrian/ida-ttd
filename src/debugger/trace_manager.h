@@ -8,7 +8,7 @@
 #include "debugger/memory_reader.h"
 #include "debugger/code_analyzer.h"
 #include "debugger/segment_layout.h"
-#include "common/trace_open.h"
+#include "common/strings.h"
 
 namespace idattd
 {

@@ -2,8 +2,6 @@
 #include "ui/ui.h"
 #include "ui/names.h"
 
-using namespace TTD;
-
 namespace idattd
 {
     static const int   g_bm_widths[] = { 16, 18, 8, 28, 40 };

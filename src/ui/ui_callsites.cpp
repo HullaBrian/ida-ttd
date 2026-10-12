@@ -4,8 +4,6 @@
 #include "ui/scope.h"
 #include "analysis/callsites.h"
 
-using namespace TTD;
-
 namespace idattd
 {
     int idaapi IndirectCallsHandler::activate(action_activation_ctx_t *ctx)
