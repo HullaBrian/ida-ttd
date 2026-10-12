@@ -366,6 +366,73 @@ int main(int argc, char **argv)
         free(tg);
     }
 
+    /* ---- the memory map -------------------------------------------------------- */
+    if ( (info.capabilities & ITTD_CAP_MAPPING_CHANGES) != 0 && api->query_mapping_changes != NULL )
+    {
+        ittd_mapping_change *mc;
+        ittd_name *names = NULL;
+        size_t n = 0, nn = 0, k, at_start = 0, rwx = 0;
+        int ordered = 1, files_ok = 1;
+        int trunc = 0;
+        printf("\nmemory map\n");
+        t0 = now_ms();
+        api->query_mapping_changes(B, NULL, 0, &n, &trunc, NULL);
+        mc = (ittd_mapping_change *)calloc(n ? n : 1, sizeof(ittd_mapping_change));
+        api->query_mapping_changes(B, mc, n, &n, &trunc, NULL);
+        printf("  %zu entr%s, %.1f ms\n", n, n == 1 ? "y" : "ies", now_ms() - t0);
+        if ( api->query_mapping_files != NULL )
+        {
+            api->query_mapping_files(B, NULL, 0, &nn);
+            names = (ittd_name *)calloc(nn ? nn : 1, sizeof(ittd_name));
+            api->query_mapping_files(B, names, nn, &nn);
+        }
+        for ( k = 0; k < n; k++ )
+        {
+            if ( mc[k].flags & ITTD_MAP_F_AT_START )
+                at_start++;
+            if ( k > 0 && (mc[k].pos.hi < mc[k - 1].pos.hi
+                        || (mc[k].pos.hi == mc[k - 1].pos.hi && mc[k].pos.lo < mc[k - 1].pos.lo)) )
+                ordered = 0;
+            if ( mc[k].file > nn )
+                files_ok = 0;
+            /* MEM_COMMIT, PAGE_EXECUTE_READWRITE, not an image */
+            if ( mc[k].state == 0x1000 && (mc[k].protect & 0xFF) == 0x40 && mc[k].region_type != ITTD_REGION_IMAGE )
+            {
+                if ( rwx++ < 5 )
+                    printf("  RWX %016llx +%llx at %s (asked for at %s), type %u\n",
+                           (unsigned long long)mc[k].base, (unsigned long long)mc[k].size,
+                           pos_text(mc[k].pos), pos_text(mc[k].call_pos), mc[k].region_type);
+            }
+        }
+        printf("  %zu at the start, %zu changes, %zu file name(s), %zu RWX committed\n",
+               at_start, n - at_start, nn, rwx);
+        for ( k = 0; k < nn && k < 3; k++ )
+            printf("  file %zu: %s\n", k + 1, names[k].name);
+        check(at_start > 0, "  the map at the start is there");
+        check(ordered, "  entries are in position order");
+        check(files_ok, "  every file index names a file");
+        free(mc);
+        free(names);
+    }
+
+    /* ---- bytes no access shows (filled from checkpoints) ----------------------- */
+    {
+        ittd_position mid = info.first;
+        ittd_regs r;
+        uint8_t page[4096], known[4096];
+        size_t nk = 0;
+        mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+        api->cursor_seek(c, mid);
+        if ( api->cursor_regs(c, &r) == ITTD_OK )
+        {
+            uint64_t sp_page = (r.gp[ITTD_REG_RSP] & ~0xFFFull) + 0x1000;
+            t0 = now_ms();
+            api->cursor_read_memory(c, sp_page, page, known, sizeof(page), &nk);
+            printf("\nthe stack page above rsp at %s: %zu of 4096 bytes known, %.1f ms\n",
+                   pos_text(mid), nk, now_ms() - t0);
+        }
+    }
+
     /* ---- exceptions ---------------------------------------------------------- */
     if ( api->query_exceptions != NULL )
     {

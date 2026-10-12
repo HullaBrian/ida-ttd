@@ -332,19 +332,22 @@ typedef struct ittd_range
  * first, at the first position, and are always ITTD_MAP_STATE. */
 #define ITTD_MAP_F_AT_START       0x8u
 
-/* ittd_mapping_change.state: as MEMORY_BASIC_INFORMATION.State. */
-#define ITTD_MEM_UNKNOWN   0u
-#define ITTD_MEM_FREE      1u
-#define ITTD_MEM_RESERVED  2u
-#define ITTD_MEM_COMMITTED 3u
-
-/* ittd_mapping_change.region_type */
-#define ITTD_REGION_UNKNOWN  0u
+/* ittd_mapping_change.state, .mem_type, .protect and .alloc_protect carry
+ * Windows' own values, as MEMORY_BASIC_INFORMATION has them: MEM_COMMIT,
+ * MEM_RESERVE or MEM_FREE; MEM_PRIVATE, MEM_MAPPED or MEM_IMAGE; PAGE_*
+ * with PAGE_GUARD and the other modifiers kept. Both engines speak them
+ * natively and so does the core's memory map, so a vocabulary of the ABI's
+ * own would only be translated into and out of again. Zero is "unknown".
+ *
+ * region_type is finer than mem_type: it tells a file view from a view of a
+ * pagefile-backed section, and names memory Windows has no type for. */
+#define ITTD_REGION_UNKNOWN  0u   /* or free */
 #define ITTD_REGION_PRIVATE  1u
 #define ITTD_REGION_IMAGE    2u
 #define ITTD_REGION_MAPPED   3u   /* a view of a file */
 #define ITTD_REGION_SECTION  4u   /* a view of a pagefile-backed section */
-#define ITTD_REGION_MMIO     5u
+#define ITTD_REGION_MMIO     5u   /* device or host-aliased memory */
+#define ITTD_REGION_HOST     6u   /* reserved by the recording host, not the program */
 
 #define ITTD_CHAIN_MAX 8
 
@@ -365,14 +368,19 @@ typedef struct ittd_mapping_change
     uint32_t      flags;            /* ITTD_MAP_F_* */
     uint32_t      tid;
     uint32_t      reserved;
-    /* What the range looks like afterwards, as VirtualQuery would say. Zero
-     * where the backend cannot tell; required for ITTD_MAP_STATE. */
-    uint64_t      alloc_base;       /* AllocationBase; 0 if unknown */
-    uint32_t      state;            /* ITTD_MEM_* */
+    /* What the range looks like afterwards, as VirtualQuery would say (see
+     * above for the values). Zero where the backend cannot tell; required for
+     * ITTD_MAP_STATE, where 'protect' is the protection of committed memory
+     * and 0 otherwise. */
+    uint64_t      alloc_base;       /* AllocationBase; 0 for free memory or unknown */
+    uint32_t      state;            /* MEM_COMMIT / MEM_RESERVE / MEM_FREE */
+    uint32_t      mem_type;         /* MEM_PRIVATE / MEM_MAPPED / MEM_IMAGE */
+    uint32_t      alloc_protect;    /* AllocationProtect */
     uint32_t      region_type;      /* ITTD_REGION_* */
-    /* The mapped file of a view, as an index into query_mapping_files' list
-     * plus one; 0 for none. An index rather than a name inline, because the
-     * same file is mapped and unmapped many times and a path is 520 bytes. */
+    /* The mapped file of a file view, as an index into query_mapping_files'
+     * list plus one; 0 for none. An index rather than a name inline, because
+     * the same file is mapped and unmapped many times and a path is 520 bytes.
+     * Images carry none: the module list names them. */
     uint32_t      file;
     uint32_t      reserved2;
 } ittd_mapping_change;

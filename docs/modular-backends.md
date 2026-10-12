@@ -469,53 +469,38 @@ silent — a register view one instruction off — so it is worth a test.
 | `format_position` | the instruction counter in decimal |
 | progress sink | `ttd::operation_control{ interrupted = sink->cancelled, progress = report(done * 1000 / total) }`; catch `operation_cancelled` → `ITTD_E_CANCELLED`. Both callbacks run on the calling thread, which the sink allows. |
 
-### What is still missing
+### What Sogen added in round 2
 
-All four are agreed in
-[sogen-ttd-requests-2-response.md](sogen-ttd-requests-2-response.md) and none is
-implemented yet. Their order: the small fixes, then the thread section, then
-the region section, then the checkpoint memory.
+All of [sogen-ttd-requests-2.md](sogen-ttd-requests-2.md) landed on `ttd/next`,
+up to `f2461773`, as optional v8 sections; see the status table in
+[sogen-ttd-requests-2-response.md](sogen-ttd-requests-2-response.md). The
+backend uses all of it, and the probe checks it on a trace recorded with them.
 
-- **The memory map.** Today `mapping_changes()` only says *that* a range
-  changed. Sogen will record the region bookkeeping (`reserved_regions_`, what
-  VirtualQuery shows) in a new optional section, with two parts:
-  - the map at the start of the recording;
-  - a log of each change's outcome: state, NT protection including guard,
-    allocation base, region type, and the file name of a view;
-  - on top of that, a `memory_regions_at(step)` reader call.
+- **The memory map (section 17).** `memory_regions()` is the map at the start
+  plus every change, each entry being what NtQueryVirtualMemory showed for its
+  range from its position on, free memory included. That is `ITTD_MAP_STATE`.
+  - **Where the shape differs from what the ABI first had**, Sogen's is
+    better, and the ABI now follows it: `state`, `mem_type`, `protect` and
+    `alloc_protect` are Windows' own `MEM_*` and `PAGE_*` values rather than
+    an enum of the ABI's, and Sogen's finer kind becomes `region_type`.
+  - **The initial map** is the entries at the start position with event
+    number 0, which the backend flags `ITTD_MAP_F_AT_START`.
+  - **File names** come only with file views; images are named by the module
+    list.
+  - **Attribution:** `call_pos` is the syscall at the change's step, from
+    `syscalls()`; `api` and the call chain are left empty.
 
-  They chose this over the backend-level map calls we proposed, because those
-  carry *effective* permissions: a guard page reads as no access, and with DEP
-  off every page reads as executable.
-
-  The ABI already takes this shape: `ITTD_MAP_STATE` entries,
-  `ITTD_MAP_F_AT_START` for the initial map, `alloc_base`, `state`,
-  `region_type`, and `file` with `query_mapping_files`. What waits for the
-  backend is the core: `RegionChange`/`Region` in `analysis/memmap.h` need the
-  same fields, and `MemoryMap::state_at` needs a fold for `ITTD_MAP_STATE`,
-  which is an overwrite of the range. The listing's attribution is the
-  backend's job:
-  - `call_pos` and `api` come from the `syscalls()` entry at that step;
-  - `chain_n` stays 0 unless the backend walks the stack.
-
-  Until the section lands, `ITTD_CAP_MAPPING_CHANGES` stays off.
-- **Holes in memory reads (#28).** Sogen will parse only the memory part of a
-  checkpoint in the reader, using a new per-checkpoint offset section, and fill
-  `memory_at`'s holes from it. No change on our side: the bytes simply come
-  back known. Three things to expect:
-  - Older traces keep their holes.
-  - The first hole read in a new checkpoint interval decodes that checkpoint's
-    whole state, so a `cursor_read_memory` can be slow once per interval. That
-    argues for reading the stack and memory views off the UI thread, which is
-    true for Microsoft too.
-  - Host-aliased (GPU bridge) memory is exact only at checkpoints.
-- **Thread stack bounds (#34).** Sogen will add a per-thread section: TEB,
-  32-bit TEB, stack base and limit, first and last step. Stacks are fully
-  committed at creation in Sogen and never grow, so the bounds only change on
-  fiber switches; the current ones are then `memory_at(teb + 8 / teb + 0x10)`.
-  The ABI's `ittd_thread` has the fields. The core does not use them yet; the
-  stack view is where they would go.
-- **Batch registers (#33).** Unchanged: sorted `cpu_view` behind `regs_at`.
+  The backend reports `ITTD_CAP_MAPPING_CHANGES` only for traces that have the
+  section. What remains is the core's side: `RegionChange` and `Region` in
+  `analysis/memmap.h` need the new fields, and `MemoryMap::state_at` a fold
+  for `ITTD_MAP_STATE`, which overwrites the range.
+- **Holes in memory reads (#28, section 18).** `memory_at` fills them from the
+  checkpoint memory itself, with no change to the ABI. The first hole in a
+  checkpoint interval costs about 0.1 s to decode the checkpoint. Older traces,
+  MMIO and host-aliased memory keep their holes.
+- **Thread stacks (#34, section 16).** In `ittd_thread`.
+- **Batch registers (#33)** are still open; `regs_at` sorts and runs a
+  `cpu_view` per position meanwhile.
 
 ### Order of work
 
@@ -524,7 +509,7 @@ the region section, then the checkpoint memory.
 disassembly, registers and memory. `query_accesses` then lights up memory
 search and coverage at once, because both go through it. `query_calls`,
 `query_indirect` and `query_exceptions` are now direct calls and can come
-straight after. The memory map waits for Sogen's region section.
+straight after, and so can the memory map once the core folds `ITTD_MAP_STATE`.
 
 ## 7. Phases
 

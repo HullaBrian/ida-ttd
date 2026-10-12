@@ -341,8 +341,11 @@ namespace
                               | ITTD_CAP_REVERSE_STEP | ITTD_CAP_EXCEPTIONS;
             if ( t.has_syscalls() )
                 out->capabilities |= ITTD_CAP_SYSCALLS;
-            // Not ITTD_CAP_MAPPING_CHANGES: the trace says that a range was
-            // mapped or unmapped, not how, and records no protections yet.
+            // The memory map with protections, for traces recorded since
+            // Sogen kept it (section 17). Older ones only say that a range was
+            // mapped or unmapped, which is not enough to draw a map from.
+            if ( t.has_memory_regions() )
+                out->capabilities |= ITTD_CAP_MAPPING_CHANGES;
             out->fingerprint = fold_id(t.id());
             out->first = at(first_position(t));
             out->last  = at(last_position(t));
@@ -1074,6 +1077,96 @@ namespace
         });
     }
 
+    // Sogen's finer region kind, as the ABI's region_type.
+    uint32_t region_type_of(uint32_t kind)
+    {
+        switch ( kind )
+        {
+            case 1: return ITTD_REGION_PRIVATE;
+            case 2: return ITTD_REGION_MAPPED;
+            case 3: return ITTD_REGION_SECTION;
+            case 4: return ITTD_REGION_IMAGE;
+            case 5: return ITTD_REGION_MMIO;
+            case 6: return ITTD_REGION_HOST;
+            default: return ITTD_REGION_UNKNOWN;
+        }
+    }
+
+    // The memory map at the start and every change to it, from the trace's
+    // memory regions section (format section 17). Each entry is what
+    // NtQueryVirtualMemory showed for its range from its position on, which is
+    // ITTD_MAP_STATE: the core folds it by overwriting the range. The values
+    // are already Windows' own.
+    int query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
+                              size_t *out_count, int *out_truncated, const ittd_progress *)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            const ttd::trace &t = *b->trace;
+            if ( !t.has_memory_regions() )
+            {
+                b->error = "this trace was recorded before Sogen recorded the memory map";
+                return ITTD_E_UNSUPPORTED;
+            }
+            const std::vector<ttd::memory_region> &v = t.memory_regions().regions;
+            std::span<const ttd::syscall_entry> sys = t.syscalls();
+            const uint64_t start = first_position(t);
+            set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+            return fill(v, buf, cap, out_count, [&](const ttd::memory_region &r)
+            {
+                ittd_mapping_change m{};
+                m.pos           = at(r.step);
+                m.call_pos      = NONE;
+                m.api           = ITTD_BADADDR;
+                m.base          = r.address;
+                m.size          = r.size;
+                m.kind          = ITTD_MAP_STATE;
+                m.flags         = ITTD_MAP_F_EXACT;
+                m.protect       = r.protection;
+                m.alloc_base    = r.allocation_base;
+                m.state         = r.state;
+                m.mem_type      = r.type;
+                m.alloc_protect = r.allocation_protection;
+                m.region_type   = region_type_of(r.kind);
+                m.file          = r.name == UINT32_MAX ? 0 : r.name + 1;
+                if ( r.step == start && r.event_number == 0 )
+                {
+                    m.flags |= ITTD_MAP_F_AT_START;
+                    return m;
+                }
+                m.tid = t.thread_at(r.step).value_or(0);
+                // The syscall that made the change, when one did: the listing
+                // travels to where the memory was asked for.
+                auto it = std::lower_bound(sys.begin(), sys.end(), r.step,
+                                           [](const ttd::syscall_entry &e, uint64_t s) { return e.step < s; });
+                if ( it != sys.end() && it->step == r.step )
+                    m.call_pos = before_step(it->step);
+                return m;
+            });
+        });
+    }
+
+    int query_mapping_files(ittd_backend *hb, ittd_name *buf, size_t cap, size_t *out_count)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            return fill(b->trace->memory_regions().names, buf, cap, out_count, [](const std::string &n)
+            {
+                ittd_name out{};
+                copy_str(out.name, sizeof(out.name), n);
+                return out;
+            });
+        });
+    }
+
     int regs_at(ittd_backend *hb, const ittd_position *positions, size_t count,
                 ittd_regs *out, const ittd_progress *progress)
     {
@@ -1187,12 +1280,12 @@ namespace
         a.query_executed     = query_executed;
         a.query_calls        = query_calls;
         a.query_indirect     = query_indirect;
-        a.query_mapping_changes = nullptr;  // see info(): no protections yet
+        a.query_mapping_changes = query_mapping_changes;
         a.module_symbols     = module_symbols;
         a.module_functions   = nullptr;     // the core reads .pdata from the file
         a.query_exceptions   = query_exceptions;
         a.regs_at            = regs_at;
-        a.query_mapping_files = nullptr;
+        a.query_mapping_files = query_mapping_files;
         return a;
     }();
 }

@@ -74,7 +74,7 @@ ABI header honest about being C.
 
 ## Results
 
-Run on 2026-10-12 against Sogen `ttd/next` at `86954f33`, Release.
+Run on 2026-10-12 against Sogen `ttd/next` at `f2461773`, Release.
 
 **`view.sogttd`** (test-sample, 31.4M positions, recorded 2026-10-09):
 
@@ -90,6 +90,20 @@ Run on 2026-10-12 against Sogen `ttd/next` at `86954f33`, Release.
 | step over a call (forward) | 0.2 ms, lands on the paired return |
 | position checks | all pass |
 
+**`regions.sogttd`** (test-sample, 33.7M positions, recorded 2026-10-12 with
+the thread stacks and memory map sections): all checks pass.
+
+| Check | Result |
+| --- | --- |
+| memory map | 1,621 entries (33 at the start), 0.1 ms; 3 mapped files; 1 RWX private allocation, attributed to its syscall |
+| `calls_to(ntdll!RtlAllocateHeap)` | 4,100 calls, 3,462 with a return, 2.3 s |
+| `regs_at`, 200 entry positions | 2.5 ms each |
+| indirect branches in test-sample.exe | 766 edges, 0.5 s |
+| the stack page above RSP mid-trace | 4,096 of 4,096 bytes known |
+
+A smaller recording of `ttd-step-sample` (`cli.sogttd`, 5.9M positions)
+passes as well: 436 map entries, 2 RWX allocations.
+
 **`bench.sogttd`** (recorded 2026-10-08, before register snapshots): queries
 work, but every register read fails, because `cpu_view` needs snapshots. A trace
 that old can be searched but not debugged. The backend reports the reason
@@ -101,7 +115,6 @@ registers.
 | | Why |
 | --- | --- |
 | `nav_step_over` backward, `nav_step_out` | Both need the entry of the current frame, which no single reader query gives. Forward step over is done: it pairs the call with its `ret` through `calls_to` (0.2 ms, exact under recursion) |
-| `query_mapping_changes` | Sogen's region section is in progress (requests-2 §1) |
 | `module_functions` | Sogen records no `.pdata`; the core reads it from the file on disk |
 | Thread stacks and the module machine | Read when the trace has them (sections 15 and 16); the test traces predate both |
 | `prepare` | Nothing to prepare: a seek is a `cpu_view`, with no keyframes |
