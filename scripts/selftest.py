@@ -164,20 +164,20 @@ def run_sogen(registry=None, host=False, fork_path=None):
         chk("fork here takes IDA's register and memory writes",
             ok_reg and ok_mem and len(d.get("regs", [])) == 1 and len(d.get("memory", [])) == 1, d)
         chk("... and shows them there",
-            ida_dbg.get_reg_val("RAX") == 0x1234 and ida_dbg.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8))
+            ida_dbg.get_reg_val("RAX") == 0x1234 and idc.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8))
         T("step")
-        moved = ida_dbg.read_dbg_memory(G, 8)
+        moved = idc.read_dbg_memory(G, 8)
         chk("elsewhere the recording is read-only",
             moved == bytes.fromhex("22" * 8) and ida_dbg.write_dbg_memory(G, bytes.fromhex("44")) != 1, moved)
         T("step back")
-        chk("back at the fork the changes show again", ida_dbg.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8))
+        chk("back at the fork the changes show again", idc.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8))
         path2 = path.replace(".sogttd", "-draft.sogttd")
         f = T('an.forkrecord "%s" 4E20%s' % (path2, extra))
         chk("the fork records with its changes",
             f.get("ok") and f.get("regs") == 1 and f.get("writes") == 1 and os.path.exists(path2),
             (f.get("instructions"), f.get("error")))
         T("an.forkdiscard")
-        chk("discarding it shows the recording again", ida_dbg.read_dbg_memory(G, 8) == bytes.fromhex("11" * 8))
+        chk("discarding it shows the recording again", idc.read_dbg_memory(G, 8) == bytes.fromhex("11" * 8))
     else:
         res.append("skip strings and fork: no registry folder given")
 
