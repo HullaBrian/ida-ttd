@@ -431,17 +431,24 @@ namespace idattd
             else
             {
                 // RET: instr == the address being returned to. Pair it with the
-                // most recent in-flight call on this thread expecting it.
+                // most recent in-flight call on this thread expecting it. The
+                // calls above that one left without returning (an exception,
+                // a longjmp, a tail jump out): with every call listed, leaving
+                // them on top would keep every outer call from pairing.
                 auto it = inflight.find(tid);
-                if ( it != inflight.end() && !it->second.empty() )
+                if ( it != inflight.end() )
                 {
-                    size_t idx = it->second.back();
-                    if ( (uint64_t)instr == recs[idx].retAddr )
+                    std::vector<size_t> &stack = it->second;
+                    for ( size_t k = stack.size(); k-- > 0; )
                     {
+                        size_t idx = stack[k];
+                        if ( (uint64_t)instr != recs[idx].retAddr )
+                            continue;
                         // The callback fires at the ret; ret_pos is just
                         // after it, back at the return address.
                         recs[idx].ev.ret_pos = next_on_thread(t->GetPosition());
-                        it->second.pop_back();
+                        stack.resize(k);
+                        break;
                     }
                 }
             }

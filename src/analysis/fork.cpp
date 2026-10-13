@@ -20,19 +20,27 @@ namespace idattd
         return c == ' ' || c == '\t' || c == ',' || c == ';' || c == '\r' || c == '\n';
     }
 
+    // Hex, as IDA shows addresses and registers ("140001000", "0x10"); "0n"
+    // or "#" in front for decimal. Never base 0: "140001000" read as decimal,
+    // or "0000000000401000" as octal, would change the wrong thing.
     static bool parse_u64(const qstring &s, uint64_t *out)
     {
         if ( s.empty() )
             return false;
+        const char *p = s.c_str();
+        int base = 16;
+        if ( p[0] == '0' && (p[1] == 'x' || p[1] == 'X') )
+            p += 2;
+        else if ( p[0] == '0' && (p[1] == 'n' || p[1] == 'N') )
+            p += 2, base = 10;
+        else if ( p[0] == '#' )
+            p += 1, base = 10;
+        if ( *p == '\0' )
+            return false;
         char *end = nullptr;
-        unsigned long long v = strtoull(s.c_str(), &end, 0);
+        unsigned long long v = strtoull(p, &end, base);
         if ( end == nullptr || *end != '\0' )
-        {
-            // Plain hex without 0x, as IDA shows registers ("7FF6A0001000").
-            v = strtoull(s.c_str(), &end, 16);
-            if ( end == nullptr || *end != '\0' )
-                return false;
-        }
+            return false;
         *out = v;
         return true;
     }

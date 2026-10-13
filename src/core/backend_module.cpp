@@ -392,8 +392,12 @@ namespace idattd
         m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;
         m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0
                                && ITTD_HAS(m_api, query_self_modifying);
-        m_caps.fork             = (c & ITTD_CAP_FORK) != 0 && ITTD_HAS(m_api, fork_close);
-        m_caps.replay_scans     = (c & ITTD_CAP_REPLAY_SCANS) != 0 && ITTD_HAS(m_api, query_buffers);
+        m_caps.fork             = (c & ITTD_CAP_FORK) != 0
+                               && ITTD_HAS(m_api, fork_open) && ITTD_HAS(m_api, fork_regs)
+                               && ITTD_HAS(m_api, fork_set_regs) && ITTD_HAS(m_api, fork_write_memory)
+                               && ITTD_HAS(m_api, fork_record) && ITTD_HAS(m_api, fork_close);
+        m_caps.replay_scans     = (c & ITTD_CAP_REPLAY_SCANS) != 0
+                               && ITTD_HAS(m_api, query_strings) && ITTD_HAS(m_api, query_buffers);
         m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
         return true;
     }

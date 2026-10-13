@@ -174,10 +174,11 @@ namespace idattd
                 warning("The replay failed: %s", err.empty() ? "no reason given" : err.c_str());
             return 1;
         }
-        msg("[ida-ttd] %d string(s) recovered.\n", (int)hits.size());
+        msg("[ida-ttd] %d string(s) recovered%s.\n", (int)hits.size(), cancelled ? " (cancelled)" : "");
         if ( hits.empty() )
         {
-            info("No strings of that length were found.");
+            if ( !cancelled )
+                info("No strings of that length were found.");
             return 1;
         }
         StringsChooser *ch = new StringsChooser(mgr(), std::move(hits));
@@ -229,10 +230,11 @@ namespace idattd
                 warning("The replay failed: %s", err.empty() ? "no reason given" : err.c_str());
             return 1;
         }
-        msg("[ida-ttd] %d buffer(s) recovered.\n", (int)hits.size());
+        msg("[ida-ttd] %d buffer(s) recovered%s.\n", (int)hits.size(), cancelled ? " (cancelled)" : "");
         if ( hits.empty() )
         {
-            info("No buffers were found.");
+            if ( !cancelled )
+                info("No buffers were found.");
             return 1;
         }
         BuffersChooser *ch = new BuffersChooser(mgr(), std::move(hits));

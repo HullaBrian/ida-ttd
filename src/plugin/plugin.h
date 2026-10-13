@@ -73,6 +73,8 @@ namespace idattd
         void movement_done();                 // ev_resume carried it out; the stop is known
         void check_stop_decompiles();         // dbg_suspend_process, stepping in pseudocode
         void widget_closing(TWidget *w);      // drop a closed widget pointer
+        void reset_step_state()               // a new session: no movement is under way
+        { m_stepView = nullptr; m_viewsBefore.clear(); m_renderBefore.clear(); }
         void schedule_after_stop();           // queue the re-focus and view restores
 
         // Queue a coverage sweep of the function we just stopped in, if that is
@@ -184,6 +186,7 @@ namespace idattd
         ForkHandler               m_fork;
         RecoverStringsHandler     m_recoverStrings;
         RecoverBuffersHandler     m_recoverBuffers;
+        CallTreeHandler           m_callTree;
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
         ClearMemoryMapHandler     m_memMapClear;

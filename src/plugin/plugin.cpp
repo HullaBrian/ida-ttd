@@ -237,6 +237,10 @@ namespace idattd
               "Find calls by name/pattern: trace every function matching a wildcard "
               "like 'kernel32!Virtual*' in one sweep",
               m_icons[ICO_FUNC_SEARCH], ITEM, MENU },
+            { actions::CALL_TREE, "Call tree of this function", &m_callTree, nullptr,
+              "Call tree: every call the function at the cursor made during this run "
+              "of it, nested, from its entry to its return",
+              NO_ICON, ITEM, MENU },
             { actions::OPEN_EVENTS, "Recorded calls...", &m_openEvents, nullptr,
               "Recorded calls: the calls found by the sweeps above, with their "
               "arguments and return values",
@@ -727,6 +731,11 @@ namespace idattd
         close_volatile_pseudocode_views();
         unquiet_ui();
         m_posLabelChars = 0;
+        // Nothing of this session's views may reach the next one.
+        m_refocusTimer.cancel();
+        m_stepView = nullptr;
+        m_viewsBefore.clear();
+        m_renderBefore.clear();
         restore_source_debugging();
         delete_toolbar(TTD_TOOLBAR);
         restore_native_icons();
@@ -888,7 +897,10 @@ namespace idattd
         settle_stop();
         TWidget *from = m_stepView;
         if ( from == nullptr )
+        {
+            m_viewsBefore.clear();
             return;
+        }
 
         std::vector<TWidget *> now;
         list_pseudocode_views(now);
@@ -917,8 +929,11 @@ namespace idattd
         diag("refocus: from %p, %d opened, kept %p showing %llX, pc %llX",
              from, (int)opened.size(), keep,
              (unsigned long long)pseudocode_function(keep), (unsigned long long)pc);
-        m_stepView = keep;
         activate_widget(keep, true);
+        // Only a stop that follows a movement begun by begin_movement() may
+        // close a view; the next one starts from scratch.
+        m_stepView = nullptr;
+        m_viewsBefore.clear();
     }
 
     void Plugin::try_hook_decompiler()
@@ -1047,6 +1062,7 @@ namespace idattd
                 if ( code == dbg_process_start )
                 {
                     trace_link_mark_start(false);   // the start survived
+                    p->reset_step_state();
                     p->show_actions();   // (re)build the toolbar inside the now-active debugger desktop
                 }
                 p->update_position_label();

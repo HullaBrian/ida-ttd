@@ -10,7 +10,9 @@ namespace idattd
     // Forking the recording: replay it to a position, change registers and
     // memory there, and run on, recording into a new trace (ITTD_CAP_FORK).
 
-    // "rax=1 rcx=0x10, rip=0x140001000" into register edits. Names are the
+    // Numbers are hex, as IDA shows them (0x optional); 0n or # for decimal.
+    //
+    // "rax=1 rcx=0x10, rip=140001000" into register edits. Names are the
     // 64-bit general registers, rip and rflags; separators are spaces, commas
     // or semicolons. False with 'err' set on anything it cannot read.
     bool parse_fork_registers(const char *text, std::vector<std::pair<int, uint64_t>> *out, qstring *err);

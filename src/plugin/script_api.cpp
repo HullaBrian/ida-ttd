@@ -11,6 +11,7 @@
 #include "analysis/syscalls.h"
 #include "analysis/fork.h"
 #include "analysis/replay_scans.h"
+#include "analysis/calltree.h"
 
 #include <expr.hpp>
 
@@ -1014,6 +1015,28 @@ namespace idattd
         out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("buffers", arr.done());
     }
 
+    static void cmd_an_calltree(const Args &a, JObj &out)
+    {
+        need_session();
+        uint64_t max = a.u64_or(0, 50);
+        CallTree t;
+        qstring err;
+        if ( !build_call_tree(&mgr(), &t, &err) )
+            fail("the call tree did not build: %s", err.c_str());
+        JArr arr;
+        for ( size_t i = 0; i < t.rows.size() && i < max; i++ )
+        {
+            const CallTreeRow &r = t.rows[i];
+            JObj o;
+            o.str("pos", format_position(r.pos)).num("depth", r.depth).hex("site", r.site)
+             .hex("target", r.target).str("ret", format_position(r.ret_pos)).boolean("call", r.is_call);
+            arr.add(o.done());
+        }
+        out.hex("root", t.root).str("from", format_position(t.from)).str("to", format_position(t.to))
+           .boolean("from_cursor", t.from_cursor).boolean("truncated", t.truncated)
+           .boolean("cancelled", t.cancelled).num("count", (int64_t)t.rows.size()).raw("calls", arr.done());
+    }
+
     static void cmd_an_coverage(const Args &a, JObj &out)
     {
         need_session();
@@ -1154,6 +1177,7 @@ namespace idattd
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
+        { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
         { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...] fork here" },

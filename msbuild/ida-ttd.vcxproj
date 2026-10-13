@@ -72,6 +72,7 @@
     <ClInclude Include="$(SrcDir)\analysis\memsearch.h" />
     <ClInclude Include="$(SrcDir)\analysis\syscalls.h" />
     <ClInclude Include="$(SrcDir)\analysis\fork.h" />
+    <ClInclude Include="$(SrcDir)\analysis\calltree.h" />
     <ClInclude Include="$(SrcDir)\analysis\replay_scans.h" />
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h" />
     <ClInclude Include="$(SrcDir)\analysis\trace_store.h" />
@@ -115,6 +116,7 @@
     <ClCompile Include="$(SrcDir)\analysis\memsearch.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\syscalls.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\fork.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\calltree.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\replay_scans.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\query_runner.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\trace_store.cpp" />
@@ -132,6 +134,7 @@
     <ClCompile Include="$(SrcDir)\ui\ui_selfmod.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_fork.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_scans.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_calltree.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />

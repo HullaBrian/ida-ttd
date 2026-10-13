@@ -92,8 +92,10 @@ namespace
         // asks twice. Guarded by their own mutex, not 'mtx', so a scan does
         // not hold up the other queries.
         std::mutex scan_mtx;
-        std::map<uint32_t, std::vector<ittd_string_hit>> strings;   // by minimum length
-        std::optional<std::vector<ittd_buffer_hit>>        buffers;
+        // Keyed by what the replay ran with (scan_key), and for strings the
+        // minimum length too: a strict run must not be answered by a lenient one.
+        std::map<std::string, std::vector<ittd_string_hit>> strings;
+        std::map<std::string, std::vector<ittd_buffer_hit>> buffers;
     };
 
     struct cursor_t
@@ -1446,18 +1448,140 @@ namespace
         return UINT64_MAX;
     }
 
+    // The opcode of an executed instruction, past its prefixes, and the byte
+    // after it; false when the bytes are not there.
+    bool opcode_of(const ttd::access_event &ev, bool is64, uint8_t *op, uint8_t *modrm)
+    {
+        size_t n = std::min<size_t>(ev.size == 0 ? ev.payload.size() : (size_t)ev.size, ev.payload.size());
+        size_t i = 0;
+        for ( ; i < n; i++ )
+        {
+            uint8_t c = ev.payload[i];
+            bool prefix = c == 0x66 || c == 0x67 || c == 0xF2 || c == 0xF3 || c == 0x2E || c == 0x3E
+                       || c == 0x26 || c == 0x36 || c == 0x64 || c == 0x65 || c == 0xF0
+                       || (is64 && c >= 0x40 && c <= 0x4F);
+            if ( !prefix )
+                break;
+        }
+        if ( i >= n )
+            return false;
+        *op    = ev.payload[i];
+        *modrm = i + 1 < n ? ev.payload[i + 1] : 0;
+        return true;
+    }
+
+    // E8, FF /2 and FF /3, and 9A on 32-bit.
+    bool is_call_op(uint8_t op, uint8_t modrm, bool is64)
+    {
+        uint8_t reg = (modrm >> 3) & 7;
+        return op == 0xE8 || (op == 0x9A && !is64) || (op == 0xFF && (reg == 2 || reg == 3));
+    }
+
+    bool is_ret_op(uint8_t op)
+    {
+        return op == 0xC3 || op == 0xC2 || op == 0xCB || op == 0xCA;
+    }
+
+    // Every call made in steps [s0, s1]. The reader lists calls by target, so
+    // this walks the execute events: a call is recognised by its bytes, its
+    // callee is the thread's next instruction, and its return is the first
+    // ret on the thread that lands on its return address -- calls above it
+    // on the thread's stack then left without returning (an exception, a
+    // longjmp). A call that has not returned by s1 has no return.
+    std::vector<ttd::call_event> every_call(ttd::trace &t, uint64_t s0, uint64_t s1, bool is64,
+                                            const ttd::operation_control &ctl)
+    {
+        struct open_call { size_t index; uint64_t return_address; };
+        struct thread_state
+        {
+            std::vector<open_call> open;
+            std::optional<size_t>   call_pending;   // its callee is the next instruction
+            std::optional<uint64_t> ret_pending;    // the step of a ret, until we see where it went
+        };
+        std::vector<ttd::call_event> out;
+        if ( s0 > s1 )
+            return out;
+        std::unordered_map<uint32_t, thread_state> threads;
+        const uint64_t X = (uint64_t)ttd::access_kind::execute;
+        ttd::event_reader reader(t, t.first_event_after(s0 - 1));
+        for ( uint64_t seen = 0;; seen++ )
+        {
+            std::optional<ttd::access_event> ev = reader.next(X);
+            if ( !ev || ev->step > s1 )
+                break;
+            if ( (seen & 0xFFFF) == 0 )
+            {
+                ctl.check();
+                if ( ctl.progress && s1 > s0 )
+                    ctl.progress(ev->step - s0, s1 - s0);
+            }
+            uint32_t tid = t.thread_at(ev->step).value_or(0);
+            thread_state &ts = threads[tid];
+            if ( ts.call_pending )
+            {
+                out[*ts.call_pending].entry_step = ev->step;
+                out[*ts.call_pending].target     = ev->ip;
+                ts.call_pending.reset();
+            }
+            if ( ts.ret_pending )
+            {
+                for ( size_t k = ts.open.size(); k-- > 0; )
+                    if ( ts.open[k].return_address == ev->ip )
+                    {
+                        out[ts.open[k].index].return_step = *ts.ret_pending;
+                        ts.open.resize(k);
+                        break;
+                    }
+                ts.ret_pending.reset();
+            }
+            uint8_t op = 0, modrm = 0;
+            if ( !opcode_of(*ev, is64, &op, &modrm) )
+                continue;
+            if ( is_call_op(op, modrm, is64) )
+            {
+                ttd::call_event c;
+                c.step      = ev->step;
+                c.site      = ev->ip;
+                c.thread_id = tid;
+                c.is_call   = true;
+                out.push_back(c);
+                ts.call_pending = out.size() - 1;
+                ts.open.push_back({ out.size() - 1, ev->ip + ev->size });
+            }
+            else if ( is_ret_op(op) )
+            {
+                ts.ret_pending = ev->step;
+            }
+        }
+        // A ret on the last steps lands after s1: see where it went.
+        for ( auto &[tid, ts] : threads )
+        {
+            if ( !ts.ret_pending )
+                continue;
+            std::optional<ttd::access_event> next = t.next_instruction(*ts.ret_pending, tid);
+            if ( !next )
+                continue;
+            for ( size_t k = ts.open.size(); k-- > 0; )
+                if ( ts.open[k].return_address == next->ip )
+                {
+                    out[ts.open[k].index].return_step = *ts.ret_pending;
+                    break;
+                }
+        }
+        // A call made on the last step has no callee in range.
+        out.erase(std::remove_if(out.begin(), out.end(),
+                                 [](const ttd::call_event &c) { return c.entry_step == 0; }),
+                  out.end());
+        return out;
+    }
+
     int query_calls(ittd_backend *hb, const uint64_t *targets, size_t ntargets,
                     ittd_position_range when, ittd_call *buf, size_t cap,
                     size_t *out_count, int *out_truncated, const ittd_progress *progress)
     {
         backend_t *b = B(hb);
-        if ( b == nullptr )
+        if ( b == nullptr || (targets == nullptr && ntargets != 0) )
             return ITTD_E_BAD_ARG;
-        if ( ntargets == 0 || targets == nullptr )
-        {
-            b->error = "Sogen lists calls by target; 'every call' is not supported";
-            return ITTD_E_UNSUPPORTED;
-        }
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->mtx);
@@ -1465,6 +1589,13 @@ namespace
             uint64_t s0 = 0, s1 = 0;
             step_range(t, when, &s0, &s1);
             std::vector<ttd::call_event> all;
+            // No targets: every call in the range -- for a short one, such as
+            // the run of one function a call tree shows.
+            if ( ntargets == 0 )
+            {
+                const ttd::module_entry *m = main_module(t);
+                all = every_call(t, s0, s1, m == nullptr || m->machine != 0x14c, control(progress));
+            }
             for ( size_t i = 0; i < ntargets; i++ )
             {
                 // Each target's share of the whole: a pattern can name
@@ -1609,8 +1740,11 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            // Its own reader under scan_mtx: seconds of scanning must not
+            // hold up the cursors' reads, which take 'mtx'.
+            std::lock_guard<std::mutex> lock(b->scan_mtx);
+            std::unique_ptr<ttd::trace> own = open_trace(b->path);
+            ttd::trace &t = *own;
             const uint64_t need = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::execute;
             if ( (t.access_mask() & need) != need )
             {
@@ -1727,7 +1861,10 @@ namespace
             f->trace = open_trace(b->path);
             f->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             if ( !resolve(*f->trace, at_pos, &f->position) )
+            {
+                b->error = "that position is not in the recording";
                 return ITTD_E_NO_POSITION;
+            }
             bool strict = false;
             f->emu = replay_emulator(*f->trace, settings, &strict);
             ttd::seek(*f->emu, *f->trace, f->position, strict, control(progress));
@@ -1857,6 +1994,21 @@ namespace
         return step == 0 ? at(first_position(t)) : before_step(step);
     }
 
+    // What a replay scan's answer depends on besides the recording.
+    std::string scan_key(const ittd_fork_settings *settings)
+    {
+        std::string key;
+        if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
+            key += std::to_string(*v);
+        key += '|';
+        if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr )
+            key += *v;
+        key += '|';
+        if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
+            key += *v;
+        return key;
+    }
+
     int query_strings(ittd_backend *hb, const ittd_fork_settings *settings, uint32_t min_length,
                       ittd_string_hit *buf, size_t cap, size_t *out_count,
                       int *out_truncated, const ittd_progress *progress)
@@ -1869,7 +2021,8 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->scan_mtx);
-            auto found = b->strings.find(min_length);
+            const std::string key = std::to_string(min_length) + "|" + scan_key(settings);
+            auto found = b->strings.find(key);
             if ( found == b->strings.end() )
             {
                 std::unique_ptr<ttd::trace> t = open_trace(b->path);
@@ -1896,7 +2049,7 @@ namespace
                             h.length++;
                     v.push_back(h);
                 }
-                found = b->strings.emplace(min_length, std::move(v)).first;
+                found = b->strings.emplace(key, std::move(v)).first;
             }
             set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
             return fill(found->second, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
@@ -1913,7 +2066,9 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->scan_mtx);
-            if ( !b->buffers )
+            const std::string key = scan_key(settings);
+            auto found = b->buffers.find(key);
+            if ( found == b->buffers.end() )
             {
                 std::unique_ptr<ttd::trace> t = open_trace(b->path);
                 bool strict = false;
@@ -1936,10 +2091,10 @@ namespace
                     copy_str(h.preview, sizeof(h.preview), r.preview);
                     v.push_back(h);
                 }
-                b->buffers = std::move(v);
+                found = b->buffers.emplace(key, std::move(v)).first;
             }
-            set_truncated(out_truncated, b->buffers->size(), cap, buf != nullptr);
-            return fill(*b->buffers, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
+            set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
+            return fill(found->second, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
         });
     }
 

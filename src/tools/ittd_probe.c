@@ -500,6 +500,54 @@ int main(int argc, char **argv)
             free(ps);
             free(rs);
         }
+
+        /* Every call in a window (no targets: what a call tree asks for)
+           agrees with the listing by target: a call that returned is found
+           in the window from its own position to its return, with the same
+           entry and return. */
+        for ( k = 0; k < n; k++ )
+        {
+            ittd_call *e = &calls[k];
+            ittd_position_range win;
+            ittd_call *ev;
+            size_t m = 0, j;
+            int found = 0;
+            double t1;
+            if ( is_none(e->pos) || is_none(e->ret_pos) || (e->flags & ITTD_CALL_F_NOT_CALL) != 0 )
+                continue;
+            /* One past the return: the ret is recognised where it lands. */
+            win.first = e->pos;
+            win.last  = e->ret_pos;
+            if ( api->position_add != NULL )
+                api->position_add(B, e->ret_pos, 1, &win.last);
+            t1 = now_ms();
+            if ( api->query_calls(B, NULL, 0, win, NULL, 0, &m, &trunc, NULL) != ITTD_OK )
+            {
+                printf("  every call in a window: %s\n", api->last_error(B));
+                check(0, "  every call in a window can be listed");
+                break;
+            }
+            ev = (ittd_call *)calloc(m ? m : 1, sizeof(ittd_call));
+            api->query_calls(B, NULL, 0, win, ev, m, &m, &trunc, NULL);
+            for ( j = 0; j < m; j++ )
+                if ( ev[j].pos.lo == e->pos.lo && ev[j].entry_pos.lo == e->entry_pos.lo
+                  && ev[j].ret_pos.lo == e->ret_pos.lo && ev[j].target == e->target )
+                    found = 1;
+            printf("  every call from %s to %s: %zu, %.1f ms\n", pos_text(win.first), pos_text(win.last),
+                   m, now_ms() - t1);
+            if ( !found )
+            {
+                printf("    wanted pos %s entry %s ret %s target %llx\n", pos_text(e->pos), pos_text(e->entry_pos),
+                       pos_text(e->ret_pos), (unsigned long long)e->target);
+                for ( j = 0; j < m && j < 4; j++ )
+                    printf("    got    pos %s entry %s ret %s target %llx site %llx\n", pos_text(ev[j].pos),
+                           pos_text(ev[j].entry_pos), pos_text(ev[j].ret_pos), (unsigned long long)ev[j].target,
+                           (unsigned long long)ev[j].site);
+            }
+            check(found, "  the window's listing has the call, with its entry and return");
+            free(ev);
+            break;
+        }
         free(calls);
     }
 

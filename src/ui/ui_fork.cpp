@@ -32,7 +32,7 @@ namespace idattd
             "\n"
             "Registers belong to the thread that runs next. Memory changes are\n"
             "ADDRESS = 90 90 C3, or ADDRESS = q:VALUE for a 64-bit value; separate\n"
-            "several with semicolons.\n"
+            "several with semicolons. Numbers are hex, as IDA shows them (#10 is decimal).\n"
             "\n"
             "<~N~ew trace:f:1:64::>\n"
             "<~I~nstructions to record (0: until the program exits):D::18::>\n"

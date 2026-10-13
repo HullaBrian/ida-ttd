@@ -1,0 +1,135 @@
+#include "analysis/calltree.h"
+#include "analysis/query_runner.h"
+#include "debugger/trace_manager.h"
+
+namespace idattd
+{
+    // A run longer than this many rows is cut: a tree that size is not read
+    // row by row, and the chooser would take a long time to build.
+    static const size_t kMaxRows = 100000;
+
+    // How far back to look for the call that entered the frame. A function
+    // that has been running for longer is shown from the cursor.
+    static const uint64_t kMaxBack = 50000000;
+
+    void nest_calls(const std::vector<CallEvent> &calls, std::vector<CallTreeRow> *rows, size_t max_rows,
+                    bool *truncated)
+    {
+        rows->clear();
+        std::vector<const CallEvent *> order;
+        order.reserve(calls.size());
+        for ( const CallEvent &c : calls )
+            if ( c.pos.is_valid() )
+                order.push_back(&c);
+        std::stable_sort(order.begin(), order.end(),
+                         [](const CallEvent *a, const CallEvent *b) { return a->pos < b->pos; });
+
+        // The calls still running at the current row, innermost last. A call
+        // that never returned stays open to the end.
+        std::vector<Position> open;
+        for ( const CallEvent *c : order )
+        {
+            while ( !open.empty() && open.back().is_valid() && open.back() <= c->pos )
+                open.pop_back();
+            if ( rows->size() >= max_rows )
+            {
+                if ( truncated != nullptr )
+                    *truncated = true;
+                break;
+            }
+            CallTreeRow r;
+            r.pos     = c->pos;
+            r.ret_pos = c->ret_pos;
+            r.site    = c->site;
+            r.target  = c->target;
+            r.is_call = c->is_call;
+            r.depth   = (int)open.size();
+            rows->push_back(r);
+            // A jump has no return of its own: what it reached returns for
+            // the call that is already open.
+            if ( c->is_call )
+                open.push_back(c->ret_pos);
+        }
+    }
+
+    bool build_call_tree(TraceManager *mgr, CallTree *out, qstring *err)
+    {
+        *out = CallTree{};
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
+        {
+            *err = "no recording is being replayed";
+            return false;
+        }
+        ITraceBackend *backend = mgr->backend();
+        if ( !backend->capabilities().call_queries )
+        {
+            *err = "this recording's backend cannot list calls";
+            return false;
+        }
+        const Position here = mgr->current_position();
+        out->tid = mgr->cursor() != nullptr ? mgr->cursor()->thread_id() : 0;
+
+        // Where this run of the function began, and where it ends.
+        Position call_pos = Position::none();
+        ea_t entry = BADADDR;
+        bool found = false;
+        QueryResult qr = run_query("Finding where this function was entered", [&](ProgressSink *)
+        {
+            found = backend->query_frame_entry(here, out->tid, kMaxBack, &call_pos, &entry);
+            QueryResult q;
+            q.ran = true;
+            return q;
+        });
+        if ( qr.cancelled )
+        {
+            out->cancelled = true;
+            *err = "cancelled";
+            return false;
+        }
+        out->from = here;
+        out->to   = backend->info().last;
+        if ( found && call_pos.is_valid() )
+        {
+            out->root = entry;
+            out->from = call_pos;
+            std::vector<CallEvent> self;
+            backend->query_calls({ entry }, PositionRange{ call_pos, call_pos }, &self, nullptr);
+            for ( const CallEvent &c : self )
+                if ( c.pos == call_pos && c.ret_pos.is_valid() )
+                    out->to = c.ret_pos;
+        }
+        else
+        {
+            out->from_cursor = true;
+            func_entry_info_t fi;
+            if ( get_func_entry_info(&fi, mgr->current_pc_ea()) )
+                out->root = fi.start_ea;
+        }
+
+        // Every call in the window, then this thread's, nested. The entering
+        // call itself is the root, not a row.
+        // One past the return: a ret is recognised where it lands.
+        std::vector<CallEvent> all;
+        PositionRange when{ out->from, backend->position_add(out->to, 1) };
+        qr = run_query("Listing the calls this function made", [&](ProgressSink *p)
+        {
+            return backend->query_calls({}, when, &all, p);
+        });
+        if ( !qr.ran )
+        {
+            *err = backend->last_error();
+            if ( err->empty() )
+                *err = "the call listing did not run";
+            return false;
+        }
+        out->cancelled = qr.cancelled;
+        out->truncated = qr.truncated;
+        std::vector<CallEvent> mine;
+        mine.reserve(all.size());
+        for ( const CallEvent &c : all )
+            if ( c.tid == out->tid && !(found && c.pos == call_pos) )
+                mine.push_back(c);
+        nest_calls(mine, &out->rows, kMaxRows, &out->truncated);
+        return true;
+    }
+}

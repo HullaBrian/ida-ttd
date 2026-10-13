@@ -74,6 +74,7 @@ database. The scope is given here instead of in a dialog.
 | `an.callsites LO HI` | annotate indirect calls; lists the comments it wrote |
 | `an.trace EA [MAX]` | find all calls to a function, with arguments and return values |
 | `an.memmap [MAX]` | build the memory map; the regions as they stand at the playhead |
+| `an.calltree [MAX]` | the calls the function at the playhead made during this run of it, nested (depth), from its entry to its return |
 | `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
 | `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |

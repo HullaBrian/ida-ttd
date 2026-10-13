@@ -112,6 +112,9 @@
     <ClInclude Include="$(SrcDir)\analysis\fork.h">
       <Filter>analysis</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\calltree.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\replay_scans.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -234,6 +237,9 @@
     <ClCompile Include="$(SrcDir)\analysis\fork.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\calltree.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\replay_scans.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
@@ -283,6 +289,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_scans.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_calltree.cpp">
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp">
