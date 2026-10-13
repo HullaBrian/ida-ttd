@@ -125,17 +125,15 @@ namespace idattd
                 p++;
             if ( *p == '\0' )
                 break;
+            // Quotes may sit anywhere in a word, so registry="C:\Program Files\x"
+            // is one argument.
             qstring tok;
-            if ( *p == '"' )
+            bool quoted = false;
+            for ( ; *p != '\0' && (quoted || (*p != ' ' && *p != '\t')); p++ )
             {
-                for ( p++; *p != '\0' && *p != '"'; p++ )
-                    tok.append(*p);
                 if ( *p == '"' )
-                    p++;
-            }
-            else
-            {
-                for ( ; *p != '\0' && *p != ' ' && *p != '\t'; p++ )
+                    quoted = !quoted;
+                else
                     tok.append(*p);
             }
             out.push_back(tok);

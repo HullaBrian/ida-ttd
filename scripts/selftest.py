@@ -142,13 +142,13 @@ def run_sogen(registry=None, host=False, fork_path=None):
     chk("self-modifying code search runs", m.get("ok"), (m.get("count"), m.get("error")))
 
     if registry:
-        extra = " registry=%s%s" % (registry, " host" if host else "")
+        extra = ' registry="%s"%s' % (registry, " host" if host else "")
         st = T("an.strings 8 5" + extra)
         chk("strings recovered by a replay", st.get("ok") and st.get("count", 0) > 0,
             (st.get("count"), st.get("error")))
         T("runto %X" % (ida_nalt.get_imagebase() + 0x13F0))
         path = fork_path or os.path.join(os.path.dirname(idc.get_idb_path()), "selftest-fork.sogttd")
-        f = T("an.fork %s 4E20 rax=1%s" % (path, extra))
+        f = T('an.fork "%s" 4E20 rax=1%s' % (path, extra))
         chk("a fork records", f.get("ok") and f.get("instructions") == 0x4E20 and os.path.exists(path),
             (f.get("instructions"), f.get("error")))
     else:
