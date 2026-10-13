@@ -105,3 +105,16 @@ helper module, since the plugin is loaded in the worker either way.
 `ttd-traces` folder and checks every movement and analysis against what that
 program is known to do: 21 checks, the same for a Microsoft and a Sogen
 recording of it. Open either trace, then `exec` the file and call `run()`.
+
+## When IDA hangs
+
+A frozen IDA cannot be asked what it is doing, so the plugin writes what takes
+long to `%TEMP%\ida-ttd-diag.log`: every backend call over 200 ms with its
+arguments, slow reads IDA makes, and the session's phases (start, each resume
+and stop, the symbol work for each module), each line with a timestamp and the
+thread. The previous session's log is kept as `ida-ttd-diag.prev.log`. Read it
+from another process -- a second MCP worker can, while the first is stuck.
+
+`ttd("state")` also returns an `event_log`: the last events handed to IDA, the
+resumes received and the breakpoint updates IDA made, which is how a movement
+that IDA drives itself (step over backwards) can be followed.

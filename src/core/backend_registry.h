@@ -59,7 +59,7 @@ namespace idattd
 
 // Put one of these at file scope in a backend's implementation:
 //
-//     REGISTER_TTD_BACKEND(MsTtdBackend);
+//     REGISTER_TTD_BACKEND(MyTestBackend);
 //
 // 'type' must be default-constructible and derive from ITraceBackend. The
 // object is created when the registry is first asked for its backends, not
