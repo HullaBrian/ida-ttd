@@ -104,6 +104,9 @@ namespace idattd
         // Everything about it is optional: without Hex-Rays the plugin behaves
         // exactly as it did before.
         m_haveDecompiler = init_decompiler();
+        set_pseudocode_opened_handler(
+            [](TWidget *w, void *ud) { static_cast<Plugin *>(ud)->pseudocode_opened(w); },
+            this);
         hook_event_listener(HT_IDD, this);
         hook_event_listener(HT_DBG, &m_dbgEvents);
         hook_event_listener(HT_UI,  &m_uiEvents);
@@ -147,6 +150,7 @@ namespace idattd
         hide_actions();     // toolbar + actions, if a session was still open
         // After hide_actions(): it closes pseudocode views of runtime-allocated
         // code, and that check is a no-op once the Hex-Rays hook is gone.
+        set_pseudocode_opened_handler(nullptr, nullptr);
         term_decompiler();
         if ( m_attachRegistered )
         {
@@ -736,6 +740,11 @@ namespace idattd
         int t = get_widget_type(cur);
         if ( t == BWN_PSEUDOCODE )
         {
+            // A view the movement opened is about to be closed again; it must
+            // not become the one the user is taken back to.
+            if ( std::find(m_strayPseudo.begin(), m_strayPseudo.end(), cur)
+                 != m_strayPseudo.end() )
+                return;
             m_pseudoWidget = cur;
             if ( !m_ignoreWidgetChanges )
                 m_userPrefersDecomp = true;
@@ -751,6 +760,32 @@ namespace idattd
     {
         if ( w == m_pseudoWidget )
             m_pseudoWidget = nullptr;
+        m_strayPseudo.erase(std::remove(m_strayPseudo.begin(), m_strayPseudo.end(), w),
+                            m_strayPseudo.end());
+    }
+
+    // Stepping from pseudocode into another function used to leave a new
+    // Pseudocode-B, -C, ... behind for every call entered: something on IDA's
+    // side of the stop opens the function landed in as a new window. Only
+    // views opened while a movement is in flight are collected, and only when
+    // the user was stepping in the decompiler; anything opened once the stop
+    // has settled is the user's and is left alone.
+    void Plugin::pseudocode_opened(TWidget *w)
+    {
+        if ( !m_mgr.is_active() || !m_userPrefersDecomp || m_pseudoWidget == nullptr
+          || w == m_pseudoWidget )
+            return;
+        if ( m_mgr.resume_serial() == m_settledResume )
+            return;
+        if ( std::find(m_strayPseudo.begin(), m_strayPseudo.end(), w) == m_strayPseudo.end() )
+            m_strayPseudo.push_back(w);
+    }
+
+    void Plugin::settle_stop()
+    {
+        m_strayPseudo.clear();
+        m_settledResume = m_mgr.resume_serial();
+        m_ignoreWidgetChanges = false;
     }
 
     int idaapi Plugin::refocus_cb(void *ud)
@@ -763,8 +798,28 @@ namespace idattd
     {
         m_refocusTimer.fired();
         if ( m_pseudoWidget != nullptr && m_userPrefersDecomp )
-            activate_widget(m_pseudoWidget, true);
-        m_ignoreWidgetChanges = false;
+        {
+            // Move the user's own view to where the stop is, then drop the
+            // windows the movement opened. In that order: if the function
+            // cannot be decompiled, the view the movement opened is the only
+            // one showing the right place, and the user keeps it.
+            ea_t pc = m_mgr.current_pc_ea();
+            func_entry_info_t fi;
+            bool moved = pc != BADADDR && get_func_entry_info(&fi, pc)
+                      && (pseudocode_function(m_pseudoWidget) == fi.start_ea
+                       || show_in_pseudocode(m_pseudoWidget, pc));
+            if ( moved )
+            {
+                // Copied: closing a widget reaches widget_closing(), which
+                // edits the list.
+                std::vector<TWidget *> strays = m_strayPseudo;
+                for ( TWidget *w : strays )
+                    close_widget(w, 0);
+            }
+            if ( m_pseudoWidget != nullptr )
+                activate_widget(m_pseudoWidget, true);
+        }
+        settle_stop();
     }
 
     void Plugin::try_hook_decompiler()
@@ -868,7 +923,10 @@ namespace idattd
     void Plugin::keep_decompiler_focused()
     {
         if ( !m_userPrefersDecomp || m_pseudoWidget == nullptr )
+        {
+            settle_stop();
             return;
+        }
         m_ignoreWidgetChanges = true;          // ignore IDA's forced disasm switch
         m_refocusTimer.arm(DEFER_MS, refocus_cb, this);
     }

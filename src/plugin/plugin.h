@@ -71,6 +71,7 @@ namespace idattd
         // the user was viewing the decompiler, we re-assert it after the stop.
         void track_widget(TWidget *cur);      // remember the user's active code view
         void widget_closing(TWidget *w);      // drop a closed widget pointer
+        void pseudocode_opened(TWidget *w);   // Hex-Rays opened a view (maybe a movement did)
         void keep_decompiler_focused();       // schedule a re-focus after a stop (if wanted)
 
         // Queue a coverage sweep of the function we just stopped in, if that is
@@ -234,6 +235,13 @@ namespace idattd
         bool     m_userPrefersDecomp = false; // user was last in the decompiler
         bool     m_ignoreWidgetChanges = false; // freeze preference during a stop
         OneShotTimer m_refocusTimer;          // deferred re-focus
+        // Pseudocode views opened by a movement rather than by the user, closed
+        // at the re-focus once the user's own view has been moved along. A view
+        // opened before the stop that follows the last resume has settled is
+        // the movement's: the user cannot open one in that window.
+        std::vector<TWidget *> m_strayPseudo;
+        uint64                 m_settledResume = 0;  // resume_serial() at the last settle
+        void settle_stop();                   // the stop is done: later opens are the user's
 
         // Automatic per-function coverage. Functions the user cancelled out of
         // are remembered for the session only, so a sweep they stopped is not

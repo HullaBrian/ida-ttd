@@ -625,6 +625,7 @@ namespace idattd
     {
         diag("resume begin: event %d, mode %d", (int)event->eid(), (int)m_resumeMode);
         DiagTimer diag_timer("resume");
+        m_resumeSerial++;
         m_lastResume.sprnt("event %d, resume mode %d, %s, request %d",
                            (int)event->eid(), (int)m_resumeMode,
                            m_isForward ? "forward" : "backward", (int)m_pending.kind);

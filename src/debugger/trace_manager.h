@@ -55,6 +55,9 @@ namespace idattd
         ssize_t on_rebase_if_required_to(ea_t new_base);
         ssize_t on_resume(debug_event_t *event);
         const qstring &last_resume() const { return m_lastResume; }
+        // Counts ev_resume calls. Lets the UI tell what a movement did (between
+        // a resume and the stop that ends it) from what the user did.
+        uint64 resume_serial() const { return m_resumeSerial; }
         const std::deque<qstring> &event_log() const { return m_eventLog; }
 
         // When the thread and module changes a movement caused are reported,
@@ -217,6 +220,7 @@ namespace idattd
         // What the last ev_resume carried, for the script API's 'state': which
         // movement IDA actually asked for is otherwise invisible.
         qstring       m_lastResume;
+        uint64        m_resumeSerial = 0;
         // The threads and modules IDA has been told about.
         std::set<uint32_t> m_toldThreads;
         std::map<std::pair<ea_t, Position>, const ModuleInfo *> m_toldMods;

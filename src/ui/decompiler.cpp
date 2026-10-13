@@ -207,6 +207,15 @@ namespace idattd
         }
     }
 
+    static pseudocode_opened_fn g_opened_fn = nullptr;
+    static void                *g_opened_ud = nullptr;
+
+    void set_pseudocode_opened_handler(pseudocode_opened_fn fn, void *ud)
+    {
+        g_opened_fn = fn;
+        g_opened_ud = ud;
+    }
+
     static ssize_t idaapi hx_callback(void *, hexrays_event_t ev, va_list va)
     {
         switch ( ev )
@@ -215,6 +224,14 @@ namespace idattd
                 // The text has just been generated; sv is ours to colour now.
                 paint(va_arg(va, cfunc_t *));
                 break;
+
+            case hxe_open_pseudocode:
+            {
+                vdui_t *vu = va_arg(va, vdui_t *);
+                if ( g_opened_fn != nullptr && vu != nullptr && vu->toplevel != nullptr )
+                    g_opened_fn(vu->toplevel, g_opened_ud);
+                break;
+            }
 
             default:
                 break;
@@ -287,6 +304,58 @@ namespace idattd
             paint(vu->cfunc);
             refresh_custom_viewer(vu->ct);
         }
+    }
+
+    ea_t pseudocode_function(TWidget *view)
+    {
+        if ( !g_hooked || view == nullptr )
+            return BADADDR;
+        vdui_t *vu = get_widget_vdui(view);
+        if ( vu == nullptr || vu->cfunc == nullptr )
+            return BADADDR;
+        return vu->cfunc->entry_ea;
+    }
+
+    bool show_in_pseudocode(TWidget *view, ea_t ea)
+    {
+        if ( !g_hooked || view == nullptr )
+            return false;
+        vdui_t *vu = get_widget_vdui(view);
+        func_entry_info_t fi;
+        if ( vu == nullptr || !get_func_entry_info(&fi, ea) )
+            return false;
+
+        // Decompile first and switch only on success. open_pseudocode() would
+        // do both, but it chooses the window itself -- the very thing that
+        // went wrong -- and reports a failure with a dialog on every step.
+        if ( vu->cfunc == nullptr || vu->cfunc->entry_ea != fi.start_ea )
+        {
+            hexrays_failure_t hf;
+            cfuncptr_t cf = decompile_function(fi.start_ea, &hf, DECOMP_NO_WAIT);
+            if ( cf == nullptr )
+                return false;
+            vu->switch_to(cf, false);
+        }
+
+        // Caret on the statement ea belongs to. A statement rather than any
+        // item with that address: the expressions inside it carry the same
+        // one, and the statement is where the line starts.
+        const citem_t *best = nullptr;
+        for ( const citem_t *it : vu->cfunc->treeitems )
+        {
+            if ( it == nullptr || it->ea != ea )
+                continue;
+            if ( best == nullptr || (best->is_expr() && !it->is_expr()) )
+                best = it;
+        }
+        int x = 0;
+        int y = 0;
+        if ( best != nullptr && vu->cfunc->find_item_coords(best, &x, &y) )
+        {
+            simpleline_place_t pl(y);
+            jumpto(vu->ct, &pl, x, 0);
+        }
+        return true;
     }
 
     void close_volatile_pseudocode_views()
