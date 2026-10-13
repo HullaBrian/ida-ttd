@@ -2069,11 +2069,13 @@ namespace
                 {
                 }
             }
+            // A fork's recording starts where it was forked, not at 0.
+            const uint64_t total = end - std::min(end, t.start_position());
             char head[160];
             snprintf(head, sizeof(head), "the replay diverged from the recording %d time%s; %llu of %llu "
                      "instructions (%.1f%%) were skipped up to the next checkpoint. First: ",
-                     gaps, gaps == 1 ? "" : "s", (unsigned long long)skipped, (unsigned long long)end,
-                     end == 0 ? 0.0 : 100.0 * (double)skipped / (double)end);
+                     gaps, gaps == 1 ? "" : "s", (unsigned long long)skipped, (unsigned long long)total,
+                     total == 0 ? 0.0 : 100.0 * (double)skipped / (double)total);
             return head + first;
         }
     }

@@ -54,6 +54,7 @@ namespace idattd
 
         debugger_t     &debugger() { return m_debugger; }
         TraceManager   &manager()  { return m_mgr; }
+        const ActionContext *action_context() const { return &m_ctx; }
         FunctionTracer &tracer()   { return m_tracer; }
 
         // The TTD commands only exist while a trace is loaded: show_actions()
@@ -98,8 +99,6 @@ namespace idattd
         // which is safe while the analysis queue is still draining.
         void schedule_trace_offer();
         void switch_trace(const qstring &path);
-        // The old session is gone: start the one switch_trace() asked for.
-        void continue_switch();
         // Start the replay of 'path' in this database (a fork of its
         // recording). False when the debugger could not be selected.
         bool start_trace_at(const char *path);
@@ -279,6 +278,8 @@ namespace idattd
         // Switching the replay to another recording: stop, then start on it
         // once IDA has finished with the old session.
         qstring         m_switchTo;
+        bool            m_switchExitSent = false;
+        int             m_switchPolls = 0;
         OneShotTimer    m_switchTimer;
         static int idaapi switch_cb(void *ud);
         OneShotTimer    m_pdbTimer;          // applies downloaded PDBs while paused

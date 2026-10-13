@@ -1,5 +1,6 @@
 #include "plugin/script_api.h"
 #include "plugin/plugin.h"
+#include "ui/ui.h"
 #include "core/backend_registry.h"
 #include "core/backend_module.h"
 #include "analysis/memsearch.h"
@@ -1000,7 +1001,10 @@ namespace idattd
     static void cmd_an_forks(const Args &, JObj &out)
     {
         JArr arr;
-        std::vector<ForkRecord> v = load_fork_records();
+        bool ok = true;
+        std::vector<ForkRecord> v = load_fork_records(&ok);
+        if ( !ok )
+            fail("the fork list in this database could not be read");
         for ( const ForkRecord &f : v )
         {
             JObj o;
@@ -1015,7 +1019,7 @@ namespace idattd
     static void cmd_an_forget(const Args &a, JObj &out)
     {
         remove_fork_record(a.at(0).c_str());
-        out.num("count", (int64_t)load_fork_records().size());
+        out.num("count", (int64_t)load_fork_records(nullptr).size());
     }
 
     // an.forkhere: make the current position a fork (TTD > Fork here). Its
@@ -1023,7 +1027,10 @@ namespace idattd
     static void cmd_an_forkhere(const Args &, JObj &out)
     {
         need_session();
+        bool shown = mgr().at_fork_draft()
+                  && (!mgr().fork_draft().regs.empty() || !mgr().fork_draft().bytes.empty());
         mgr().begin_fork_draft();
+        fork_draft_changed(g_plugin->action_context(), shown);
         draft_json(out);
     }
 
@@ -1037,7 +1044,10 @@ namespace idattd
     static void cmd_an_forkdiscard(const Args &, JObj &out)
     {
         need_session();
+        bool shown = mgr().at_fork_draft()
+                  && (!mgr().fork_draft().regs.empty() || !mgr().fork_draft().bytes.empty());
         mgr().discard_fork_draft();
+        fork_draft_changed(g_plugin->action_context(), shown);
         draft_json(out);
     }
 

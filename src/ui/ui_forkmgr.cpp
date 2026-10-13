@@ -1,4 +1,4 @@
-﻿// The Fork manager: the recording this database came from and every fork
+// The Fork manager: the recording this database came from and every fork
 // recorded from it (and from its forks), as an indented tree. A row is a
 // recording; Enter switches this IDA to it or opens it in another, Delete
 // takes a fork out of the tree.
@@ -44,7 +44,7 @@ namespace idattd
 
     void ForkTree::rebuild()
     {
-        records = load_fork_records();
+        records = load_fork_records(nullptr);
         rows.clear();
         TraceManager *mgr = ctx != nullptr ? ctx->mgr : nullptr;
 
@@ -155,7 +155,7 @@ namespace idattd
                 const Row &r = g_ft.rows[n];
                 qstring name;
                 for ( int i = 0; i < r.depth; i++ )
-                    name.append(i + 1 == r.depth ? "  \xE2\x94\x94\xE2\x94\x80 " : "     ");  // "  â””â”€ "
+                    name.append(i + 1 == r.depth ? "  \xE2\x94\x94\xE2\x94\x80 " : "     ");  // "  |- " in box-drawing characters
                 name.append(qbasename(r.path.c_str()));
                 if ( r.current )
                     name.append("   (replaying now)");
@@ -223,6 +223,15 @@ namespace idattd
             g_ft.rebuild();
             refresh_chooser(FM_TITLE);
         }
+    }
+
+    void close_fork_manager()
+    {
+        if ( TWidget *w = find_widget(FM_TITLE) )
+            close_widget(w, 0);
+        g_ft.ctx = nullptr;
+        g_ft.rows.clear();
+        g_ft.records.clear();
     }
 
     int idaapi ForkManagerHandler::activate(action_activation_ctx_t *)

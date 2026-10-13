@@ -770,6 +770,7 @@ namespace idattd
                                              std::vector<StringHit> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_strings", 0);
+        m_replayBlock = ReplayBlock::None;
         if ( m_handle == nullptr || !ITTD_HAS(m_api, query_strings) || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -799,6 +800,7 @@ namespace idattd
                                              std::vector<BufferHit> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_buffers", 0);
+        m_replayBlock = ReplayBlock::None;
         if ( m_handle == nullptr || !ITTD_HAS(m_api, query_buffers) || out == nullptr )
             return QueryResult{};
         ProgressBridge pb(progress);
@@ -830,6 +832,7 @@ namespace idattd
     ForkResult BackendModule::record_fork(const ForkRequest &req, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.record_fork", 0);
+        m_replayBlock = ReplayBlock::None;
         ForkResult r;
         if ( m_handle == nullptr || !ITTD_HAS(m_api, fork_close) )
         {

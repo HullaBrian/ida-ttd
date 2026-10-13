@@ -442,6 +442,11 @@ namespace idattd
     { int idaapi activate(action_activation_ctx_t *) override; };
     // Redraw the Fork manager, if it is open (a fork recorded, a switch).
     void refresh_fork_manager();
+    // Close it and drop its hold on the plugin (the plugin is going away).
+    void close_fork_manager();
+    // The views showed a fork's changes, and the fork is gone or begun:
+    // have IDA read registers and memory again, and redraw the position.
+    void fork_draft_changed(const ActionContext *ctx, bool views_showed_changes);
 
     // Replays (forks, recovered strings and buffers) start with the saved
     // hives folder and without consent to replay a recording made against

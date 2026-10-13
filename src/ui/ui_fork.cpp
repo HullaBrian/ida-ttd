@@ -117,9 +117,9 @@ namespace idattd
                     format_position(d.at).c_str()) != ASKBTN_YES )
             return 1;
 
+        bool shown = m->at_fork_draft() && has_changes(d);
         m->begin_fork_draft();
-        if ( ctx->refresh_position )
-            ctx->refresh_position();
+        fork_draft_changed(ctx, shown);
         msg("[ida-ttd] Forking at %s. Change registers (the registers window) and memory "
             "(the hex view, or Edit > Patch program) as on a live target, then TTD > "
             "Record fork. The changes stay with this position while you move around.\n",
@@ -197,10 +197,7 @@ namespace idattd
         req.path             = path;
         req.max_instructions = count > 0 ? (uint64_t)count : 0;
         req.note.sprnt("forked at %s", format_position(req.at).c_str());
-        for ( const auto &[idx, v] : req.regs )
-            req.note.cat_sprnt("; reg %d = 0x%llX", idx, (unsigned long long)v);
-        for ( const auto &[ea, bytes] : req.memory )
-            req.note.cat_sprnt("; %u byte(s) at 0x%llX", (uint)bytes.size(), (unsigned long long)ea);
+        req.note.cat_sprnt("; %s", describe_fork_changes(req).c_str());
 
         ReplaySettings rs = initial_replay_settings(m);
         ForkResult r;
@@ -248,17 +245,22 @@ namespace idattd
             return 1;
         bool shown = m->at_fork_draft() && has_changes(m->fork_draft());
         m->discard_fork_draft();
-        if ( ctx->refresh_position )
-            ctx->refresh_position();
+        fork_draft_changed(ctx, shown);
+        msg("[ida-ttd] fork discarded.\n");
+        return 1;
+    }
+
+    void fork_draft_changed(const ActionContext *c, bool views_showed_changes)
+    {
+        if ( c != nullptr && c->refresh_position )
+            c->refresh_position();
         // The views showed the fork's changes; have IDA read the recording again.
-        if ( shown )
+        if ( views_showed_changes )
         {
             invalidate_dbg_state(DBGINV_REGS);
             invalidate_dbgmem_contents(BADADDR, 0);
             refresh_idaview_anyway();
         }
-        msg("[ida-ttd] fork discarded.\n");
-        return 1;
     }
 
     action_state_t idaapi ForkDiscardHandler::update(action_update_ctx_t *)

@@ -135,6 +135,8 @@ namespace idattd
         // that is going away.
         symsrv_shutdown();
         remove_script_api();
+        // The Fork manager holds this plugin's action context.
+        close_fork_manager();
         m_refocusTimer.cancel();
         m_autoCoverTimer.cancel();
         m_attachTimer.cancel();
@@ -515,34 +517,54 @@ namespace idattd
 
     // Replay another recording in this database: a fork shares the
     // recording's program and modules, so the same database serves it.
+    //
+    // All of it runs from a timer, outside whatever asked (the Fork
+    // manager's Enter, which must not see its chooser refreshed under it):
+    // end the session, wait until IDA is done with it, start the new one.
+    // The request lives only while that runs, so a switch that cannot
+    // happen is dropped, not carried over to some later session's end.
     void Plugin::switch_trace(const qstring &path)
     {
         if ( m_mgr.is_active() && same_trace_path(path, m_mgr.trace_path()) )
             return;
-        m_switchTo = path;
-        if ( get_process_state() == DSTATE_NOTASK )
-            m_switchTimer.arm(10, switch_cb, this);
-        else
-            exit_process();         // dbg_process_exit arms the timer
-    }
-
-    void Plugin::continue_switch()
-    {
-        if ( !m_switchTo.empty() )
-            m_switchTimer.arm(10, switch_cb, this);
+        m_switchTo       = path;
+        m_switchExitSent = false;
+        m_switchPolls    = 0;
+        m_switchTimer.cancel();
+        m_switchTimer.arm(10, switch_cb, this);
     }
 
     int idaapi Plugin::switch_cb(void *ud)
     {
         Plugin *p = static_cast<Plugin *>(ud);
+        if ( p->m_switchTo.empty() )
+            return -1;
         if ( get_process_state() != DSTATE_NOTASK )
-            return 50;              // still winding down; ask again
+        {
+            if ( !p->m_switchExitSent )
+            {
+                p->m_switchExitSent = true;
+                if ( !exit_process() )
+                {
+                    msg("[ida-ttd] could not end the replay to switch to %s.\n", p->m_switchTo.c_str());
+                    p->m_switchTo.clear();
+                    return -1;
+                }
+            }
+            // About ten seconds for IDA to finish with the old session.
+            if ( ++p->m_switchPolls > 200 )
+            {
+                msg("[ida-ttd] the replay did not end; not switching to %s.\n", p->m_switchTo.c_str());
+                p->m_switchTo.clear();
+                return -1;
+            }
+            return 50;
+        }
         qstring path;
         path.swap(p->m_switchTo);
-        if ( path.empty() )
-            return -1;
         msg("[ida-ttd] switching the replay to %s\n", path.c_str());
-        p->start_trace_at(path.c_str());
+        if ( !p->start_trace_at(path.c_str()) )
+            warning("Could not start the replay of %s: the TTD debugger could not be selected.", path.c_str());
         return -1;
     }
 
@@ -1177,8 +1199,6 @@ namespace idattd
                 // debugger backend itself is unloaded.
                 p->hide_actions();
                 refresh_fork_manager();
-                // A switch to another recording waits for this.
-                p->continue_switch();
                 break;
             default:
                 break;

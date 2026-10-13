@@ -139,11 +139,16 @@ namespace idattd
             {
                 // A replay that could not follow all of the recording here
                 // still found what it could; say what it missed.
+                // Once per scan: the backend keeps its answer, and asking
+                // again for the same scan shows the same note.
+                static std::set<std::string> told;
                 qstring note = mgr->backend()->scan_notice();
                 if ( !note.empty() )
                 {
                     msg("[ida-ttd] %s: %s\n", what, note.c_str());
-                    info("The results are incomplete: %s", note.c_str());
+                    std::string key = std::string(what) + "|" + mgr->trace_path().c_str() + "|" + note.c_str();
+                    if ( told.insert(key).second )
+                        info("The results are incomplete: %s", note.c_str());
                 }
                 return true;
             }
