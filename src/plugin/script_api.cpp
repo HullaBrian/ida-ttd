@@ -943,6 +943,95 @@ namespace idattd
            .str("at", format_position(req.at)).str("path", req.path);
     }
 
+    static void draft_json(JObj &out)
+    {
+        const TraceManager::ForkDraft &d = mgr().fork_draft();
+        out.boolean("forking", d.active);
+        if ( !d.active )
+            return;
+        JArr regs, mem;
+        ForkRequest req;
+        mgr().fill_fork_request(&req);
+        for ( const auto &[idx, v] : req.regs )
+        {
+            JObj o;
+            o.num("reg", idx).hex("value", (uint64)v);
+            regs.add(o.done());
+        }
+        for ( const auto &[ea, bytes] : req.memory )
+        {
+            JObj o;
+            qstring hex;
+            for ( uchar b : bytes )
+                hex.cat_sprnt("%02X", b);
+            o.hex("address", ea).str("bytes", hex);
+            mem.add(o.done());
+        }
+        out.str("at", format_position(d.at)).boolean("here", mgr().at_fork_draft())
+           .raw("regs", regs.done()).raw("memory", mem.done());
+    }
+
+    // an.forkhere: make the current position a fork (TTD > Fork here). Its
+    // registers and memory are then changed through IDA's own debugger calls.
+    static void cmd_an_forkhere(const Args &, JObj &out)
+    {
+        need_session();
+        mgr().begin_fork_draft();
+        draft_json(out);
+    }
+
+    // an.forkdraft: the fork being prepared, with its changes.
+    static void cmd_an_forkdraft(const Args &, JObj &out)
+    {
+        need_session();
+        draft_json(out);
+    }
+
+    static void cmd_an_forkdiscard(const Args &, JObj &out)
+    {
+        need_session();
+        mgr().discard_fork_draft();
+        draft_json(out);
+    }
+
+    // an.forkrecord PATH N [registry=DIR] [strict] [host]: record the fork
+    // being prepared (TTD > Record fork).
+    static void cmd_an_forkrecord(const Args &a, JObj &out)
+    {
+        need_session();
+        if ( !mgr().fork_draft().active )
+            fail("there is no fork; an.forkhere first");
+        ForkRequest req;
+        mgr().fill_fork_request(&req);
+        req.path             = a.at(0);
+        req.max_instructions = a.u64(1);
+        for ( size_t i = 2; i < a.count(); i++ )
+        {
+            const qstring &t = a.at(i);
+            if ( t.starts_with("registry=") )
+                req.registry_dir = t.substr(9);
+            else if ( t == "strict" )
+                req.strict = true;
+            else if ( t == "host" )
+                req.allow_host = true;
+            else
+                fail("'%s' is not registry=DIR, strict or host", t.c_str());
+        }
+        req.note = "ida-ttd script";
+        ForkResult r = run_fork(&mgr(), req);
+        if ( !r.ok )
+        {
+            ReplayBlock b = mgr().backend()->last_replay_block();
+            fail("the fork failed%s: %s",
+                 b == ReplayBlock::HostConsent ? " (needs host)"
+                 : b == ReplayBlock::Registry ? " (needs registry=DIR)" : "",
+                 r.error.c_str());
+        }
+        out.boolean("cancelled", r.cancelled).num("instructions", (int64_t)r.instructions)
+           .str("at", format_position(req.at)).str("path", req.path)
+           .num("regs", (int64_t)req.regs.size()).num("writes", (int64_t)req.memory.size());
+    }
+
     // Trailing "registry=DIR" and "strict" words set what the replay needs.
     static ReplaySettings replay_args(const Args &a, size_t from)
     {
@@ -1178,6 +1267,10 @@ namespace idattd
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
+        { "an.forkhere",    cmd_an_forkhere,    "make this position a fork; change it with IDA's debugger calls" },
+        { "an.forkdraft",   cmd_an_forkdraft,   "the fork being prepared and its changes" },
+        { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },
+        { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] record the fork being prepared" },
         { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...] fork here" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },

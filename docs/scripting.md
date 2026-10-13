@@ -24,7 +24,8 @@ ida_ttd.h(r["rip"])
 ## Conventions
 
 - **Arguments** are separated by spaces. Write one that contains spaces in
-  double quotes. Numbers are hex, with or without `0x`.
+  double quotes, which may also sit inside a word:
+  `registry="C:\Program Files\x"`. Numbers are hex, with or without `0x`.
 - **A trailing `back`** makes a movement go backwards.
 - **Answers** are JSON objects with `"ok"`; a failure also carries `"error"`.
   Addresses and positions are strings (`"0x..."`, or the backend's own position
@@ -79,6 +80,10 @@ database. The scope is given here instead of in a dialog.
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
 | `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
 | `an.buffers [MAX] [registry=DIR] [strict]` | replay the recording (Sogen) and list the buffers it filled |
+| `an.forkhere` | make the playhead a fork (TTD > Fork here); change it with IDA's own calls (`ida_dbg.set_reg_val`, `ida_dbg.write_dbg_memory`), which only succeed at the fork's position |
+| `an.forkdraft` | the fork being prepared: its position, whether the playhead is there, and its register and memory changes |
+| `an.forkrecord PATH N [registry=DIR] [strict] [host]` | record the fork being prepared: replay to it, apply its changes, record N (hex) instructions (0: to the end) into PATH. The error says `(needs host)` or `(needs registry=DIR)` when that is what stopped it |
+| `an.forkdiscard` | drop the fork being prepared |
 | `an.fork PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
 
 `help` lists every command with its arguments, and `backends` lists the loaded

@@ -166,12 +166,12 @@ namespace idattd
         return true;
     }
 
-    qstring default_fork_path(TraceManager *mgr)
+    qstring default_fork_path(TraceManager *mgr, Position at)
     {
         if ( mgr == nullptr || mgr->trace_path().empty() )
             return qstring("fork.sogttd");
         std::filesystem::path p = std::filesystem::u8path(mgr->trace_path().c_str());
-        qstring pos = format_position(mgr->current_position());
+        qstring pos = format_position(at);
         for ( size_t k = 0; k < pos.length(); k++ )
             if ( pos[k] == ':' )
                 pos[k] = '-';

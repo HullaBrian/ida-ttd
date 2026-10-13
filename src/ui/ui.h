@@ -279,6 +279,8 @@ namespace idattd
         TraceManager   *mgr    = nullptr;
         FunctionTracer *tracer = nullptr;
         BookmarkStore  *store  = nullptr;
+        // Redraw the toolbar's position readout (a fork begun or ended).
+        std::function<void()> refresh_position;
     };
 
     // Base for the TTD handlers: the shared context, and the enabled-always
@@ -410,13 +412,33 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
-    // Fork the recording at the current position into a new one. Enabled only
-    // for a backend that can.
+    // Forking: "Fork here" makes the current position a fork, whose
+    // registers and memory are then changed in IDA as on a live target;
+    // "Record fork" runs it on into a new trace; "Discard fork" drops it.
+    // Enabled only for a backend that can fork (and the last two only with a
+    // fork begun).
     struct ForkHandler : public TtdAction
     {
         int idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
+    struct ForkRecordHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+    struct ForkDiscardHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
+    // Replays (forks, recovered strings and buffers) start with the saved
+    // hives folder and without consent to replay a recording made against
+    // the host. When one is refused for want of either, this asks the user
+    // for it and updates 'rs'; true to try again.
+    ReplaySettings initial_replay_settings(TraceManager *mgr);
+    bool ask_replay_needs(TraceManager *mgr, ReplaySettings *rs);
 
     // The syscall listing. Enabled only for a recording that has one.
     struct SyscallsHandler : public TtdAction
@@ -472,6 +494,8 @@ namespace idattd
         constexpr const char *SYSCALLS      = "idattd:syscalls";
         constexpr const char *SELF_MOD      = "idattd:self_modifying";
         constexpr const char *FORK          = "idattd:fork";
+        constexpr const char *FORK_RECORD   = "idattd:fork_record";
+        constexpr const char *FORK_DISCARD  = "idattd:fork_discard";
         constexpr const char *STRINGS       = "idattd:recover_strings";
         constexpr const char *CALL_TREE     = "idattd:call_tree";
         constexpr const char *BUFFERS       = "idattd:recover_buffers";

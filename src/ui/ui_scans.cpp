@@ -125,14 +125,29 @@ namespace idattd
     //=======================================================================
     // Actions
     //=======================================================================
-    static const char SCAN_NOTE[] =
-        "This replays the whole recording in Sogen's emulator -- seconds for a small\n"
-        "one, minutes for a large one -- with the registry hives it ran against.\n"
-        "The result is kept until the recording is closed.\n"
-        "\n"
-        "A recording made against the host (no emulation root) runs its program's\n"
-        "file and network operations on this machine again -- only allow that for\n"
-        "programs you trust.\n";
+    // Run a replay scan, asking for what it needs (host consent, the hives)
+    // when it is refused for want of it. False, reported, when it did not run.
+    static bool run_scan(TraceManager *mgr, const char *what, bool *cancelled,
+                         const std::function<bool(const ReplaySettings &, qstring *)> &scan)
+    {
+        ReplaySettings rs = initial_replay_settings(mgr);
+        qstring err;
+        for ( ;; )
+        {
+            err.clear();
+            if ( scan(rs, &err) )
+                return true;
+            if ( *cancelled || !ask_replay_needs(mgr, &rs) )
+                break;
+        }
+        if ( *cancelled )
+            msg("[ida-ttd] %s cancelled.\n", what);
+        else if ( mgr->backend() != nullptr && mgr->backend()->last_replay_block() != ReplayBlock::None )
+            msg("[ida-ttd] %s not run: %s.\n", what, err.c_str());
+        else
+            warning("The replay failed: %s", err.empty() ? "no reason given" : err.c_str());
+        return false;
+    }
 
     int idaapi RecoverStringsHandler::activate(action_activation_ctx_t *)
     {
@@ -147,33 +162,21 @@ namespace idattd
             "\n"
             "\n"
             "Every ASCII and UTF-16 string the program had in memory, and where it appeared.\n"
-            "%A\n"
+            "This replays the whole recording, seconds for a small one, minutes for a large one.\n"
+            "\n"
             "<~M~inimum length:D::8::>\n"
-            "<Registry ~h~ives folder (empty: next to the Sogen backend):F::64::>\n"
-            "<##Replay##~A~llow a recording made against the host to touch this machine:C>>\n"
             "\n";
         static sval_t min_len = 6;
-        char registry[QMAXPATH];
-        qstrncpy(registry, saved_registry_dir().c_str(), sizeof(registry));
-        ushort allow = 0;
-        if ( ask_form(form, SCAN_NOTE, &min_len, registry, &allow) <= 0 )
+        if ( ask_form(form, &min_len) <= 0 )
             return 1;
-        save_registry_dir(registry);
 
-        ReplaySettings rs;
-        rs.registry_dir = registry;
-        rs.allow_host   = allow != 0;
         std::vector<StringHit> hits;
         bool cancelled = false;
-        qstring err;
-        if ( !recover_strings(mgr(), rs, (uint32_t)std::max<sval_t>(min_len, 2), &hits, &cancelled, &err) )
-        {
-            if ( cancelled )
-                msg("[ida-ttd] string recovery cancelled.\n");
-            else
-                warning("The replay failed: %s", err.empty() ? "no reason given" : err.c_str());
+        if ( !run_scan(mgr(), "string recovery", &cancelled, [&](const ReplaySettings &rs, qstring *err)
+            {
+                return recover_strings(mgr(), rs, (uint32_t)std::max<sval_t>(min_len, 2), &hits, &cancelled, err);
+            }) )
             return 1;
-        }
         msg("[ida-ttd] %d string(s) recovered%s.\n", (int)hits.size(), cancelled ? " (cancelled)" : "");
         if ( hits.empty() )
         {
@@ -199,37 +202,15 @@ namespace idattd
                     "(Sogen recordings).");
             return 1;
         }
-        static const char form[] =
-            "Recover buffers\n"
-            "\n"
-            "\n"
-            "Every buffer the program filled -- decoded data, built strings, unpacked\n"
-            "images -- with the code that wrote it and when.\n"
-            "%A\n"
-            "<Registry ~h~ives folder (empty: next to the Sogen backend):F::64::>\n"
-            "<##Replay##~A~llow a recording made against the host to touch this machine:C>>\n"
-            "\n";
-        char registry[QMAXPATH];
-        qstrncpy(registry, saved_registry_dir().c_str(), sizeof(registry));
-        ushort allow = 0;
-        if ( ask_form(form, SCAN_NOTE, registry, &allow) <= 0 )
-            return 1;
-        save_registry_dir(registry);
-
-        ReplaySettings rs;
-        rs.registry_dir = registry;
-        rs.allow_host   = allow != 0;
+        // No questions up front: every buffer, replaying the whole recording
+        // behind a cancellable wait box.
         std::vector<BufferHit> hits;
         bool cancelled = false;
-        qstring err;
-        if ( !recover_buffers(mgr(), rs, &hits, &cancelled, &err) )
-        {
-            if ( cancelled )
-                msg("[ida-ttd] buffer recovery cancelled.\n");
-            else
-                warning("The replay failed: %s", err.empty() ? "no reason given" : err.c_str());
+        if ( !run_scan(mgr(), "buffer recovery", &cancelled, [&](const ReplaySettings &rs, qstring *err)
+            {
+                return recover_buffers(mgr(), rs, &hits, &cancelled, err);
+            }) )
             return 1;
-        }
         msg("[ida-ttd] %d buffer(s) recovered%s.\n", (int)hits.size(), cancelled ? " (cancelled)" : "");
         if ( hits.empty() )
         {

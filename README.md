@@ -59,9 +59,12 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   with the write that made it.
 - Strings and buffers recovered by replaying the recording: every string the
   program had in memory and every buffer it filled, with when and by what.
-- Fork the recording: replay the program to a position, change registers or
-  memory there, and let it run on into a new recording, which opens like any
-  other.
+- Fork the recording: TTD > Fork here makes the current position a fork.
+  Change registers (the registers window) and memory (the hex view, or Edit >
+  Patch program) as on a live target; the views show the changes there, and
+  the toolbar says "(fork)". TTD > Record fork... replays the program to the
+  fork, applies them, and lets it run on into a new recording, which opens
+  like any other.
 
 Replaying a recording made against the host (without an emulation root) runs
 the program's file and network operations on your machine again, so the
@@ -97,8 +100,8 @@ replay features ask before doing it.
    ([docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
    and put it in `plugins\ida-ttd-backends\`. The replay features (forks,
    recovered strings and buffers) also need the registry hives the recording
-   ran against: a `registry` folder next to the backend, or any folder you
-   name in their dialogs.
+   ran against: a `registry` folder next to the backend. Without one, the first
+   replay asks for the folder and remembers it.
 
 The output window names each backend as it loads, and says why when one does
 not.

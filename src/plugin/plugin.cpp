@@ -94,6 +94,7 @@ namespace idattd
         m_ctx.mgr    = &m_mgr;
         m_ctx.tracer = &m_tracer;
         m_ctx.store  = &m_bookmarks;
+        m_ctx.refresh_position = [this]() { update_position_label(); };
 
         // Icons are loaded once for the lifetime of the plugin (they are freed in
         // the destructor); the actions themselves are only registered while a
@@ -200,9 +201,16 @@ namespace idattd
               "Go to position: jump to a Sequence:Steps trace position",
               m_icons[ICO_GOTO], ITEM, MENU },
 
-            { actions::FORK, "Fork from here...", &m_fork, nullptr,
-              "Fork from here: replay the program to this position, change registers "
-              "or memory, and let it run on into a new recording (Sogen)",
+            { actions::FORK, "Fork here", &m_fork, nullptr,
+              "Fork here: make this position a fork. Change registers and memory in "
+              "IDA as on a live target, then Record fork (Sogen recordings)",
+              NO_ICON, ITEM, MENU },
+            { actions::FORK_RECORD, "Record fork...", &m_forkRecord, nullptr,
+              "Record fork: replay the program to the fork, apply the changes, and let "
+              "it run on into a new recording",
+              NO_ICON, ITEM, MENU },
+            { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
+              "Discard fork: drop the fork and its changes",
               NO_ICON, ITEM, MENU },
 
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
@@ -752,6 +760,25 @@ namespace idattd
                                         : qstring();
         if ( !pos.empty() )
             label.sprnt("Position %s", pos.c_str());
+        // Where a fork is being prepared, say so: what is shown there is the
+        // fork's changes, not the recording.
+        if ( !pos.empty() && m_mgr.at_fork_draft() )
+        {
+            const auto &d = m_mgr.fork_draft();
+            // A register, or a run of consecutive bytes, is one change.
+            size_t n = d.regs.size();
+            ea_t next = BADADDR;
+            for ( const auto &b : d.bytes )
+            {
+                if ( b.first != next )
+                    n++;
+                next = b.first + 1;
+            }
+            if ( n == 0 )
+                label.append(" (fork)");
+            else
+                label.cat_sprnt(" (fork, %u change%s)", (uint)n, n == 1 ? "" : "s");
+        }
         else
             label = "Position: XX:XX";
         // Pad to the widest label shown this session with figure spaces,
@@ -1332,6 +1359,33 @@ namespace idattd
                 size_t  size   = va_arg(va, size_t);
                 va_arg(va, qstring *);
                 return m_mgr.on_read_memory(nbytes, ea, buffer, size);
+            }
+
+            // Accepted only at a fork's position (TTD > Fork here); they
+            // become the fork's changes.
+            case debugger_t::ev_write_register:
+            {
+                thid_t          tid    = va_argi(va, thid_t);
+                int             regidx = va_arg(va, int);
+                const regval_t *value  = va_arg(va, const regval_t *);
+                qstring        *errbuf = va_arg(va, qstring *);
+                ssize_t rc = m_mgr.on_write_register(tid, regidx, value, errbuf);
+                if ( rc == DRC_OK )
+                    update_position_label();
+                return rc;
+            }
+
+            case debugger_t::ev_write_memory:
+            {
+                size_t     *nbytes = va_arg(va, size_t *);
+                ea_t        ea     = va_arg(va, ea_t);
+                const void *buffer = va_arg(va, const void *);
+                size_t      size   = va_arg(va, size_t);
+                qstring    *errbuf = va_arg(va, qstring *);
+                ssize_t rc = m_mgr.on_write_memory(nbytes, ea, buffer, size, errbuf);
+                if ( rc == DRC_OK )
+                    update_position_label();
+                return rc;
             }
 
             case debugger_t::ev_check_bpt:

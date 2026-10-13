@@ -23,4 +23,8 @@ namespace idattd
     // The same table filled from the ABI's canonical register set, which is
     // what every backend produces. 'values' has register_count(is64) entries.
     void fill_regvals(const ittd_regs &regs, bool is64, regval_t *values);
+
+    // What a fork calls the table's register 'regidx': an ITTD_REG_* index,
+    // or FORK_REG_RFLAGS. -1 for one a fork cannot change (the segments).
+    int fork_register_index(int regidx, bool is64);
 }

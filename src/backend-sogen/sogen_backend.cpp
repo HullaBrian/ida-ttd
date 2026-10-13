@@ -211,6 +211,13 @@ namespace
         return c;
     }
 
+    // A failure the caller can act on, with its own ITTD_E_* code.
+    struct coded_error : std::runtime_error
+    {
+        int code;
+        coded_error(int c, const std::string &what) : std::runtime_error(what), code(c) {}
+    };
+
     // Run 'body', mapping exceptions onto status codes and 'err'.
     template <typename F>
     int guarded(std::string &err, F &&body)
@@ -223,6 +230,11 @@ namespace
         {
             err = "canceled";
             return ITTD_E_CANCELLED;
+        }
+        catch ( const coded_error &e )
+        {
+            err = e.what();
+            return e.code;
         }
         catch ( const std::exception &e )
         {
@@ -1824,12 +1836,12 @@ namespace
         // Against the host, the program's file and network operations reach
         // this machine for real. Only on request.
         if ( root.empty() && !allow_host )
-            throw std::runtime_error("this recording was made against the host, not an emulation root: "
+            throw coded_error(ITTD_E_HOST_REPLAY, "this recording was made against the host, not an emulation root: "
                                      "replaying it runs the program's file and network operations on this "
                                      "machine again. Allow that explicitly to go ahead");
-        if ( !std::filesystem::is_directory(registry) )
-            throw std::runtime_error("no registry hives at " + registry.string()
-                                     + ": replaying the program loads the registry it ran against");
+        if ( !std::filesystem::is_regular_file(registry / "SYSTEM") )
+            throw coded_error(ITTD_E_NO_REGISTRY, "no registry hives (SYSTEM, SOFTWARE, ...) in " + registry.string()
+                                                  + ": replaying the program loads the registry it ran against");
 
         sogen::emulator_settings es{};
         es.disable_logging    = true;

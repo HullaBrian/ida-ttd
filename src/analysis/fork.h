@@ -23,9 +23,9 @@ namespace idattd
     //   0x140007000 = d:5             a little-endian 32-bit value
     bool parse_fork_memory(const char *text, std::vector<std::pair<ea_t, bytevec_t>> *out, qstring *err);
 
-    // Where a fork of the current recording at the current position goes by
-    // default: next to the recording, named after it and the position.
-    qstring default_fork_path(TraceManager *mgr);
+    // Where a fork of the current recording at 'at' goes by default: next to
+    // the recording, named after it and the position.
+    qstring default_fork_path(TraceManager *mgr, Position at);
 
     // Run the fork behind a cancellable wait box. Cancelling during the
     // recording keeps what was recorded so far, as a complete trace.

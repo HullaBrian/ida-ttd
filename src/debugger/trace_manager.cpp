@@ -130,6 +130,7 @@ namespace idattd
         m_toldThreads.clear();
         m_toldMods.clear();
         m_stepMode = false;
+        m_draft    = ForkDraft{};
     }
 
     ssize_t TraceManager::on_get_processes(procinfo_vec_t *procs)
@@ -315,7 +316,15 @@ namespace idattd
             *nbytes = 0;
             return DRC_FAILED;
         }
-        return m_memory.read(m_cursor.get(), nbytes, ea, buffer, size);
+        ssize_t rc = m_memory.read(m_cursor.get(), nbytes, ea, buffer, size);
+        if ( rc == DRC_OK && at_fork_draft() && !m_draft.bytes.empty() )
+        {
+            uchar *out = (uchar *)buffer;
+            for ( auto it = m_draft.bytes.lower_bound(ea);
+                  it != m_draft.bytes.end() && it->first < ea + *nbytes; ++it )
+                out[it->first - ea] = it->second;
+        }
+        return rc;
     }
 
     size_t TraceManager::reread_range(ea_t lo, ea_t hi)
@@ -362,7 +371,88 @@ namespace idattd
         if ( !ok || (r.have & ITTD_REGS_GP) == 0 )
             return DRC_FAILED;
         fill_regvals(r, m_is64, values);
+        if ( at_fork_draft() && (tid == NO_THREAD ? current_tid() : tid) == m_draft.tid )
+            for ( const auto &[idx, v] : m_draft.regs )
+                values[idx].set_int(v);
         return DRC_OK;
+    }
+
+    void TraceManager::begin_fork_draft()
+    {
+        m_draft        = ForkDraft{};
+        m_draft.active = is_active();
+        m_draft.at     = current_position();
+        m_draft.tid    = current_tid();
+    }
+
+    bool TraceManager::at_fork_draft() const
+    {
+        return m_draft.active && m_cursor && m_cursor->position() == m_draft.at;
+    }
+
+    // Changes only at the draft's position: anywhere else the recording says
+    // what the program did, and that cannot be edited.
+    static const char NOT_FORKING[] =
+        "a recording cannot be changed. TTD > Fork here makes the current position a fork, "
+        "whose registers and memory can be changed before it is recorded";
+
+    ssize_t TraceManager::on_write_register(thid_t tid, int regidx, const regval_t *value, qstring *errbuf)
+    {
+        qstring err;
+        int fidx = fork_register_index(regidx, m_is64);
+        if ( !at_fork_draft() )
+            err = m_draft.active ? "the fork is at another position; go back to it to change it" : NOT_FORKING;
+        else if ( (tid == NO_THREAD ? current_tid() : tid) != m_draft.tid )
+            err.sprnt("only the registers of the thread that runs next (%X) can be changed", (uint)m_draft.tid);
+        else if ( fidx < 0 || value == nullptr || value->rvtype != RVT_INT )
+            err = "a fork can change the general registers, the instruction pointer and the flags";
+        if ( !err.empty() )
+        {
+            msg("[ida-ttd] %s.\n", err.c_str());
+            if ( errbuf != nullptr )
+                *errbuf = err;
+            return DRC_FAILED;
+        }
+        m_draft.regs[regidx] = value->ival;
+        return DRC_OK;
+    }
+
+    ssize_t TraceManager::on_write_memory(size_t *nbytes, ea_t ea, const void *buffer, size_t size, qstring *errbuf)
+    {
+        *nbytes = 0;
+        if ( !at_fork_draft() )
+        {
+            qstring err = m_draft.active ? "the fork is at another position; go back to it to change it"
+                                         : NOT_FORKING;
+            msg("[ida-ttd] %s.\n", err.c_str());
+            if ( errbuf != nullptr )
+                *errbuf = err;
+            return DRC_FAILED;
+        }
+        const uchar *in = (const uchar *)buffer;
+        for ( size_t i = 0; i < size; i++ )
+            m_draft.bytes[ea + i] = in[i];
+        *nbytes = size;
+        return DRC_OK;
+    }
+
+    void TraceManager::fill_fork_request(ForkRequest *req) const
+    {
+        req->at = m_draft.at;
+        req->regs.clear();
+        req->memory.clear();
+        for ( const auto &[idx, v] : m_draft.regs )
+            req->regs.emplace_back(fork_register_index(idx, m_is64), (uint64_t)v);
+        // Runs of consecutive bytes, one write each.
+        for ( auto it = m_draft.bytes.begin(); it != m_draft.bytes.end(); )
+        {
+            ea_t start = it->first;
+            bytevec_t run;
+            ea_t next = start;
+            for ( ; it != m_draft.bytes.end() && it->first == next; ++it, ++next )
+                run.push_back(it->second);
+            req->memory.emplace_back(start, std::move(run));
+        }
     }
 
     ssize_t TraceManager::on_rebase_if_required_to(ea_t new_base)

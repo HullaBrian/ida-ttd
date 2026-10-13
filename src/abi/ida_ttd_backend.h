@@ -81,6 +81,11 @@ extern "C" {
 #define ITTD_E_OPEN_FAILED    -4   /* the file is not a recording we can read */
 #define ITTD_E_NO_POSITION    -5   /* the position is not in this recording */
 #define ITTD_E_CANCELLED      -6   /* the caller's progress sink said to stop */
+/* A replay (fork_open, query_strings, query_buffers) was refused because the
+ * recording was made against the host and ITTD_FORK_ALLOW_HOST was not given. */
+#define ITTD_E_HOST_REPLAY    -7
+/* A replay found no registry hives where it looked (ittd_fork_settings). */
+#define ITTD_E_NO_REGISTRY    -8
 #define ITTD_E_FAILED        -100  /* anything else; see ittd_last_error */
 
 /* ----------------------------------------------------------------- position */

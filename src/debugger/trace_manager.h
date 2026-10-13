@@ -160,6 +160,31 @@ namespace idattd
         ITraceBackend             *backend() const { return m_backend; }
         ITraceCursor              *cursor() const  { return m_cursor.get(); }
 
+        // ---- a fork being prepared ------------------------------------------
+        //
+        // "Fork here" fixes a position. Registers and memory changed there
+        // through IDA -- the registers window, the hex view, patching -- are
+        // kept as the fork's changes, and shown instead of the recording's
+        // while the cursor stands there; elsewhere the recording is
+        // read-only. Recording the fork turns them into a ForkRequest.
+        struct ForkDraft
+        {
+            bool     active = false;
+            Position at;
+            thid_t   tid = NO_THREAD;           // the thread that runs next
+            std::map<int, uint64_t> regs;       // IDA register index, value
+            std::map<ea_t, uchar>   bytes;
+        };
+        void             begin_fork_draft();
+        void             discard_fork_draft() { m_draft = ForkDraft{}; }
+        const ForkDraft &fork_draft() const { return m_draft; }
+        // The cursor stands at the draft's position.
+        bool             at_fork_draft() const;
+        // The draft's position and changes, as a request to record.
+        void             fill_fork_request(ForkRequest *req) const;
+        ssize_t on_write_register(thid_t tid, int regidx, const regval_t *value, qstring *errbuf);
+        ssize_t on_write_memory(size_t *nbytes, ea_t ea, const void *buffer, size_t size, qstring *errbuf);
+
         // Called once per stop (from HT_DBG dbg_suspend_process), when the
         // debugger memory cache is valid for the new position: name exports for
         // any newly-seen module and disassemble a run of code around RIP.
@@ -253,5 +278,6 @@ namespace idattd
         PendingRequest m_pending;
 
         std::string m_targetName; // file name of the analyzed binary (for rebase)
+        ForkDraft   m_draft;
     };
 }

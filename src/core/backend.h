@@ -243,6 +243,14 @@ namespace idattd
         qstring  preview;
     };
 
+    // Why a replay was refused before it ran, when the user can fix it.
+    enum class ReplayBlock
+    {
+        None,
+        HostConsent,    // made against the host: needs ReplaySettings::allow_host
+        Registry,       // no registry hives where the replay looked
+    };
+
     // A fork: replay to 'at', change registers and memory there, and run on,
     // recording into a new trace at 'path' (ITTD_CAP_FORK).
     struct ForkRequest
@@ -576,6 +584,11 @@ namespace idattd
 
         // Why the last call failed, when the backend says; empty otherwise.
         virtual qstring last_error() const { return qstring(); }
+
+        // What the last replay (record_fork, query_strings, query_buffers) was
+        // refused for, when it was something the user can give: consent to
+        // replay a recording made against the host, or the registry hives.
+        virtual ReplayBlock last_replay_block() const { return ReplayBlock::None; }
 
         // Fork the recording (see ForkRequest). Requires capabilities().fork.
         // Long: a replay to the position, then the recording.

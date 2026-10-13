@@ -634,13 +634,16 @@ command, and a probe check:
 | `ITTD_CAP_SYSCALLS` | `query_syscalls` | Syscalls... | `an.syscalls` |
 | `ITTD_CAP_SELF_MODIFYING` | `query_self_modifying` | Self-modifying code... | `an.selfmod` |
 | `ITTD_CAP_REPLAY_SCANS` | `query_strings`, `query_buffers` | Recover strings..., Recover buffers... | `an.strings`, `an.buffers` |
-| `ITTD_CAP_FORK` | `fork_open` ... `fork_close` | Fork from here... | `an.fork` |
+| `ITTD_CAP_FORK` | `fork_open` ... `fork_close` | Fork here, Record fork..., Discard fork | `an.forkhere`, `an.forkrecord`, `an.fork` |
 
 The first two read the recording. The replay scans and forks run Sogen's
 emulator, so the Sogen backend now links `windows-ttd` and `windows-emulator`
 and needs the registry hives the recording ran against. A recording made
 against the host replays with this machine's files and network, so those
-features refuse it unless the caller passes `ITTD_FORK_ALLOW_HOST`.
+features refuse it unless the caller passes `ITTD_FORK_ALLOW_HOST`. A replay
+refused for that answers `ITTD_E_HOST_REPLAY`, and one that found no hives
+`ITTD_E_NO_REGISTRY`, so the plugin asks the user for exactly that and tries
+again rather than putting both in every dialog.
 
 Phases 1–3 are worth doing whether or not a second backend ever lands: they are
 the open items of the existing code review.

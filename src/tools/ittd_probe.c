@@ -900,10 +900,22 @@ int main(int argc, char **argv)
         printf("\nwithout ITTD_FORK_ALLOW_HOST: %s\n", rc == ITTD_OK ? "opened" : api->last_error(B));
         if ( rc == ITTD_OK )
             api->fork_close(fk);
-        check(rc != ITTD_OK && strstr(api->last_error(B), "against the host") != NULL,
-              "  a host recording is not replayed without consent");
+        check(rc == ITTD_E_HOST_REPLAY && strstr(api->last_error(B), "against the host") != NULL,
+              "  a host recording is not replayed without consent (ITTD_E_HOST_REPLAY)");
         fs.flags = ITTD_FORK_ALLOW_HOST;
         fk = NULL;
+
+        /* A folder with no hives in it is named as such. */
+        {
+            const char *real = fs.registry_dir;
+            fs.registry_dir = "C:\\";
+            rc = api->fork_open(B, mid, &fs, NULL, &fk);
+            if ( rc == ITTD_OK )
+                api->fork_close(fk);
+            check(rc == ITTD_E_NO_REGISTRY, "  a folder without hives is ITTD_E_NO_REGISTRY");
+            fs.registry_dir = real;
+            fk = NULL;
+        }
 
         t0 = now_ms();
         rc = api->fork_open(B, mid, &fs, NULL, &fk);

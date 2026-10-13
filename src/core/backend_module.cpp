@@ -751,6 +751,14 @@ namespace idattd
         return fs;
     }
 
+    int BackendModule::note_replay(int rc)
+    {
+        m_replayBlock = rc == ITTD_E_HOST_REPLAY ? ReplayBlock::HostConsent
+                      : rc == ITTD_E_NO_REGISTRY ? ReplayBlock::Registry
+                      : ReplayBlock::None;
+        return rc;
+    }
+
     QueryResult BackendModule::query_strings(const ReplaySettings &settings, uint32_t min_length,
                                              std::vector<StringHit> *out, ProgressSink *progress)
     {
@@ -765,6 +773,7 @@ namespace idattd
         {
             return m_api->query_strings(m_handle, &fs, min_length, b, cap, n, &trunc, pb.get());
         });
+        note_replay(rc);
         out->reserve(v.size());
         for ( const ittd_string_hit &x : v )
         {
@@ -793,6 +802,7 @@ namespace idattd
         {
             return m_api->query_buffers(m_handle, &fs, b, cap, n, &trunc, pb.get());
         });
+        note_replay(rc);
         out->reserve(v.size());
         for ( const ittd_buffer_hit &x : v )
         {
@@ -834,7 +844,7 @@ namespace idattd
         fs.registry_dir   = req.registry_dir.empty() ? nullptr : req.registry_dir.c_str();
         fs.emulation_root = nullptr;
         ittd_fork *f = nullptr;
-        int rc = m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f);
+        int rc = note_replay(m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f));
         if ( rc != ITTD_OK || f == nullptr )
             return failed(rc);
         // Whatever happens below, the fork goes.

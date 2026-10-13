@@ -1,4 +1,5 @@
 #include "debugger/registers.h"
+#include "core/backend.h"
 
 namespace idattd
 {
@@ -149,4 +150,19 @@ namespace idattd
             values[i++].set_int(r.seg[k]);
     }
 
+    int fork_register_index(int regidx, bool is64)
+    {
+        static const int x86_gp[] = {
+            ITTD_REG_RAX, ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_RBX,
+            ITTD_REG_RSP, ITTD_REG_RBP, ITTD_REG_RSI, ITTD_REG_RDI, ITTD_REG_RIP,
+        };
+        const int ngp = is64 ? ITTD_REG_GP_COUNT : (int)qnumber(x86_gp);
+        if ( regidx < 0 )
+            return -1;
+        if ( regidx < ngp )
+            return is64 ? regidx : x86_gp[regidx];
+        if ( regidx == ngp )
+            return FORK_REG_RFLAGS;
+        return -1;
+    }
 }

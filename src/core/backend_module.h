@@ -88,14 +88,19 @@ namespace idattd
         const qstring &path() const { return m_path; }
         // The backend's own reason for its last failure on the open trace.
         qstring last_error() const override;
+        ReplayBlock last_replay_block() const override { return m_replayBlock; }
 
     private:
+        // Keeps what a replay call's status code says the user can fix.
+        int note_replay(int rc);
+
         const ittd_backend_api *m_api = nullptr;
         qstring       m_path;
         ittd_backend *m_handle = nullptr;
         bool          m_prepared = false;
         TraceInfo     m_info;
         Capabilities  m_caps;
+        ReplayBlock   m_replayBlock = ReplayBlock::None;
     };
 
     // Load every backend DLL in IDA's plugins/ida-ttd-backends and
