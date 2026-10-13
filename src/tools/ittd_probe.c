@@ -357,6 +357,18 @@ int main(int argc, char **argv)
                     printf("    write breakpoint on [rsp-8, rsp): stop %d at %s\n", stop, pos_text(landed));
                     check(stop == ITTD_STOP_BREAKPOINT && landed.lo == e->pos.lo,
                           "  a write breakpoint on the return-address slot stops at the call");
+
+                    /* And run backward into it from the callee's entry, just
+                       after the write: the same stop. */
+                    api->cursor_seek(c, e->entry_pos);
+                    api->nav_breakpoints(c, &bp, 1);
+                    stop = -1;
+                    api->nav_run(c, 0, &stop);
+                    api->cursor_position(c, &landed);
+                    api->nav_breakpoints(c, NULL, 0);
+                    printf("    ... run backward into it: stop %d at %s\n", stop, pos_text(landed));
+                    check(stop == ITTD_STOP_BREAKPOINT && landed.lo == e->pos.lo && landed.hi == e->pos.hi,
+                          "  running backward into the write stops at the call too");
                 }
             }
             if ( !is_none(e->pos) && !is_none(e->ret_pos) && is_call && api->nav_step_over != NULL )

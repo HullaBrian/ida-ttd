@@ -18,6 +18,7 @@ namespace idattd
     MsTtdNavigator::MsTtdNavigator(MsTtdBackend *backend, MsTtdCursor *cursor)
         : m_backend(backend), m_cursor(cursor)
     {
+        record_hits();
     }
 
     MsTtdNavigator::~MsTtdNavigator()
@@ -25,6 +26,7 @@ namespace idattd
         // The watchpoints live on the cursor, which outlives this navigator.
         for ( const MemoryWatchpointData &wp : m_userWatchpoints )
             cur()->RemoveMemoryWatchpoint(wp);
+        cur()->SetMemoryWatchpointCallback(nullptr, 0);
         cur()->SetEventMask(EventMask::None);
     }
 
@@ -76,7 +78,57 @@ namespace idattd
         return n;
     }
 
-    StopReason MsTtdNavigator::settle(EventType sr, bool forward)
+    bool MsTtdNavigator::data_breakpoints_armed() const
+    {
+        for ( const MemoryWatchpointData &wp : m_userWatchpoints )
+            if ( wp.AccessMask != DataAccessMask::Execute )
+                return true;
+        return false;
+    }
+
+    static bool is_data_access(DataAccessType t)
+    {
+        return t == DataAccessType::Read || t == DataAccessType::Write || t == DataAccessType::Overwrite;
+    }
+
+    // The context is the navigator's m_lastHitData. A plain function, because
+    // the SDK keeps a pointer to the callable it is given, not a copy.
+    static bool __fastcall record_hit(uintptr_t context, ICursorView::MemoryWatchpointResult const &w,
+                                      IThreadView const *)
+    {
+        *reinterpret_cast<bool *>(context) = is_data_access(w.AccessType);
+        return true;
+    }
+
+    void MsTtdNavigator::record_hits()
+    {
+        cur()->SetMemoryWatchpointCallback(&record_hit, reinterpret_cast<uintptr_t>(&m_lastHitData));
+    }
+
+    // Did the instruction just before the playhead make an access a data
+    // breakpoint watches? A backward run cannot say -- the engine would report
+    // it at the playhead itself, and skips that -- so replay that one
+    // instruction forward and see. When it did, stop on it.
+    bool MsTtdNavigator::data_hit_just_before()
+    {
+        if ( !data_breakpoints_armed() )
+            return false;
+        const TtdPosition here = cur()->GetPosition();
+        cur()->ReplayBackward(TtdPosition::Min, StepCount{ 1 });
+        const TtdPosition before = cur()->GetPosition();
+        if ( !(before < here) )
+        {
+            cur()->SetPosition(here);
+            return false;
+        }
+        m_lastHitData = false;
+        ICursorView::ReplayResult r = cur()->ReplayForward(TtdPosition::Max, StepCount{ 1 });
+        bool hit = r.StopReason == EventType::MemoryWatchpoint && m_lastHitData;
+        cur()->SetPosition(hit ? before : here);
+        return hit;
+    }
+
+    StopReason MsTtdNavigator::settle(EventType sr, bool forward, ea_t target)
     {
         // Do this FIRST and unconditionally: a run that reached either end of
         // the trace leaves the cursor on the limit sentinel, not on a real
@@ -85,7 +137,16 @@ namespace idattd
 
         // A breakpoint stop is not a trace edge.
         if ( sr == EventType::MemoryWatchpoint )
+        {
+            // An execute breakpoint or the movement's own target stops on the
+            // instruction. A data breakpoint stops just after the access, so
+            // step back onto the instruction that made it.
+            ea_t pc = (ea_t)(uint64_t)cur()->GetProgramCounter();
+            if ( pc != target && m_lastHitData )
+                cur()->ReplayBackward(TtdPosition::Min, StepCount{ 1 });
+            m_lastHitData = false;
             return StopReason::Breakpoint;
+        }
         IReplayEngine *e = m_backend->engine();
         TtdPosition p = cur()->GetPosition();
         if ( forward && !(p < e->GetLastPosition()) )
@@ -102,6 +163,8 @@ namespace idattd
 
     StopReason MsTtdNavigator::run(bool forward)
     {
+        if ( !forward && data_hit_just_before() )
+            return StopReason::Breakpoint;
         return settle(navigate_steps(forward, StepCount::Max), forward);
     }
 
@@ -123,8 +186,10 @@ namespace idattd
 
     StopReason MsTtdNavigator::run_to(ea_t addr, bool forward)
     {
+        if ( !forward && data_hit_just_before() )
+            return StopReason::Breakpoint;
         EventType sr = forward ? navigate_forward_to(addr) : navigate_backward_to(addr);
-        StopReason r = settle(sr, forward);
+        StopReason r = settle(sr, forward, addr);
         // The target is a temporary watchpoint, so reaching it reads as a
         // watchpoint stop; it is the movement completing, unless a user
         // breakpoint somewhere else stopped it first.
@@ -201,12 +266,17 @@ namespace idattd
         // The callback is shared by all watchpoints on the cursor: accept the
         // step target only on the right thread and frame, but always stop on
         // any other (user) breakpoint.
-        auto stop_cb = [addr, min_sp, utid](ICursorView::MemoryWatchpointResult const &w,
-                                            IThreadView const *t) noexcept -> bool
+        auto stop_cb = [this, addr, min_sp, utid](ICursorView::MemoryWatchpointResult const &w,
+                                                  IThreadView const *t) noexcept -> bool
         {
-            if ( (uint64_t)w.Address == (uint64_t)addr )
+            if ( (uint64_t)w.Address == (uint64_t)addr && w.AccessType != DataAccessType::Read
+              && w.AccessType != DataAccessType::Write && w.AccessType != DataAccessType::Overwrite )
+            {
+                m_lastHitData = false;
                 return (uint32_t)t->GetThreadInfo().UniqueId == utid
                     && (uint64_t)t->GetStackPointer() >= min_sp;
+            }
+            m_lastHitData = is_data_access(w.AccessType);
             return true; // user breakpoint
         };
         cur()->SetMemoryWatchpointCallback(stop_cb);
@@ -215,7 +285,7 @@ namespace idattd
         ICursorView::ReplayResult r = cur()->ReplayForward();
 
         drop_temp_exec_watchpoint(wp, owned);
-        cur()->SetMemoryWatchpointCallback(nullptr, 0);
+        record_hits();
         restore_event_mask();
 
         if ( r.StopReason != EventType::MemoryWatchpoint )

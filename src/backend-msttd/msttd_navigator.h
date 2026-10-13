@@ -63,7 +63,18 @@ namespace idattd
         // The movement's engine result as a stop reason, after clamping onto a
         // real position: a run that reached either end leaves the cursor on
         // the limit sentinel, and everything after it works from there.
-        StopReason settle(EventType sr, bool forward);
+        StopReason settle(EventType sr, bool forward, ea_t target = BADADDR);
+
+        // Data breakpoints. The engine reports a data watchpoint just after
+        // the instruction that made the access, in either direction, and a
+        // backward run never reports the instruction right before where it
+        // started; the ABI's stop is at that instruction.
+        bool data_breakpoints_armed() const;
+        bool data_hit_just_before();
+        // Records, for every watchpoint that stops a replay, whether it was a
+        // data access: the program counter alone cannot say, since an execute
+        // breakpoint on any byte of an instruction stops on its first.
+        void record_hits();
 
         MsTtdBackend *m_backend;
         MsTtdCursor  *m_cursor;
@@ -71,5 +82,6 @@ namespace idattd
         std::set<TTD::Replay::MemoryWatchpointData> m_userWatchpoints;
         qstring m_notice;
         ProgressSink *m_progress = nullptr;
+        bool          m_lastHitData = false;   // see record_hits()
     };
 }
