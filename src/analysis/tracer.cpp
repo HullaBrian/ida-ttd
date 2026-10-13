@@ -343,41 +343,68 @@ namespace idattd
         show_wait_box("Resolving %d call(s)... (Cancel to stop)", (int)calls.size());
         if ( cur )
         {
-            size_t resolved = 0;
-            for ( const CallEvent &c : calls )
+            // Every place to read, then read them in position order. A call's
+            // arguments and its return are far apart, and a backend that
+            // rebuilds state from the nearest checkpoint (Sogen) pays for that
+            // checkpoint again each time the reads alternate between two --
+            // which, call by call, they otherwise always do.
+            struct Visit { Position where; size_t call; bool ret; };
+            std::vector<Visit> visits;
+            std::vector<FunctionInvocation> slot(calls.size());
+            std::vector<bool> keep(calls.size(), false);
+            for ( size_t i = 0; i < calls.size(); i++ )
+            {
+                const CallEvent &c = calls[i];
+                auto disp = tgt2disp.find(c.target);
+                if ( disp == tgt2disp.end() )
+                    continue;
+                // The arguments are decoded as the caller left them, just
+                // before the call. Without a call -- the thread began in the
+                // callee, or a jump got there -- they are read at the entry
+                // instead (see below).
+                Position where = c.is_call && c.pos.is_valid() ? c.pos : c.entry_pos;
+                if ( !where.is_valid() )
+                    continue;
+                keep[i] = true;
+                slot[i].func_ea = disp->second;
+                slot[i].tid     = c.tid;
+                slot[i].pos     = where;
+                visits.push_back(Visit{ where, i, false });
+                if ( c.ret_pos.is_valid() )
+                    visits.push_back(Visit{ c.ret_pos, i, true });
+            }
+            std::sort(visits.begin(), visits.end(),
+                      [](const Visit &x, const Visit &y) { return x.where < y.where; });
+
+            size_t done = 0;
+            for ( const Visit &v : visits )
             {
                 if ( user_cancelled() )
                 {
                     cancelled = true;
                     break;
                 }
-                if ( (resolved & 0x3F) == 0 )
-                    replace_wait_box("Resolving call %d of %d... (Cancel to stop)",
-                                     (int)resolved + 1, (int)calls.size());
-                resolved++;
-
-                auto disp = tgt2disp.find(c.target);
-                if ( disp == tgt2disp.end() )
+                if ( (done & 0x3F) == 0 )
+                    replace_wait_box("Resolving calls: %d of %d values... (Cancel to stop)",
+                                     (int)done + 1, (int)visits.size());
+                done++;
+                if ( !cur->seek(v.where) )
                     continue;
-
-                FunctionInvocation ev;
-                ev.func_ea = disp->second;
-                ev.tid     = c.tid;
-
-                // The arguments are decoded as the caller left them, just
-                // before the call. Without a call -- the thread began in the
-                // callee, or a jump got there -- read them at the entry
-                // instead, where the return address is already on the stack:
-                // step the stack pointer back over it so the stack arguments
-                // are where a call site would have them.
-                bool at_call = c.is_call && c.pos.is_valid();
-                Position where = at_call ? c.pos : c.entry_pos;
-                if ( !where.is_valid() || !cur->seek(where) )
-                    continue;
-                ev.pos = where;
-                GuestView view = guest_view(cur.get());
-                if ( !at_call )
+                FunctionInvocation &ev = slot[v.call];
+                if ( v.ret )
                 {
+                    ev.end_pos = v.where;
+                    ev.retval  = render_return(guest_view(cur.get()), ev.func_ea, m_is64);
+                    ev.has_ret = true;
+                    continue;
+                }
+                GuestView view = guest_view(cur.get());
+                const CallEvent &c = calls[v.call];
+                if ( !(c.is_call && c.pos.is_valid()) )
+                {
+                    // At the entry the return address is already on the
+                    // stack: step the stack pointer back over it so the stack
+                    // arguments are where a call site would have them.
                     auto regs = view.regs;
                     view.regs = [regs, ptr](ittd_regs *r)
                     {
@@ -388,14 +415,10 @@ namespace idattd
                     };
                 }
                 extract_args(view, ev.func_ea, m_is64, ev.args);
-                if ( c.ret_pos.is_valid() && cur->seek(c.ret_pos) )
-                {
-                    ev.end_pos = c.ret_pos;
-                    ev.retval  = render_return(guest_view(cur.get()), ev.func_ea, m_is64);
-                    ev.has_ret = true;
-                }
-                built.push_back(std::move(ev));
             }
+            for ( size_t i = 0; i < calls.size(); i++ )
+                if ( keep[i] )
+                    built.push_back(std::move(slot[i]));
         }
 
         std::sort(built.begin(), built.end(),

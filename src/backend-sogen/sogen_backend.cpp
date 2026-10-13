@@ -1431,13 +1431,17 @@ namespace
                     };
                 }
                 std::vector<ttd::call_event> v = t.calls_to(targets[i], s0, s1, ctl);
-                for ( ttd::call_event &e : v )
-                    if ( !e.is_call && e.return_step == UINT64_MAX )
-                        e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
                 all.insert(all.end(), v.begin(), v.end());
             }
             std::sort(all.begin(), all.end(), [](const ttd::call_event &a, const ttd::call_event &b)
                       { return a.entry_step < b.entry_step; });
+            // In entry order, after the sort: each needs the CPU at its entry,
+            // and the reader rebuilds that from the nearest checkpoint, which
+            // it keeps only one of -- out of order, nearly every entry would
+            // pay for its checkpoint again.
+            for ( ttd::call_event &e : all )
+                if ( !e.is_call && e.return_step == UINT64_MAX )
+                    e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
             set_truncated(out_truncated, all.size(), cap, buf != nullptr);
             return fill(all, buf, cap, out_count, [](const ttd::call_event &e)
             {
