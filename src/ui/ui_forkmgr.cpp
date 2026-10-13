@@ -3,11 +3,13 @@
 // recording; double-clicking one switches this IDA to it or opens it in
 // another.
 //
-// The graph viewer is created inside a widget of our own (create_graph_viewer's
-// 'parent'), not as a window by itself. IDA 9.4 refreshes the current
-// instruction in every top-level graph window after a step or a register
-// change, treating each as a disassembly graph; with the Fork manager a
-// window of that kind, that took IDA down.
+// IDA 9.4 bug, worked around in guard_graph() below: after a step or a
+// register change, IDA updates the current instruction in every graph view
+// as if each one showed a disassembly graph, calling virtual functions that
+// only a disassembly graph has (slots 35 and 39, "the node at this address"
+// and "the line in it"). A plugin's graph (IDA's user_graph_t, the SDK's
+// interactive_graph_t) has 33, so the calls ran off the end of its virtual
+// table into another class's, and IDA crashed.
 #include "ui/ui.h"
 #include "analysis/fork.h"
 #include "analysis/fork_registry.h"
@@ -18,7 +20,6 @@
 namespace idattd
 {
     static const char FM_TITLE[] = "TTD forks";
-    static const char FM_GRAPH[] = "TTD fork graph";
     static const char FM_NODE[]  = "$ ida-ttd fork graph";
 
     namespace
@@ -36,7 +37,6 @@ namespace idattd
         struct ForkGraph
         {
             const ActionContext     *ctx  = nullptr;
-            TWidget                 *host = nullptr;
             graph_viewer_t          *gv   = nullptr;
             std::vector<ForkRecord>  records;
             std::vector<Node>        nodes;
@@ -117,6 +117,110 @@ namespace idattd
         }
     }
 
+    //-----------------------------------------------------------------------
+    // The graph's extra virtual table
+    //-----------------------------------------------------------------------
+    // Give our graph object a copy of its class's virtual table that goes on
+    // past the class's own functions with harmless ones: "no node" for the
+    // address lookup IDA's current-instruction update makes, nothing for the
+    // rest. Only code that wrongly takes the graph for a disassembly graph
+    // calls past the class's own functions, so nothing else changes. The
+    // copy keeps the run-time type information entry in front of the table.
+    namespace
+    {
+        constexpr size_t EXTRA_SLOTS = 64;      // beyond the class's own
+        constexpr size_t NODE_AT_LINE_SLOT = 39;  // "-1": no node, skip it
+
+        uint64_t idaapi slot_nothing() { return 0; }
+        int64_t  idaapi slot_no_node() { return -1; }
+
+        struct GuardedTable
+        {
+            void *const      *original = nullptr;
+            std::vector<void *> slots;           // [0] = the type information, then the table
+        };
+        std::vector<GuardedTable *> g_tables;    // never freed: IDA may keep a graph past us
+
+        bool executable(const void *p)
+        {
+            MEMORY_BASIC_INFORMATION mbi;
+            if ( p == nullptr || VirtualQuery(p, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT )
+                return false;
+            const DWORD x = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+            return (mbi.Protect & x) != 0;
+        }
+
+        bool readable(const void *p, size_t n)
+        {
+            MEMORY_BASIC_INFORMATION mbi;
+            if ( p == nullptr || VirtualQuery(p, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT
+              || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0 )
+                return false;
+            return (const char *)p + n <= (const char *)mbi.BaseAddress + mbi.RegionSize;
+        }
+
+        // The class name the compiler recorded for the object's table.
+        qstring class_of(void *const *vtbl)
+        {
+            struct Col { uint32_t sig, off, cdoff, td, cd, self; };
+            if ( !readable(vtbl - 1, sizeof(void *)) )
+                return qstring();
+            const Col *col = (const Col *)vtbl[-1];
+            if ( !readable(col, sizeof(Col)) || col->sig != 1 )
+                return qstring();
+            const char *base = (const char *)col - col->self;
+            const char *name = base + col->td + 16;
+            if ( !readable(name, 64) )
+                return qstring();
+            return qstring(name, strnlen(name, 64));
+        }
+    }
+
+    static void guard_graph(interactive_graph_t *g)
+    {
+        if ( g == nullptr )
+            return;
+        void *const **vptr = (void *const **)g;
+        void *const *vtbl = *vptr;
+        for ( const GuardedTable *t : g_tables )
+            if ( vtbl == t->slots.data() + 1 )
+                return;                             // already ours
+        // Only IDA's own graph class, whose layout this is about.
+        if ( class_of(vtbl) != ".?AVuser_graph_t@@" )
+        {
+            msg("[ida-ttd] the fork graph is not the kind expected (%s); stepping with it open may crash IDA.\n",
+                class_of(vtbl).c_str());
+            return;
+        }
+        GuardedTable *t = nullptr;
+        for ( GuardedTable *x : g_tables )
+            if ( x->original == vtbl )
+                t = x;
+        if ( t == nullptr )
+        {
+            size_t own = 0;
+            while ( own < 256 && readable(vtbl + own, sizeof(void *)) && executable(vtbl[own]) )
+                own++;
+            // 33 in IDA 9.4; the lookups IDA makes are slots 35 and 39.
+            if ( own < 30 || own >= 35 )
+            {
+                msg("[ida-ttd] the fork graph's class has %d functions, not the 33 expected; "
+                    "stepping with it open may crash IDA.\n", (int)own);
+                return;
+            }
+            t = new GuardedTable;
+            t->original = vtbl;
+            t->slots.push_back(vtbl[-1]);
+            for ( size_t i = 0; i < own; i++ )
+                t->slots.push_back(vtbl[i]);
+            for ( size_t i = own; i < own + EXTRA_SLOTS; i++ )
+                t->slots.push_back(i == NODE_AT_LINE_SLOT ? (void *)&slot_no_node : (void *)&slot_nothing);
+            g_tables.push_back(t);
+            msg("[ida-ttd] fork graph: guarded IDA's current-instruction update (%d functions).\n", (int)own);
+        }
+        *(void *const **)vptr = t->slots.data() + 1;
+    }
+
     static void act_on(int node)
     {
         if ( node < 0 || node >= (int)g_fm.nodes.size() )
@@ -157,6 +261,7 @@ namespace idattd
             case grcode_user_refresh:
             {
                 interactive_graph_t *g = va_arg(va, interactive_graph_t *);
+                guard_graph(g);
                 g_fm.rebuild();
                 g->clear();
                 g->resize((int)g_fm.nodes.size());
@@ -164,6 +269,11 @@ namespace idattd
                     g->add_edge(src, dst, nullptr);
                 return 1;
             }
+
+            // A new graph object (grouping makes one): guard it too.
+            case grcode_changed_graph:
+                guard_graph(va_arg(va, interactive_graph_t *));
+                return 0;
 
             case grcode_user_text:
             {
@@ -208,13 +318,12 @@ namespace idattd
         return 0;
     }
 
-    // Still open? IDA deletes both widgets when the user closes the window.
+    // Still open? IDA deletes the widget when the user closes it.
     static bool fm_open()
     {
-        if ( g_fm.host != nullptr && find_widget(FM_TITLE) == g_fm.host )
+        if ( g_fm.gv != nullptr && find_widget(FM_TITLE) == (TWidget *)g_fm.gv )
             return true;
-        g_fm.host = nullptr;
-        g_fm.gv   = nullptr;
+        g_fm.gv = nullptr;
         return false;
     }
 
@@ -267,19 +376,19 @@ namespace idattd
 
     void refresh_fork_manager()
     {
-        if ( fm_open() && g_fm.gv != nullptr )
+        if ( fm_open() )
             refresh_viewer(g_fm.gv);
     }
 
     bool fork_manager_widget(TWidget *w)
     {
-        return w != nullptr && fm_open() && (w == g_fm.host || w == (TWidget *)g_fm.gv);
+        return w != nullptr && fm_open() && w == (TWidget *)g_fm.gv;
     }
 
     void close_fork_manager()
     {
         if ( fm_open() )
-            close_widget(g_fm.host, 0);
+            close_widget(g_fm.gv, 0);
         g_fm = ForkGraph();
     }
 
@@ -289,26 +398,19 @@ namespace idattd
         if ( fm_open() )
         {
             refresh_fork_manager();
-            activate_widget(g_fm.host, true);
-            return 1;
-        }
-        g_fm.host = create_empty_widget(FM_TITLE);
-        if ( g_fm.host == nullptr )
-        {
-            warning("Could not open the fork graph.");
+            activate_widget(g_fm.gv, true);
             return 1;
         }
         netnode id;
         id.create(FM_NODE);
-        g_fm.gv = create_graph_viewer(FM_GRAPH, id, fm_callback, nullptr, 0, g_fm.host);
+        g_fm.gv = create_graph_viewer(FM_TITLE, id, fm_callback, nullptr, 0);
         if ( g_fm.gv == nullptr )
         {
-            close_widget(g_fm.host, 0);
-            g_fm.host = nullptr;
             warning("Could not open the fork graph.");
             return 1;
         }
-        display_widget(g_fm.host, WOPN_DP_TAB | WOPN_RESTORE);
+        guard_graph(get_viewer_graph(g_fm.gv));
+        display_widget(g_fm.gv, WOPN_DP_TAB | WOPN_RESTORE);
         viewer_fit_window(g_fm.gv);
         return 1;
     }
