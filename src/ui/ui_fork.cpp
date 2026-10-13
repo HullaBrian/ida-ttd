@@ -222,6 +222,7 @@ namespace idattd
                 msg("[ida-ttd] fork not recorded: %s.\n", r.error.c_str());
             return 1;
         }
+        refresh_fork_manager();
         msg("[ida-ttd] forked at %s: %llu instruction(s) recorded into %s%s.\n",
             format_position(req.at).c_str(), (unsigned long long)r.instructions, path,
             r.cancelled ? " (stopped early; what ran is a complete trace)" : "");

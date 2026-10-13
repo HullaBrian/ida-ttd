@@ -97,6 +97,9 @@ namespace idattd
         // Starting a session rebases the program and adds segments, neither of
         // which is safe while the analysis queue is still draining.
         void schedule_trace_offer();
+        void switch_trace(const qstring &path);
+        // The old session is gone: start the one switch_trace() asked for.
+        void continue_switch();
         void start_trace_session();     // the action body; no prompting
         // Make IDA's debugger machinery point at us and know where the trace is,
         // so Debugger > Process options and Start process are already correct
@@ -186,6 +189,9 @@ namespace idattd
         ForkHandler               m_fork;
         ForkRecordHandler         m_forkRecord;
         ForkDiscardHandler        m_forkDiscard;
+        ForkManagerHandler        m_forkManager;
+        ForkOpenHandler           m_forkOpen;
+        ForkForgetHandler         m_forkForget;
         RecoverStringsHandler     m_recoverStrings;
         RecoverBuffersHandler     m_recoverBuffers;
         CallTreeHandler           m_callTree;
@@ -269,6 +275,11 @@ namespace idattd
         // offered again on the very next step -- but reopening the trace retries.
         OneShotTimer    m_autoCoverTimer;
         OneShotTimer    m_attachTimer;
+        // Switching the replay to another recording: stop, then start on it
+        // once IDA has finished with the old session.
+        qstring         m_switchTo;
+        OneShotTimer    m_switchTimer;
+        static int idaapi switch_cb(void *ud);
         OneShotTimer    m_pdbTimer;          // applies downloaded PDBs while paused
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;

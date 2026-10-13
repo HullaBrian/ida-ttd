@@ -136,7 +136,17 @@ namespace idattd
         {
             err.clear();
             if ( scan(rs, &err) )
+            {
+                // A replay that could not follow all of the recording here
+                // still found what it could; say what it missed.
+                qstring note = mgr->backend()->scan_notice();
+                if ( !note.empty() )
+                {
+                    msg("[ida-ttd] %s: %s\n", what, note.c_str());
+                    info("The results are incomplete: %s", note.c_str());
+                }
                 return true;
+            }
             if ( *cancelled || !ask_replay_needs(mgr, &rs) )
                 break;
         }

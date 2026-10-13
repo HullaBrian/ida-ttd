@@ -31,6 +31,9 @@ namespace idattd
     // recording keeps what was recorded so far, as a complete trace.
     ForkResult run_fork(TraceManager *mgr, const ForkRequest &req);
 
+    // "rax=0x1, 8 bytes at 0x1400070A8", or "no changes".
+    qstring describe_fork_changes(const ForkRequest &req);
+
     // Start another IDA on 'path'. False when it could not be started.
     bool open_in_new_ida(const char *path);
 }

@@ -590,6 +590,11 @@ namespace idattd
         // replay a recording made against the host, or the registry hives.
         virtual ReplayBlock last_replay_block() const { return ReplayBlock::None; }
 
+        // What the last query_strings or query_buffers skipped, in words: the
+        // stretches of the recording its replay could not follow on this
+        // machine. Empty when it covered all of it.
+        virtual qstring scan_notice() const { return qstring(); }
+
         // Fork the recording (see ForkRequest). Requires capabilities().fork.
         // Long: a replay to the position, then the recording.
         virtual ForkResult record_fork(const ForkRequest &req, ProgressSink *progress)

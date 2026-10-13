@@ -1,6 +1,7 @@
 #include "analysis/fork.h"
 #include "analysis/query_runner.h"
 #include "debugger/trace_manager.h"
+#include "analysis/fork_registry.h"
 
 #include <filesystem>
 
@@ -183,6 +184,26 @@ namespace idattd
         return qstring(reinterpret_cast<const char *>(out.c_str()));
     }
 
+    qstring describe_fork_changes(const ForkRequest &req)
+    {
+        qstring s;
+        for ( const auto &[idx, v] : req.regs )
+        {
+            const char *name = "?";
+            for ( const auto &r : g_fork_regs )
+                if ( r.index == idx )
+                {
+                    name = r.name;
+                    break;
+                }
+            s.cat_sprnt("%s%s=0x%llX", s.empty() ? "" : ", ", name, (unsigned long long)v);
+        }
+        for ( const auto &[ea, bytes] : req.memory )
+            s.cat_sprnt("%s%u byte%s at 0x%llX", s.empty() ? "" : ", ", (uint)bytes.size(),
+                        bytes.size() == 1 ? "" : "s", (unsigned long long)ea);
+        return s.empty() ? qstring("no changes") : s;
+    }
+
     ForkResult run_fork(TraceManager *mgr, const ForkRequest &req)
     {
         ForkResult result;
@@ -205,6 +226,18 @@ namespace idattd
             q.cancelled = result.cancelled;
             return q;
         });
+        // Remembered for the Fork manager, whoever asked for it.
+        if ( result.ok )
+        {
+            ForkRecord rec;
+            rec.path         = req.path;
+            rec.parent       = mgr->trace_path();
+            rec.at           = format_position(req.at);
+            rec.changes      = describe_fork_changes(req);
+            rec.instructions = result.instructions;
+            rec.time         = (uint64_t)qtime64();
+            add_fork_record(rec);
+        }
         return result;
     }
 

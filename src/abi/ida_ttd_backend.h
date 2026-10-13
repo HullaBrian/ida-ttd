@@ -937,6 +937,13 @@ typedef struct ittd_backend_api
     int (*query_buffers)(ittd_backend *b, const ittd_fork_settings *settings,
                          ittd_buffer_hit *buf, size_t cap, size_t *out_count,
                          int *out_truncated, const ittd_progress *progress);
+
+    /* What the last query_strings or query_buffers could not cover, in words,
+     * or "" when it covered the whole recording. A replay that diverges from
+     * the recording (this machine's files differ from the ones it ran
+     * against) goes on from the next checkpoint, whose state is the
+     * recording's own; this names the stretches it skipped. */
+    const char *(*scan_notice)(ittd_backend *b);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

@@ -751,6 +751,13 @@ namespace idattd
         return fs;
     }
 
+    qstring BackendModule::scan_notice() const
+    {
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, scan_notice) )
+            return qstring();
+        return qstring(or_empty(m_api->scan_notice(m_handle)));
+    }
+
     int BackendModule::note_replay(int rc)
     {
         m_replayBlock = rc == ITTD_E_HOST_REPLAY ? ReplayBlock::HostConsent

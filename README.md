@@ -59,12 +59,20 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   with the write that made it.
 - Strings and buffers recovered by replaying the recording: every string the
   program had in memory and every buffer it filled, with when and by what.
+  Where the replay cannot follow the recording on this machine (its files
+  differ from the ones the recording ran against), the scan goes on from the
+  next checkpoint and says how much it skipped.
 - Fork the recording: TTD > Fork here makes the current position a fork.
   Change registers (the registers window) and memory (the hex view, or Edit >
   Patch program) as on a live target; the views show the changes there, and
   the toolbar says "(fork)". TTD > Record fork... replays the program to the
   fork, applies them, and lets it run on into a new recording, which opens
-  like any other.
+  like any other. Fork here is also on the context menu of the disassembly,
+  pseudocode, hex view and registers.
+- Fork manager (TTD menu and toolbar): the recording and every fork recorded
+  from it, and from its forks, as a graph. Double-click one to switch this IDA
+  to it (the replay restarts on it, in the same database) or open it in a new
+  IDA.
 
 Replaying a recording made against the host (without an emulation root) runs
 the program's file and network operations on your machine again, so the

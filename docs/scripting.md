@@ -80,6 +80,8 @@ database. The scope is given here instead of in a dialog.
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
 | `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
 | `an.buffers [MAX] [registry=DIR] [strict]` | replay the recording (Sogen) and list the buffers it filled |
+| `an.forks` | the forks recorded in this database (the Fork manager's graph): path, parent, position, changes |
+| `an.forget PATH` | take a fork out of the graph; its file stays |
 | `an.forkhere` | make the playhead a fork (TTD > Fork here); change it with IDA's own calls (`ida_dbg.set_reg_val`, `ida_dbg.write_dbg_memory`), which only succeed at the fork's position |
 | `an.forkdraft` | the fork being prepared: its position, whether the playhead is there, and its register and memory changes |
 | `an.forkrecord PATH N [registry=DIR] [strict] [host]` | record the fork being prepared: replay to it, apply its changes, record N (hex) instructions (0: to the end) into PATH. The error says `(needs host)` or `(needs registry=DIR)` when that is what stopped it |

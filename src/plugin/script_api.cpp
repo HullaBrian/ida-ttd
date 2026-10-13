@@ -10,6 +10,7 @@
 #include "analysis/memmap.h"
 #include "analysis/syscalls.h"
 #include "analysis/fork.h"
+#include "analysis/fork_registry.h"
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
 
@@ -971,6 +972,28 @@ namespace idattd
            .raw("regs", regs.done()).raw("memory", mem.done());
     }
 
+    // an.forks: the forks this database knows of (the Fork manager's graph).
+    static void cmd_an_forks(const Args &, JObj &out)
+    {
+        JArr arr;
+        std::vector<ForkRecord> v = load_fork_records();
+        for ( const ForkRecord &f : v )
+        {
+            JObj o;
+            o.str("path", f.path).str("parent", f.parent).str("at", f.at).str("changes", f.changes)
+             .num("instructions", (int64_t)f.instructions);
+            arr.add(o.done());
+        }
+        out.num("count", (int64_t)v.size()).raw("forks", arr.done());
+    }
+
+    // an.forget PATH: take a fork out of the graph.
+    static void cmd_an_forget(const Args &a, JObj &out)
+    {
+        remove_fork_record(a.at(0).c_str());
+        out.num("count", (int64_t)load_fork_records().size());
+    }
+
     // an.forkhere: make the current position a fork (TTD > Fork here). Its
     // registers and memory are then changed through IDA's own debugger calls.
     static void cmd_an_forkhere(const Args &, JObj &out)
@@ -1077,7 +1100,8 @@ namespace idattd
              .boolean("wide", v[i].wide).str("text", v[i].text);
             arr.add(o.done());
         }
-        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("strings", arr.done());
+        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("strings", arr.done())
+           .str("notice", mgr().backend()->scan_notice());
     }
 
     static void cmd_an_buffers(const Args &a, JObj &out)
@@ -1099,7 +1123,8 @@ namespace idattd
              .hex("writer", v[i].writer_ip).num("writes", (int64_t)v[i].writes).str("preview", v[i].preview);
             arr.add(o.done());
         }
-        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("buffers", arr.done());
+        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("buffers", arr.done())
+           .str("notice", mgr().backend()->scan_notice());
     }
 
     static void cmd_an_calltree(const Args &a, JObj &out)
@@ -1267,6 +1292,8 @@ namespace idattd
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
+        { "an.forks",       cmd_an_forks,       "the forks recorded in this database" },
+        { "an.forget",      cmd_an_forget,      "PATH take a fork out of the fork graph" },
         { "an.forkhere",    cmd_an_forkhere,    "make this position a fork; change it with IDA's debugger calls" },
         { "an.forkdraft",   cmd_an_forkdraft,   "the fork being prepared and its changes" },
         { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },

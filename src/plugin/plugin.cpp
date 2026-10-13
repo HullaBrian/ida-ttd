@@ -1,4 +1,5 @@
 #include "plugin/plugin.h"
+#include "analysis/fork_registry.h"
 #include "common/trace_link.h"
 #include "common/symsrv.h"
 #include "core/backend_module.h"
@@ -95,6 +96,7 @@ namespace idattd
         m_ctx.tracer = &m_tracer;
         m_ctx.store  = &m_bookmarks;
         m_ctx.refresh_position = [this]() { update_position_label(); };
+        m_ctx.switch_trace     = [this](const qstring &path) { switch_trace(path); };
 
         // Icons are loaded once for the lifetime of the plugin (they are freed in
         // the destructor); the actions themselves are only registered while a
@@ -212,6 +214,17 @@ namespace idattd
             { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
               "Discard fork: drop the fork and its changes",
               NO_ICON, ITEM, MENU },
+            { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
+              "Fork manager: this recording and the forks recorded from it, as a graph; "
+              "double-click one to switch to it",
+              NO_ICON, ITEM, MENU },
+            // On the Fork manager's popup only.
+            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
+              "Switch this IDA to the selected recording, or open it in a new IDA",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
+            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
+              "Take the selected fork out of the graph (its file stays)",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
 
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
               "Bookmark this position: save the current trace position, with a name "
@@ -506,6 +519,40 @@ namespace idattd
         return -1;
     }
 
+    // Replay another recording in this database: a fork shares the
+    // recording's program and modules, so the same database serves it.
+    void Plugin::switch_trace(const qstring &path)
+    {
+        if ( m_mgr.is_active() && same_trace_path(path, m_mgr.trace_path()) )
+            return;
+        m_switchTo = path;
+        if ( get_process_state() == DSTATE_NOTASK )
+            m_switchTimer.arm(10, switch_cb, this);
+        else
+            exit_process();         // dbg_process_exit arms the timer
+    }
+
+    void Plugin::continue_switch()
+    {
+        if ( !m_switchTo.empty() )
+            m_switchTimer.arm(10, switch_cb, this);
+    }
+
+    int idaapi Plugin::switch_cb(void *ud)
+    {
+        Plugin *p = static_cast<Plugin *>(ud);
+        if ( get_process_state() != DSTATE_NOTASK )
+            return 50;              // still winding down; ask again
+        qstring path;
+        path.swap(p->m_switchTo);
+        if ( path.empty() )
+            return -1;
+        msg("[ida-ttd] switching the replay to %s\n", path.c_str());
+        if ( p->select_trace_debugger(path.c_str()) )
+            start_process(path.c_str(), "", "");
+        return -1;
+    }
+
     void Plugin::schedule_trace_offer()
     {
         m_attachTimer.arm(ATTACH_POLL_MS, attach_cb, this);
@@ -705,6 +752,7 @@ namespace idattd
         // --- bookmarks, next to the position they record ---
         attach_action_to_toolbar(TTD_TOOLBAR, actions::ADD_BOOKMARK);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::BOOKMARKS);
+        attach_action_to_toolbar(TTD_TOOLBAR, actions::FORK_MANAGER);
         // --- forward ---
         attach_action_to_toolbar(TTD_TOOLBAR, "ProcessStart");           // Continue
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepInto");         // Step into
@@ -760,6 +808,8 @@ namespace idattd
                                         : qstring();
         if ( !pos.empty() )
             label.sprnt("Position %s", pos.c_str());
+        else
+            label = "Position: XX:XX";
         // Where a fork is being prepared, say so: what is shown there is the
         // fork's changes, not the recording.
         if ( !pos.empty() && m_mgr.at_fork_draft() )
@@ -779,8 +829,6 @@ namespace idattd
             else
                 label.cat_sprnt(" (fork, %u change%s)", (uint)n, n == 1 ? "" : "s");
         }
-        else
-            label = "Position: XX:XX";
         // Pad to the widest label shown this session with figure spaces,
         // which are as wide as a digit; ordinary spaces are narrower, so the
         // toolbar would still shift.
@@ -1091,6 +1139,7 @@ namespace idattd
                     trace_link_mark_start(false);   // the start survived
                     p->reset_step_state();
                     p->show_actions();   // (re)build the toolbar inside the now-active debugger desktop
+                    refresh_fork_manager();
                 }
                 p->update_position_label();
                 break;
@@ -1126,6 +1175,9 @@ namespace idattd
                 // waiting for ev_term_debugger, which only fires when the
                 // debugger backend itself is unloaded.
                 p->hide_actions();
+                refresh_fork_manager();
+                // A switch to another recording waits for this.
+                p->continue_switch();
                 break;
             default:
                 break;
@@ -1155,6 +1207,12 @@ namespace idattd
                 // (action_activation_ctx_t* ctx follows; not needed here)
                 if ( widget == nullptr )
                     break;
+                if ( fork_manager_widget(widget) )
+                {
+                    attach_action_to_popup(widget, popup, actions::FORK_OPEN);
+                    attach_action_to_popup(widget, popup, actions::FORK_FORGET);
+                    break;
+                }
                 int wt = get_widget_type(widget);
                 if ( wt == BWN_DISASM || wt == BWN_PSEUDOCODE )
                 {
@@ -1163,6 +1221,19 @@ namespace idattd
                     attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_FWD, "TTD/");
                     attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_BACK, "TTD/");
                     attach_action_to_popup(widget, popup, actions::ADD_BOOKMARK, "TTD/");
+                }
+                // Forking, wherever the user would change the program's
+                // state: code, memory, registers. Only for a recording that
+                // can be forked, and Record / Discard only with a fork begun.
+                if ( (wt == BWN_DISASM || wt == BWN_PSEUDOCODE || wt == BWN_HEXVIEW || wt == BWN_CPUREGS)
+                  && p->manager().backend() != nullptr && p->manager().backend()->capabilities().fork )
+                {
+                    attach_action_to_popup(widget, popup, actions::FORK, "TTD/");
+                    if ( p->manager().fork_draft().active )
+                    {
+                        attach_action_to_popup(widget, popup, actions::FORK_RECORD, "TTD/");
+                        attach_action_to_popup(widget, popup, actions::FORK_DISCARD, "TTD/");
+                    }
                 }
                 if ( wt == BWN_DISASM )
                 {

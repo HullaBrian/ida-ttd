@@ -643,7 +643,9 @@ against the host replays with this machine's files and network, so those
 features refuse it unless the caller passes `ITTD_FORK_ALLOW_HOST`. A replay
 refused for that answers `ITTD_E_HOST_REPLAY`, and one that found no hives
 `ITTD_E_NO_REGISTRY`, so the plugin asks the user for exactly that and tries
-again rather than putting both in every dialog.
+again rather than putting both in every dialog. A replay scan that diverges
+goes on from the next checkpoint instead of failing; `scan_notice` names what
+it skipped.
 
 Phases 1–3 are worth doing whether or not a second backend ever lands: they are
 the open items of the existing code review.

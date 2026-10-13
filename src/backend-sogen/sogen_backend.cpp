@@ -96,6 +96,10 @@ namespace
         // minimum length too: a strict run must not be answered by a lenient one.
         std::map<std::string, std::vector<ittd_string_hit>> strings;
         std::map<std::string, std::vector<ittd_buffer_hit>> buffers;
+        // What each cached scan skipped (scan_notice), by the same keys, and
+        // the last scan's.
+        std::map<std::string, std::string> scan_notes;
+        std::string scan_note;
     };
 
     struct cursor_t
@@ -398,6 +402,11 @@ namespace
     const char *last_error(ittd_backend *b)
     {
         return b == nullptr ? g_module_error.c_str() : B(b)->error.c_str();
+    }
+
+    const char *scan_notice(ittd_backend *b)
+    {
+        return b == nullptr ? "" : B(b)->scan_note.c_str();
     }
 
     int info(ittd_backend *hb, ittd_trace_info *out)
@@ -2007,6 +2016,63 @@ namespace
     }
 
     // What a replay scan's answer depends on besides the recording.
+    // Replay the whole recording with a scanner attached. Where the replay
+    // diverges from the recording -- typically because this machine's files
+    // are not the ones a host recording ran against -- it is not the end: the
+    // next checkpoint holds the recording's own state, so the scan restores
+    // it, lets the scanner look at memory again ('restored'), and goes on.
+    // Returns what was skipped, in words; empty when nothing was. Strict
+    // replays still fail at the first divergence.
+    std::string replay_scan(sogen::windows_emulator &emu, ttd::trace &t, const std::function<void()> &attach,
+                            const std::function<void()> &restored, bool strict, const ittd_progress *progress)
+    {
+        try
+        {
+            ttd::replay_to_end(emu, t, attach, strict, true, control(progress));
+            return std::string();
+        }
+        catch ( const ttd::divergence_error &e )
+        {
+            if ( strict )
+                throw;
+            std::string first = e.what();
+            const uint64_t end = t.metadata().instruction_count;
+            uint64_t skipped = 0;
+            int gaps = 0;
+            for ( ;; )
+            {
+                const uint64_t at = emu.get_executed_instructions();
+                uint64_t next = end;
+                for ( const auto &c : t.checkpoints() )
+                    if ( c.step > at )
+                    {
+                        next = c.step;
+                        break;
+                    }
+                skipped += next - at;
+                gaps++;
+                if ( next >= end )
+                    break;
+                ttd::seek(emu, t, next, strict, control(progress));
+                restored();
+                try
+                {
+                    ttd::run_to(emu, t, end, strict, control(progress));
+                    break;
+                }
+                catch ( const ttd::divergence_error & )
+                {
+                }
+            }
+            char head[160];
+            snprintf(head, sizeof(head), "the replay diverged from the recording %d time%s; %llu of %llu "
+                     "instructions (%.1f%%) were skipped up to the next checkpoint. First: ",
+                     gaps, gaps == 1 ? "" : "s", (unsigned long long)skipped, (unsigned long long)end,
+                     end == 0 ? 0.0 : 100.0 * (double)skipped / (double)end);
+            return head + first;
+        }
+    }
+
     std::string scan_key(const ittd_fork_settings *settings)
     {
         std::string key;
@@ -2041,11 +2107,11 @@ namespace
                 bool strict = false;
                 auto emu = replay_emulator(*t, settings, &strict);
                 std::optional<ttd::string_scanner> scanner;
-                ttd::replay_to_end(*emu, *t, [&]()
+                b->scan_notes[key] = replay_scan(*emu, *t, [&]()
                 {
                     scanner.emplace(*emu, min_length);
                     scanner->scan_initial_memory();
-                }, strict, true, control(progress));
+                }, [&]() { scanner->scan_initial_memory(); }, strict, progress);
                 scanner->finish();
                 std::vector<ittd_string_hit> v;
                 for ( const ttd::recovered_string &s : scanner->results() )
@@ -2063,6 +2129,7 @@ namespace
                 }
                 found = b->strings.emplace(key, std::move(v)).first;
             }
+            b->scan_note = b->scan_notes[key];
             set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
             return fill(found->second, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
         });
@@ -2086,8 +2153,8 @@ namespace
                 bool strict = false;
                 auto emu = replay_emulator(*t, settings, &strict);
                 std::optional<ttd::buffer_scanner> scanner;
-                ttd::replay_to_end(*emu, *t, [&]() { scanner.emplace(*emu, *t); },
-                                   strict, true, control(progress));
+                b->scan_notes[key] = replay_scan(*emu, *t, [&]() { scanner.emplace(*emu, *t); },
+                                                 []() {}, strict, progress);
                 scanner->finish();
                 std::vector<ittd_buffer_hit> v;
                 for ( const ttd::recovered_buffer &r : scanner->results() )
@@ -2105,6 +2172,7 @@ namespace
                 }
                 found = b->buffers.emplace(key, std::move(v)).first;
             }
+            b->scan_note = b->scan_notes[key];
             set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
             return fill(found->second, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
         });
@@ -2426,6 +2494,7 @@ namespace
         a.fork_close         = fork_close;
         a.query_strings      = query_strings;
         a.query_buffers      = query_buffers;
+        a.scan_notice        = scan_notice;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;
         a.position_add       = position_add;

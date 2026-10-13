@@ -89,6 +89,7 @@ namespace idattd
         // The backend's own reason for its last failure on the open trace.
         qstring last_error() const override;
         ReplayBlock last_replay_block() const override { return m_replayBlock; }
+        qstring scan_notice() const override;
 
     private:
         // Keeps what a replay call's status code says the user can fix.
