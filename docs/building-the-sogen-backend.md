@@ -16,11 +16,13 @@ From a Visual Studio x64 developer prompt, against a Sogen checkout on
 `ttd/next` (`%SOGEN%`) and a build directory of your choosing
 (`%SOGEN_BUILD%`):
 
-Use `ttd/next` at `ada569b0` or later. Before it, reading a page of memory
-walked every recorded access to it -- tens to hundreds of milliseconds on a
-hot code page -- and IDA reads whole modules after their symbols load; with
-it, a page is read from the checkpoint and the writes since, in tens of
-microseconds. The backend reports ITTD_CAP_CHEAP_READS only for recordings
+Use `ttd/next` at `86158936` or later. Before `ada569b0`, reading a page of
+memory walked every recorded access to it -- tens to hundreds of
+milliseconds on a hot code page -- and IDA reads whole modules after their
+symbols load; since, a page comes from the checkpoint and the writes since,
+in tens of microseconds. `86158936` walks those writes backward, so a busy
+heap page is quick too, keeps four decoded checkpoints, and reads memory
+committed but never written as zero rather than unknown. The backend reports ITTD_CAP_CHEAP_READS only for recordings
 with checkpoint memory, so an older recording still opens, more slowly.
 
 To update an existing build after pulling Sogen, reconfigure with

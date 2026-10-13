@@ -289,10 +289,15 @@ namespace idattd
                     continue;
             }
 
+            // A name inside a function rather than at its start is a label
+            // there (a funclet, a jump target the PDB named), not a function
+            // to trace; tracing the function around it listed calls to an
+            // unnamed function under the pattern.
             ea_t fstart = get_func_start(ea);
-            ea_t key = fstart != BADADDR ? fstart : ea;
-            if ( seen.insert(key).second )
-                out.push_back(key);
+            if ( fstart != BADADDR && fstart != ea )
+                continue;
+            if ( seen.insert(ea).second )
+                out.push_back(ea);
         }
 
         // IDA names a module once it is mapped where the user is, so a module
