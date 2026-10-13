@@ -1396,6 +1396,12 @@ namespace idattd
         if ( ::dbg != &m_debugger )
             return 0;
 
+        // What IDA asks of the debugger, around a session's start and end,
+        // for the diagnostics log. The frequent polls and reads are left out.
+        if ( code != debugger_t::ev_get_debug_event && code != debugger_t::ev_read_memory
+          && code != debugger_t::ev_read_registers && code != debugger_t::ev_get_memory_info )
+            diag("idd: %d (process state %d)", (int)code, get_process_state());
+
         switch ( code )
         {
             case debugger_t::ev_init_debugger:

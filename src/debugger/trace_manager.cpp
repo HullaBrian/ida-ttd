@@ -308,6 +308,7 @@ namespace idattd
         if ( m_eventLog.size() >= 48 )
             m_eventLog.pop_front();
         m_eventLog.push_back(line);
+        diag("event log: %s", line.c_str());
     }
 
     ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
