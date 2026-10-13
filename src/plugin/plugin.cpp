@@ -1050,6 +1050,11 @@ namespace idattd
         unquiet_ui();
         restore_renderers();
         settle_stop();
+        // Both write to the database or open windows, so they wait for here
+        // rather than running inside IDA's stop notification.
+        if ( m_mgr.is_active() )
+            coverage_settle_recording_change();
+        reopen_fork_manager();
         TWidget *from = m_stepView;
         if ( from == nullptr )
         {
@@ -1250,7 +1255,6 @@ namespace idattd
                 refresh_call_stack();
                 // A travel from a list is done once all of the above is.
                 p->manager().end_travel_wait();
-                p->reopen_fork_manager();
                 break;
             case dbg_process_exit:
                 // The trace session is over (the user terminated it). Drop the

@@ -92,6 +92,10 @@ namespace idattd
                 "complementary shade; this recording's are painted in the usual one.\n", (uint64_t)n);
     }
 
+    // The recording changed and its predecessor's painting is still to be
+    // turned to the complementary shade.
+    static bool g_repaint_pending = false;
+
     // The coverage node, with any marks left over from another recording
     // dropped. Every access goes through here so the check cannot be skipped.
     static netnode cv_node(bool create)
@@ -103,7 +107,12 @@ namespace idattd
             msg("[ida-ttd] coverage: this database was last measured against a "
                 "different recording, so its per-function marks were dropped and "
                 "functions will be measured again.\n");
-            repaint_as_previous(nn);
+            // Not here: this runs wherever coverage is first asked about,
+            // which includes the decompiler printing pseudocode and IDA's
+            // debugger notifications, and repainting the database there
+            // took IDA down (internal error 40183). The plugin settles it
+            // after the stop (coverage_settle_recording_change).
+            g_repaint_pending = true;
         }
         else if ( nn != BADNODE && create )
         {
@@ -151,6 +160,16 @@ namespace idattd
             }
         }
         return out;
+    }
+
+    void coverage_settle_recording_change()
+    {
+        netnode nn = cv_node(false);        // notices a change not seen yet
+        if ( !g_repaint_pending )
+            return;
+        g_repaint_pending = false;
+        if ( nn != BADNODE )
+            repaint_as_previous(nn);
     }
 
     bool coverage_is_previous(bgcolor_t c)
@@ -238,6 +257,10 @@ namespace idattd
             warning("Execution coverage is only available while replaying a trace.");
             return false;
         }
+
+        // Another recording's painting goes to its own shade first, or this
+        // sweep's would be turned to it too.
+        coverage_settle_recording_change();
 
         std::vector<std::pair<ea_t, ea_t>> spans = normalize(ranges);
         if ( spans.empty() )

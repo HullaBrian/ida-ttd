@@ -728,6 +728,14 @@ namespace idattd
         out.str("trace", mgr().trace_path());
     }
 
+    // The switch as the Fork manager makes it: queued, from a timer and IDA's
+    // request queue, returning at once. Poll "state" for the new trace.
+    static void cmd_switch_ui(const Args &a, JObj &out)
+    {
+        g_plugin->switch_trace(a.at(0));
+        out.str("queued", a.at(0));
+    }
+
     // One movement of the real debugger session, then wait for it to stop.
     // The backward ones go the way the TTD toolbar sends them.
     static void cmd_move(const Args &a, JObj &out)
@@ -1327,6 +1335,7 @@ namespace idattd
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
+        { "switch.ui",      cmd_switch_ui,      "PATH the same, the way the Fork manager does it (returns at once)" },
         { "an.forks",       cmd_an_forks,       "the forks recorded in this database" },
         { "an.forget",      cmd_an_forget,      "PATH take a fork out of the fork graph" },
         { "an.forkhere",    cmd_an_forkhere,    "make this position a fork; change it with IDA's debugger calls" },

@@ -24,6 +24,10 @@ namespace idattd
     // replay switched to this one (a fork, or the recording it came from),
     // in the complement of the shade it had.
     bool coverage_is_previous(bgcolor_t c);
+    // After the replay changed recording, repaint the other recording's
+    // coverage in the complementary shade. Only from a safe place (a timer
+    // after the stop, or a command): it writes to every painted instruction.
+    void coverage_settle_recording_change();
 
     // Automatic highlighting of the function you stop in. On by default,
     // remembered per database.
