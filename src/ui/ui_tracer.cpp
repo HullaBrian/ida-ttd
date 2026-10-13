@@ -1,5 +1,5 @@
-// Function-call tracing: the traced-function list, the recorded-call listing and
-// the actions that drive a sweep.
+// Function-call tracing: the recorded-call listing and the actions that
+// drive a sweep.
 #include "ui/ui.h"
 #include "ui/names.h"
 
@@ -18,55 +18,6 @@ namespace idattd
                 return e;
         }
         return n;
-    }
-
-    //=======================================================================
-    // TracedFunctionsChooser
-    //=======================================================================
-    static const int   g_trc_widths[] = { 18, 48 };
-    static const char *g_trc_header[] = { "Offset", "Function name" };
-
-    TracedFunctionsChooser::TracedFunctionsChooser(TraceManager *mgr, FunctionTracer *tracer)
-        : chooser_t(CH_CAN_DEL | CH_CAN_INS,
-                    qnumber(g_trc_widths), g_trc_widths, g_trc_header, "Traced functions"),
-          m_mgr(mgr), m_tracer(tracer)
-    {
-    }
-
-    size_t idaapi TracedFunctionsChooser::get_count() const
-    {
-        return m_tracer != nullptr ? m_tracer->count_traced() : 0;
-    }
-
-    void idaapi TracedFunctionsChooser::get_row(qstrvec_t *cols, int * /*icon*/,
-                                                chooser_item_attrs_t * /*attrs*/, size_t n) const
-    {
-        if ( m_tracer == nullptr )
-            return;
-        ea_t ea = m_tracer->traced_at(n);
-        cols->at(0).sprnt("0x%llX", (uint64_t)ea);
-        cols->at(1) = traced_name(m_mgr, ea);
-    }
-
-    ea_t idaapi TracedFunctionsChooser::get_ea(size_t n) const
-    {
-        return m_tracer != nullptr ? m_tracer->traced_at(n) : BADADDR;
-    }
-
-    chooser_t::cbret_t idaapi TracedFunctionsChooser::ins(ssize_t /*n*/)
-    {
-        ea_t fea = choose_func_ea("Choose a function to trace", get_screen_ea());
-        if ( fea == BADADDR || m_tracer == nullptr )
-            return cbret_t();
-        m_tracer->add_func(fea);
-        return ALL_CHANGED;
-    }
-
-    chooser_t::cbret_t idaapi TracedFunctionsChooser::del(size_t n)
-    {
-        if ( m_tracer != nullptr )
-            m_tracer->remove_trace(n);
-        return ALL_CHANGED;
     }
 
     //=======================================================================
@@ -242,8 +193,7 @@ namespace idattd
         ea_t target = fstart != BADADDR ? fstart : ea;
 
         // This is a focused "calls to this function" query: replace any prior
-        // traced set so results aren't polluted by earlier picks. (Use the
-        // 'Traced functions' chooser + 'Re-run trace' to accumulate several.)
+        // traced set so results aren't polluted by earlier picks.
         tracer()->reset();
         tracer()->add_func(target);
         tracer()->run_sweep();
@@ -297,32 +247,6 @@ namespace idattd
 
         TraceEventsChooser *ch = new TraceEventsChooser(mgr(), tracer());
         ch->choose();
-        return 1;
-    }
-
-    int idaapi OpenTracedHandler::activate(action_activation_ctx_t *)
-    {
-        TracedFunctionsChooser *ch = new TracedFunctionsChooser(mgr(), tracer());
-        ch->choose();
-        return 1;
-    }
-
-    int idaapi OpenEventsHandler::activate(action_activation_ctx_t *)
-    {
-        TraceEventsChooser *ch = new TraceEventsChooser(mgr(), tracer());
-        ch->choose();
-        return 1;
-    }
-
-    int idaapi RunTraceHandler::activate(action_activation_ctx_t *)
-    {
-        if ( mgr() == nullptr || !mgr()->is_active() )
-        {
-            warning("Tracing is only available while replaying a trace.");
-            return 1;
-        }
-        if ( tracer() != nullptr )
-            tracer()->run_sweep();
         return 1;
     }
 }

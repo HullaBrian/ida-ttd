@@ -147,8 +147,9 @@ namespace idattd
             const char       *shortcut = nullptr;   // nullptr for none
             const char       *tooltip  = nullptr;
             int               icon     = -1;        // -1 for none
-            bool              new_group = false;    // separator above this item
+            bool              new_group = false;    // separator above this item, in its menu
             bool              on_menu   = true;     // false: toolbar only
+            const char       *submenu  = nullptr;   // a TTD_SUBMENUS name, nullptr for the TTD menu
         };
 
         debugger_t     m_debugger = {};
@@ -178,9 +179,6 @@ namespace idattd
         // Function-call tracer
         TraceFuncHandler    m_traceFunc;
         TracePatternHandler m_tracePat;
-        OpenTracedHandler   m_openTraced;
-        OpenEventsHandler   m_openEvents;
-        RunTraceHandler     m_runTrace;
         AttachTraceHandler  m_attachTrace;
         AutoStartHandler    m_autoStart;
         // Bookmarks + execution coverage

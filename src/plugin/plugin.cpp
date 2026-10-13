@@ -46,6 +46,41 @@ namespace idattd
     static const char *TTD_MENU      = "TTD";
     static const char *TTD_MENU_PATH = "TTD/";      // path items attach under
 
+    // Submenus of the TTD menu, in the order they appear. An ActionDesc names
+    // one of them by 'name'; the rows of one submenu are consecutive in the
+    // table. Paths resolve by label, so a label holds no '/' or '&'.
+    static const char *SUB_CODE     = "TTDCode";
+    static const char *SUB_ANALYSIS = "TTDAnalysis";
+    static const char *SUB_FORKS    = "TTDForks";
+    static const char *SUB_CLEAR    = "TTDClear";
+    struct SubmenuDesc
+    {
+        const char *name;
+        const char *label;
+        bool        new_group;      // separator above it in the TTD menu
+    };
+    static const SubmenuDesc TTD_SUBMENUS[] =
+    {
+        { SUB_CODE,     "Code",     true  },
+        { SUB_ANALYSIS, "Analysis", false },
+        { SUB_FORKS,    "Forks",    true  },
+        { SUB_CLEAR,    "Clear",    true  },
+    };
+
+    // A separator goes above a menu item, not above a submenu. The one above
+    // a submenu belongs to a hidden action that sits just above it, one per
+    // submenu (an action goes on a menu once).
+    static const char *const SUBMENU_SEP_ACTIONS[] =
+    {
+        "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2", "idattd:menu_sep_3",
+    };
+    struct MenuSepHandler : public action_handler_t
+    {
+        int idaapi activate(action_activation_ctx_t *) override { return 0; }
+        action_state_t idaapi update(action_update_ctx_t *) override { return AST_DISABLE_ALWAYS; }
+    };
+    static MenuSepHandler g_menuSep;
+
     // Flag the call stack + stack views for refresh. We build the widget mask by
     // hand instead of via IWID_*/builtin_widget_mask_from_id, whose uint128 <<
     // is defined out-of-line and not present in ida.lib (link error on MSVC).
@@ -83,6 +118,7 @@ namespace idattd
                 // nothing in the next one, and the choosers would happily
                 // time-travel to them.
                 m_tracer.reset();
+                coverage_session_ended();
             },
         });
 
@@ -199,36 +235,13 @@ namespace idattd
         const bool MENU = true, TOOLBAR_ONLY = false;
 
         m_actions = {
+            // Getting around.
             { actions::TIMELINE, "Timeline...", &m_timeline, "Ctrl+Shift+T",
               "Timeline: open the TTD trace timeline of notable positions",
               m_icons[ICO_TIMELINE], ITEM, MENU },
             { actions::GOTO_POS, "Go to position...", &m_goto, "Ctrl+Shift+G",
               "Go to position: jump to a Sequence:Steps trace position",
               m_icons[ICO_GOTO], ITEM, MENU },
-
-            { actions::FORK, "Fork here", &m_fork, nullptr,
-              "Fork here: make this position a fork. Change registers and memory in "
-              "IDA as on a live target, then Record fork (Sogen recordings)",
-              NO_ICON, ITEM, MENU },
-            { actions::FORK_RECORD, "Record fork...", &m_forkRecord, nullptr,
-              "Record fork: replay the program to the fork, apply the changes, and let "
-              "it run on into a new recording",
-              NO_ICON, ITEM, MENU },
-            { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
-              "Discard fork: drop the fork and its changes",
-              NO_ICON, ITEM, MENU },
-            { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
-              "Fork manager: this recording and the forks recorded from it, as a graph; "
-              "double-click one to switch to it",
-              NO_ICON, ITEM, MENU },
-            // On the Fork manager's popup only.
-            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
-              "Switch this IDA to the selected recording, or open it in a new IDA",
-              NO_ICON, ITEM, TOOLBAR_ONLY },
-            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
-              "Take the selected fork out of the graph (its file stays)",
-              NO_ICON, ITEM, TOOLBAR_ONLY },
-
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
               "Bookmark this position: save the current trace position, with a name "
               "and a note, in the database",
@@ -237,22 +250,7 @@ namespace idattd
               "Bookmarks: the saved trace positions for this database",
               m_icons[ICO_BOOKMARKS], ITEM, MENU },
 
-            // Code analysis: what the recording says about the code in front of
-            // you.
-            { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
-              "Analyze whole function: walk the trace backward to find the enclosing "
-              "function's entry and define it (runs behind a cancellable wait box)",
-              NO_ICON, GROUP, MENU },
-            { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
-              "Highlight executed code: replay the recording and color every "
-              "instruction in the chosen scope that actually ran",
-              NO_ICON, ITEM, MENU },
-            { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
-              "Resolve indirect calls: record where each one actually went, as a "
-              "comment and a cross-reference",
-              NO_ICON, ITEM, MENU },
-
-            // Call tracing.
+            // Searching the recording.
             { actions::TRACE_FUNC, "Find all calls to this function", &m_traceFunc, "Ctrl+Shift+C",
               "Find all calls to this function: sweep the whole trace and list every "
               "call with its arguments and return value",
@@ -265,66 +263,95 @@ namespace idattd
               "Call tree: every call the function at the cursor made during this run "
               "of it, nested, from its entry to its return",
               NO_ICON, ITEM, MENU },
-            { actions::OPEN_EVENTS, "Recorded calls...", &m_openEvents, nullptr,
-              "Recorded calls: the calls found by the sweeps above, with their "
-              "arguments and return values",
-              NO_ICON, ITEM, MENU },
-            { actions::OPEN_TRACED, "Traced functions...", &m_openTraced, nullptr,
-              "Traced functions: manage the list of functions selected for call tracing",
-              NO_ICON, ITEM, MENU },
-            { actions::RUN_TRACE, "Re-run trace", &m_runTrace, nullptr,
-              "Re-run trace: re-sweep the trace for all currently traced functions",
-              NO_ICON, ITEM, MENU },
-
-            // Memory.
             { actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, "Ctrl+Shift+M",
               "Find memory accesses: every read, write or execute of an address "
               "anywhere in the recording",
-              NO_ICON, GROUP, MENU },
-            { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
-              "Syscalls: every syscall the program made, with its result and "
-              "arguments (recordings that list them: Sogen)",
-              NO_ICON, ITEM, MENU },
-            { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
-              "Self-modifying code: every instruction the program wrote before "
-              "running it, with the write (recordings that can tell: Sogen)",
-              NO_ICON, ITEM, MENU },
-            { actions::STRINGS, "Recover strings...", &m_recoverStrings, nullptr,
-              "Recover strings: replay the recording and list every string the "
-              "program had in memory, with where it appeared (Sogen)",
-              NO_ICON, ITEM, MENU },
-            { actions::BUFFERS, "Recover buffers...", &m_recoverBuffers, nullptr,
-              "Recover buffers: replay the recording and list every buffer the "
-              "program filled, with the code that wrote it (Sogen)",
-              NO_ICON, ITEM, MENU },
-            { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
-              "Memory map: every allocation, protection change and free the recording "
-              "made, with each live region as a segment",
-              NO_ICON, ITEM, MENU },
-            { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
-              "Re-read memory: discard what IDA cached for the selected range, rebuild "
-              "it from the recording and disassemble it again",
               NO_ICON, ITEM, MENU },
 
+            // Code: what the recording says about the code in front of you,
+            // written into the database.
+            { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
+              "Analyze whole function: walk the trace backward to find the enclosing "
+              "function's entry and define it (runs behind a cancellable wait box)",
+              NO_ICON, ITEM, MENU, SUB_CODE },
+            { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
+              "Highlight executed code: replay the recording and color every "
+              "instruction in the chosen scope that actually ran",
+              NO_ICON, ITEM, MENU, SUB_CODE },
+            { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
+              "Resolve indirect calls: record where each one actually went, as a "
+              "comment and a cross-reference",
+              NO_ICON, ITEM, MENU, SUB_CODE },
             // The one automatic behavior.
             { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
               "Highlight functions automatically: measure and color each function "
               "the first time you stop in it",
-              NO_ICON, GROUP, MENU },
+              NO_ICON, GROUP, MENU, SUB_CODE },
 
-            // Undoing what the groups above wrote into the database.
+            // Analysis: what the program did, recovered from the whole
+            // recording.
+            { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
+              "Syscalls: every syscall the program made, with its result and "
+              "arguments",
+              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
+              "Self-modifying code: every instruction the program wrote before "
+              "running it, with the write (recordings that can tell: Sogen)",
+              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::STRINGS, "Recover strings...", &m_recoverStrings, nullptr,
+              "Recover strings: replay the recording and list every string the "
+              "program had in memory, with where it appeared (Sogen)",
+              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::BUFFERS, "Recover buffers...", &m_recoverBuffers, nullptr,
+              "Recover buffers: replay the recording and list every buffer the "
+              "program filled, with the code that wrote it (Sogen)",
+              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
+              "Memory map: every allocation, protection change and free the recording "
+              "made, with each live region as a segment",
+              NO_ICON, GROUP, MENU, SUB_ANALYSIS },
+            { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
+              "Re-read memory: discard what IDA cached for the selected range, rebuild "
+              "it from the recording and disassemble it again",
+              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+
+            // Forks, in a section of their own.
+            { actions::FORK, "Fork here", &m_fork, nullptr,
+              "Fork here: make this position a fork. Change registers and memory in "
+              "IDA as on a live target, then Record fork (Sogen recordings)",
+              NO_ICON, ITEM, MENU, SUB_FORKS },
+            { actions::FORK_RECORD, "Record fork...", &m_forkRecord, nullptr,
+              "Record fork: replay the program to the fork, apply the changes, and let "
+              "it run on into a new recording",
+              NO_ICON, ITEM, MENU, SUB_FORKS },
+            { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
+              "Discard fork: drop the fork and its changes",
+              NO_ICON, ITEM, MENU, SUB_FORKS },
+            { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
+              "Fork manager: this recording and the forks recorded from it, as a graph; "
+              "double-click one to switch to it",
+              NO_ICON, GROUP, MENU, SUB_FORKS },
+            // On the Fork manager's popup only.
+            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
+              "Switch this IDA to the selected recording, or open it in a new IDA",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
+            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
+              "Take the selected fork out of the graph (its file stays)",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
+
+            // Undoing what the commands above wrote into the database.
             { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
               "Clear execution highlight: remove the coverage color from the whole "
               "database",
-              NO_ICON, GROUP, MENU },
+              NO_ICON, ITEM, MENU, SUB_CLEAR },
             { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
               "Clear resolved indirect calls: remove the comments and cross-references "
               "a previous run added",
-              NO_ICON, ITEM, MENU },
+              NO_ICON, ITEM, MENU, SUB_CLEAR },
             { actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, nullptr,
               "Clear memory map: forget the reconstructed regions and go back to one "
               "range over user space",
-              NO_ICON, ITEM, MENU },
+              NO_ICON, ITEM, MENU, SUB_CLEAR },
 
             // Toolbar only. The backward movement and run-to-cursor actions sit
             // on the TTD toolbar beside their forward counterparts, which is
@@ -736,13 +763,37 @@ namespace idattd
         // existing menu, or a path to a menu item, and nest TTD inside it. With
         // none given, IDA appends the menu to the menu bar.
         create_menu(TTD_MENU, "TTD");
+        CASSERT(qnumber(SUBMENU_SEP_ACTIONS) >= qnumber(TTD_SUBMENUS));
         int wanted = 0, attached = 0;
+        const char *open_sub = nullptr;     // the submenu the last row went in
+        qstring path = TTD_MENU_PATH;
         for ( const ActionDesc &d : m_actions )
         {
             if ( !d.on_menu )
                 continue;
+            if ( d.submenu != open_sub )
+            {
+                open_sub = d.submenu;
+                path = TTD_MENU_PATH;
+                for ( size_t i = 0; open_sub != nullptr && i < qnumber(TTD_SUBMENUS); i++ )
+                {
+                    const SubmenuDesc &s = TTD_SUBMENUS[i];
+                    if ( strcmp(s.name, open_sub) != 0 )
+                        continue;
+                    if ( s.new_group
+                      && register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                             SUBMENU_SEP_ACTIONS[i], "-", &g_menuSep, this, nullptr, nullptr, -1)) )
+                    {
+                        attach_action_to_menu(TTD_MENU_PATH, SUBMENU_SEP_ACTIONS[i],
+                                              SETMENU_APP | SETMENU_ENSURE_SEP);
+                        update_action_visibility(SUBMENU_SEP_ACTIONS[i], false);
+                    }
+                    create_menu(s.name, s.label, TTD_MENU_PATH);
+                    path.sprnt("%s%s/", TTD_MENU_PATH, s.label);
+                }
+            }
             wanted++;
-            if ( attach_action_to_menu(TTD_MENU_PATH, d.id,
+            if ( attach_action_to_menu(path.c_str(), d.id,
                                        SETMENU_APP | (d.new_group ? SETMENU_ENSURE_SEP : 0)) )
                 attached++;
         }
@@ -762,7 +813,11 @@ namespace idattd
 
         // Drop the whole menu rather than detaching item by item: unregistering
         // the actions alone would leave an empty TTD menu behind in the menu bar.
+        for ( const SubmenuDesc &s : TTD_SUBMENUS )
+            delete_menu(s.name);
         delete_menu(TTD_MENU);
+        for ( const char *sep : SUBMENU_SEP_ACTIONS )
+            unregister_action(sep);
 
         for ( const ActionDesc &d : m_actions )
             unregister_action(d.id);
@@ -854,7 +909,6 @@ namespace idattd
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TIMELINE);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::GOTO_POS);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TRACE_PAT);
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::OPEN_EVENTS);
 
         reskin_actions();
         update_position_label();

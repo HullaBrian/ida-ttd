@@ -39,24 +39,6 @@ namespace idattd
         std::vector<TraceManager::NamedPosition> m_positions;
     };
 
-    // List of functions selected for call tracing. Insert opens choose_func_ea;
-    // delete removes a trace.
-    class TracedFunctionsChooser : public chooser_t
-    {
-    public:
-        TracedFunctionsChooser(TraceManager *mgr, FunctionTracer *tracer);
-
-        size_t  idaapi get_count() const override;
-        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        ea_t    idaapi get_ea(size_t n) const override;   // pure navigation, no side effects
-        cbret_t idaapi ins(ssize_t n) override;
-        cbret_t idaapi del(size_t n) override;
-
-    private:
-        TraceManager   *m_mgr;
-        FunctionTracer *m_tracer;
-    };
-
     // Builds the trace-events column layout from the traced function's
     // signature. Fixed leading columns Start/End/Thread/Function, then one
     // column per parameter (named after it) when a single function is traced,
@@ -350,15 +332,6 @@ namespace idattd
     struct TracePatternHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
-    struct OpenTracedHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
-
-    struct OpenEventsHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
-
-    struct RunTraceHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
-
     // Bookmark the current trace position (prompts for a name and a comment).
     struct AddBookmarkHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
@@ -548,9 +521,6 @@ namespace idattd
         constexpr const char *TRACE_FUNC   = "idattd:trace_func";
         constexpr const char *TRACE_PAT    = "idattd:trace_pattern";
         constexpr const char *ANALYZE_FUNC = "idattd:analyze_func";
-        constexpr const char *OPEN_TRACED  = "idattd:open_traced";
-        constexpr const char *OPEN_EVENTS  = "idattd:open_events";
-        constexpr const char *RUN_TRACE    = "idattd:run_trace";
         constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
         constexpr const char *AUTO_START   = "idattd:auto_start";
     }
