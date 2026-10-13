@@ -70,8 +70,10 @@ namespace idattd
         // IDA forces the disassembly view to the front on every debugger stop. If
         // the user stepped from the decompiler, we re-assert it after the stop.
         void begin_movement();                // ev_resume: note where the user stepped from
+        void movement_done();                 // ev_resume carried it out; the stop is known
+        void check_stop_decompiles();         // dbg_suspend_process, stepping in pseudocode
         void widget_closing(TWidget *w);      // drop a closed widget pointer
-        void keep_decompiler_focused();       // schedule a re-focus after a stop (if wanted)
+        void schedule_after_stop();           // queue the re-focus and view restores
 
         // Queue a coverage sweep of the function we just stopped in, if that is
         // switched on and the function has not been measured before. Deferred to
@@ -116,7 +118,7 @@ namespace idattd
         void restore_native_icons();          // give IDA's movement actions their own icons back
         void load_icons();
         void build_action_table();            // fill m_actions (after load_icons)
-        void do_refocus();                    // timer body: re-activate the decompiler
+        void do_after_stop();                    // timer body: re-activate the decompiler
         static int idaapi refocus_cb(void *ud);
         void do_auto_coverage();              // timer body: sweep the current function
         static int idaapi autocover_cb(void *ud);
@@ -236,6 +238,21 @@ namespace idattd
         uint64   m_settledResume = 0;         // resume_serial() when the last stop settled
         OneShotTimer m_refocusTimer;          // deferred re-focus
         void settle_stop();                   // the stop is done: the next resume is a new movement
+        // Disassembly views and whether they showed text or graph when the
+        // movement started: IDA flips a text view to graph on its own once a
+        // stop lands inside a function, and that is put back.
+        std::vector<std::pair<TWidget *, tcc_renderer_type_t>> m_renderBefore;
+        void restore_renderers();
+        // IDA's 'batch' flag, set by us across a stop Hex-Rays cannot
+        // decompile so that its "Decompilation failure" goes to the output
+        // window instead of a dialog per step.
+        bool m_quiet      = false;
+        bool m_quietSaved = false;
+        void quiet_ui();
+        void unquiet_ui();
+        // The position readout only ever grows within a session, so the
+        // toolbar does not shift every time the position gains a digit.
+        size_t m_posLabelChars = 0;
 
         // Automatic per-function coverage. Functions the user cancelled out of
         // are remembered for the session only, so a sweep they stopped is not

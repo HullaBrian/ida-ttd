@@ -312,6 +312,14 @@ namespace idattd
         return vu->cfunc->entry_ea;
     }
 
+    bool can_decompile(ea_t func_ea)
+    {
+        if ( !g_hooked )
+            return false;
+        hexrays_failure_t hf;
+        return decompile_function(func_ea, &hf, DECOMP_NO_WAIT) != nullptr;
+    }
+
     bool show_in_pseudocode(TWidget *view, ea_t ea)
     {
         if ( !g_hooked || view == nullptr )

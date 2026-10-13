@@ -40,6 +40,10 @@ namespace idattd
     // widget is not a pseudocode view or shows nothing.
     ea_t pseudocode_function(TWidget *view);
 
+    // Whether the function starting at func_ea decompiles. Silent: a failure
+    // shows no dialog. Successes are cached by Hex-Rays, so asking again is cheap.
+    bool can_decompile(ea_t func_ea);
+
     // Show the function containing ea in this pseudocode view, caret on ea,
     // without opening another window. False when the function cannot be
     // decompiled; the view is then left as it was.

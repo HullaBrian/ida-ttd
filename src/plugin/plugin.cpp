@@ -704,6 +704,8 @@ namespace idattd
         // allocated at runtime cannot survive the session, and IDA would
         // save it in the desktop and restore it broken.
         close_volatile_pseudocode_views();
+        unquiet_ui();
+        m_posLabelChars = 0;
         restore_source_debugging();
         delete_toolbar(TTD_TOOLBAR);
         restore_native_icons();
@@ -722,7 +724,35 @@ namespace idattd
             label.sprnt("Position %s", pos.c_str());
         else
             label = "Position: XX:XX";
+        // Pad to the widest label shown this session with figure spaces,
+        // which are as wide as a digit; ordinary spaces are narrower, so the
+        // toolbar would still shift.
+        static const char FIGURE_SPACE[] = "\xE2\x80\x87";
+        m_posLabelChars = std::max(m_posLabelChars, label.length());
+        for ( size_t n = label.length(); n < m_posLabelChars; n++ )
+            label.append(FIGURE_SPACE);
         update_action_label(actions::POS_LABEL, label.c_str());
+    }
+
+    // Every open disassembly view, by title: the ones the user opened and the
+    // one the debugger desktop names after the instruction pointer.
+    static void list_disasm_views(std::vector<TWidget *> &out)
+    {
+        out.clear();
+        auto add = [&out](const char *title)
+        {
+            TWidget *w = find_widget(title);
+            if ( w != nullptr && get_widget_type(w) == BWN_DISASM )
+                out.push_back(w);
+        };
+        add("IDA View-RIP");
+        add("IDA View-EIP");
+        for ( char c = 'A'; c <= 'Z'; c++ )
+        {
+            char title[16];
+            qsnprintf(title, sizeof(title), "IDA View-%c", c);
+            add(title);
+        }
     }
 
     // The first resume after a stop has settled is the user starting a
@@ -736,6 +766,72 @@ namespace idattd
         TWidget *cur = get_current_widget();
         m_stepView = cur != nullptr && get_widget_type(cur) == BWN_PSEUDOCODE ? cur : nullptr;
         list_pseudocode_views(m_viewsBefore);
+        std::vector<TWidget *> disasm;
+        list_disasm_views(disasm);
+        m_renderBefore.clear();
+        for ( TWidget *w : disasm )
+            m_renderBefore.emplace_back(w, get_view_renderer_type(w));
+    }
+
+    // Stepping from pseudocode, IDA opens the function the stop is in with
+    // Hex-Rays, and a stop in code that is not a function (or that Hex-Rays
+    // cannot take) raises a "Decompilation failure" dialog -- one per step
+    // through such code. The stop is known once ev_resume has carried the
+    // movement out, before IDA does anything with it, so the case without a
+    // function is caught here. Asking Hex-Rays itself has to wait for the stop
+    // notification, where memory can be read (check_stop_decompiles()).
+    void Plugin::movement_done()
+    {
+        if ( m_stepView == nullptr || !m_mgr.is_active() )
+            return;
+        ea_t pc = m_mgr.current_pc_ea();
+        func_entry_info_t fi;
+        if ( pc != BADADDR && !get_func_entry_info(&fi, pc) )
+            quiet_ui();
+    }
+
+    void Plugin::check_stop_decompiles()
+    {
+        if ( m_stepView == nullptr || m_quiet || !m_mgr.is_active() )
+            return;
+        ea_t pc = m_mgr.current_pc_ea();
+        func_entry_info_t fi;
+        if ( pc != BADADDR && get_func_entry_info(&fi, pc) && !can_decompile(fi.start_ea) )
+            quiet_ui();
+    }
+
+    void Plugin::quiet_ui()
+    {
+        if ( m_quiet )
+            return;
+        m_quietSaved = batch;
+        batch        = true;
+        m_quiet      = true;
+    }
+
+    void Plugin::unquiet_ui()
+    {
+        if ( !m_quiet )
+            return;
+        batch   = m_quietSaved;
+        m_quiet = false;
+    }
+
+    void Plugin::restore_renderers()
+    {
+        std::vector<TWidget *> now;
+        list_disasm_views(now);
+        for ( const auto &[w, before] : m_renderBefore )
+        {
+            // Only text that became graph. The other way round is IDA
+            // falling back to text where a graph cannot be drawn.
+            if ( before != TCCRT_FLAT
+              || std::find(now.begin(), now.end(), w) == now.end()
+              || get_view_renderer_type(w) != TCCRT_GRAPH )
+                continue;
+            set_view_renderer_type(w, TCCRT_FLAT);
+        }
+        m_renderBefore.clear();
     }
 
     void Plugin::widget_closing(TWidget *w)
@@ -751,7 +847,7 @@ namespace idattd
 
     int idaapi Plugin::refocus_cb(void *ud)
     {
-        static_cast<Plugin *>(ud)->do_refocus();
+        static_cast<Plugin *>(ud)->do_after_stop();
         return -1;  // one-shot
     }
 
@@ -764,8 +860,10 @@ namespace idattd
     // closed -- so its view is the one kept, and the one the step started from
     // is closed. When IDA opened nothing, the view the step started from is
     // moved to the function instead.
-    void Plugin::do_refocus()
+    void Plugin::do_after_stop()
     {
+        unquiet_ui();
+        restore_renderers();
         settle_stop();
         TWidget *from = m_stepView;
         if ( from == nullptr )
@@ -872,6 +970,7 @@ namespace idattd
 
     void Plugin::do_auto_coverage()
     {
+        unquiet_ui();       // its wait box must show, whatever ran first
         ea_t start = m_autoCoverFunc;
         m_autoCoverFunc = BADADDR;
         if ( start == BADADDR || !m_mgr.is_active() )
@@ -895,17 +994,12 @@ namespace idattd
         refresh_pseudocode_views();
     }
 
-    // Called from the stop handler. If the user was in the decompiler, schedule a
-    // deferred re-focus: IDA brings the disassembly to the front as part of its own
-    // post-stop handling, so we must re-assert the decompiler after that, from a
-    // short timer (the callback runs on the UI thread once IDA has settled).
-    void Plugin::keep_decompiler_focused()
+    // Called from the stop handler. IDA brings the disassembly to the front,
+    // switches its view mode and opens pseudocode as part of its own post-stop
+    // handling, so whatever is put right afterwards has to wait until it is
+    // done: a short timer, then the next turn of the UI loop.
+    void Plugin::schedule_after_stop()
     {
-        if ( m_stepView == nullptr )
-        {
-            settle_stop();
-            return;
-        }
         m_refocusTimer.arm(DEFER_MS, refocus_cb, this);
     }
 
@@ -942,10 +1036,15 @@ namespace idattd
                 // valid for the new position: name newly-revealed module exports,
                 // disassemble around RIP, and refresh the toolbar readout.
                 p->manager().on_suspended();
+                // Before anything else can make IDA decompile the stop.
+                p->check_stop_decompiles();
                 // Last chance to pick the decompiler up, for installs where
                 // it loads after everything above has already run.
                 p->try_hook_decompiler();
                 p->update_position_label();
+                // Queued before the coverage sweep so that it runs first: the
+                // sweep's wait box must not be shown in batch mode.
+                p->schedule_after_stop();
                 // Measure the function we landed in, if it has not been measured
                 // before and the user has left that switched on. Queued, not run
                 // here -- see schedule_auto_coverage().
@@ -953,9 +1052,6 @@ namespace idattd
                 // IDA can rebuild the debug toolbars across a stop and reset our
                 // action icons -- reapply them (cheap, belt-and-suspenders).
                 p->reskin_actions();
-                // IDA forces the disassembly view to the front on each stop; if the
-                // user was in the decompiler, re-assert it afterward.
-                p->keep_decompiler_focused();
                 // Exports were just (re)named; refresh the call stack so frames
                 // show names rather than raw VAs.
                 refresh_call_stack();
@@ -1157,7 +1253,9 @@ namespace idattd
             {
                 debug_event_t *event = va_arg(va, debug_event_t *);
                 begin_movement();
-                return m_mgr.on_resume(event);
+                ssize_t rc = m_mgr.on_resume(event);
+                movement_done();
+                return rc;
             }
 
             case debugger_t::ev_set_backwards:
