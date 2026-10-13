@@ -4,6 +4,7 @@
 #include "core/backend_module.h"
 #include "plugin/script_api.h"
 #include "debugger/registers.h"
+#include "core/diag.h"
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
 // actions, including the "continue backwards" action IDA has no native icon for.
@@ -472,7 +473,6 @@ namespace idattd
         // is walking them, which crashed IDA outright. Wait it out.
         if ( !auto_is_ok() )
             return ATTACH_POLL_MS;      // not yet; ask again
-        p->m_attachTimer.fired();
         execute_ui_requests(new start_request_t(p), nullptr);
         return -1;
     }
@@ -774,9 +774,17 @@ namespace idattd
     {
         if ( !m_mgr.is_active() || !m_userPrefersDecomp || m_pseudoWidget == nullptr
           || w == m_pseudoWidget )
+        {
+            diag("pseudocode opened %p: ignored (active %d, prefers %d, view %p)",
+                 w, (int)m_mgr.is_active(), (int)m_userPrefersDecomp, m_pseudoWidget);
             return;
+        }
         if ( m_mgr.resume_serial() == m_settledResume )
+        {
+            diag("pseudocode opened %p: the user's (stop settled)", w);
             return;
+        }
+        diag("pseudocode opened %p during a movement: stray", w);
         if ( std::find(m_strayPseudo.begin(), m_strayPseudo.end(), w) == m_strayPseudo.end() )
             m_strayPseudo.push_back(w);
     }
@@ -796,7 +804,6 @@ namespace idattd
 
     void Plugin::do_refocus()
     {
-        m_refocusTimer.fired();
         if ( m_pseudoWidget != nullptr && m_userPrefersDecomp )
         {
             // Move the user's own view to where the stop is, then drop the
@@ -808,6 +815,10 @@ namespace idattd
             bool moved = pc != BADADDR && get_func_entry_info(&fi, pc)
                       && (pseudocode_function(m_pseudoWidget) == fi.start_ea
                        || show_in_pseudocode(m_pseudoWidget, pc));
+            diag("refocus: view %p shows %llX, pc %llX, moved %d, %d stray",
+                 m_pseudoWidget, (unsigned long long)pseudocode_function(m_pseudoWidget),
+                 (unsigned long long)pc,
+                 (int)moved, (int)m_strayPseudo.size());
             if ( moved )
             {
                 // Copied: closing a widget reaches widget_closing(), which
@@ -892,7 +903,6 @@ namespace idattd
 
     void Plugin::do_auto_coverage()
     {
-        m_autoCoverTimer.fired();
         ea_t start = m_autoCoverFunc;
         m_autoCoverFunc = BADADDR;
         if ( start == BADADDR || !m_mgr.is_active() )
