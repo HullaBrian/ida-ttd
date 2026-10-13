@@ -17,6 +17,9 @@ namespace idattd
     bool init_decompiler();     // true when Hex-Rays is present and hooked
     void term_decompiler();
 
+    // Decompile every open pseudocode view again: types changed under it.
+    void redecompile_pseudocode_views();
+
     // Repaint every open pseudocode view in place and redraw it. Call after a
     // coverage sweep or an annotation pass changes what the database says.
     void refresh_pseudocode_views();

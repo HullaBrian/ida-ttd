@@ -1038,11 +1038,16 @@ namespace idattd
             {
                 JObj o;
                 o.hex("site", ea).str("comment", cmt);
+                tinfo_t ct;
+                qstring ts;
+                if ( get_tinfo(&ct, ea) && ct.print(&ts) )
+                    o.str("call_type", ts);
                 arr.add(o.done());
             }
         }
         out.num("sites", (int64_t)r.sites).num("targets", (int64_t)r.targets)
            .num("polymorphic", (int64_t)r.polymorphic).num("undefined", (int64_t)r.undefined)
+           .num("typed", (int64_t)r.typed)
            .boolean("truncated", r.truncated).boolean("cancelled", r.cancelled)
            .raw("annotated", arr.done());
     }

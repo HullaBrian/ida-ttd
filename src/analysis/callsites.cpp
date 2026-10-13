@@ -13,6 +13,7 @@ namespace idattd
     static const char  CS_NODE[]  = "$ ida-ttd callsites";
     static const uchar CS_SITE_TAG = 'S';   // alt <site> -> 1
     static const uchar CS_TGTS_TAG = 'T';   // blob at <site> -> u64 targets
+    static const uchar CS_TYPE_TAG = 'Y';   // alt <site> -> 1: we set its call type
 
     static const size_t kMaxTargetsPerSite = 16;
     static const size_t kMaxSites          = 20000;
@@ -52,6 +53,43 @@ namespace idattd
         else
             out.sprnt("0x%llX", (uint64_t)ea);
         return out;
+    }
+
+    // The prototype of a called function: its own type when the database has
+    // one (from a PDB, or set by the user), else the type library's entry for
+    // its name -- an API export such as CreateFileW. IDA names a second
+    // export of a name already taken with a "_0"-style suffix, which is not
+    // part of the API's name.
+    static bool callee_type(ea_t target, tinfo_t *out)
+    {
+        if ( get_tinfo(out, target) && out->is_func() )
+            return true;
+        qstring name;
+        if ( get_name(&name, target) <= 0 || name.empty() )
+            return false;
+        for ( int pass = 0; pass < 2; pass++ )
+        {
+            const type_t *type = nullptr;
+            const p_list *fields = nullptr;
+            if ( get_named_type(get_idati(), name.c_str(), NTF_SYMU, &type, &fields) > 0
+              && out->deserialize(get_idati(), &type, &fields) && out->is_func() )
+                return true;
+            ssize_t us = name.rfind('_');
+            if ( us <= 0 || (size_t)us + 1 >= name.length() )
+                return false;
+            for ( size_t k = (size_t)us + 1; k < name.length(); k++ )
+                if ( name[k] < '0' || name[k] > '9' )
+                    return false;
+            name.resize((size_t)us);
+        }
+        return false;
+    }
+
+    static void remember_type(ea_t site)
+    {
+        netnode nn(CS_NODE, 0, true);
+        if ( nn != BADNODE )
+            nn.altset((nodeidx_t)site, 1, CS_TYPE_TAG);
     }
 
     static void remember(ea_t site, const std::vector<ea_t> &targets)
@@ -201,6 +239,15 @@ namespace idattd
             for ( ea_t t : targets )
                 add_cref(site, t, fl_CN);
 
+            // The call type, for a site with one target and nothing set there.
+            tinfo_t existing, proto;
+            if ( targets.size() == 1 && !get_tinfo(&existing, site)
+              && callee_type(targets[0], &proto) && set_tinfo(site, &proto) )
+            {
+                remember_type(site);
+                res.typed++;
+            }
+
             remember(site, targets);
             res.sites++;
             res.targets += targets.size();
@@ -238,6 +285,11 @@ namespace idattd
                     del_cref(site, (ea_t)t[k], false);
             }
             set_cmt(site, "", true);
+            if ( nn.altval(i, CS_TYPE_TAG) != 0 )
+            {
+                del_tinfo(site);
+                nn.altdel(i, CS_TYPE_TAG);
+            }
             nn.delblob(i, CS_TGTS_TAG);
             nn.altdel(i, CS_SITE_TAG);
             n++;

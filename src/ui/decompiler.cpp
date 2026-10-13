@@ -362,6 +362,23 @@ namespace idattd
         return true;
     }
 
+    void redecompile_pseudocode_views()
+    {
+        if ( !g_hooked )
+            return;
+        std::vector<TWidget *> views;
+        list_pseudocode_views(views);
+        for ( TWidget *w : views )
+        {
+            vdui_t *vu = get_widget_vdui(w);
+            if ( vu != nullptr && vu->cfunc != nullptr )
+            {
+                mark_cfunc_dirty(vu->cfunc->entry_ea, false);
+                vu->refresh_view(true);
+            }
+        }
+    }
+
     void close_volatile_pseudocode_views()
     {
         if ( !g_hooked )

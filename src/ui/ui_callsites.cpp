@@ -43,8 +43,8 @@ namespace idattd
             return 1;
 
         msg("[ida-ttd] indirect calls: %d site(s) annotated, %d distinct target(s), "
-            "%d site(s) reached more than one%s%s.\n",
-            (int)r.sites, (int)r.targets, (int)r.polymorphic,
+            "%d site(s) reached more than one, %d given their callee's prototype%s%s.\n",
+            (int)r.sites, (int)r.targets, (int)r.polymorphic, (int)r.typed,
             r.truncated ? " (site limit reached)" : "",
             r.cancelled ? " (stopped early)" : "");
         if ( r.undefined != 0 )
@@ -54,7 +54,10 @@ namespace idattd
         if ( r.sites == 0 )
             info("No indirect call in that scope was executed by the recording.");
         refresh_idaview_anyway();
-        refresh_pseudocode_views();
+        if ( r.typed != 0 )
+            redecompile_pseudocode_views();
+        else
+            refresh_pseudocode_views();
         return 1;
     }
 
@@ -63,7 +66,7 @@ namespace idattd
         size_t n = clear_indirect_call_annotations();
         msg("[ida-ttd] removed the indirect-call annotation from %d site(s).\n", (int)n);
         refresh_idaview_anyway();
-        refresh_pseudocode_views();
+        redecompile_pseudocode_views();
         return 1;
     }
 }
