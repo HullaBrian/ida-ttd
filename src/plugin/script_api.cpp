@@ -876,7 +876,15 @@ namespace idattd
         FunctionTracer &tr = g_plugin->tracer();
         uint64_t max = a.u64_or(1, 40);
         tr.reset();
-        tr.add_func((ea_t)a.u64(0));
+        // An address, or a "module!Glob*" pattern as the Trace calls by pattern
+        // action takes it.
+        uint64_t ea = 0;
+        if ( parse_u64(a.at(0), &ea) )
+            tr.add_func((ea_t)ea);
+        else
+            for ( ea_t f : mgr().modules().resolve_function_pattern(a.at(0).c_str()) )
+                tr.add_func(f);
+        out.num("traced", (int64_t)tr.count_traced());
         tr.run_sweep();
         std::vector<FunctionInvocation> v = tr.snapshot_events();
         JArr arr;
@@ -954,7 +962,7 @@ namespace idattd
         { "an.search",      cmd_an_search,      "LO HI [rwx] [MAX] memory search, as the dialog runs it" },
         { "an.coverage",    cmd_an_coverage,    "LO HI [COLOR] measure and colour execution coverage" },
         { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },
-        { "an.trace",       cmd_an_trace,       "EA [MAX] find all calls to a function, with arguments" },
+        { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },

@@ -92,14 +92,14 @@ namespace idattd
         return BADADDR;
     }
 
-    void CodeAnalyzer::define_function_at(ea_t ea)
+    bool CodeAnalyzer::define_function_at(ea_t ea)
     {
         if ( ea == BADADDR || ea == 0 )
-            return;
+            return true;
         if ( get_segment_ea(ea) == BADADDR )
-            return;                         // not mapped at this position
+            return false;                   // not mapped yet: worth another try
         if ( get_func_start(ea) == ea )
-            return;                         // already a function here
+            return true;                    // already a function here
 
         ea_t fstart, fend;
         if ( m_modules->function_range_at(ea, fstart, fend) && fstart == ea && fstart < fend )
@@ -136,6 +136,7 @@ namespace idattd
         {
             set_func_flag(ea, FUNC_LIB, true);
         }
+        return true;
     }
 
     void CodeAnalyzer::define_callees(ITraceCursor *playhead, ea_t lo, ea_t hi)
@@ -148,7 +149,11 @@ namespace idattd
         // rebuilt, so self-modifying code is rescanned.)
         if ( lo == m_calleeScanFunc )
             return;
-        m_calleeScanFunc = lo;
+        // Remembered only when every target got defined: at the first stop of
+        // a session a callee's module may not have a segment yet, and a scan
+        // remembered then would leave the call undefined until the function
+        // changed.
+        bool complete = true;
 
         // Bounded on both axes so this stays a per-stop-safe cost: a cap on how
         // far we walk, and a cap on how many targets we define.
@@ -174,7 +179,8 @@ namespace idattd
 
                 if ( tgt != BADADDR && seen.insert(tgt).second )
                 {
-                    define_function_at(tgt);
+                    if ( !define_function_at(tgt) )
+                        complete = false;
                     defined++;
                 }
 
@@ -199,6 +205,8 @@ namespace idattd
             }
             ip = nxt > ip ? nxt : ip + 1;
         }
+        if ( complete )
+            m_calleeScanFunc = lo;
     }
 
     // Grow an already-defined function to the end its module's exception table

@@ -939,10 +939,14 @@ namespace
     // only if its stack pointer was higher -- read just before it, where the
     // thread about to run is certainly this one. That costs a cpu_view per
     // candidate, and there is rarely more than one.
+    //
+    // 'check_sp' false skips that check, for a caller walking many frames that
+    // cannot afford a cpu_view per candidate and takes the small risk instead.
     std::optional<ttd::access_event> entering_call(ttd::trace &t, uint64_t pos, uint32_t tid,
-                                                   uint64_t max_back)
+                                                   uint64_t max_back, bool check_sp = true)
     {
-        std::optional<uint64_t> here_sp = thread_after(t, pos) == tid ? sp_at(t, pos) : std::nullopt;
+        std::optional<uint64_t> here_sp = check_sp && thread_after(t, pos) == tid ? sp_at(t, pos)
+                                                                                  : std::nullopt;
         uint64_t s = pos + 1;               // the instruction about to run
         int64_t depth = 0;
         for ( uint64_t n = 0; n < max_back; n++ )
@@ -1542,6 +1546,42 @@ namespace
     // NtQueryVirtualMemory showed for its range from its position on, which is
     // ITTD_MAP_STATE: the core folds it by overwriting the range. The values
     // are already Windows' own.
+    // Who asked for a change the map records: the routine whose system call
+    // made it (the call that entered the syscall's stub, so ntdll's
+    // NtAllocateVirtualMemory) and the call sites that led there, innermost
+    // first and one per module crossed -- what the Microsoft backend reports
+    // from the calls it watches. Sogen records the outcome, not the call, so
+    // the chain is walked back from the syscall instruction.
+    void syscall_chain(ttd::trace &t, uint64_t sys_step, uint32_t tid,
+                       const std::vector<std::pair<uint64_t, uint64_t>> &mods, ittd_mapping_change *m)
+    {
+        static const uint64_t kWalk   = 1ull << 16;    // instructions back, per frame
+        static const int      kFrames = 32;
+        auto module_of = [&mods](uint64_t a) -> size_t
+        {
+            for ( size_t i = 0; i < mods.size(); i++ )
+                if ( a >= mods[i].first && a < mods[i].first + mods[i].second )
+                    return i;
+            return (size_t)-1;
+        };
+        std::optional<ttd::access_event> call = entering_call(t, sys_step - 1, tid, kWalk, false);
+        if ( !call )
+            return;
+        if ( std::optional<ttd::access_event> entry = t.next_instruction(call->step, tid) )
+            m->api = entry->ip;
+        size_t last = (size_t)-2;
+        for ( int f = 0; call && f < kFrames && m->chain_n < ITTD_CHAIN_MAX; f++ )
+        {
+            size_t mi = module_of(call->ip);
+            if ( m->chain_n == 0 || mi != last )
+            {
+                m->chain[m->chain_n++] = call->ip;
+                last = mi;
+            }
+            call = entering_call(t, call->step - 1, tid, kWalk, false);
+        }
+    }
+
     int query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
                               size_t *out_count, int *out_truncated, const ittd_progress *)
     {
@@ -1559,6 +1599,9 @@ namespace
             }
             const std::vector<ttd::memory_region> &v = t.memory_regions().regions;
             std::span<const ttd::syscall_entry> sys = t.syscalls();
+            std::vector<std::pair<uint64_t, uint64_t>> mods;
+            for ( const ttd::module_entry &me : t.modules() )
+                mods.emplace_back(me.base, me.size);
             const uint64_t start = first_position(t);
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [&](const ttd::memory_region &r)
@@ -1589,7 +1632,10 @@ namespace
                 auto it = std::lower_bound(sys.begin(), sys.end(), r.step,
                                            [](const ttd::syscall_entry &e, uint64_t s) { return e.step < s; });
                 if ( it != sys.end() && it->step == r.step )
+                {
                     m.call_pos = before_step(it->step);
+                    syscall_chain(*b->trace, it->step, m.tid, mods, &m);
+                }
                 return m;
             });
         });

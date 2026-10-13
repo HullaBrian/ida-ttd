@@ -69,7 +69,8 @@ namespace idattd
         // Define a single function at 'ea', preferring the authoritative .pdata
         // bounds of its module and marking library code FUNC_LIB. No-op when
         // 'ea' is already the start of a function.
-        void  define_function_at(ea_t ea);
+        // False when 'ea' is not mapped yet, so the caller can try again later.
+        bool  define_function_at(ea_t ea);
         // Where a call instruction transfers to: the operand for a direct call,
         // or the pointer stored at the slot for an indirect call through memory
         // (an import thunk's IAT entry). The latter only works because this is

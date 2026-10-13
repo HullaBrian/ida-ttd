@@ -51,12 +51,15 @@ namespace idattd
         const uint64 m = (uint64(1) << BWN_CALL_STACK) | (uint64(1) << BWN_STKVIEW);
         mark_builtin_widgets(uint128(m, uint64(0)));
     }
+    static int idaapi pdb_poll_cb(void *ud);     // below
+
     Plugin::Plugin()
     {
         // Backends for kinds of recording other than Microsoft's, installed as
         // DLLs under plugins/ida-ttd-backends. Nothing is there unless the user
         // put it there, in which case each one is named in the output window.
         load_backend_modules();
+        m_pdbTimer.arm(1000, pdb_poll_cb, this);
         // ttd("...") for scripts: how the plugin is driven and tested without
         // a person at the UI (plugin/script_api.h).
         install_script_api(this);
@@ -107,6 +110,19 @@ namespace idattd
         hook_event_listener(HT_IDB, &m_idbEvents);
     }
 
+    // PDBs download in the background and used to be applied only at the next
+    // stop, so the first stop of a session showed bare addresses until the
+    // user moved. While the replay is paused, hand IDA whatever finished, and
+    // repaint so the names appear on their own.
+    static int idaapi pdb_poll_cb(void *ud)
+    {
+        Plugin *p = static_cast<Plugin *>(ud);
+        if ( p->manager().is_active() && get_process_state() == DSTATE_SUSP
+          && p->manager().modules().apply_finished_pdbs() != 0 )
+            refresh_idaview_anyway();
+        return 1000;
+    }
+
     Plugin::~Plugin()
     {
         // Before anything else: a symbol download must not outlive the plugin
@@ -117,6 +133,7 @@ namespace idattd
         m_refocusTimer.cancel();
         m_autoCoverTimer.cancel();
         m_attachTimer.cancel();
+        m_pdbTimer.cancel();
         unhook_event_listener(HT_IDB, &m_idbEvents);
         unhook_event_listener(HT_UI,  &m_uiEvents);
         unhook_event_listener(HT_DBG, &m_dbgEvents);

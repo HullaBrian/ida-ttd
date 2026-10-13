@@ -23,6 +23,8 @@
 #include <abi/ida_ttd_backend.h>
 
 #include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -511,9 +513,16 @@ int main(int argc, char **argv)
             if ( mc[k].state == 0x1000 && (mc[k].protect & 0xFF) == 0x40 && mc[k].region_type != ITTD_REGION_IMAGE )
             {
                 if ( rwx++ < 5 )
-                    printf("  RWX %016llx +%llx at %s (asked for at %s), type %u\n",
+                {
+                    uint32_t q;
+                    printf("  RWX %016llx +%llx at %s (asked for at %s), type %u, api %llx, chain",
                            (unsigned long long)mc[k].base, (unsigned long long)mc[k].size,
-                           pos_text(mc[k].pos), pos_text(mc[k].call_pos), mc[k].region_type);
+                           pos_text(mc[k].pos), pos_text(mc[k].call_pos), mc[k].region_type,
+                           (unsigned long long)mc[k].api);
+                    for ( q = 0; q < mc[k].chain_n; q++ )
+                        printf(" %llx", (unsigned long long)mc[k].chain[q]);
+                    printf("\n");
+                }
             }
         }
         printf("  %zu at the start, %zu changes, %zu file name(s), %zu RWX committed\n",
@@ -543,6 +552,52 @@ int main(int argc, char **argv)
             api->cursor_read_memory(c, sp_page, page, known, sizeof(page), &nk);
             printf("\nthe stack page above rsp at %s: %zu of 4096 bytes known, %.1f ms\n",
                    pos_text(mid), nk, now_ms() - t0);
+        }
+
+        /* What jumping around costs, in time and memory: a page at ten
+           positions spread over the recording. */
+        {
+            int j;
+            PROCESS_MEMORY_COUNTERS pmc;
+            for ( j = 0; j < 10; j++ )
+            {
+                ittd_position at = info.first;
+                double t1;
+                at.lo = info.first.lo + (info.last.lo - info.first.lo) / 10 * j;
+                api->cursor_seek(c, at);
+                if ( api->cursor_regs(c, &r) != ITTD_OK )
+                    continue;
+                t1 = now_ms();
+                /* the stack: written all the time, so never served from a cache */
+                api->cursor_read_memory(c, r.gp[ITTD_REG_RSP] & ~0xFFFull, page, known, sizeof(page), &nk);
+                t1 = now_ms() - t1;
+                memset(&pmc, 0, sizeof(pmc));
+                GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+                printf("a page at %s: %.1f ms, working set %zu MiB\n", pos_text(at), t1,
+                       (size_t)(pmc.WorkingSetSize >> 20));
+            }
+        }
+
+        /* What a cursor costs in memory: ten more, each reading one page. */
+        {
+            int j;
+            ittd_cursor *extra[10];
+            PROCESS_MEMORY_COUNTERS pmc;
+            for ( j = 0; j < 10; j++ )
+            {
+                extra[j] = api->cursor_open(B);
+                if ( extra[j] != NULL )
+                {
+                    api->cursor_seek(extra[j], info.last);
+                    api->cursor_read_memory(extra[j], mods[0].base, page, known, sizeof(page), &nk);
+                }
+            }
+            memset(&pmc, 0, sizeof(pmc));
+            GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+            printf("with ten more cursors: working set %zu MiB\n", (size_t)(pmc.WorkingSetSize >> 20));
+            for ( j = 0; j < 10; j++ )
+                if ( extra[j] != NULL )
+                    api->cursor_close(extra[j]);
         }
 
         /* What naming a module costs: the core reads each one's headers where

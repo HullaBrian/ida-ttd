@@ -540,11 +540,11 @@ namespace idattd
             pdb.name.c_str(), pdb.signature.c_str(), pdb.name.c_str());
     }
 
-    void ModuleRegistry::apply_finished_pdbs()
+    size_t ModuleRegistry::apply_finished_pdbs()
     {
         std::vector<FetchResult> done;
         if ( symsrv_take_completed(&done) == 0 )
-            return;
+            return 0;
 
         for ( const FetchResult &r : done )
         {
@@ -564,6 +564,7 @@ namespace idattd
             if ( pdb_identity(r.base, &pdb) )
                 apply_pdb(r.base, path, pdb);
         }
+        return done.size();
     }
 
     bool ModuleRegistry::pdb_identity(ea_t base, GuestPdbInfo *out)

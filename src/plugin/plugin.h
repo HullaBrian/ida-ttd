@@ -240,6 +240,7 @@ namespace idattd
         // offered again on the very next step -- but reopening the trace retries.
         OneShotTimer    m_autoCoverTimer;
         OneShotTimer    m_attachTimer;
+        OneShotTimer    m_pdbTimer;          // applies downloaded PDBs while paused
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;
         bool            m_haveDecompiler = false;
