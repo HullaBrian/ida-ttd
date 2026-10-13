@@ -52,6 +52,21 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   free, with each live region exposed as an IDA segment carrying its real
   permissions.
 
+**Sogen recordings only**
+
+- Every syscall the program made, with its result and arguments.
+- Self-modifying code: every instruction the program wrote before running it,
+  with the write that made it.
+- Strings and buffers recovered by replaying the recording: every string the
+  program had in memory and every buffer it filled, with when and by what.
+- Fork the recording: replay the program to a position, change registers or
+  memory there, and let it run on into a new recording, which opens like any
+  other.
+
+Replaying a recording made against the host (without an emulation root) runs
+the program's file and network operations on your machine again, so the
+replay features ask before doing it.
+
 **Opening traces**
 
 - Open a `.run` or `.sogttd` file directly from `File > Open`. The recorded program's image
@@ -80,7 +95,10 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
    without it.
 4. Optional, for Sogen recordings: build `ida-ttd-sogen.dll`
    ([docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
-   and put it in `plugins\ida-ttd-backends\`.
+   and put it in `plugins\ida-ttd-backends\`. The replay features (forks,
+   recovered strings and buffers) also need the registry hives the recording
+   ran against: a `registry` folder next to the backend, or any folder you
+   name in their dialogs.
 
 The output window names each backend as it loads, and says why when one does
 not.

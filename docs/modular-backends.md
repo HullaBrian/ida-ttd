@@ -624,6 +624,24 @@ rather than in `src/backend-sogen/` as §5 sketched, and outside the solution.
 `self_modifying_code()`, and its replay scans for strings and buffers have no
 Microsoft equivalent and want UI of their own, gated on the capability flags.
 
+*Done (2026-10-13)*, with forks on top. Each is a capability bit and a query
+appended to the ABI table (older backends simply lack it; the core checks the
+table size), a TTD menu command that is disabled without the bit, a script
+command, and a probe check:
+
+| Capability | Query | TTD menu | Script |
+| --- | --- | --- | --- |
+| `ITTD_CAP_SYSCALLS` | `query_syscalls` | Syscalls... | `an.syscalls` |
+| `ITTD_CAP_SELF_MODIFYING` | `query_self_modifying` | Self-modifying code... | `an.selfmod` |
+| `ITTD_CAP_REPLAY_SCANS` | `query_strings`, `query_buffers` | Recover strings..., Recover buffers... | `an.strings`, `an.buffers` |
+| `ITTD_CAP_FORK` | `fork_open` ... `fork_close` | Fork from here... | `an.fork` |
+
+The first two read the recording. The replay scans and forks run Sogen's
+emulator, so the Sogen backend now links `windows-ttd` and `windows-emulator`
+and needs the registry hives the recording ran against. A recording made
+against the host replays with this machine's files and network, so those
+features refuse it unless the caller passes `ITTD_FORK_ALLOW_HOST`.
+
 Phases 1–3 are worth doing whether or not a second backend ever lands: they are
 the open items of the existing code review.
 

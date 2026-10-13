@@ -2,7 +2,8 @@
 
 `ida-ttd-sogen.dll` reads Sogen time-travel traces (`.sogttd`) for ida-ttd. It
 is a separate DLL behind the C ABI in `src/abi/ida_ttd_backend.h`, and it links
-Sogen's trace reader and `cpu_view`, which are GPL-2.0-only. The DLL it
+Sogen's trace reader and `cpu_view`, and for forks and the replay scans
+Sogen's replay, recorder and Windows emulator, all GPL-2.0-only. The DLL it
 produces is therefore a GPL-2.0 binary
 ([modular-backends.md](modular-backends.md) §3). It is not part of
 `ida-ttd.slnx`, so building ida-ttd never needs Sogen.
@@ -35,11 +36,18 @@ cmake -S %SOGEN% -B %SOGEN_BUILD% -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
       -DSOGEN_BUILD_STATIC=ON -DSOGEN_BUILD_TOOLS=OFF -DSOGEN_ENABLE_PYTHON_BINDINGS=OFF ^
       -DSOGEN_ENABLE_RUST_CODE=OFF -DSOGEN_DISABLE_FEX=ON -DSOGEN_ENABLE_SDL3=OFF ^
       -DSOGEN_ENABLE_LTO=OFF
-cmake --build %SOGEN_BUILD% --target windows-ttd-view
+cmake --build %SOGEN_BUILD% --target windows-ttd
 ```
 
-That builds 129 objects (most of them Unicorn) into ten static libraries under
-`%SOGEN_BUILD%\artifacts`, with no windows-emulator, SDL, FEX or Rust.
+That builds about 260 objects into 22 static libraries under
+`%SOGEN_BUILD%\artifacts`: the reader and view, plus the replay and recorder
+(`windows-ttd`), the Windows emulator and what it links (mbedTLS, the
+disassembler, the process manager). No SDL, FEX or Rust. The backend imports
+nothing beyond the CRT, Winsock, crypt32 and bcrypt -- in particular not the
+Windows Hypervisor Platform -- and is about 15 MB.
+
+Until 2026-10-13 the backend needed only `windows-ttd-view`; a build of just
+that target no longer links.
 
 - **The cache values matter.** `backend-sogen.vcxproj` compiles Sogen's headers
   with the defines this configuration produces (`SOGEN_BUILD_STATIC=1`,
@@ -87,10 +95,50 @@ wrong is silent in the UI:
 - **Batch registers:** `regs_at`, given positions in reverse order, agrees with
   the cursor.
 
+- **Syscalls:** in position order and named, and RIP at a sampled syscall's
+  position is a `syscall` instruction.
+- **Self-modifying code:** RIP at a hit's write position is the writer, and at
+  its first-run position the written instruction.
+
+With `ITTD_PROBE_FORK_REGISTRY` naming a folder of registry hives, it also
+replays: a fork in the middle of the recording with a changed register,
+recorded into `ITTD_PROBE_FORK_OUT` (default `fork.sogttd`) and opened again
+(it starts at the fork's position, with the parent's RIP and the changed
+register), and the string and buffer scans (a sampled string is in memory
+just after its position). It also checks that a recording made against the
+host is not replayed without `ITTD_FORK_ALLOW_HOST`. The reference traces were
+all recorded against the host, so these runs re-run their file operations on
+the machine running the probe.
+
 It exits 0 when every check passes. It is written in C, which also keeps the
 ABI header honest about being C.
 
+## 4. Registry hives for replay
+
+Forks and the replay scans run the program again in Sogen's emulator, which
+loads the registry the recording ran against: `HARDWARE`, `NTUSER.DAT`, `SAM`,
+`SECURITY`, `SOFTWARE` and `SYSTEM` (Sogen's `grab-registry.bat` captures
+them; an emulation root's `registry` folder has them). The backend looks for
+them in a `registry` folder next to `ida-ttd-sogen.dll`; the dialogs take any
+other folder and remember it. A replay on another machine than the recording
+one can diverge, and a recording made against the host also needs that
+machine's system DLLs; the replay then fails, naming what differs.
+
 ## Results
+
+Run on 2026-10-13 against Sogen `ttd/next` at `86158936`, Release, with the
+backend linking `windows-ttd`:
+
+| Check | ttd-step-sample (5.9M) | test-sample (33M) |
+| --- | --- | --- |
+| syscalls | 572, all named | 5,698, all named |
+| self-modifying code | 4 hits, 0.5 s | 8 hits, 3.5 s |
+| fork in the middle, open | 214 ms | 216 ms |
+| record 20,000 instructions | 0.3 s | 0.6 s |
+| strings (8+ characters) | 28,257, 3.5 s | 135,029, 21 s |
+| buffers | 500, 1.4 s | 978, 8.4 s |
+
+Earlier results:
 
 Run on 2026-10-12 against Sogen `ttd/next` at `f2461773`, Release.
 
