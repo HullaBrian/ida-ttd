@@ -192,14 +192,16 @@ namespace idattd
 
             // A line is covered if ANY instruction it came from ran. A statement
             // that spans several instructions is not half-executed in any sense
-            // the reader cares about.
+            // the reader cares about. This recording's shade wins over another
+            // recording's (a fork's parent, or a fork).
             for ( ea_t ea : eas )
             {
                 bgcolor_t c = get_item_color(ea);
                 if ( c != DEFCOLOR && ours.find(c) != ours.end() )
                 {
                     sl.bgcolor = c;
-                    break;
+                    if ( !coverage_is_previous(c) )
+                        break;
                 }
             }
 

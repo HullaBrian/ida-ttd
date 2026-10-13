@@ -535,6 +535,9 @@ namespace idattd
         if ( m_mgr.is_active() && same_trace_path(path, m_mgr.trace_path()) )
             return;
         m_switchTo       = path;
+        // Ending the session closes the debugging session's windows; the
+        // Fork manager is opened again at the new session's first stop.
+        m_reopenForkManager = fork_manager_is_open();
         m_switchExitSent = false;
         m_switchPolls    = 0;
         m_switchTimer.cancel();
@@ -611,6 +614,15 @@ namespace idattd
         path.swap(p->m_switchTo);
         execute_ui_requests(new switch_start_request_t(p, path), nullptr);
         return -1;
+    }
+
+    void Plugin::reopen_fork_manager()
+    {
+        if ( m_reopenForkManager )
+        {
+            m_reopenForkManager = false;
+            process_ui_action(actions::FORK_MANAGER);
+        }
     }
 
     bool Plugin::start_trace_at(const char *path)
@@ -1236,6 +1248,9 @@ namespace idattd
                 // Exports were just (re)named; refresh the call stack so frames
                 // show names rather than raw VAs.
                 refresh_call_stack();
+                // A travel from a list is done once all of the above is.
+                p->manager().end_travel_wait();
+                p->reopen_fork_manager();
                 break;
             case dbg_process_exit:
                 // The trace session is over (the user terminated it). Drop the
@@ -1243,6 +1258,7 @@ namespace idattd
                 // waiting for ev_term_debugger, which only fires when the
                 // debugger backend itself is unloaded.
                 p->hide_actions();
+                p->manager().end_travel_wait();
                 refresh_fork_manager();
                 break;
             default:

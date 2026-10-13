@@ -385,6 +385,11 @@ namespace idattd
         return w != nullptr && fm_open() && w == (TWidget *)g_fm.gv;
     }
 
+    bool fork_manager_is_open()
+    {
+        return fm_open();
+    }
+
     void close_fork_manager()
     {
         if ( fm_open() )

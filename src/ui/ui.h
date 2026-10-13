@@ -452,8 +452,10 @@ namespace idattd
     };
     // Redraw the Fork manager, if it is open (a fork recorded, a switch).
     void refresh_fork_manager();
-    // The widget is the Fork manager's graph (or the window holding it).
+    // The widget is the Fork manager's graph.
     bool fork_manager_widget(TWidget *w);
+    // The Fork manager is open.
+    bool fork_manager_is_open();
     // Close it and drop its hold on the plugin (the plugin is going away).
     void close_fork_manager();
     // The views showed a fork's changes, and the fork is gone or begun:

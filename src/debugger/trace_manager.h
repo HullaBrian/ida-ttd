@@ -96,7 +96,11 @@ namespace idattd
         };
 
         // ---- UI helpers ----------------------------------------------------
+        // Travel to 'p' at the next resume. Shows a wait box until the stop
+        // there is fully processed (end_travel_wait), which can take seconds:
+        // a backend may only rebuild the state there when it is first read.
         void                       set_next_position(const Position &p);
+        void                       end_travel_wait();
         void                       goto_position();
         void                       request_backward_step();
         void                       request_single_step(bool forward);
@@ -254,6 +258,7 @@ namespace idattd
         std::map<std::pair<ea_t, Position>, const ModuleInfo *> m_toldMods;
         int           m_eventOrder = 2;
         bool          m_stepMode   = false;   // this resume is one of IDA's step modes
+        bool          m_travelWait = false;   // set_next_position's wait box is up
         // The last few events handed to IDA, resumes received and breakpoint
         // updates, oldest first, for the same reason.
         std::deque<qstring> m_eventLog;

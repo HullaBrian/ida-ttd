@@ -20,6 +20,10 @@ namespace idattd
     // recognise their own work: the disassembly when clearing, the decompiler
     // when repainting pseudocode lines.
     std::set<bgcolor_t> coverage_colors();
+    // The colour shows another recording's coverage: painted before the
+    // replay switched to this one (a fork, or the recording it came from),
+    // in the complement of the shade it had.
+    bool coverage_is_previous(bgcolor_t c);
 
     // Automatic highlighting of the function you stop in. On by default,
     // remembered per database.

@@ -101,6 +101,9 @@ namespace idattd
         void switch_trace(const qstring &path);
         // A switch's first half, from the request queue: end the session.
         void switch_exit();
+        // After a switch, at the new session's first stop: open the Fork
+        // manager again if it was open before.
+        void reopen_fork_manager();
         // Start the replay of 'path' in this database (a fork of its
         // recording). False when the debugger could not be selected.
         bool start_trace_at(const char *path);
@@ -283,6 +286,7 @@ namespace idattd
         // once IDA has finished with the old session.
         qstring         m_switchTo;
         bool            m_switchExitSent = false;
+        bool            m_reopenForkManager = false;   // it was open when a switch began
         int             m_switchPolls = 0;
         OneShotTimer    m_switchTimer;
         static int idaapi switch_cb(void *ud);

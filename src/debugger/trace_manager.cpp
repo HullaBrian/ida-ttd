@@ -107,6 +107,7 @@ namespace idattd
 
     void TraceManager::reset_session_state()
     {
+        end_travel_wait();
         // Everything that holds a cursor goes before the backend that made it.
         m_code.reset();
         m_nav.reset();
@@ -856,6 +857,22 @@ namespace idattd
         m_pending          = PendingRequest{};
         m_pending.kind     = Request::GotoPosition;
         m_pending.position = p;
+        // Only when a resume will follow to take it down again, and not for
+        // scripts in batch mode.
+        if ( !m_travelWait && !batch && get_process_state() == DSTATE_SUSP )
+        {
+            show_wait_box("HIDECANCEL\nGoing to position %s...", format_position(p).c_str());
+            m_travelWait = true;
+        }
+    }
+
+    void TraceManager::end_travel_wait()
+    {
+        if ( m_travelWait )
+        {
+            m_travelWait = false;
+            hide_wait_box();
+        }
     }
 
     Position TraceManager::current_position() const

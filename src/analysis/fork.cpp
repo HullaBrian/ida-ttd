@@ -176,12 +176,22 @@ namespace idattd
         for ( size_t k = 0; k < pos.length(); k++ )
             if ( pos[k] == ':' )
                 pos[k] = '-';
-        std::u8string name = p.stem().u8string();
-        name += u8"-fork-";
-        name += reinterpret_cast<const char8_t *>(pos.c_str());
-        name += u8".sogttd";
-        std::u8string out = (p.parent_path() / std::filesystem::path(name)).u8string();
-        return qstring(reinterpret_cast<const char *>(out.c_str()));
+        std::u8string base = p.stem().u8string();
+        base += u8"-fork-";
+        base += reinterpret_cast<const char8_t *>(pos.c_str());
+        // Another fork at the same position gets a name of its own rather
+        // than the earlier one's: -2, -3, ...
+        for ( int n = 1; ; n++ )
+        {
+            std::u8string name = base;
+            if ( n > 1 )
+                name += reinterpret_cast<const char8_t *>(("-" + std::to_string(n)).c_str());
+            name += u8".sogttd";
+            std::u8string out = (p.parent_path() / std::filesystem::path(name)).u8string();
+            qstring q(reinterpret_cast<const char *>(out.c_str()));
+            if ( !qfileexist(q.c_str()) || n >= 1000 )
+                return q;
+        }
     }
 
     qstring describe_fork_changes(const ForkRequest &req)

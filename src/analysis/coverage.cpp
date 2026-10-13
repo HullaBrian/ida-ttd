@@ -22,6 +22,7 @@ namespace idattd
     static const uchar CV_USED_TAG = 'C';   // alt <colour> -> 1
     static const uchar CV_AUTO_TAG = 'A';   // alt 0 -> 1 off, 2 on (0 = never set)
     static const uchar CV_FUNC_TAG = 'F';   // alt <function start> -> 1
+    static const uchar CV_PREV_TAG = 'P';   // alt <colour> -> 1: shows another recording's coverage
 
     // Shade painted by builds that predate the configurable colour. Always
     // cleared as well, so those databases can still be cleaned up.
@@ -32,6 +33,64 @@ namespace idattd
     // answer changes, so the marks from the old execution must not suppress a
     // fresh sweep. The colours are a user preference and survive.
     static const uchar CV_TRACE_TAGS[] = { CV_FUNC_TAG };
+
+    // The same shade turned to the opposite hue: each channel mirrored about
+    // the middle of the brightest and darkest, so the lightness stays and the
+    // colour reads as well on the theme the user picked the first one for.
+    static bgcolor_t complement(bgcolor_t c)
+    {
+        int ch[3] = { int(c & 0xFF), int((c >> 8) & 0xFF), int((c >> 16) & 0xFF) };
+        int sum = qmax(ch[0], qmax(ch[1], ch[2])) + qmin(ch[0], qmin(ch[1], ch[2]));
+        bgcolor_t out = 0;
+        for ( int i = 0; i < 3; i++ )
+            out |= bgcolor_t(sum - ch[i]) << (8 * i);
+        // A grey has no opposite hue; shift it so it still differs.
+        return out == c ? (c ^ 0x202000) : out;
+    }
+
+    // Another recording is being replayed (a fork, or the recording a fork
+    // came from): what is painted now is the other one's coverage. Repaint
+    // it in the complementary shade, so this recording's sweeps, painted in
+    // the usual one, show where its path differs.
+    static void repaint_as_previous(netnode &nn)
+    {
+        std::map<bgcolor_t, bgcolor_t> to;
+        auto add = [&](bgcolor_t c)
+        {
+            if ( c != DEFCOLOR && nn.altval((nodeidx_t)c, CV_PREV_TAG) == 0 )
+                to[c] = complement(c);
+        };
+        add(CV_LEGACY_COLOR);
+        for ( nodeidx_t i = nn.altfirst(CV_USED_TAG); i != BADNODE; i = nn.altnext(i, CV_USED_TAG) )
+            add((bgcolor_t)i);
+        for ( const auto &[from, prev] : to )
+        {
+            nn.altset((nodeidx_t)prev, 1, CV_USED_TAG);   // so clearing removes it
+            nn.altset((nodeidx_t)prev, 1, CV_PREV_TAG);
+        }
+
+        size_t n = 0;
+        show_wait_box("HIDECANCEL\nMarking the other recording's coverage...");
+        for ( int i = 0; i < get_segm_qty(); i++ )
+        {
+            segment_info_t s;
+            if ( !get_segment_info_by_num(&s, i) )
+                continue;
+            for ( ea_t ea = s.start_ea; ea != BADADDR && ea < s.end_ea; ea = next_head(ea, s.end_ea) )
+            {
+                auto p = to.find(get_item_color(ea));
+                if ( p != to.end() )
+                {
+                    set_item_color(ea, p->second);
+                    n++;
+                }
+            }
+        }
+        hide_wait_box();
+        if ( n != 0 )
+            msg("[ida-ttd] coverage: %llu instruction(s) painted by another recording are now in the "
+                "complementary shade; this recording's are painted in the usual one.\n", (uint64_t)n);
+    }
 
     // The coverage node, with any marks left over from another recording
     // dropped. Every access goes through here so the check cannot be skipped.
@@ -44,6 +103,7 @@ namespace idattd
             msg("[ida-ttd] coverage: this database was last measured against a "
                 "different recording, so its per-function marks were dropped and "
                 "functions will be measured again.\n");
+            repaint_as_previous(nn);
         }
         else if ( nn != BADNODE && create )
         {
@@ -91,6 +151,12 @@ namespace idattd
             }
         }
         return out;
+    }
+
+    bool coverage_is_previous(bgcolor_t c)
+    {
+        netnode nn = cv_node(false);
+        return nn != BADNODE && c != DEFCOLOR && nn.altval((nodeidx_t)c, CV_PREV_TAG) != 0;
     }
 
     bool coverage_auto_enabled()
@@ -251,12 +317,13 @@ namespace idattd
         netnode nn = cv_node(true);
         if ( nn != BADNODE )
         {
-            for ( nodeidx_t i = nn.altfirst(CV_FUNC_TAG); i != BADNODE; )
-            {
-                nodeidx_t next = nn.altnext(i, CV_FUNC_TAG);
-                nn.altdel(i, CV_FUNC_TAG);
-                i = next;
-            }
+            for ( uchar tag : { CV_FUNC_TAG, CV_PREV_TAG } )
+                for ( nodeidx_t i = nn.altfirst(tag); i != BADNODE; )
+                {
+                    nodeidx_t next = nn.altnext(i, tag);
+                    nn.altdel(i, tag);
+                    i = next;
+                }
         }
 
         size_t n = 0;
