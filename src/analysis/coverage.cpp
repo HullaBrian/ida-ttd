@@ -194,14 +194,39 @@ namespace idattd
             nn.altset(0, on ? 2 : 1, CV_AUTO_TAG);
     }
 
+    // Functions swept this session in debugger segments. Those segments (the
+    // system DLLs of a Microsoft recording) and their colours go when the
+    // session ends, so a mark saved in the database would outlive the
+    // painting it stands for and keep the function from being painted in
+    // every later session.
+    static std::set<ea_t> g_session_done;
+
+    static bool in_debug_segment(ea_t ea)
+    {
+        segment_info_t s;
+        return get_segment_info(&s, ea) && s.is_debugger_segm();
+    }
+
+    void coverage_session_ended()
+    {
+        g_session_done.clear();
+    }
+
     bool coverage_function_done(ea_t start)
     {
+        if ( in_debug_segment(start) )
+            return g_session_done.count(start) != 0;
         netnode nn = cv_node(false);
         return nn != BADNODE && nn.altval((nodeidx_t)start, CV_FUNC_TAG) != 0;
     }
 
     static void mark_function_done(ea_t start)
     {
+        if ( in_debug_segment(start) )
+        {
+            g_session_done.insert(start);
+            return;
+        }
         netnode nn = cv_node(true);
         if ( nn != BADNODE )
             nn.altset((nodeidx_t)start, 1, CV_FUNC_TAG);
@@ -337,6 +362,7 @@ namespace idattd
 
         // Clearing also forgets which functions were measured, so the automatic
         // pass will paint them again rather than treating an empty view as done.
+        g_session_done.clear();
         netnode nn = cv_node(true);
         if ( nn != BADNODE )
         {

@@ -37,6 +37,8 @@ namespace idattd
     // Has the function starting at 'start' already been swept in this database?
     // Sweeps are recorded so a function is measured once, ever, not once a stop.
     bool coverage_function_done(ea_t start);
+    // The session ended: what it painted in debugger segments went with them.
+    void coverage_session_ended();
 
     // Sweep and colour one function with the database's current colour, then
     // record it as done. False means it did not complete (no trace, or the user
