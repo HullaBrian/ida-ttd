@@ -1370,28 +1370,34 @@ namespace
 
     // The return of a function entered by a jump -- a tail call, an import
     // thunk, the CFG dispatcher's 'jmp rax' -- which calls_to cannot pair,
-    // having no call of its own to pair with. At the entry, [rsp] is the
-    // return address the original call pushed, so the function returns at the
-    // first ret that reads that slot. UINT64_MAX when none does (it never
-    // returned, or unwound past it).
+    // having no call of its own to pair with. The call that led to the jump
+    // is found walking back; its return address is that call's address plus
+    // its length, and the function returned at the ret that the next
+    // execution of that address on this thread follows. Index lookups only:
+    // no CPU state is rebuilt, which on a reader that rebuilds it from a
+    // checkpoint costs tens of milliseconds an entry. UINT64_MAX when there is
+    // no such return (the thread ended in it, or it unwound past it).
     uint64_t return_of_jump_entry(ttd::trace &t, uint64_t entry_step, uint32_t tid)
     {
         if ( entry_step == 0 || entry_step == UINT64_MAX )
             return UINT64_MAX;
-        std::optional<uint64_t> sp = sp_at(t, entry_step - 1);
-        if ( !sp )
+        std::optional<ttd::access_event> call = entering_call(t, entry_step - 1, tid, 1ull << 16, false);
+        if ( !call )
             return UINT64_MAX;
-        const uint64_t R = (uint64_t)ttd::access_kind::read;
+        const uint64_t ra = call->ip + call->size;
+        const uint64_t X  = (uint64_t)ttd::access_kind::execute;
         uint64_t s = entry_step;
         for ( int k = 0; k < 64; k++ )
         {
-            std::optional<ttd::access_event> ev = t.next_access(*sp, 8, s, R);
+            std::optional<ttd::access_event> ev = t.next_access(ra, 1, s, X);
             if ( !ev )
                 return UINT64_MAX;
-            std::optional<ttd::access_event> insn = t.next_instruction(ev->step - 1, tid);
-            if ( insn && insn->step == ev->step && is_ret_insn(*insn) )
-                return ev->step;
             s = ev->step;
+            if ( ev->ip != ra || t.thread_at(ev->step).value_or(0) != tid )
+                continue;
+            std::optional<ttd::access_event> prev = t.previous_instruction(ev->step, tid);
+            if ( prev && is_ret_insn(*prev) )
+                return prev->step;
         }
         return UINT64_MAX;
     }

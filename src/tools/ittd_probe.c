@@ -580,6 +580,27 @@ int main(int argc, char **argv)
             }
         }
 
+        /* Registers then memory, at nearby positions: what reading a call's
+           arguments does, call after call. */
+        {
+            int j;
+            ittd_position at = info.first;
+            for ( j = 0; j < 5; j++ )
+            {
+                double t1, t2;
+                at.lo = info.first.lo + (info.last.lo - info.first.lo) / 2 + (uint64_t)j * 1000;
+                api->cursor_seek(c, at);
+                t1 = now_ms();
+                api->cursor_regs(c, &r);
+                t1 = now_ms() - t1;
+                t2 = now_ms();
+                api->cursor_read_memory(c, (r.gp[ITTD_REG_RSP] & ~0xFFFull) - 0x2000, page, known,
+                                        sizeof(page), &nk);
+                t2 = now_ms() - t2;
+                printf("regs then a stack page at %s: %.1f ms, %.1f ms\n", pos_text(at), t1, t2);
+            }
+        }
+
         /* What a cursor costs in memory: ten more, each reading one page. */
         {
             int j;
