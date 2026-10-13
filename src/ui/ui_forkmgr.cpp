@@ -1,133 +1,120 @@
-// The Fork manager: the recording this database came from and every fork
-// recorded from it (and from its forks), drawn as a tree. A node is a
-// recording; double-clicking one switches this IDA to it or opens it in
-// another.
+﻿// The Fork manager: the recording this database came from and every fork
+// recorded from it (and from its forks), as an indented tree. A row is a
+// recording; Enter switches this IDA to it or opens it in another, Delete
+// takes a fork out of the tree.
+//
+// Not a graph view, though a graph is the natural picture: IDA 9.4 crashes
+// when a plugin's graph viewer (create_graph_viewer) is open during a debugging
+// session and the instruction pointer is refreshed -- after a step, or a
+// register change. Its routine that highlights the current instruction in
+// every graph view assumes each one is a disassembly graph, calls the
+// renderer's address lookup, and on a plugin graph's renderer that slot is
+// another function, which takes the address for a type name and reads it.
 #include "ui/ui.h"
 #include "analysis/fork.h"
 #include "analysis/fork_registry.h"
 #include "common/trace_link.h"
 
-#include <graph.hpp>
-
 namespace idattd
 {
     static const char FM_TITLE[] = "TTD forks";
-    static const char FM_NODE[]  = "$ ida-ttd fork graph";
 
     namespace
     {
-        struct Node
+        struct Row
         {
             qstring path;
-            qstring text;
-            qstring hint;
-            int     record = -1;        // index into records, -1 for a recording not forked here
+            int     depth   = 0;
+            int     record  = -1;       // index into records; -1 for a recording not forked here
             bool    current = false;    // the one being replayed
             bool    missing = false;    // its file is gone
         };
 
-        struct ForkGraph
+        struct ForkTree
         {
             const ActionContext     *ctx = nullptr;
-            graph_viewer_t          *gv  = nullptr;
             std::vector<ForkRecord>  records;
-            std::vector<Node>        nodes;
-            std::vector<std::pair<int, int>> edges;
-
-            int find(const qstring &path) const
-            {
-                for ( size_t i = 0; i < nodes.size(); i++ )
-                    if ( same_trace_path(nodes[i].path, path) )
-                        return (int)i;
-                return -1;
-            }
-
-            int add(const qstring &path)
-            {
-                int n = find(path);
-                if ( n >= 0 )
-                    return n;
-                Node node;
-                node.path = path;
-                nodes.push_back(node);
-                return (int)nodes.size() - 1;
-            }
+            std::vector<Row>         rows;
 
             void rebuild();
         };
 
-        ForkGraph g_fm;
+        ForkTree g_ft;
     }
 
-    static qstring file_name(const qstring &path)
-    {
-        return qstring(qbasename(path.c_str()));
-    }
-
-    void ForkGraph::rebuild()
+    void ForkTree::rebuild()
     {
         records = load_fork_records();
-        nodes.clear();
-        edges.clear();
-
-        // The database's own recording first, so it is the root even when
-        // nothing has been forked from it yet.
-        TraceLink link;
-        if ( trace_link_read(&link) && !link.trace_path.empty() )
-            add(link.trace_path);
+        rows.clear();
         TraceManager *mgr = ctx != nullptr ? ctx->mgr : nullptr;
-        if ( mgr != nullptr && !mgr->trace_path().empty() )
-            add(mgr->trace_path());
-        for ( size_t i = 0; i < records.size(); i++ )
-        {
-            int parent = add(records[i].parent);
-            int child  = add(records[i].path);
-            nodes[child].record = (int)i;
-            edges.emplace_back(parent, child);
-        }
 
-        for ( Node &n : nodes )
+        // Every recording that is not itself a recorded fork is a root: the
+        // database's own recording first, so it heads the list even when
+        // nothing has been forked from it yet.
+        std::vector<qstring> roots;
+        auto add_root = [&](const qstring &p)
         {
-            n.current = mgr != nullptr && mgr->is_active() && same_trace_path(n.path, mgr->trace_path());
-            n.missing = !qfileexist(n.path.c_str());
-            n.text = file_name(n.path);
-            n.hint = n.path;
-            if ( n.record >= 0 )
-            {
-                const ForkRecord &r = records[n.record];
-                n.text.cat_sprnt("\nforked at %s\n%s\n%llu instructions", r.at.c_str(), r.changes.c_str(),
-                                 (unsigned long long)r.instructions);
-                char when[64] = {};
-                qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)r.time);
-                n.hint.cat_sprnt("\nforked at %s, %s\nchanges: %s", r.at.c_str(), when, r.changes.c_str());
-            }
-            else
-            {
-                n.text.append("\nrecording");
-            }
-            if ( n.current )
-                n.text.append("\n(replaying now)");
-            if ( n.missing )
-                n.text.append("\n(file not found)");
+            if ( p.empty() )
+                return;
+            for ( const ForkRecord &r : records )
+                if ( same_trace_path(r.path, p) )
+                    return;
+            for ( const qstring &q : roots )
+                if ( same_trace_path(q, p) )
+                    return;
+            roots.push_back(p);
+        };
+        TraceLink link;
+        if ( trace_link_read(&link) )
+            add_root(link.trace_path);
+        if ( mgr != nullptr )
+            add_root(mgr->trace_path());
+        for ( const ForkRecord &r : records )
+            add_root(r.parent);
+
+        // Depth first, children in the order they were recorded. 'seen'
+        // guards against a cycle in a hand-edited or confused record.
+        std::vector<bool> seen(records.size(), false);
+        std::function<void(const qstring &, int, int)> walk = [&](const qstring &path, int record, int depth)
+        {
+            Row row;
+            row.path   = path;
+            row.depth  = depth;
+            row.record = record;
+            rows.push_back(row);
+            for ( size_t i = 0; i < records.size(); i++ )
+                if ( !seen[i] && same_trace_path(records[i].parent, path) )
+                {
+                    seen[i] = true;
+                    walk(records[i].path, (int)i, depth + 1);
+                }
+        };
+        for ( const qstring &r : roots )
+            walk(r, -1, 0);
+
+        for ( Row &r : rows )
+        {
+            r.current = mgr != nullptr && mgr->is_active() && same_trace_path(r.path, mgr->trace_path());
+            r.missing = !qfileexist(r.path.c_str());
         }
     }
 
-    static void act_on(int node)
+    static void act_on(size_t n)
     {
-        if ( node < 0 || node >= (int)g_fm.nodes.size() )
+        if ( n >= g_ft.rows.size() )
             return;
-        const Node &n = g_fm.nodes[node];
-        if ( n.current )
+        const Row &r = g_ft.rows[n];
+        if ( r.current )
         {
-            info("%s is the recording being replayed.", n.path.c_str());
+            info("%s is the recording being replayed.", r.path.c_str());
             return;
         }
-        if ( n.missing )
+        if ( r.missing )
         {
-            warning("%s is not there any more.", n.path.c_str());
+            warning("%s is not there any more.", r.path.c_str());
             return;
         }
-        qstring path = n.path;
+        qstring path = r.path;
         int answer = ask_buttons("~S~witch here", "Open in a ~n~ew IDA", "Cancel", ASKBTN_YES,
                                  "HIDECANCEL\n%s\n\n"
                                  "Switch this IDA to that recording? The replay stops here and starts\n"
@@ -135,8 +122,8 @@ namespace idattd
                                  path.c_str());
         if ( answer == ASKBTN_YES )
         {
-            if ( g_fm.ctx != nullptr && g_fm.ctx->switch_trace )
-                g_fm.ctx->switch_trace(path);
+            if ( g_ft.ctx != nullptr && g_ft.ctx->switch_trace )
+                g_ft.ctx->switch_trace(path);
         }
         else if ( answer == ASKBTN_NO )
         {
@@ -145,143 +132,111 @@ namespace idattd
         }
     }
 
-    static ssize_t idaapi fm_callback(void *, int code, va_list va)
+    namespace
     {
-        switch ( code )
+        const int   g_fm_widths[] = { 40, 14, 40, 12, 16 };
+        const char *g_fm_header[] = { "Recording", "Forked at", "Changes", "Instructions", "Recorded" };
+
+        struct ForkChooser : public chooser_t
         {
-            case grcode_user_refresh:
+            ForkChooser()
+                : chooser_t(CH_CAN_DEL | CH_CAN_REFRESH,
+                            qnumber(g_fm_widths), g_fm_widths, g_fm_header, FM_TITLE)
             {
-                interactive_graph_t *g = va_arg(va, interactive_graph_t *);
-                g_fm.rebuild();
-                g->clear();
-                g->resize((int)g_fm.nodes.size());
-                for ( const auto &[src, dst] : g_fm.edges )
-                    g->add_edge(src, dst, nullptr);
-                return 1;
+                g_ft.rebuild();
             }
 
-            case grcode_user_text:
+            size_t idaapi get_count() const override { return g_ft.rows.size(); }
+
+            void idaapi get_row(qstrvec_t *cols, int *, chooser_item_attrs_t *attrs, size_t n) const override
             {
-                va_arg(va, interactive_graph_t *);
-                int          node    = va_arg(va, int);
-                const char **text    = va_arg(va, const char **);
-                bgcolor_t   *bgcolor = va_arg(va, bgcolor_t *);
-                if ( node < 0 || node >= (int)g_fm.nodes.size() )
-                    return 0;
-                const Node &n = g_fm.nodes[node];
-                *text = n.text.c_str();
-                if ( bgcolor != nullptr )
-                    *bgcolor = n.current ? 0xC0F0C0 : n.missing ? 0xC0C0C0 : DEFCOLOR;
-                return 1;
+                if ( n >= g_ft.rows.size() )
+                    return;
+                const Row &r = g_ft.rows[n];
+                qstring name;
+                for ( int i = 0; i < r.depth; i++ )
+                    name.append(i + 1 == r.depth ? "  \xE2\x94\x94\xE2\x94\x80 " : "     ");  // "  â””â”€ "
+                name.append(qbasename(r.path.c_str()));
+                if ( r.current )
+                    name.append("   (replaying now)");
+                if ( r.missing )
+                    name.append("   (file not found)");
+                cols->at(0) = name;
+                if ( r.record >= 0 )
+                {
+                    const ForkRecord &f = g_ft.records[r.record];
+                    cols->at(1) = f.at;
+                    cols->at(2) = f.changes;
+                    cols->at(3).sprnt("%llu", (unsigned long long)f.instructions);
+                    char when[64] = {};
+                    qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)f.time);
+                    cols->at(4) = when;
+                }
+                else
+                {
+                    cols->at(2) = "the recording";
+                }
+                if ( attrs != nullptr )
+                {
+                    if ( r.current )
+                        attrs->color = 0xC0F0C0;
+                    else if ( r.missing )
+                        attrs->flags |= CHITEM_GRAY;
+                }
             }
 
-            case grcode_user_hint:
+            cbret_t idaapi enter(size_t n) override
             {
-                va_arg(va, interactive_graph_t *);
-                int    node = va_argi(va, int);
-                va_argi(va, int);
-                va_argi(va, int);
-                char **hint = va_arg(va, char **);
-                if ( node < 0 || node >= (int)g_fm.nodes.size() )
-                    return 0;
-                *hint = qstrdup(g_fm.nodes[node].hint.c_str());
-                return 1;
+                act_on(n);
+                return cbret_t(n, NOTHING_CHANGED);
             }
 
-            case grcode_dblclicked:
+            cbret_t idaapi del(size_t n) override
             {
-                va_arg(va, graph_viewer_t *);
-                selection_item_t *s = va_arg(va, selection_item_t *);
-                if ( s != nullptr && s->is_node )
-                    act_on(s->node);
-                return 1;
+                if ( n >= g_ft.rows.size() || g_ft.rows[n].record < 0 )
+                {
+                    warning("Only forks can be taken out of the list, not the recording they came from.");
+                    return cbret_t(n, NOTHING_CHANGED);
+                }
+                const qstring path = g_ft.rows[n].path;
+                if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nTake %s out of the fork list?\n\n"
+                                       "Its file stays where it is, and so do forks made from it.",
+                            path.c_str()) != ASKBTN_YES )
+                    return cbret_t(n, NOTHING_CHANGED);
+                remove_fork_record(path.c_str());
+                g_ft.rebuild();
+                return cbret_t(n == 0 ? 0 : n - 1, ALL_CHANGED);
             }
 
-            default:
-                break;
-        }
-        return 0;
-    }
-
-    // The fork under the graph's selection, for the popup actions.
-    static int selected_node(action_ctx_base_t *ctx)
-    {
-        if ( ctx == nullptr || ctx->widget != (TWidget *)g_fm.gv || ctx->graph_selection == nullptr )
-            return -1;
-        for ( size_t i = 0; i < ctx->graph_selection->size(); i++ )
-            if ( ctx->graph_selection->at(i).is_node )
-                return ctx->graph_selection->at(i).node;
-        return -1;
-    }
-
-    int idaapi ForkOpenHandler::activate(action_activation_ctx_t *ctx)
-    {
-        act_on(selected_node(ctx));
-        return 1;
-    }
-
-    action_state_t idaapi ForkOpenHandler::update(action_update_ctx_t *ctx)
-    {
-        if ( ctx->widget != (TWidget *)g_fm.gv )
-            return AST_DISABLE_FOR_WIDGET;
-        return selected_node(ctx) >= 0 ? AST_ENABLE : AST_DISABLE;
-    }
-
-    int idaapi ForkForgetHandler::activate(action_activation_ctx_t *ctx)
-    {
-        int node = selected_node(ctx);
-        if ( node < 0 || g_fm.nodes[node].record < 0 )
-            return 1;
-        const qstring path = g_fm.nodes[node].path;
-        if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nTake %s out of the fork graph?\n\n"
-                               "The file stays where it is.", path.c_str()) != ASKBTN_YES )
-            return 1;
-        remove_fork_record(path.c_str());
-        refresh_fork_manager();
-        return 1;
-    }
-
-    action_state_t idaapi ForkForgetHandler::update(action_update_ctx_t *ctx)
-    {
-        if ( ctx->widget != (TWidget *)g_fm.gv )
-            return AST_DISABLE_FOR_WIDGET;
-        int node = selected_node(ctx);
-        return node >= 0 && g_fm.nodes[node].record >= 0 ? AST_ENABLE : AST_DISABLE;
+            cbret_t idaapi refresh(ssize_t n) override
+            {
+                g_ft.rebuild();
+                return cbret_t(n, ALL_CHANGED);
+            }
+        };
     }
 
     void refresh_fork_manager()
     {
-        if ( g_fm.gv != nullptr && find_widget(FM_TITLE) == (TWidget *)g_fm.gv )
-            refresh_viewer(g_fm.gv);
-        else
-            g_fm.gv = nullptr;
-    }
-
-    bool fork_manager_widget(TWidget *w)
-    {
-        return w != nullptr && g_fm.gv != nullptr && w == (TWidget *)g_fm.gv;
+        if ( find_widget(FM_TITLE) != nullptr )
+        {
+            g_ft.rebuild();
+            refresh_chooser(FM_TITLE);
+        }
     }
 
     int idaapi ForkManagerHandler::activate(action_activation_ctx_t *)
     {
-        g_fm.ctx = ctx;
-        TWidget *w = find_widget(FM_TITLE);
-        if ( w != nullptr )
+        g_ft.ctx = ctx;
+        if ( TWidget *w = find_widget(FM_TITLE) )
         {
             refresh_fork_manager();
             activate_widget(w, true);
             return 1;
         }
-        netnode id;
-        id.create(FM_NODE);
-        g_fm.gv = create_graph_viewer(FM_TITLE, id, fm_callback, nullptr, 0);
-        if ( g_fm.gv == nullptr )
-        {
-            warning("Could not open the fork graph.");
-            return 1;
-        }
-        display_widget(g_fm.gv, WOPN_DP_TAB | WOPN_RESTORE);
-        viewer_fit_window(g_fm.gv);
+        // IDA deletes a non-modal chooser when its widget closes.
+        ForkChooser *ch = new ForkChooser();
+        ch->choose();
         return 1;
     }
 }

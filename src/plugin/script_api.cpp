@@ -680,7 +680,8 @@ namespace idattd
         out.num("process_state", get_process_state()).boolean("session", mgr().is_active())
            .boolean("actions_visible", g_plugin->actions_visible());
         if ( mgr().is_active() )
-            out.str("pos", format_position(mgr().current_position())).hex("pc", mgr().current_pc_ea());
+            out.str("pos", format_position(mgr().current_position())).hex("pc", mgr().current_pc_ea())
+               .str("trace", mgr().trace_path());
         out.str("drv_backend", g_drv.backend != nullptr ? g_drv.backend->id() : "")
            .str("last_resume", mgr().last_resume()).num("event_order", mgr().event_order());
         JArr log;
@@ -702,6 +703,29 @@ namespace idattd
     }
 
     static void cmd_wait(const Args &a, JObj &out) { wait_stop(a, 0, out); }
+
+    // switch PATH [TIMEOUT]: end the session, if one runs, and start the
+    // replay of PATH in this database -- what the Fork manager's "Switch
+    // here" does, without its timer.
+    static void cmd_switch(const Args &a, JObj &out)
+    {
+        qstring path = a.at(0);
+        if ( get_process_state() != DSTATE_NOTASK )
+        {
+            exit_process();
+            wait_for_next_event(WFNE_ANY | WFNE_SILENT, 10);
+        }
+        if ( get_process_state() != DSTATE_NOTASK )
+            fail("the running session did not end");
+        if ( !g_plugin->start_trace_at(path.c_str()) )
+            fail("the TTD debugger could not be selected for %s", path.c_str());
+        Args rest;
+        rest.v.push_back(a.v[0]);
+        for ( size_t i = 1; i < a.count(); i++ )
+            rest.v.push_back(a.at(i));
+        wait_stop(rest, 0, out);
+        out.str("trace", mgr().trace_path());
+    }
 
     // One movement of the real debugger session, then wait for it to stop.
     // The backward ones go the way the TTD toolbar sends them.
@@ -1292,6 +1316,7 @@ namespace idattd
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
+        { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
         { "an.forks",       cmd_an_forks,       "the forks recorded in this database" },
         { "an.forget",      cmd_an_forget,      "PATH take a fork out of the fork graph" },
         { "an.forkhere",    cmd_an_forkhere,    "make this position a fork; change it with IDA's debugger calls" },

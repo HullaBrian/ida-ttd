@@ -80,6 +80,7 @@ database. The scope is given here instead of in a dialog.
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
 | `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
 | `an.buffers [MAX] [registry=DIR] [strict]` | replay the recording (Sogen) and list the buffers it filled |
+| `switch PATH [TIMEOUT]` | end the session and replay PATH (a fork of the recording) in this database, as the Fork manager's "Switch here" does |
 | `an.forks` | the forks recorded in this database (the Fork manager's graph): path, parent, position, changes |
 | `an.forget PATH` | take a fork out of the graph; its file stays |
 | `an.forkhere` | make the playhead a fork (TTD > Fork here); change it with IDA's own calls (`ida_dbg.set_reg_val`, `ida_dbg.write_dbg_memory`), which only succeed at the fork's position |

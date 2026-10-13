@@ -3,6 +3,7 @@
 #include "common/trace_link.h"
 #include "common/symsrv.h"
 #include "core/backend_module.h"
+#include "core/backend_registry.h"
 #include "plugin/script_api.h"
 #include "debugger/registers.h"
 #include "core/diag.h"
@@ -215,16 +216,9 @@ namespace idattd
               "Discard fork: drop the fork and its changes",
               NO_ICON, ITEM, MENU },
             { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
-              "Fork manager: this recording and the forks recorded from it, as a graph; "
+              "Fork manager: this recording and the forks recorded from it, as a tree; "
               "double-click one to switch to it",
               NO_ICON, ITEM, MENU },
-            // On the Fork manager's popup only.
-            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
-              "Switch this IDA to the selected recording, or open it in a new IDA",
-              NO_ICON, ITEM, TOOLBAR_ONLY },
-            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
-              "Take the selected fork out of the graph (its file stays)",
-              NO_ICON, ITEM, TOOLBAR_ONLY },
 
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
               "Bookmark this position: save the current trace position, with a name "
@@ -548,9 +542,16 @@ namespace idattd
         if ( path.empty() )
             return -1;
         msg("[ida-ttd] switching the replay to %s\n", path.c_str());
-        if ( p->select_trace_debugger(path.c_str()) )
-            start_process(path.c_str(), "", "");
+        p->start_trace_at(path.c_str());
         return -1;
+    }
+
+    bool Plugin::start_trace_at(const char *path)
+    {
+        if ( !select_trace_debugger(path) )
+            return false;
+        start_process(path, "", "");
+        return true;
     }
 
     void Plugin::schedule_trace_offer()
@@ -1207,12 +1208,6 @@ namespace idattd
                 // (action_activation_ctx_t* ctx follows; not needed here)
                 if ( widget == nullptr )
                     break;
-                if ( fork_manager_widget(widget) )
-                {
-                    attach_action_to_popup(widget, popup, actions::FORK_OPEN);
-                    attach_action_to_popup(widget, popup, actions::FORK_FORGET);
-                    break;
-                }
                 int wt = get_widget_type(widget);
                 if ( wt == BWN_DISASM || wt == BWN_PSEUDOCODE )
                 {
@@ -1322,10 +1317,19 @@ namespace idattd
                 // The user has just chosen us, possibly by hand because the
                 // programmatic switch above did not work. Point the Application
                 // field at the recording so they do not have to find it behind
-                // IDA's "*.exe" filter.
+                // IDA's "*.exe" filter -- unless it already names a recording
+                // that exists. This runs for every session, and a session
+                // started on a fork of the recording (the Fork manager's
+                // switch) must not be turned back to the recording itself.
                 {
                     TraceLink link;
-                    if ( get_process_state() == DSTATE_NOTASK
+                    qstring app;
+                    get_process_options(&app, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                    load_backend_modules();
+                    bool chosen = !app.empty() && qfileexist(app.c_str())
+                               && BackendRegistry::instance().for_file(app.c_str()) != nullptr;
+                    if ( !chosen
+                      && get_process_state() == DSTATE_NOTASK
                       && trace_link_read(&link)
                       && !link.trace_path.empty() )
                     {

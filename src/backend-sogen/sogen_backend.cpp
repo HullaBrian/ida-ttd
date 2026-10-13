@@ -2020,11 +2020,15 @@ namespace
     // diverges from the recording -- typically because this machine's files
     // are not the ones a host recording ran against -- it is not the end: the
     // next checkpoint holds the recording's own state, so the scan restores
-    // it, lets the scanner look at memory again ('restored'), and goes on.
+    // it and goes on. 'leaving' runs before the restore and 'restored' after
+    // it: a scanner that cannot watch a restore (the buffer scanner owns the
+    // emulator's one mapping-change callback, which seek needs) is put away
+    // and a new one attached; one that can is shown the restored memory.
     // Returns what was skipped, in words; empty when nothing was. Strict
     // replays still fail at the first divergence.
     std::string replay_scan(sogen::windows_emulator &emu, ttd::trace &t, const std::function<void()> &attach,
-                            const std::function<void()> &restored, bool strict, const ittd_progress *progress)
+                            const std::function<void()> &leaving, const std::function<void()> &restored,
+                            bool strict, const ittd_progress *progress)
     {
         try
         {
@@ -2053,6 +2057,7 @@ namespace
                 gaps++;
                 if ( next >= end )
                     break;
+                leaving();
                 ttd::seek(emu, t, next, strict, control(progress));
                 restored();
                 try
@@ -2111,7 +2116,16 @@ namespace
                 {
                     scanner.emplace(*emu, min_length);
                     scanner->scan_initial_memory();
-                }, [&]() { scanner->scan_initial_memory(); }, strict, progress);
+                }, []() {}, [&]()
+                {
+                    // Attached by now, unless the replay was refused before
+                    // it started.
+                    if ( !scanner )
+                        scanner.emplace(*emu, min_length);
+                    scanner->scan_initial_memory();
+                }, strict, progress);
+                if ( !scanner )
+                    throw std::runtime_error("the replay did not start");
                 scanner->finish();
                 std::vector<ittd_string_hit> v;
                 for ( const ttd::recovered_string &s : scanner->results() )
@@ -2153,11 +2167,21 @@ namespace
                 bool strict = false;
                 auto emu = replay_emulator(*t, settings, &strict);
                 std::optional<ttd::buffer_scanner> scanner;
+                // What scanners put away at a restore found, then the last one's.
+                std::vector<ttd::recovered_buffer> found_before;
+                auto put_away = [&]()
+                {
+                    if ( !scanner )
+                        return;
+                    scanner->finish();
+                    found_before.insert(found_before.end(), scanner->results().begin(), scanner->results().end());
+                    scanner.reset();
+                };
                 b->scan_notes[key] = replay_scan(*emu, *t, [&]() { scanner.emplace(*emu, *t); },
-                                                 []() {}, strict, progress);
-                scanner->finish();
+                                                 put_away, [&]() { scanner.emplace(*emu, *t); }, strict, progress);
+                put_away();
                 std::vector<ittd_buffer_hit> v;
-                for ( const ttd::recovered_buffer &r : scanner->results() )
+                for ( const ttd::recovered_buffer &r : found_before )
                 {
                     ittd_buffer_hit h{};
                     h.address   = r.address;

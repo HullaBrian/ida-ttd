@@ -178,6 +178,25 @@ def run_sogen(registry=None, host=False, fork_path=None):
             (f.get("instructions"), f.get("error")))
         T("an.forkdiscard")
         chk("discarding it shows the recording again", idc.read_dbg_memory(G, 8) == bytes.fromhex("11" * 8))
+
+        # The Fork manager's list, and switching the replay to the fork and
+        # back, in this database.
+        forks = T("an.forks").get("forks", [])
+        mine = [x for x in forks if os.path.normcase(x["path"]) == os.path.normcase(path2)]
+        chk("the fork is in the fork list, with its parent and change",
+            len(mine) == 1 and mine[0]["changes"] == "rax=0x1234, 8 bytes at 0x%X" % G, mine)
+        parent = mine[0]["parent"] if mine else ""
+        sw = T('switch "%s"' % path2)
+        chk("switching replays the fork in this database",
+            sw.get("ok") and os.path.normcase(sw.get("trace", "")) == os.path.normcase(path2)
+            and sw.get("pc") and int(sw["pc"], 16) == B + 0x14E7
+            and ida_dbg.get_reg_val("RAX") == 0x1234 and idc.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8),
+            (sw.get("trace"), sw.get("pc"), sw.get("error")))
+        sw = T('switch "%s"' % parent)
+        chk("... and back to the recording", sw.get("ok") and os.path.normcase(sw.get("trace", "")) == os.path.normcase(parent),
+            (sw.get("trace"), sw.get("error")))
+        for x in (path, path2):
+            T('an.forget "%s"' % x)
     else:
         res.append("skip strings and fork: no registry folder given")
 

@@ -70,9 +70,9 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   like any other. Fork here is also on the context menu of the disassembly,
   pseudocode, hex view and registers.
 - Fork manager (TTD menu and toolbar): the recording and every fork recorded
-  from it, and from its forks, as a graph. Double-click one to switch this IDA
+  from it, and from its forks, as a tree. Double-click one to switch this IDA
   to it (the replay restarts on it, in the same database) or open it in a new
-  IDA.
+  IDA; Delete takes a fork off the list.
 
 Replaying a recording made against the host (without an emulation root) runs
 the program's file and network operations on your machine again, so the

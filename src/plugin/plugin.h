@@ -100,6 +100,9 @@ namespace idattd
         void switch_trace(const qstring &path);
         // The old session is gone: start the one switch_trace() asked for.
         void continue_switch();
+        // Start the replay of 'path' in this database (a fork of its
+        // recording). False when the debugger could not be selected.
+        bool start_trace_at(const char *path);
         void start_trace_session();     // the action body; no prompting
         // Make IDA's debugger machinery point at us and know where the trace is,
         // so Debugger > Process options and Start process are already correct
@@ -190,8 +193,6 @@ namespace idattd
         ForkRecordHandler         m_forkRecord;
         ForkDiscardHandler        m_forkDiscard;
         ForkManagerHandler        m_forkManager;
-        ForkOpenHandler           m_forkOpen;
-        ForkForgetHandler         m_forkForget;
         RecoverStringsHandler     m_recoverStrings;
         RecoverBuffersHandler     m_recoverBuffers;
         CallTreeHandler           m_callTree;
