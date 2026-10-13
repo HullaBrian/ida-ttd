@@ -286,6 +286,7 @@ namespace idattd
             if ( c.cheap_seek )       caps |= ITTD_CAP_CHEAP_SEEK;
             if ( c.reverse_step )     caps |= ITTD_CAP_REVERSE_STEP;
             if ( c.exceptions )       caps |= ITTD_CAP_EXCEPTIONS;
+            if ( c.self_modifying )   caps |= ITTD_CAP_SELF_MODIFYING;
             if ( c.cheap_reads )      caps |= ITTD_CAP_CHEAP_READS;
             if ( !h->b->prepared() )  caps |= ITTD_CAP_PREPARE;
             out->capabilities = caps;
@@ -835,6 +836,37 @@ namespace idattd
         });
     }
 
+    static int x_query_self_modifying(ittd_backend *hb, ittd_selfmod *buf, size_t cap,
+                                      size_t *out_count, int *out_truncated,
+                                      const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            return answer<ittd_selfmod>(h, "selfmod", buf, cap, out_count, out_truncated,
+                                        [&](std::vector<ittd_selfmod> *out)
+            {
+                std::vector<SelfModHit> v;
+                AbiSink sink(progress);
+                QueryResult r = h->b->query_self_modifying(&v, &sink);
+                for ( const SelfModHit &e : v )
+                {
+                    ittd_selfmod x{};
+                    x.address     = (uint64_t)e.address;
+                    x.size        = e.size;
+                    x.write_pos   = to_abi(e.write_pos);
+                    x.write_ip    = (uint64_t)e.write_ip;
+                    x.execute_pos = to_abi(e.execute_pos);
+                    x.executions  = e.executions;
+                    out->push_back(x);
+                }
+                return r;
+            });
+        });
+    }
+
     static int x_query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
                                        size_t *out_count, int *out_truncated,
                                        const ittd_progress *progress)
@@ -1045,6 +1077,7 @@ namespace idattd
         a.nav_take_notice       = x_nav_take_notice;
         a.nav_set_progress      = x_nav_set_progress;
         a.query_syscalls        = x_query_syscalls;
+        a.query_self_modifying  = x_query_self_modifying;
         built = true;
         return &a;
     }

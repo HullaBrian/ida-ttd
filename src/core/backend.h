@@ -70,6 +70,9 @@ namespace idattd
         // Reading a page costs about a copy (ITTD_CAP_CHEAP_READS): IDA may
         // analyse whole library modules, reading all of their code.
         bool cheap_reads      = false;
+        // Code the program wrote and then ran can be listed
+        // (query_self_modifying).
+        bool self_modifying   = false;
     };
 
     // ------------------------------------------------------------- the trace
@@ -189,6 +192,17 @@ namespace idattd
         uint32_t number = 0;
         uint32_t tid    = 0;        // 0 when unknown
         qstring  name;              // empty when unknown
+    };
+
+    // An instruction the program wrote before running it (ittd_selfmod).
+    struct SelfModHit
+    {
+        ea_t     address     = BADADDR;
+        uint64_t size        = 0;
+        Position write_pos;         // at the writing instruction
+        ea_t     write_ip    = BADADDR;
+        Position execute_pos;       // its first execution
+        uint64_t executions  = 0;
     };
 
     // Reported by a query that could not return everything it found.
@@ -467,6 +481,15 @@ namespace idattd
                                                   ProgressSink *progress)
         {
             qnotused(out); qnotused(files); qnotused(progress);
+            return QueryResult{};
+        }
+
+        // Every instruction the program wrote before running it. Requires
+        // capabilities().self_modifying; a backend without it answers not-ran.
+        virtual QueryResult query_self_modifying(std::vector<SelfModHit> *out,
+                                                 ProgressSink *progress)
+        {
+            qnotused(out); qnotused(progress);
             return QueryResult{};
         }
 

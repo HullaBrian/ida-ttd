@@ -62,6 +62,8 @@ namespace idattd
                                      ProgressSink *progress) override;
         QueryResult query_syscalls(std::vector<SyscallEvent> *out,
                                    ProgressSink *progress) override;
+        QueryResult query_self_modifying(std::vector<SelfModHit> *out,
+                                         ProgressSink *progress) override;
         QueryResult query_mapping_changes(std::vector<ittd_mapping_change> *out,
                                           std::vector<qstring> *files,
                                           ProgressSink *progress) override;

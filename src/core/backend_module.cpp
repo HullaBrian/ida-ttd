@@ -385,11 +385,13 @@ namespace idattd
         m_caps.access_queries   = (c & ITTD_CAP_ACCESS_QUERIES) != 0;
         m_caps.call_queries     = (c & ITTD_CAP_CALL_QUERIES) != 0;
         m_caps.mapping_changes  = (c & ITTD_CAP_MAPPING_CHANGES) != 0;
-        m_caps.syscalls         = (c & ITTD_CAP_SYSCALLS) != 0;
+        m_caps.syscalls         = (c & ITTD_CAP_SYSCALLS) != 0 && ITTD_HAS(m_api, query_syscalls);
         m_caps.recorded_exports = (c & ITTD_CAP_RECORDED_EXPORTS) != 0;
         m_caps.cheap_seek       = (c & ITTD_CAP_CHEAP_SEEK) != 0;
         m_caps.reverse_step     = (c & ITTD_CAP_REVERSE_STEP) != 0;
         m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;
+        m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0
+                               && ITTD_HAS(m_api, query_self_modifying);
         m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
         return true;
     }
@@ -702,6 +704,33 @@ namespace idattd
             e.tid    = x.tid;
             e.name   = qstring(x.name, strnlen(x.name, sizeof(x.name)));
             out->push_back(std::move(e));
+        }
+        return result_of(rc, trunc);
+    }
+
+    QueryResult BackendModule::query_self_modifying(std::vector<SelfModHit> *out, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_self_modifying");
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_self_modifying) || out == nullptr )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        int trunc = 0;
+        std::vector<ittd_selfmod> v;
+        int rc = count_fill(&v, [&](ittd_selfmod *b, size_t cap, size_t *n)
+        {
+            return m_api->query_self_modifying(m_handle, b, cap, n, &trunc, pb.get());
+        });
+        out->reserve(v.size());
+        for ( const ittd_selfmod &x : v )
+        {
+            SelfModHit h;
+            h.address     = (ea_t)x.address;
+            h.size        = x.size;
+            h.write_pos   = from_abi(x.write_pos);
+            h.write_ip    = (ea_t)x.write_ip;
+            h.execute_pos = from_abi(x.execute_pos);
+            h.executions  = x.executions;
+            out->push_back(h);
         }
         return result_of(rc, trunc);
     }

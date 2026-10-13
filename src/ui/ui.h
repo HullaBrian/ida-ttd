@@ -165,6 +165,24 @@ namespace idattd
         qstring                    m_title;  // owned: chooser_base_t keeps the pointer
     };
 
+    // Code the program wrote and then ran, one row per executed address.
+    // Selecting a row shows the code; Enter time-travels to the write.
+    class SelfModChooser : public chooser_t
+    {
+    public:
+        SelfModChooser(TraceManager *mgr, std::vector<SelfModHit> &&hits);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+
+    private:
+        TraceManager             *m_mgr;
+        std::vector<SelfModHit>   m_hits;
+        qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
     // The reconstructed memory map, as a timeline. One row per allocation,
     // protection change or free the recording made, in the order they happened.
     // Enter time-travels to the call that made the change.
@@ -311,6 +329,14 @@ namespace idattd
     struct MemSearchHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
+    // The self-modifying code listing. Enabled only for a backend that can
+    // look for it.
+    struct SelfModHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     // The syscall listing. Enabled only for a recording that has one.
     struct SyscallsHandler : public TtdAction
     {
@@ -363,6 +389,7 @@ namespace idattd
         constexpr const char *COVERAGE_AUTO = "idattd:coverage_auto";
         constexpr const char *MEM_SEARCH    = "idattd:mem_search";
         constexpr const char *SYSCALLS      = "idattd:syscalls";
+        constexpr const char *SELF_MOD      = "idattd:self_modifying";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
         constexpr const char *REREAD        = "idattd:reread_memory";

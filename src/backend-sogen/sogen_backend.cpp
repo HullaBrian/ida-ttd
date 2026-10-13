@@ -373,6 +373,9 @@ namespace
                               | ITTD_CAP_REVERSE_STEP | ITTD_CAP_EXCEPTIONS;
             if ( t.has_syscalls() )
                 out->capabilities |= ITTD_CAP_SYSCALLS;
+            // Every Sogen recording can be asked; one recorded without write
+            // or execute events answers with an error that says so.
+            out->capabilities |= ITTD_CAP_SELF_MODIFYING;
             // The memory map with protections, for traces recorded since
             // Sogen kept it (section 17). Older ones only say that a range was
             // mapped or unmapped, which is not enough to draw a map from.
@@ -1563,6 +1566,41 @@ namespace
         });
     }
 
+    // One pass over every write and execute event in the recording, in the
+    // reader: seconds on a large trace, and progress counts events.
+    int query_self_modifying(ittd_backend *hb, ittd_selfmod *buf, size_t cap, size_t *out_count,
+                             int *out_truncated, const ittd_progress *progress)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            ttd::trace &t = *b->trace;
+            const uint64_t need = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::execute;
+            if ( (t.access_mask() & need) != need )
+            {
+                b->error = "this recording was made without write or execute events, "
+                           "which finding self-modifying code needs";
+                return ITTD_E_FAILED;
+            }
+            std::vector<ttd::self_modifying_hit> v = t.self_modifying_code(control(progress));
+            set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+            return fill(v, buf, cap, out_count, [](const ttd::self_modifying_hit &h)
+            {
+                ittd_selfmod x{};
+                x.address     = h.address;
+                x.size        = h.size;
+                x.write_pos   = before_step(h.write_step);
+                x.write_ip    = h.write_ip;
+                x.execute_pos = before_step(h.execute_step);
+                x.executions  = h.executions;
+                return x;
+            });
+        });
+    }
+
     // The instruction stream of one thread (or all) over a range of positions,
     // straight from the execute events: no replay, so a long window costs only
     // the events it reads. Stops after 'cap'.
@@ -1870,6 +1908,7 @@ namespace
         a.module_functions   = nullptr;     // the core reads .pdata from the file
         a.query_exceptions   = query_exceptions;
         a.query_syscalls     = query_syscalls;
+        a.query_self_modifying = query_self_modifying;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;
         a.position_add       = position_add;

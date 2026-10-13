@@ -782,6 +782,44 @@ int main(int argc, char **argv)
         free(sc);
     }
 
+    /* ---- self-modifying code --------------------------------------------------- */
+    if ( (info.capabilities & ITTD_CAP_SELF_MODIFYING) != 0
+      && offsetof(ittd_backend_api, query_self_modifying) + sizeof(api->query_self_modifying) <= api->size
+      && api->query_self_modifying != NULL )
+    {
+        ittd_selfmod *sm;
+        size_t n = 0, k, writer_ok = 0, run_ok = 0, sampled = 0;
+        int trunc = 0, rc;
+        t0 = now_ms();
+        rc = api->query_self_modifying(B, NULL, 0, &n, &trunc, NULL);
+        sm = (ittd_selfmod *)calloc(n ? n : 1, sizeof(*sm));
+        if ( rc == ITTD_OK )
+            rc = api->query_self_modifying(B, sm, n, &n, &trunc, NULL);
+        printf("\nself-modifying code: %zu instruction(s), %.1f ms%s%s\n", rc == ITTD_OK ? n : 0,
+               now_ms() - t0, rc == ITTD_OK ? "" : ", failed: ", rc == ITTD_OK ? "" : api->last_error(B));
+        if ( rc == ITTD_OK )
+        {
+            for ( k = 0; k < n && k < 5; k++ )
+                printf("  %llx +%llu  written at %s by %llx, first run at %s, %llu run(s)\n",
+                       (unsigned long long)sm[k].address, (unsigned long long)sm[k].size,
+                       pos_text(sm[k].write_pos), (unsigned long long)sm[k].write_ip,
+                       pos_text(sm[k].execute_pos), (unsigned long long)sm[k].executions);
+            /* The positions mean what the ABI says: at the write, RIP is the
+               writer; at the first run, RIP is the instruction. */
+            for ( k = 0; k < n; k += n / 32 + 1 )
+            {
+                sampled++;
+                if ( rip_at(c, sm[k].write_pos) == sm[k].write_ip )
+                    writer_ok++;
+                if ( rip_at(c, sm[k].execute_pos) == sm[k].address )
+                    run_ok++;
+            }
+            check(writer_ok == sampled, "  rip at write_pos is the writer");
+            check(run_ok == sampled, "  rip at execute_pos is the written instruction");
+        }
+        free(sm);
+    }
+
     api->cursor_close(c);
     api->close(B);
     free(mods);

@@ -23,6 +23,11 @@ namespace idattd
                            size_t first, size_t count,
                            std::vector<std::optional<SyscallArgs>> *out);
 
+    // Every instruction the program wrote before running it, for a backend
+    // that can look (capabilities().self_modifying). One pass over the whole
+    // recording behind a cancellable wait box.
+    bool find_self_modifying(TraceManager *mgr, std::vector<SelfModHit> *out, bool *cancelled);
+
     // "STATUS_SUCCESS"-style text for the common NTSTATUS values a syscall
     // returns, else nullptr.
     const char *ntstatus_name(uint32_t status);

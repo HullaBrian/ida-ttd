@@ -252,6 +252,10 @@ namespace idattd
               "Syscalls: every syscall the program made, with its result and "
               "arguments (recordings that list them: Sogen)",
               NO_ICON, ITEM, MENU },
+            { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
+              "Self-modifying code: every instruction the program wrote before "
+              "running it, with the write (recordings that can tell: Sogen)",
+              NO_ICON, ITEM, MENU },
             { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
               "Memory map: every allocation, protection change and free the recording "
               "made, with each live region as a segment",

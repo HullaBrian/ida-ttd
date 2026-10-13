@@ -264,6 +264,9 @@
     <ClCompile Include="$(SrcDir)\ui\ui_syscalls.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_selfmod.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp">
       <Filter>ui</Filter>
     </ClCompile>

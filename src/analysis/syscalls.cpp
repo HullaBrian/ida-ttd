@@ -24,6 +24,26 @@ namespace idattd
         return qr.ran;
     }
 
+    bool find_self_modifying(TraceManager *mgr, std::vector<SelfModHit> *out, bool *cancelled)
+    {
+        if ( cancelled != nullptr )
+            *cancelled = false;
+        if ( out != nullptr )
+            out->clear();
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr || out == nullptr )
+            return false;
+        ITraceBackend *backend = mgr->backend();
+        if ( !backend->capabilities().self_modifying )
+            return false;
+        QueryResult qr = run_query("Looking for code the program wrote and then ran", [&](ProgressSink *p)
+        {
+            return backend->query_self_modifying(out, p);
+        });
+        if ( cancelled != nullptr )
+            *cancelled = qr.cancelled;
+        return qr.ran;
+    }
+
     void syscall_arguments(ITraceBackend *backend, const std::vector<SyscallEvent> &calls,
                            size_t first, size_t count,
                            std::vector<std::optional<SyscallArgs>> *out)

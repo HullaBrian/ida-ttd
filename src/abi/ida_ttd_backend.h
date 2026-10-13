@@ -140,6 +140,9 @@ typedef struct ittd_position_range
  * analyse a whole module -- which reads all of its code -- when symbols for
  * it load. Without it the core keeps the names and drops that analysis. */
 #define ITTD_CAP_CHEAP_READS      0x0200u
+/* query_self_modifying answers: the recording has the write and execute
+ * events to find code the program wrote before running it. */
+#define ITTD_CAP_SELF_MODIFYING   0x0400u
 
 #define ITTD_NAME_MAX  256
 #define ITTD_PATH_MAX  520
@@ -322,6 +325,23 @@ typedef struct ittd_syscall
     uint32_t      tid;              /* 0 when unknown */
     char          name[64];         /* "NtCreateFile"; empty when unknown */
 } ittd_syscall;
+
+/*
+ * Code the program wrote and then ran: an executed instruction some of whose
+ * bytes an earlier instruction of the program wrote. Writes the system made
+ * (the loader mapping an image, a syscall filling a buffer) do not count.
+ * One entry per executed address, with the write that made it and its first
+ * execution.
+ */
+typedef struct ittd_selfmod
+{
+    uint64_t      address;          /* the instruction executed */
+    uint64_t      size;             /* its length */
+    ittd_position write_pos;        /* at the instruction that wrote it */
+    uint64_t      write_ip;         /* that instruction's address */
+    ittd_position execute_pos;      /* at its first execution */
+    uint64_t      executions;       /* how often it ran after the write */
+} ittd_selfmod;
 
 /* One breakpoint: an execution of 'addr', or a read or write of any byte of
  * [addr, addr + size). */
@@ -803,6 +823,13 @@ typedef struct ittd_backend_api
     int (*query_syscalls)(ittd_backend *b,
                           ittd_syscall *buf, size_t cap, size_t *out_count,
                           int *out_truncated, const ittd_progress *progress);
+
+    /* Every instruction the program wrote before running it, by address. A
+     * count query over the whole recording; expect seconds. Only called when
+     * ITTD_CAP_SELF_MODIFYING is set. */
+    int (*query_self_modifying)(ittd_backend *b,
+                                ittd_selfmod *buf, size_t cap, size_t *out_count,
+                                int *out_truncated, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

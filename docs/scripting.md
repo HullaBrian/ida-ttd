@@ -75,6 +75,7 @@ database. The scope is given here instead of in a dialog.
 | `an.trace EA [MAX]` | find all calls to a function, with arguments and return values |
 | `an.memmap [MAX]` | build the memory map; the regions as they stand at the playhead |
 | `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
+| `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
 
 `help` lists every command with its arguments, and `backends` lists the loaded
 backend DLLs.

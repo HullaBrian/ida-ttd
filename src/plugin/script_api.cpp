@@ -884,6 +884,27 @@ namespace idattd
         out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("syscalls", arr.done());
     }
 
+    static void cmd_an_selfmod(const Args &a, JObj &out)
+    {
+        need_session();
+        uint64_t max = a.u64_or(0, 50);
+        std::vector<SelfModHit> v;
+        bool cancelled = false;
+        if ( !find_self_modifying(&mgr(), &v, &cancelled) )
+            fail("this recording's backend cannot look for self-modifying code");
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.hex("address", v[i].address).num("size", (int64_t)v[i].size)
+             .str("written", format_position(v[i].write_pos)).hex("writer", v[i].write_ip)
+             .str("first_run", format_position(v[i].execute_pos))
+             .num("runs", (int64_t)v[i].executions);
+            arr.add(o.done());
+        }
+        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("hits", arr.done());
+    }
+
     static void cmd_an_coverage(const Args &a, JObj &out)
     {
         need_session();
@@ -1018,6 +1039,7 @@ namespace idattd
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
+        { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },

@@ -125,6 +125,7 @@
     <ClCompile Include="$(SrcDir)\ui\ui_memmap.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_memsearch.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_syscalls.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_selfmod.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />
