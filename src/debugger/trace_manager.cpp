@@ -200,6 +200,7 @@ namespace idattd
         // Whichever backend reads this kind of recording: Microsoft TTD, built
         // in, for a .run; one loaded from plugins/ida-ttd-backends for others.
         load_backend_modules();
+        m_tracePath = path;
         ITraceBackend *backend = BackendRegistry::instance().for_file(path);
         if ( backend == nullptr )
         {

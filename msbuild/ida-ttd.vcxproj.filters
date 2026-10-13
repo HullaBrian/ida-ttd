@@ -109,6 +109,9 @@
     <ClInclude Include="$(SrcDir)\analysis\syscalls.h">
       <Filter>analysis</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\fork.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -225,6 +228,9 @@
     <ClCompile Include="$(SrcDir)\analysis\syscalls.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\fork.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\query_runner.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
@@ -265,6 +271,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_selfmod.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_fork.cpp">
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_navigation.cpp">

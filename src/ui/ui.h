@@ -337,6 +337,14 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
+    // Fork the recording at the current position into a new one. Enabled only
+    // for a backend that can.
+    struct ForkHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     // The syscall listing. Enabled only for a recording that has one.
     struct SyscallsHandler : public TtdAction
     {
@@ -390,6 +398,7 @@ namespace idattd
         constexpr const char *MEM_SEARCH    = "idattd:mem_search";
         constexpr const char *SYSCALLS      = "idattd:syscalls";
         constexpr const char *SELF_MOD      = "idattd:self_modifying";
+        constexpr const char *FORK          = "idattd:fork";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
         constexpr const char *REREAD        = "idattd:reread_memory";

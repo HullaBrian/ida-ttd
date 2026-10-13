@@ -392,6 +392,7 @@ namespace idattd
         m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;
         m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0
                                && ITTD_HAS(m_api, query_self_modifying);
+        m_caps.fork             = (c & ITTD_CAP_FORK) != 0 && ITTD_HAS(m_api, fork_close);
         m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
         return true;
     }
@@ -733,6 +734,71 @@ namespace idattd
             out->push_back(h);
         }
         return result_of(rc, trunc);
+    }
+
+    ForkResult BackendModule::record_fork(const ForkRequest &req, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.record_fork", 0);
+        ForkResult r;
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, fork_close) )
+        {
+            r.error = "this recording's backend cannot fork it";
+            return r;
+        }
+        auto failed = [&](int rc)
+        {
+            r.cancelled = rc == ITTD_E_CANCELLED;
+            const char *e = m_api->last_error(m_handle);
+            r.error = r.cancelled ? qstring("cancelled") : qstring(e != nullptr ? e : "failed");
+            return r;
+        };
+
+        ProgressBridge pb(progress);
+        ittd_fork_settings fs{};
+        fs.size  = sizeof(fs);
+        fs.flags = req.strict ? ITTD_FORK_STRICT : 0;
+        fs.registry_dir   = req.registry_dir.empty() ? nullptr : req.registry_dir.c_str();
+        fs.emulation_root = nullptr;
+        ittd_fork *f = nullptr;
+        int rc = m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f);
+        if ( rc != ITTD_OK || f == nullptr )
+            return failed(rc);
+        // Whatever happens below, the fork goes.
+        struct Closer
+        {
+            const ittd_backend_api *api; ittd_fork *f;
+            ~Closer() { api->fork_close(f); }
+        } closer{ m_api, f };
+
+        if ( !req.regs.empty() )
+        {
+            ittd_regs regs{};
+            if ( (rc = m_api->fork_regs(f, &regs)) != ITTD_OK )
+                return failed(rc);
+            for ( const auto &[idx, value] : req.regs )
+            {
+                if ( idx == FORK_REG_RFLAGS )
+                    regs.rflags = value;
+                else if ( idx >= 0 && idx < ITTD_REG_GP_COUNT )
+                    regs.gp[idx] = value;
+            }
+            regs.have = ITTD_REGS_GP;
+            if ( (rc = m_api->fork_set_regs(f, &regs)) != ITTD_OK )
+                return failed(rc);
+        }
+        for ( const auto &[ea, bytes] : req.memory )
+            if ( (rc = m_api->fork_write_memory(f, (uint64_t)ea, bytes.begin(), bytes.size())) != ITTD_OK )
+                return failed(rc);
+
+        uint64_t ran = 0;
+        rc = m_api->fork_record(f, req.path.c_str(), req.max_instructions,
+                                req.note.c_str(), pb.get(), &ran);
+        if ( rc != ITTD_OK )
+            return failed(rc);
+        r.ok = true;
+        r.instructions = ran;
+        r.cancelled = progress != nullptr && progress->cancelled();
+        return r;
     }
 
     QueryResult BackendModule::query_mapping_changes(std::vector<ittd_mapping_change> *out,

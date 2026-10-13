@@ -9,6 +9,7 @@
 #include "analysis/tracer.h"
 #include "analysis/memmap.h"
 #include "analysis/syscalls.h"
+#include "analysis/fork.h"
 
 #include <expr.hpp>
 
@@ -905,6 +906,38 @@ namespace idattd
         out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("hits", arr.done());
     }
 
+    // an.fork PATH N [registry=DIR] [strict] [REG=VALUE ...] [mem:ADDR=HEXBYTES ...]
+    static void cmd_an_fork(const Args &a, JObj &out)
+    {
+        need_session();
+        ForkRequest req;
+        req.at               = mgr().current_position();
+        req.path             = a.at(0);
+        req.max_instructions = a.u64(1);
+        qstring regs, mem;
+        for ( size_t i = 2; i < a.count(); i++ )
+        {
+            qstring t = a.at(i);
+            if ( t.starts_with("registry=") )
+                req.registry_dir = t.substr(9);
+            else if ( t == "strict" )
+                req.strict = true;
+            else if ( t.starts_with("mem:") )
+                mem.cat_sprnt("%s;", t.c_str() + 4);
+            else
+                regs.cat_sprnt("%s ", t.c_str());
+        }
+        qstring err;
+        if ( !parse_fork_registers(regs.c_str(), &req.regs, &err)
+          || !parse_fork_memory(mem.c_str(), &req.memory, &err) )
+            fail(err.c_str());
+        req.note = "ida-ttd script";
+        ForkResult r = run_fork(&mgr(), req);
+        out.boolean("ok", r.ok).boolean("cancelled", r.cancelled)
+           .num("instructions", (int64_t)r.instructions).str("error", r.error)
+           .str("at", format_position(req.at)).str("path", req.path);
+    }
+
     static void cmd_an_coverage(const Args &a, JObj &out)
     {
         need_session();
@@ -1040,6 +1073,7 @@ namespace idattd
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
+        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...] fork here" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },

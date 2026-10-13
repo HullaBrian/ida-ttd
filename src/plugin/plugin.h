@@ -181,6 +181,7 @@ namespace idattd
         MemSearchHandler          m_memSearch;
         SyscallsHandler           m_syscalls;
         SelfModHandler            m_selfMod;
+        ForkHandler               m_fork;
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
         ClearMemoryMapHandler     m_memMapClear;

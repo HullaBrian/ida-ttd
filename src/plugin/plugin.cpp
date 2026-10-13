@@ -200,6 +200,11 @@ namespace idattd
               "Go to position: jump to a Sequence:Steps trace position",
               m_icons[ICO_GOTO], ITEM, MENU },
 
+            { actions::FORK, "Fork from here...", &m_fork, nullptr,
+              "Fork from here: replay the program to this position, change registers "
+              "or memory, and let it run on into a new recording (Sogen)",
+              NO_ICON, ITEM, MENU },
+
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
               "Bookmark this position: save the current trace position, with a name "
               "and a note, in the database",

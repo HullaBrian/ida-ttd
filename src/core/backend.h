@@ -73,6 +73,8 @@ namespace idattd
         // Code the program wrote and then ran can be listed
         // (query_self_modifying).
         bool self_modifying   = false;
+        // The recording can be forked into a new one (record_fork).
+        bool fork             = false;
     };
 
     // ------------------------------------------------------------- the trace
@@ -203,6 +205,29 @@ namespace idattd
         ea_t     write_ip    = BADADDR;
         Position execute_pos;       // its first execution
         uint64_t executions  = 0;
+    };
+
+    // A fork: replay to 'at', change registers and memory there, and run on,
+    // recording into a new trace at 'path' (ITTD_CAP_FORK).
+    struct ForkRequest
+    {
+        Position at;
+        qstring  path;
+        uint64_t max_instructions = 0;      // 0: until the program exits
+        qstring  registry_dir;              // empty: the backend's default
+        bool     strict = false;
+        std::vector<std::pair<int, uint64_t>>   regs;     // ITTD_REG_* index (or FORK_REG_RFLAGS), value
+        std::vector<std::pair<ea_t, bytevec_t>> memory;   // address, bytes
+        qstring  note;                      // goes into the new trace's manifest
+    };
+    constexpr int FORK_REG_RFLAGS = 100;
+
+    struct ForkResult
+    {
+        bool     ok = false;
+        bool     cancelled = false;
+        uint64_t instructions = 0;          // how many the fork ran
+        qstring  error;
     };
 
     // Reported by a query that could not return everything it found.
@@ -491,6 +516,16 @@ namespace idattd
         {
             qnotused(out); qnotused(progress);
             return QueryResult{};
+        }
+
+        // Fork the recording (see ForkRequest). Requires capabilities().fork.
+        // Long: a replay to the position, then the recording.
+        virtual ForkResult record_fork(const ForkRequest &req, ProgressSink *progress)
+        {
+            qnotused(req); qnotused(progress);
+            ForkResult r;
+            r.error = "this recording's backend cannot fork it";
+            return r;
         }
 
         // Every syscall the program made, in order. Requires
