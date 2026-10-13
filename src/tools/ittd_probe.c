@@ -856,6 +856,22 @@ int main(int argc, char **argv)
                            (unsigned long long)sc[k].result, (unsigned long long)r1.gp[ITTD_REG_RAX]);
             }
             printf("  %zu of %zu sampled returned to the next instruction\n", came_back, sampled);
+            if ( api->regs_at != NULL )
+            {
+                /* A backend may answer regs_at for syscall positions from what it
+                   saw listing them; it must agree with a seek. */
+                size_t same = 0, asked = 0;
+                for ( k = 0; k < n; k += n / 64 + 1 )
+                {
+                    ittd_regs a, b;
+                    asked++;
+                    if ( api->regs_at(B, &sc[k].pos, 1, &a, NULL) == ITTD_OK
+                      && api->cursor_seek(c, sc[k].pos) == ITTD_OK && api->cursor_regs(c, &b) == ITTD_OK
+                      && memcmp(a.gp, b.gp, sizeof(a.gp)) == 0 )
+                        same++;
+                }
+                check(same == asked, "  registers at a syscall agree between regs_at and a seek");
+            }
             check(came_back > 0 && agree == came_back, "  a syscall's result is rax once it returns");
         }
         {

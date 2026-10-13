@@ -28,6 +28,10 @@ namespace idattd
         uint64_t  ret_pc    = 0;            // where the kernel returns to; 0 unknown
         uint64_t  sp        = 0;
         uint32_t  number    = 0;
+        // The general registers going in (ITTD_REG_*), so a listing of
+        // syscalls shows their arguments without seeking to each one.
+        uint64_t  gp[ITTD_REG_GP_COUNT] = { 0 };
+        uint64_t  rflags    = 0;
         const char *name    = nullptr;      // in the SyscallTable; nullptr unknown
         ea_t      stub      = BADADDR;      // the ntdll/win32u stub it was made from, if one
         uint64_t  args[kKernelCallArgs] = { 0 };    // as the kernel takes them

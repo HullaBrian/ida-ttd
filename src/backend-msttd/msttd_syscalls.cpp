@@ -337,6 +337,10 @@ namespace idattd
                 // The number first; the arguments only for the calls the
                 // caller wants them for.
                 read_kernel_call(t, is64, false, &k);
+                ittd_regs regs;
+                regs_from_context(t->GetCrossPlatformContext(), is64, &regs);
+                memcpy(k.gp, regs.gp, sizeof(k.gp));
+                k.rflags = regs.rflags;
                 k.name = table.name_of(k.number);
                 if ( k.name == nullptr && !is64 )
                     k.name = table.name_of(k.number & 0xFFFF);
@@ -488,6 +492,50 @@ namespace idattd
         return r;
     }
 
+    // The registers of the syscalls last listed, so the listing's argument
+    // column costs no seek per row. Capped: it is a convenience.
+    static const size_t kMaxCachedRegs = 250000;
+
+    QueryResult MsTtdBackend::registers_at(const std::vector<Position> &positions,
+                                           std::vector<ittd_regs> *out, ProgressSink *progress)
+    {
+        QueryResult r;
+        if ( !m_engine || out == nullptr )
+            return r;
+        r.ran = true;
+        out->assign(positions.size(), ittd_regs{});
+        for ( size_t i = 0; i < positions.size(); i++ )
+        {
+            if ( progress != nullptr && (i & 0xF) == 0 )
+            {
+                if ( progress->cancelled() )
+                {
+                    r.cancelled = true;
+                    break;
+                }
+                progress->report(uint32_t(i * 100 / positions.size()));
+            }
+            TtdPosition p = from_core(positions[i]);
+            auto it = m_syscallRegs.find({ (uint64_t)p.Sequence, (uint64_t)p.Steps });
+            ittd_regs &o = (*out)[i];
+            if ( it != m_syscallRegs.end() )
+            {
+                memcpy(o.gp, it->second.gp, sizeof(o.gp));
+                o.rflags = it->second.rflags;
+                o.have   = ITTD_REGS_GP;
+                continue;
+            }
+            // One scratch cursor for every call, rather than one per batch.
+            if ( !m_regsScratch )
+                m_regsScratch = new_engine_cursor();
+            if ( !m_regsScratch )
+                break;
+            m_regsScratch->SetPosition(p);
+            regs_from_context(m_regsScratch->GetCrossPlatformContext(), m_info.is64, &o);
+        }
+        return r;
+    }
+
     QueryResult MsTtdBackend::query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress)
     {
         QueryResult r;
@@ -504,8 +552,15 @@ namespace idattd
         if ( !r.ran )
             return r;
         out->reserve(out->size() + calls.size());
+        m_syscallRegs.clear();
         for ( const KernelCall &c : calls )
         {
+            if ( m_syscallRegs.size() < kMaxCachedRegs )
+            {
+                SyscallRegs &sr = m_syscallRegs[{ (uint64_t)c.pos.Sequence, (uint64_t)c.pos.Steps }];
+                memcpy(sr.gp, c.gp, sizeof(sr.gp));
+                sr.rflags = c.rflags;
+            }
             SyscallEvent e;
             e.pos    = to_core(c.pos);
             e.result = c.result;

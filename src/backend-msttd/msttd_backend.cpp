@@ -160,6 +160,8 @@ namespace idattd
         // Cursors before the engine they belong to.
         m_frameScratch.reset();
         m_insnScratch.reset();
+        m_regsScratch.reset();
+        m_syscallRegs.clear();
         m_engine.reset();
         m_info = TraceInfo{};
         m_caps = Capabilities{};

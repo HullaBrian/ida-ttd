@@ -69,6 +69,9 @@ namespace idattd
         QueryResult query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress) override;
         // Every transition into the kernel (msttd_syscalls.cpp).
         QueryResult query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress) override;
+        // From the last syscall listing where it has them, else by seeking.
+        QueryResult registers_at(const std::vector<Position> &positions, std::vector<ittd_regs> *out,
+                                 ProgressSink *progress) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
                                        std::vector<Access> *out, ProgressSink *progress) override;
         Position position_add(Position p, int64_t delta) const override;
@@ -93,6 +96,13 @@ namespace idattd
         // replay would dispatch it from several threads at once.
         TTD::Replay::UniqueCursor       m_frameScratch;
         TTD::Replay::UniqueCursor       m_insnScratch;     // query_instructions, likewise
+        TTD::Replay::UniqueCursor       m_regsScratch;     // registers_at
+        struct SyscallRegs
+        {
+            uint64_t gp[ITTD_REG_GP_COUNT];
+            uint64_t rflags;
+        };
+        std::map<std::pair<uint64_t, uint64_t>, SyscallRegs> m_syscallRegs;  // by (sequence, steps)
         TraceInfo                       m_info;
         Capabilities                    m_caps;
         bool                            m_indexed = false;   // prepare() ran this session
