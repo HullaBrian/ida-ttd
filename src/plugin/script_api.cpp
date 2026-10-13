@@ -313,7 +313,9 @@ namespace idattd
         caps.boolean("access_queries", c.access_queries).boolean("call_queries", c.call_queries)
             .boolean("mapping_changes", c.mapping_changes).boolean("syscalls", c.syscalls)
             .boolean("recorded_exports", c.recorded_exports).boolean("cheap_seek", c.cheap_seek)
-            .boolean("reverse_step", c.reverse_step).boolean("exceptions", c.exceptions);
+            .boolean("reverse_step", c.reverse_step).boolean("exceptions", c.exceptions)
+            .boolean("cheap_reads", c.cheap_reads).boolean("self_modifying", c.self_modifying)
+            .boolean("fork", c.fork).boolean("replay_scans", c.replay_scans);
         out.str("backend", b.id()).str("backend_name", ti.backend_name).str("path", g_drv.path)
            .str("main_module", ti.main_module).boolean("is64", ti.is64)
            .hex("fingerprint", ti.fingerprint)
@@ -936,8 +938,9 @@ namespace idattd
             fail(err.c_str());
         req.note = "ida-ttd script";
         ForkResult r = run_fork(&mgr(), req);
-        out.boolean("ok", r.ok).boolean("cancelled", r.cancelled)
-           .num("instructions", (int64_t)r.instructions).str("error", r.error)
+        if ( !r.ok )
+            fail("the fork failed: %s", r.error.c_str());
+        out.boolean("cancelled", r.cancelled).num("instructions", (int64_t)r.instructions)
            .str("at", format_position(req.at)).str("path", req.path);
     }
 

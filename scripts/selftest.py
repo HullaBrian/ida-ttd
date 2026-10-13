@@ -12,6 +12,10 @@ Open the trace (File > Open, or the MCP's open_database), then:
     run()                    # base of the recorded image, from the database
 
 Each line of the result is "ok" or "FAIL" with the check's name.
+
+On a Sogen recording, run_sogen() also checks the Sogen-only commands
+(syscalls, self-modifying code, and with a registry folder recovered strings
+and a fork); see its docstring.
 """
 import json
 import time
@@ -101,6 +105,55 @@ def run(base=None):
 
     r = T("state")
     chk("still responsive", r.get("session") and r.get("process_state") == -1)
+    r = T("stop")
+    chk("stop", r.get("process_state") == 0, r.get("process_state"))
+    res.append("%.1f s, %d failed" % (time.time() - t0, len(fails)))
+    return res
+
+
+def run_sogen(registry=None, host=False, fork_path=None):
+    """The Sogen-only commands, on a Sogen recording of the same sample.
+
+    registry: a folder of registry hives (SYSTEM, SOFTWARE, ...) for the checks
+    that replay the program -- recovered strings and a fork; without it those
+    are skipped. host: allow replaying a recording made against the host,
+    which runs the program's file and network operations on this machine
+    again (the reference recordings were made that way). fork_path: where the
+    fork goes (default: next to the database).
+    """
+    import os
+    res, fails = [], []
+
+    def chk(name, cond, detail=""):
+        res.append(("ok  " if cond else "FAIL") + " " + name + (" " + str(detail) if detail != "" else ""))
+        if not cond:
+            fails.append(name)
+
+    t0 = time.time()
+    r = T("start B4")
+    chk("start", r.get("ok") and r.get("process_state") == -1, r.get("pos"))
+
+    s = T("an.syscalls 5")
+    chk("syscalls listed and named", s.get("ok") and s.get("count", 0) > 0 and s["syscalls"][0]["name"] != "",
+        (s.get("count"), s.get("error")))
+    chk("syscall arguments read", s.get("ok") and "args" in s["syscalls"][0], s.get("error"))
+
+    m = T("an.selfmod 5")
+    chk("self-modifying code search runs", m.get("ok"), (m.get("count"), m.get("error")))
+
+    if registry:
+        extra = " registry=%s%s" % (registry, " host" if host else "")
+        st = T("an.strings 8 5" + extra)
+        chk("strings recovered by a replay", st.get("ok") and st.get("count", 0) > 0,
+            (st.get("count"), st.get("error")))
+        T("runto %X" % (ida_nalt.get_imagebase() + 0x13F0))
+        path = fork_path or os.path.join(os.path.dirname(idc.get_idb_path()), "selftest-fork.sogttd")
+        f = T("an.fork %s 4E20 rax=1%s" % (path, extra))
+        chk("a fork records", f.get("ok") and f.get("instructions") == 0x4E20 and os.path.exists(path),
+            (f.get("instructions"), f.get("error")))
+    else:
+        res.append("skip strings and fork: no registry folder given")
+
     r = T("stop")
     chk("stop", r.get("process_state") == 0, r.get("process_state"))
     res.append("%.1f s, %d failed" % (time.time() - t0, len(fails)))
