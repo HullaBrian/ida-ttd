@@ -218,6 +218,18 @@ namespace idattd
                 paint(va_arg(va, cfunc_t *));
                 break;
 
+            case hxe_open_pseudocode:
+            case hxe_refresh_pseudocode:
+            {
+                // A view showing a cached decompilation gets text printed
+                // before the function was highlighted, with no
+                // hxe_func_printed this time: paint what it shows.
+                vdui_t *vu = va_arg(va, vdui_t *);
+                if ( vu != nullptr && vu->cfunc != nullptr )
+                    paint(vu->cfunc);
+                break;
+            }
+
             default:
                 break;
         }
