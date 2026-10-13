@@ -2171,17 +2171,32 @@ namespace
                 std::optional<ttd::buffer_scanner> scanner;
                 // What scanners put away at a restore found, then the last one's.
                 std::vector<ttd::recovered_buffer> found_before;
-                auto put_away = [&]()
+                // A scanner checks every write against the recording and, at
+                // the end, that none is missing. One put away at a divergence
+                // fails both by definition; what it found before is kept
+                // (finish hands out its results before it throws).
+                auto put_away = [&](bool diverged)
                 {
                     if ( !scanner )
                         return;
-                    scanner->finish();
+                    try
+                    {
+                        scanner->finish();
+                    }
+                    catch ( const std::runtime_error & )
+                    {
+                        if ( !diverged )
+                            throw;
+                    }
                     found_before.insert(found_before.end(), scanner->results().begin(), scanner->results().end());
                     scanner.reset();
                 };
                 b->scan_notes[key] = replay_scan(*emu, *t, [&]() { scanner.emplace(*emu, *t); },
-                                                 put_away, [&]() { scanner.emplace(*emu, *t); }, strict, progress);
-                put_away();
+                                                 [&]() { put_away(true); }, [&]() { scanner.emplace(*emu, *t); },
+                                                 strict, progress);
+                // The last scanner ran to the end unless the last divergence
+                // had no checkpoint after it.
+                put_away(!b->scan_notes[key].empty());
                 std::vector<ittd_buffer_hit> v;
                 for ( const ttd::recovered_buffer &r : found_before )
                 {
