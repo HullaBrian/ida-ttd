@@ -306,6 +306,23 @@ typedef struct ittd_exception
     uint32_t      reserved;
 } ittd_exception;
 
+/*
+ * A syscall the program made, as the recording dispatched it. Only listed by
+ * a backend with ITTD_CAP_SYSCALLS: an emulator that served the call records
+ * it; a CPU-level recording does not know where one began.
+ *
+ * The arguments are not here: they are the registers at 'pos' (r10, rdx, r8,
+ * r9, then the stack), which regs_at reads in a batch.
+ */
+typedef struct ittd_syscall
+{
+    ittd_position pos;              /* at the syscall instruction */
+    uint64_t      result;           /* the value it returned in rax */
+    uint32_t      number;           /* the syscall number (eax going in) */
+    uint32_t      tid;              /* 0 when unknown */
+    char          name[64];         /* "NtCreateFile"; empty when unknown */
+} ittd_syscall;
+
 /* One breakpoint: an execution of 'addr', or a read or write of any byte of
  * [addr, addr + size). */
 typedef struct ittd_breakpoint
@@ -780,6 +797,12 @@ typedef struct ittd_backend_api
      * it. The core sets one around each movement and clears it after, so the
      * pointer is valid until then. Movements run on the host's main thread. */
     int (*nav_set_progress)(ittd_cursor *c, const ittd_progress *progress);
+
+    /* Every syscall the program made, in order. A count query. Only called
+     * when ITTD_CAP_SYSCALLS is set. */
+    int (*query_syscalls)(ittd_backend *b,
+                          ittd_syscall *buf, size_t cap, size_t *out_count,
+                          int *out_truncated, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

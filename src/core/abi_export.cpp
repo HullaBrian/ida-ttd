@@ -803,6 +803,38 @@ namespace idattd
         });
     }
 
+    static int x_query_syscalls(ittd_backend *hb, ittd_syscall *buf, size_t cap,
+                                size_t *out_count, int *out_truncated, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            return answer<ittd_syscall>(h, "syscalls", buf, cap, out_count, out_truncated,
+                                        [&](std::vector<ittd_syscall> *out)
+            {
+                std::vector<SyscallEvent> v;
+                AbiSink sink(progress);
+                QueryResult r = h->b->query_syscalls(&v, &sink);
+                for ( const SyscallEvent &e : v )
+                {
+                    ittd_syscall x{};
+                    x.pos    = to_abi(e.pos);
+                    x.result = e.result;
+                    x.number = e.number;
+                    x.tid    = e.tid;
+                    // Not qstrncpy: this file is also built into a backend
+                    // that does not link ida.dll.
+                    size_t len = std::min(e.name.length(), sizeof(x.name) - 1);
+                    memcpy(x.name, e.name.c_str(), len);
+                    out->push_back(x);
+                }
+                return r;
+            });
+        });
+    }
+
     static int x_query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
                                        size_t *out_count, int *out_truncated,
                                        const ittd_progress *progress)
@@ -1012,6 +1044,7 @@ namespace idattd
         a.cursor_rebuild_range  = x_cursor_rebuild_range;
         a.nav_take_notice       = x_nav_take_notice;
         a.nav_set_progress      = x_nav_set_progress;
+        a.query_syscalls        = x_query_syscalls;
         built = true;
         return &a;
     }

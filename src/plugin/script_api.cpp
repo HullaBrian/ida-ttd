@@ -8,6 +8,7 @@
 #include "analysis/callsites.h"
 #include "analysis/tracer.h"
 #include "analysis/memmap.h"
+#include "analysis/syscalls.h"
 
 #include <expr.hpp>
 
@@ -583,6 +584,23 @@ namespace idattd
         out.raw("exceptions", arr.done());
     }
 
+    static void cmd_drv_syscalls(const Args &a, JObj &out)
+    {
+        ITraceBackend &b = drv();
+        uint64_t max = a.u64_or(0, 200);
+        std::vector<SyscallEvent> v;
+        query_status(b.query_syscalls(&v, nullptr), out);
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.str("pos", position_text(b, v[i].pos)).num("tid", v[i].tid)
+             .hex("number", v[i].number).str("name", v[i].name).hex("result", v[i].result);
+            arr.add(o.done());
+        }
+        out.num("count", (int64_t)v.size()).raw("syscalls", arr.done());
+    }
+
     static void cmd_drv_map(const Args &a, JObj &out)
     {
         ITraceBackend &b = drv();
@@ -834,6 +852,38 @@ namespace idattd
            .num("count", (int64_t)v.size()).raw("accesses", arr.done());
     }
 
+    static void cmd_an_syscalls(const Args &a, JObj &out)
+    {
+        need_session();
+        uint64_t max = a.u64_or(0, 50);
+        std::vector<SyscallEvent> v;
+        bool cancelled = false;
+        if ( !list_syscalls(&mgr(), &v, &cancelled) )
+            fail("this recording does not list its syscalls");
+        std::vector<std::optional<SyscallArgs>> args;
+        syscall_arguments(mgr().backend(), v, 0, (size_t)max, &args);
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.str("pos", format_position(v[i].pos)).num("tid", v[i].tid)
+             .hex("number", v[i].number).str("name", v[i].name).hex("result", v[i].result);
+            if ( i < args.size() && args[i].has_value() )
+            {
+                JArr av;
+                for ( uint64_t x : *args[i] )
+                {
+                    qstring t;
+                    t.sprnt("\"0x%llX\"", (unsigned long long)x);
+                    av.add(t);
+                }
+                o.raw("args", av.done());
+            }
+            arr.add(o.done());
+        }
+        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("syscalls", arr.done());
+    }
+
     static void cmd_an_coverage(const Args &a, JObj &out)
     {
         need_session();
@@ -967,6 +1017,7 @@ namespace idattd
         { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
+        { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },
@@ -988,6 +1039,7 @@ namespace idattd
         { "drv.calls",      cmd_drv_calls,      "EA [MAX] calls to a function" },
         { "drv.indirect",   cmd_drv_indirect,   "LO HI [jumps] indirect branch targets from [LO, HI)" },
         { "drv.exceptions", cmd_drv_exceptions, "dispatched exceptions" },
+        { "drv.syscalls",   cmd_drv_syscalls,   "[MAX] dispatched syscalls" },
         { "drv.map",        cmd_drv_map,        "[MAX] memory map changes" },
         { "drv.symbols",    cmd_drv_symbols,    "BASE [MAX] a module's recorded exports" },
     };

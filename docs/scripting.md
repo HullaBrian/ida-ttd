@@ -47,7 +47,7 @@ headless or not:
 | `drv.step`, `drv.over`, `drv.out`, `drv.run`, `drv.runto EA` | movement, each `[back]` |
 | `drv.bp EA...` | replace the execute breakpoints |
 | `drv.regs`, `drv.read EA [SIZE]` | state at the cursor; unknown bytes are `??` |
-| `drv.accesses LO HI [rwx] [MAX]`, `drv.calls EA [MAX]`, `drv.indirect LO HI [jumps]`, `drv.exceptions`, `drv.map [MAX]`, `drv.symbols BASE [MAX]` | whole-trace queries |
+| `drv.accesses LO HI [rwx] [MAX]`, `drv.calls EA [MAX]`, `drv.indirect LO HI [jumps]`, `drv.exceptions`, `drv.syscalls [MAX]`, `drv.map [MAX]`, `drv.symbols BASE [MAX]` | whole-trace queries |
 | `drv.close` | |
 
 **The debugger session:** what a user sees, through IDA's own debugger
@@ -74,6 +74,7 @@ database. The scope is given here instead of in a dialog.
 | `an.callsites LO HI` | annotate indirect calls; lists the comments it wrote |
 | `an.trace EA [MAX]` | find all calls to a function, with arguments and return values |
 | `an.memmap [MAX]` | build the memory map; the regions as they stand at the playhead |
+| `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
 
 `help` lists every command with its arguments, and `backends` lists the loaded
 backend DLLs.

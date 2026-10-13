@@ -180,6 +180,17 @@ namespace idattd
         uint64_t information[2] = {};
     };
 
+    // A syscall the program made (ittd_syscall). Its arguments are the
+    // registers at 'pos'.
+    struct SyscallEvent
+    {
+        Position pos;               // at the syscall instruction
+        uint64_t result = 0;        // rax after it
+        uint32_t number = 0;
+        uint32_t tid    = 0;        // 0 when unknown
+        qstring  name;              // empty when unknown
+    };
+
     // Reported by a query that could not return everything it found.
     struct QueryResult
     {
@@ -456,6 +467,15 @@ namespace idattd
                                                   ProgressSink *progress)
         {
             qnotused(out); qnotused(files); qnotused(progress);
+            return QueryResult{};
+        }
+
+        // Every syscall the program made, in order. Requires
+        // capabilities().syscalls; a backend without it answers not-ran.
+        virtual QueryResult query_syscalls(std::vector<SyscallEvent> *out,
+                                           ProgressSink *progress)
+        {
+            qnotused(out); qnotused(progress);
             return QueryResult{};
         }
 

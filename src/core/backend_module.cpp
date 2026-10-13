@@ -680,6 +680,32 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
+    QueryResult BackendModule::query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_syscalls");
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_syscalls) || out == nullptr )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        int trunc = 0;
+        std::vector<ittd_syscall> v;
+        int rc = count_fill(&v, [&](ittd_syscall *b, size_t cap, size_t *n)
+        {
+            return m_api->query_syscalls(m_handle, b, cap, n, &trunc, pb.get());
+        });
+        out->reserve(v.size());
+        for ( const ittd_syscall &x : v )
+        {
+            SyscallEvent e;
+            e.pos    = from_abi(x.pos);
+            e.result = x.result;
+            e.number = x.number;
+            e.tid    = x.tid;
+            e.name   = qstring(x.name, strnlen(x.name, sizeof(x.name)));
+            out->push_back(std::move(e));
+        }
+        return result_of(rc, trunc);
+    }
+
     QueryResult BackendModule::query_mapping_changes(std::vector<ittd_mapping_change> *out,
                                                      std::vector<qstring> *files,
                                                      ProgressSink *progress)

@@ -179,6 +179,7 @@ namespace idattd
         AutoCoverageHandler  m_coverageAuto;
         // Memory access search + indirect call annotation
         MemSearchHandler          m_memSearch;
+        SyscallsHandler           m_syscalls;
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
         ClearMemoryMapHandler     m_memMapClear;

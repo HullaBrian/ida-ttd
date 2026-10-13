@@ -738,6 +738,50 @@ int main(int argc, char **argv)
                    ex[k].code, (unsigned long long)ex[k].address, pos_text(ex[k].raise_pos));
     }
 
+    /* ---- syscalls ------------------------------------------------------------ */
+    if ( (info.capabilities & ITTD_CAP_SYSCALLS) != 0
+      && offsetof(ittd_backend_api, query_syscalls) + sizeof(api->query_syscalls) <= api->size
+      && api->query_syscalls != NULL )
+    {
+        ittd_syscall *sc;
+        size_t n = 0, k, named = 0, at_syscall = 0, sampled = 0, ordered = 1;
+        int trunc = 0;
+        t0 = now_ms();
+        api->query_syscalls(B, NULL, 0, &n, &trunc, NULL);
+        sc = (ittd_syscall *)calloc(n ? n : 1, sizeof(*sc));
+        api->query_syscalls(B, sc, n, &n, &trunc, NULL);
+        printf("\nsyscalls: %zu, %.1f ms\n", n, now_ms() - t0);
+        for ( k = 0; k < n; k++ )
+        {
+            if ( sc[k].name[0] != '\0' )
+                named++;
+            if ( k > 0 && (sc[k].pos.hi < sc[k - 1].pos.hi
+                        || (sc[k].pos.hi == sc[k - 1].pos.hi && sc[k].pos.lo < sc[k - 1].pos.lo)) )
+                ordered = 0;
+        }
+        for ( k = 0; k < n && k < 5; k++ )
+            printf("  %s  tid %u  %#x %s -> %#llx\n", pos_text(sc[k].pos), sc[k].tid, sc[k].number,
+                   sc[k].name, (unsigned long long)sc[k].result);
+        /* At a syscall's position the next instruction is the syscall itself.
+           Sampled across the list, as each one is a seek. */
+        for ( k = 0; k < n; k += n / 64 + 1 )
+        {
+            uint8_t code[2] = { 0, 0 }, kn[2] = { 0, 0 };
+            size_t got = 0;
+            uint64_t rip = rip_at(c, sc[k].pos);
+            sampled++;
+            if ( rip != ITTD_BADADDR
+              && api->cursor_read_memory(c, rip, code, kn, 2, &got) == ITTD_OK
+              && got == 2 && code[0] == 0x0F && code[1] == 0x05 )
+                at_syscall++;
+        }
+        printf("  %zu named, %zu of %zu sampled at a syscall instruction\n", named, at_syscall, sampled);
+        check((int)ordered, "  syscalls are in position order");
+        check(n == 0 || named > 0, "  syscalls have names");
+        check(at_syscall == sampled, "  rip at a syscall's position is a syscall instruction");
+        free(sc);
+    }
+
     api->cursor_close(c);
     api->close(B);
     free(mods);

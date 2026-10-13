@@ -6,6 +6,7 @@
 #include "analysis/bookmarks.h"
 #include "analysis/memsearch.h"
 #include "analysis/memmap.h"
+#include "analysis/syscalls.h"
 
 namespace idattd
 {
@@ -140,6 +141,28 @@ namespace idattd
         TraceManager           *m_mgr;
         std::vector<MemAccess>  m_hits;   // frozen snapshot
         qstring                 m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
+    // The syscalls the recording dispatched (Sogen records them), with their
+    // result and first four arguments. Enter time-travels to the call.
+    class SyscallChooser : public chooser_t
+    {
+    public:
+        SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+
+    private:
+        const std::optional<SyscallArgs> &args_of(size_t n) const;
+
+        TraceManager              *m_mgr;
+        std::vector<SyscallEvent>  m_calls;
+        // Read a chunk at a time as rows are drawn; see ARG_CHUNK.
+        mutable std::vector<std::optional<SyscallArgs>> m_args;
+        mutable std::vector<bool>                       m_argsRead;
+        qstring                    m_title;  // owned: chooser_base_t keeps the pointer
     };
 
     // The reconstructed memory map, as a timeline. One row per allocation,
@@ -288,6 +311,13 @@ namespace idattd
     struct MemSearchHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
+    // The syscall listing. Enabled only for a recording that has one.
+    struct SyscallsHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     // Re-read a range of memory from the recording and disassemble it again.
     // Uses the current selection when there is one, otherwise asks for a range.
     struct RereadHandler : public TtdAction
@@ -332,6 +362,7 @@ namespace idattd
         constexpr const char *COVERAGE_CLR  = "idattd:coverage_clear";
         constexpr const char *COVERAGE_AUTO = "idattd:coverage_auto";
         constexpr const char *MEM_SEARCH    = "idattd:mem_search";
+        constexpr const char *SYSCALLS      = "idattd:syscalls";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
         constexpr const char *REREAD        = "idattd:reread_memory";

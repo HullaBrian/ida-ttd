@@ -206,8 +206,8 @@ namespace
     }
 
     // The count-then-fill convention: write what fits, report the full count.
-    template <typename T, typename Src, typename Conv>
-    int fill(const std::vector<Src> &src, T *buf, size_t cap, size_t *out_count, Conv conv)
+    template <typename T, typename Range, typename Conv>
+    int fill(const Range &src, T *buf, size_t cap, size_t *out_count, Conv conv)
     {
         if ( out_count != nullptr )
             *out_count = src.size();
@@ -1531,6 +1531,38 @@ namespace
         });
     }
 
+    // The syscall table is decoded when the trace opens, so this is a copy. The
+    // thread comes from the thread-switch table; the arguments are left to
+    // regs_at, since the table does not hold them.
+    int query_syscalls(ittd_backend *hb, ittd_syscall *buf, size_t cap, size_t *out_count,
+                       int *out_truncated, const ittd_progress *)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            const ttd::trace &t = *b->trace;
+            std::span<const ttd::syscall_entry> v = t.syscalls();
+            set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+            return fill(v, buf, cap, out_count, [&](const ttd::syscall_entry &e)
+            {
+                ittd_syscall x{};
+                x.pos    = before_step(e.step);
+                x.result = e.result;
+                x.number = e.id;
+                x.tid    = t.thread_at(e.step).value_or(0);
+                if ( std::optional<std::string_view> n = t.syscall_name(e.id) )
+                {
+                    size_t len = std::min(n->size(), sizeof(x.name) - 1);
+                    memcpy(x.name, n->data(), len);
+                }
+                return x;
+            });
+        });
+    }
+
     // The instruction stream of one thread (or all) over a range of positions,
     // straight from the execute events: no replay, so a long window costs only
     // the events it reads. Stops after 'cap'.
@@ -1837,6 +1869,7 @@ namespace
         a.module_symbols     = module_symbols;
         a.module_functions   = nullptr;     // the core reads .pdata from the file
         a.query_exceptions   = query_exceptions;
+        a.query_syscalls     = query_syscalls;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;
         a.position_add       = position_add;

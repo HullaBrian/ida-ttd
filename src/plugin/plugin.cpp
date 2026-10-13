@@ -248,6 +248,10 @@ namespace idattd
               "Find memory accesses: every read, write or execute of an address "
               "anywhere in the recording",
               NO_ICON, GROUP, MENU },
+            { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
+              "Syscalls: every syscall the program made, with its result and "
+              "arguments (recordings that list them: Sogen)",
+              NO_ICON, ITEM, MENU },
             { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
               "Memory map: every allocation, protection change and free the recording "
               "made, with each live region as a segment",
