@@ -28,6 +28,9 @@
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_sweep.h">
       <Filter>backend-msttd</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\backend-msttd\msttd_syscalls.h">
+      <Filter>backend-msttd</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_guest.h">
       <Filter>backend-msttd</Filter>
     </ClInclude>
@@ -82,6 +85,9 @@
       <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_syscalls.cpp">
       <Filter>backend-msttd</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp">

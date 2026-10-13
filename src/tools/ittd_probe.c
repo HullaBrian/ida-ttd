@@ -609,6 +609,17 @@ int main(int argc, char **argv)
                 ordered = 0;
             if ( mc[k].file > nn )
                 files_ok = 0;
+            if ( getenv("ITTD_PROBE_MAP_DUMP") != NULL )
+            {
+                uint32_t q;
+                printf("  %s (asked %s) kind %u %016llx +%llx prot %#x flags %#x tid %u api %llx chain",
+                       pos_text(mc[k].pos), pos_text(mc[k].call_pos), mc[k].kind,
+                       (unsigned long long)mc[k].base, (unsigned long long)mc[k].size, mc[k].protect,
+                       mc[k].flags, mc[k].tid, (unsigned long long)mc[k].api);
+                for ( q = 0; q < mc[k].chain_n; q++ )
+                    printf(" %llx", (unsigned long long)mc[k].chain[q]);
+                printf("\n");
+            }
             /* MEM_COMMIT, PAGE_EXECUTE_READWRITE, not an image */
             if ( mc[k].state == 0x1000 && (mc[k].protect & 0xFF) == 0x40 && mc[k].region_type != ITTD_REGION_IMAGE )
             {
@@ -824,6 +835,46 @@ int main(int argc, char **argv)
                 at_syscall++;
         }
         printf("  %zu named, %zu of %zu sampled at a syscall instruction\n", named, at_syscall, sampled);
+        {
+            /* One step on from a syscall the kernel has returned: rax there is its result.
+               (Not for the few that never come back, like NtContinue.) */
+            size_t came_back = 0, agree = 0;
+            for ( k = 0; k < n; k += n / 64 + 1 )
+            {
+                ittd_regs r0, r1;
+                int stop = 0;
+                if ( api->cursor_seek(c, sc[k].pos) != ITTD_OK || api->cursor_regs(c, &r0) != ITTD_OK )
+                    continue;
+                api->nav_step(c, 1, &stop);
+                if ( api->cursor_regs(c, &r1) != ITTD_OK || r1.gp[ITTD_REG_RIP] != r0.gp[ITTD_REG_RIP] + 2 )
+                    continue;
+                came_back++;
+                if ( r1.gp[ITTD_REG_RAX] == sc[k].result )
+                    agree++;
+                else
+                    printf("  %s %s: result %#llx, rax after %#llx\n", pos_text(sc[k].pos), sc[k].name,
+                           (unsigned long long)sc[k].result, (unsigned long long)r1.gp[ITTD_REG_RAX]);
+            }
+            printf("  %zu of %zu sampled returned to the next instruction\n", came_back, sampled);
+            check(came_back > 0 && agree == came_back, "  a syscall's result is rax once it returns");
+        }
+        {
+            /* The numbers no stub was found for, so a gap in the name table shows. */
+            uint32_t seen[16];
+            size_t ns = 0, j;
+            for ( k = 0; k < n && ns < 16; k++ )
+            {
+                if ( sc[k].name[0] != '\0' )
+                    continue;
+                for ( j = 0; j < ns && seen[j] != sc[k].number; j++ )
+                    ;
+                if ( j == ns )
+                {
+                    seen[ns++] = sc[k].number;
+                    printf("  unnamed: %#x, first at %s\n", sc[k].number, pos_text(sc[k].pos));
+                }
+            }
+        }
         check((int)ordered, "  syscalls are in position order");
         check(n == 0 || named > 0, "  syscalls have names");
         check(at_syscall == sampled, "  rip at a syscall's position is a syscall instruction");

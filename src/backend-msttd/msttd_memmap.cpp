@@ -1,6 +1,8 @@
-// The Microsoft backend's memory map: reconstructed from the five syscalls
-// that shape a process's address space, because the Replay SDK reports no
-// protections and no region list. Moved here from analysis/memmap.cpp, which
+// The Microsoft backend's memory map: reconstructed from the syscalls that
+// shape a process's address space, because the Replay SDK reports no
+// protections and no region list. The syscalls come from the recording's
+// transitions into the kernel (msttd_syscalls.h), so memory a program maps
+// with syscalls of its own is in the map too. Moved here from analysis/memmap.cpp, which
 // keeps the model, the fold, the persistence and the listing -- everything
 // that is the same for every backend -- and now asks
 // ITraceBackend::query_mapping_changes for the changes.
@@ -10,6 +12,7 @@
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
+#include "backend-msttd/msttd_syscalls.h"
 #include "backend-msttd/msttd_host.h"
 #include "backend-msttd/msttd_guest.h"
 #include "common/symbols.h"
@@ -46,6 +49,12 @@ namespace idattd
         //                         SIZE_T, PLARGE_INTEGER, PSIZE_T ViewSize, SECTION_INHERIT,
         //                         ULONG, ULONG Win32Protect)
         // NtUnmapViewOfSection   (HANDLE Process, PVOID Base)
+        // NtAllocateVirtualMemoryEx(HANDLE, PVOID* Base, PSIZE_T Size, ULONG, ULONG Protect, ...)
+        // NtMapViewOfSectionEx   (HANDLE Section, HANDLE Process, PVOID* Base, PLARGE_INTEGER,
+        //                         PSIZE_T ViewSize, ULONG, ULONG Protect, ...)
+        // NtUnmapViewOfSectionEx (HANDLE Process, PVOID Base, ULONG)
+        //
+        // The indexes are the syscall's own arguments, as the kernel takes them.
         //
         // 'deferred' marks the two whose out-params the kernel fills in. A free's
         // are written by the caller before the call, so they are in the recording
@@ -58,6 +67,9 @@ namespace idattd
             { "NtFreeVirtualMemory",     ITTD_MAP_FREE,      4, 0, 1,  2,  3, true,  false },
             { "NtMapViewOfSection",      ITTD_MAP_MAPVIEW,  10, 1, 2,  6,  9, true,  true  },
             { "NtUnmapViewOfSection",    ITTD_MAP_UNMAPVIEW, 2, 0, 1, -1, -1, false, false },
+            { "NtAllocateVirtualMemoryEx", ITTD_MAP_ALLOC,   7, 0, 1,  2,  4, true,  true  },
+            { "NtMapViewOfSectionEx",    ITTD_MAP_MAPVIEW,   9, 1, 2,  4,  6, true,  true  },
+            { "NtUnmapViewOfSectionEx",  ITTD_MAP_UNMAPVIEW, 3, 0, 1, -1, -1, false, false },
         };
 
         static const uint64_t PAGE = 0x1000;
@@ -122,12 +134,7 @@ namespace idattd
 
         struct SweepState
         {
-            std::map<ea_t, const WatchDesc *> watched;
-            std::map<ea_t, bool>              watchedIs64;
-            ea_t  lo = BADADDR, hi = 0;      // bounds of 'watched', for a cheap reject
-
             std::vector<Rec> recs;
-            std::map<uint32_t, std::vector<size_t>> inflight;   // per-thread call stack
 
             std::vector<Retry> retries;
             std::map<uint32_t, std::vector<size_t>> byThread;
@@ -140,35 +147,6 @@ namespace idattd
         // these, and the engine's callback is noexcept -- a bad_alloc in there
         // does not unwind, it terminates the process with no message.
         static const size_t kMaxRecs = 200000;     // the memory map's own storage cap
-
-        // The pending frame for one in-flight call.
-        struct Frame
-        {
-            const WatchDesc *d;
-            bool     is64;
-            uint64_t retAddr;
-            ea_t     pc;
-            ea_t     api;
-            TtdPosition callPos;
-            uint64_t args[12];
-            ea_t     chain[ITTD_CHAIN_MAX];
-            uint8_t  chain_n;
-        };
-
-        // One entry of the per-thread shadow call stack. Every call in the
-        // recording pushes one and every matching return pops it, which is what
-        // makes a call chain available at the moment a watched call happens.
-        struct ShadowFrame
-        {
-            uint64_t retAddr;   // where this call will return to
-            uint64_t sp;        // the stack pointer when it was made
-            ea_t     site;      // the instruction that made it
-        };
-
-        // A call depth past this is pathological, and an unbounded vector grown
-        // inside a noexcept callback is the shape of bug that takes the whole
-        // process down with no message.
-        static const size_t kMaxDepth = 256;
     }
 
     template <typename V>
@@ -181,64 +159,6 @@ namespace idattd
             return false;
         *out = tmp;
         return true;
-    }
-
-    // Read a watched call's arguments from inside the call/return callback.
-    //
-    // The stack pointer comes from the engine rather than from RSP/ESP in the
-    // register context: that is what keeps this correct on both architectures,
-    // and in a WoW64 recording where the two alternate call by call.
-    //
-    // Whether the CALL has already pushed its return address is asked of the
-    // stack rather than assumed. It has to be: the two answers put the first
-    // stack argument 8 bytes apart on x64, which for NtAllocateVirtualMemory is
-    // the difference between reading Protect and reading whatever the caller
-    // left in the shadow space. The SDK guide says the callback fires at the
-    // call instruction; a working reference implementation says it fires at the
-    // callee's first instruction. If the word at the top of the stack is the
-    // return address, the push has happened.
-    static void capture_args(IThreadView const *t, bool is64, size_t n,
-                             uint64_t retAddr, uint64_t *out) noexcept
-    {
-        for ( size_t i = 0; i < n; i++ )
-            out[i] = 0;
-
-        uint64_t sp    = (uint64_t)t->GetStackPointer();
-        uint32_t width = is64 ? 8 : 4;
-        uint64_t top   = 0;
-        bool pushed = read_ptr(t, sp, width, &top) && top == retAddr;
-
-        if ( !is64 )
-        {
-            // Nothing arrives in a register: every argument was pushed, so they
-            // run contiguously from just above the return address (or from the
-            // stack pointer itself, if it has not been pushed yet).
-            uint32_t slots[12] = { 0 };
-            size_t want = n < 12 ? n : 12;
-            t->QueryMemoryBuffer(GuestAddress{ sp + (pushed ? 4 : 0) },
-                                 BufferView{ slots, want * sizeof(uint32_t) });
-            for ( size_t i = 0; i < want; i++ )
-                out[i] = slots[i];
-            return;
-        }
-
-        CROSS_PLATFORM_CONTEXT ctx = t->GetCrossPlatformContext();
-        const AMD64_CONTEXT &c = ctx.Amd64Context;
-        const uint64_t regs[4] = { c.Rcx, c.Rdx, c.R8, c.R9 };
-        for ( size_t i = 0; i < n && i < 4; i++ )
-            out[i] = regs[i];
-        if ( n <= 4 )
-            return;
-        // 0x20 bytes of shadow space precede the first stack argument, plus the
-        // return address on top of it once the call has pushed one.
-        uint64_t slots[12] = { 0 };
-        size_t rest = n - 4;
-        if ( rest > 12 )
-            rest = 12;
-        t->QueryMemoryBuffer(GuestAddress{ sp + (pushed ? 0x28 : 0x20) },
-                             BufferView{ slots, rest * sizeof(uint64_t) });
-        for ( size_t i = 0; i < rest; i++ )
-            out[4 + i] = slots[i];
     }
 
     static bool read_ptr_policy(ICursorView const *c, uint64_t addr, uint32_t width,
@@ -322,92 +242,30 @@ namespace idattd
             return r;
         const std::vector<ModuleInfo> all_modules = modules();
 
-        SweepState st;
-
-        // ---- find the syscalls, in every ntdll the recording loaded ---------
+        // ---- which syscall numbers to look at ---------------------------------
         //
-        // Every one, not the first: a WoW64 recording has a 32-bit and a 64-bit
-        // ntdll under the same base name, with different calling conventions,
-        // and the calls alternate between them.
-        {
-            UniqueCursor sym = new_engine_cursor();
-            if ( !sym )
-                return r;
-            for ( const ModuleInfo &ml : all_modules )
-            {
-                if ( _stricmp(ml.name.c_str(), "ntdll.dll") != 0 )
-                    continue;
-                // Exports can only be read where the module is mapped.
-                sym->SetPosition(from_core(ml.loaded));
-                GuestPeInfo pe;
-                bool havePe = read_guest_pe_info(msttd_read_plain(sym.get()), ml.base, &pe);
-                bool is64   = havePe ? pe.is64 : m_info.is64;
-                for ( const WatchDesc &d : kWatches )
-                {
-                    ea_t a = resolve_export_va(msttd_read_plain(sym.get()), ml.base, is64, d.name);
-                    if ( a == BADADDR )
-                        continue;
-                    st.watched[a]     = &d;
-                    st.watchedIs64[a] = is64;
-                    if ( st.lo == BADADDR || a < st.lo ) st.lo = a;
-                    if ( a > st.hi )                     st.hi = a;
-                }
-            }
-        }
-        if ( st.watched.empty() )
+        // By number, not by watching ntdll's exports: the syscalls themselves
+        // are what change the address space, and a program that makes its own
+        // never calls the export.
+        SyscallTable table;
+        build_syscall_table(this, &table);
+        std::map<uint32_t, const WatchDesc *> by_number;
+        for ( const WatchDesc &d : kWatches )
+            for ( uint32_t n : table.numbers_of(d.name) )
+                by_number.emplace(n, &d);
+        if ( by_number.empty() )
         {
             msttd_log("[ida-ttd] memory map: could not find ntdll's memory syscalls in this "
                 "recording (its export table was never read during recording).\n");
             return r;
         }
-
-        UniqueCursor sweep = new_engine_cursor();
-        if ( !sweep )
-            return r;
-
-        // Which module an address belongs to, answered from a table built here
-        // before the replay starts: the callback runs on the replay worker, and
-        // nothing it reads may be built lazily from two threads.
-        const std::vector<std::pair<ea_t, ea_t>> mods = module_ranges(all_modules);
-
-        auto module_of = [&mods](ea_t ea) noexcept -> size_t
+        auto desc_of = [&by_number](uint32_t n) -> const WatchDesc *
         {
-            // Last module whose base <= ea, then check ea falls inside it.
-            size_t lo = 0, hi = mods.size();
-            while ( lo < hi )
-            {
-                size_t mid = lo + (hi - lo) / 2;
-                if ( mods[mid].first <= ea )
-                    lo = mid + 1;
-                else
-                    hi = mid;
-            }
-            if ( lo == 0 )
-                return (size_t)-1;
-            --lo;
-            return ea < mods[lo].second ? lo : (size_t)-1;
+            auto it = by_number.find(n);
+            return it != by_number.end() ? it->second : nullptr;
         };
 
-        // ---- the sweep ------------------------------------------------------
-        std::map<uint32_t, std::vector<Frame>> frames;   // per-thread watched calls
-
-        // Every call in the recording, per thread, so a watched call can be
-        // given the chain that led to it. The map lookup is cached because this
-        // runs on every call in the trace and threads execute in bursts.
-        std::map<uint32_t, std::vector<ShadowFrame>> shadow;
-        uint32_t                    lastTid   = 0xFFFFFFFF;
-        std::vector<ShadowFrame>   *lastStack = nullptr;
-
-        auto stack_for = [&shadow, &lastTid, &lastStack](uint32_t tid)
-                         -> std::vector<ShadowFrame> *
-        {
-            if ( tid != lastTid || lastStack == nullptr )
-            {
-                lastStack = &shadow[tid];
-                lastTid   = tid;
-            }
-            return lastStack;
-        };
+        SweepState st;
 
         auto retire = [&st](size_t idx) noexcept
         {
@@ -452,6 +310,9 @@ namespace idattd
             }
         };
 
+        // An out-param the kernel wrote is often not in the recording when the
+        // syscall returns -- only once the program reads it back. Each later
+        // call and return on the same thread looks again.
         auto poll_retries = [&st, &retire](IThreadView const *t, uint32_t tid) noexcept
         {
             if ( st.outstanding == 0 )
@@ -481,191 +342,18 @@ namespace idattd
             }
         };
 
-        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
-                               IThreadView const *t) noexcept
+        // The memory syscalls still out, per thread, innermost last. Each
+        // is settled at the return from the call that made it -- the stub's
+        // return to its caller -- where the result is still in rax and the
+        // out-params are as the caller first sees them.
+        std::map<uint32_t, std::vector<KernelCall>> out_now;
+
+        auto on_syscall = [&](const KernelCall &k, IThreadView const *) noexcept
         {
-            uint32_t tid = (uint32_t)t->GetThreadInfo().UniqueId;   // as SetPositionOnThread wants it
-            uint32_t os_tid = (uint32_t)t->GetThreadInfo().Id;
             try
             {
-                if ( (uint64_t)fall_through != 0 )
-                {
-                    // A CALL. 'instr' is the callee.
-                    ea_t tgt = (ea_t)(uint64_t)instr;
-
-                    // Whichever instruction the position sits on, this lands in
-                    // the caller: the program counter when it is not the callee
-                    // itself, otherwise the address the call returns to, which is
-                    // the instruction after the call site.
-                    ea_t pc   = (ea_t)(uint64_t)t->GetProgramCounter();
-                    ea_t site = pc != tgt ? pc : (ea_t)(uint64_t)fall_through;
-
-                    std::vector<ShadowFrame> *sh = stack_for(tid);
-
-                    // Drop frames the stack has already left behind.
-                    //
-                    // Matching returns is not enough on its own: a call that
-                    // never returns, an exception unwind and a tail jump all
-                    // leave a frame that no return will ever match, and without
-                    // this the stack only grows -- first reporting a chain of
-                    // long-dead frames, then hitting the depth cap and freezing.
-                    // The stack pointer settles it. It grows downward, so a frame
-                    // recorded at a lower value than the current one is below the
-                    // stack pointer and cannot still be live.
-                    uint64_t sp = (uint64_t)t->GetStackPointer();
-                    while ( !sh->empty() && sh->back().sp < sp )
-                        sh->pop_back();
-
-                    ShadowFrame sf;
-                    sf.retAddr = (uint64_t)fall_through;
-                    sf.sp      = sp;
-                    sf.site    = site;
-                    // At the cap, slide rather than stop: the frames worth having
-                    // are the innermost ones, and refusing to push would freeze
-                    // the chain at whatever was there when the depth was reached.
-                    if ( sh->size() >= kMaxDepth )
-                        sh->erase(sh->begin());
-                    sh->push_back(sf);
-
-                    if ( tgt < st.lo || tgt > st.hi )
-                    {
-                        poll_retries(t, tid);
-                        return;
-                    }
-                    auto w = st.watched.find(tgt);
-                    if ( w != st.watched.end() )
-                    {
-                        Frame f;
-                        f.d       = w->second;
-                        f.is64    = st.watchedIs64[tgt];
-                        f.retAddr = (uint64_t)fall_through;
-                        f.pc      = site;
-                        f.api     = tgt;
-                        f.callPos = t->GetPosition();
-                        // Innermost first, starting with the call we are on,
-                        // then one frame per module the chain crosses into. The
-                        // frame kept for a module is the innermost one in it,
-                        // which is the code that called onward -- for the CRT
-                        // that is malloc itself, and for the program its own
-                        // call site.
-                        f.chain_n = 0;
-                        size_t lastMod = (size_t)-2;    // distinct from "none"
-                        for ( size_t k = sh->size();
-                              k-- > 0 && f.chain_n < ITTD_CHAIN_MAX; )
-                        {
-                            ea_t   s  = (*sh)[k].site;
-                            size_t mi = module_of(s);
-                            if ( f.chain_n != 0 && mi == lastMod )
-                                continue;
-                            f.chain[f.chain_n++] = s;
-                            lastMod = mi;
-                        }
-                        capture_args(t, f.is64, f.d->nargs, f.retAddr, f.args);
-                        frames[tid].push_back(f);
-                    }
-                    poll_retries(t, tid);
-                    return;
-                }
-
-                // A RET. 'instr' is the address being returned to. Unwind the
-                // shadow stack to the frame that expected it, dropping anything
-                // above -- a return can leave several frames at once when the
-                // recording unwinds an exception or longjmps.
-                {
-                    std::vector<ShadowFrame> *sh = stack_for(tid);
-                    for ( size_t k = sh->size(); k-- > 0; )
-                    {
-                        if ( (*sh)[k].retAddr == (uint64_t)instr )
-                        {
-                            sh->resize(k);
-                            break;
-                        }
-                    }
-                }
-
-                // Pair it with the innermost in-flight watched call that
-                // expected it.
-                auto fit = frames.find(tid);
-                if ( fit == frames.end() || fit->second.empty() )
-                {
-                    poll_retries(t, tid);
-                    return;
-                }
-                Frame &f = fit->second.back();
-                if ( (uint64_t)instr != f.retAddr )
-                {
-                    poll_retries(t, tid);
-                    return;
-                }
-                Frame call = f;
-                fit->second.pop_back();
-
-                // NTSTATUS: anything negative failed, and a failed call changed
-                // nothing.
-                if ( (int32_t)(uint32_t)t->GetBasicReturnValue() < 0 )
-                {
-                    poll_retries(t, tid);
-                    return;
-                }
-                if ( st.recs.size() >= kMaxRecs )
-                {
-                    st.truncated = true;
-                    poll_retries(t, tid);
-                    return;
-                }
-
-                uint32_t width = call.is64 ? 8 : 4;
-
-                Rec rec;
-                rec.d      = call.d;
-                rec.is64   = call.is64;
-                rec.tid    = tid;
-                rec.os_tid = os_tid;
-                rec.pc     = call.pc;
-                rec.api    = call.api;
-                rec.retPos  = t->GetPosition();
-                rec.callPos = call.callPos;
-                rec.chain_n = call.chain_n;
-                for ( uint8_t k = 0; k < call.chain_n; k++ )
-                    rec.chain[k] = call.chain[k];
-                rec.extra  = call.d->iExtra >= 0
-                           ? (uint32_t)call.args[call.d->iExtra] : 0;
-                rec.otherProcess = !is_current_process(call.args[call.d->iProc], call.is64);
-
-                if ( !call.d->basePtr )
-                {
-                    // The address is the argument itself (an unmap).
-                    rec.base   = call.args[call.d->iBase];
-                    rec.baseOk = rec.base != 0;
-                    rec.sizeOk = true;                 // there is no size
-                    st.recs.push_back(rec);
-                    poll_retries(t, tid);
-                    return;
-                }
-
-                rec.pBase = call.args[call.d->iBase];
-                rec.pSize = call.d->iSize >= 0 ? call.args[call.d->iSize] : 0;
-
-                if ( rec.pBase != 0 && read_ptr(t, rec.pBase, width, &rec.base) )
-                    rec.baseOk = !call.d->deferred || page_granular(rec.base);
-                if ( rec.pSize == 0 )
-                    rec.sizeOk = true;                 // a free may pass none
-                else if ( read_ptr(t, rec.pSize, width, &rec.size) )
-                    rec.sizeOk = !call.d->deferred || page_granular(rec.size);
-
-                // A free's out-params were written by the caller before the call,
-                // so what we just read is in the recording and is the answer.
-                // Only the kernel-written ones need chasing.
-                st.recs.push_back(rec);
-                size_t idx = st.recs.size() - 1;
-                if ( call.d->deferred )
-                {
-                    if ( !st.recs[idx].baseOk && rec.pBase != 0 )
-                        add_retry(rec.pBase, tid, width, idx, true);
-                    if ( !st.recs[idx].sizeOk && rec.pSize != 0 )
-                        add_retry(rec.pSize, tid, width, idx, false);
-                }
-                poll_retries(t, tid);
+                if ( desc_of(k.number) != nullptr )
+                    out_now[k.utid].push_back(k);
             }
             catch ( ... )
             {
@@ -673,23 +361,122 @@ namespace idattd
             }
         };
 
-        // Sequential replay is load-bearing: the default dispatches this callback
-        // from several threads at once and every container above is
-        // unsynchronized. Filtering is off because there is no EventMask bit for
-        // call/return -- the engine has nothing to filter on and replays every
-        // instruction either way.
-        sweep->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                            | ReplayFlags::ReplaySegmentsSequentially);
-        sweep->SetCallReturnCallback(on_call_ret);
+        auto settle = [&](const KernelCall &k, IThreadView const *t) noexcept
+        {
+            try
+            {
+                const WatchDesc *d = desc_of(k.number);
+                if ( d == nullptr )
+                    return;
+                // NTSTATUS: anything negative failed, and a failed call
+                // changed nothing.
+                if ( (int32_t)(uint32_t)t->GetBasicReturnValue() < 0 )
+                    return;
+                if ( st.recs.size() >= kMaxRecs )
+                {
+                    st.truncated = true;
+                    return;
+                }
+                const bool is64 = m_info.is64;
+                const uint32_t width = is64 ? 8 : 4;
+                const uint64_t mask = is64 ? ~0ull : 0xFFFFFFFFull;
 
-        bool complete = msttd_sweep(sweep.get(), TtdPosition::Min, TtdPosition::Max, progress);
+                Rec rec;
+                rec.d       = d;
+                rec.is64    = is64;
+                rec.tid     = k.utid;
+                rec.os_tid  = k.tid;
+                rec.pc      = k.chain_n != 0 ? k.chain[0] : k.pc;
+                rec.api     = k.stub != BADADDR ? k.stub : k.pc;
+                rec.retPos  = t->GetPosition();
+                rec.callPos = k.pos;
+                rec.chain_n = k.chain_n;
+                for ( uint8_t i = 0; i < k.chain_n; i++ )
+                    rec.chain[i] = k.chain[i];
+                rec.extra = d->iExtra >= 0 ? (uint32_t)k.args[d->iExtra] : 0;
+                rec.otherProcess = !is_current_process(k.args[d->iProc] & mask, is64);
 
-        sweep->SetCallReturnCallback(nullptr, 0);
-        sweep.reset();
+                if ( !d->basePtr )
+                {
+                    // The address is the argument itself (an unmap).
+                    rec.base   = k.args[d->iBase] & mask;
+                    rec.baseOk = rec.base != 0;
+                    rec.sizeOk = true;                 // there is no size
+                    st.recs.push_back(rec);
+                    return;
+                }
+
+                rec.pBase = k.args[d->iBase] & mask;
+                rec.pSize = d->iSize >= 0 ? k.args[d->iSize] & mask : 0;
+
+                if ( rec.pBase != 0 && read_ptr(t, rec.pBase, width, &rec.base) )
+                    rec.baseOk = !d->deferred || page_granular(rec.base);
+                if ( rec.pSize == 0 )
+                    rec.sizeOk = true;                 // a free may pass none
+                else if ( read_ptr(t, rec.pSize, width, &rec.size) )
+                    rec.sizeOk = !d->deferred || page_granular(rec.size);
+
+                // A free's out-params were written by the caller before the
+                // call, so what we just read is in the recording and is the
+                // answer. Only the kernel-written ones need chasing.
+                st.recs.push_back(rec);
+                size_t idx = st.recs.size() - 1;
+                if ( d->deferred )
+                {
+                    if ( !st.recs[idx].baseOk && rec.pBase != 0 )
+                        add_retry(rec.pBase, k.utid, width, idx, true);
+                    if ( !st.recs[idx].sizeOk && rec.pSize != 0 )
+                        add_retry(rec.pSize, k.utid, width, idx, false);
+                }
+            }
+            catch ( ... )
+            {
+                st.truncated = true;
+            }
+        };
+
+        auto on_call_ret = [&](IThreadView const *t, uint32_t utid, bool is_return, uint64_t target) noexcept
+        {
+            poll_retries(t, utid);
+            if ( !is_return )
+                return;
+            auto it = out_now.find(utid);
+            if ( it == out_now.end() || it->second.empty() )
+                return;
+            // The innermost call this return leaves: a return can leave
+            // several frames at once (an unwind), and the syscalls made in
+            // the ones above it never came back the usual way.
+            std::vector<KernelCall> &v = it->second;
+            for ( size_t i = v.size(); i-- > 0; )
+            {
+                if ( v[i].frame_ret != target )
+                    continue;
+                settle(v[i], t);
+                v.resize(i);
+                return;
+            }
+        };
+
+        // ---- the syscalls, with their chains ---------------------------------
+        //
+        // One replay, with the call/return callback: the chains need it, and
+        // it is what settles each call. No second replay for the results.
+        KernelCallOptions opts;
+        opts.args_wanted = [&desc_of](uint32_t n) { return desc_of(n) != nullptr; };
+        opts.chains      = true;
+        opts.on_syscall  = on_syscall;
+        opts.on_call_ret = on_call_ret;
+        opts.results     = false;
+        std::vector<KernelCall> calls;
+        QueryResult kr = collect_kernel_calls(this, table, opts, &calls, progress);
+        if ( !kr.ran )
+            return r;
+        st.truncated = st.truncated || kr.truncated;
+        const std::vector<std::pair<ea_t, ea_t>> mods = module_ranges(all_modules);
 
         // Cancelling either the replay or the resolve pass below leaves a partial
         // map, which the caller is told about so it is not saved as a whole one.
-        bool stopped = !complete;
+        bool stopped = kr.cancelled;
 
         // ---- whatever the in-replay retry did not catch ----------------------
         size_t viaPolicy = 0, viaReplay = 0, snapped = 0, dropped = 0;

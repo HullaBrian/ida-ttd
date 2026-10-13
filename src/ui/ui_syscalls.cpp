@@ -100,8 +100,7 @@ namespace idattd
     {
         if ( !backend_lists_syscalls(mgr()) )
         {
-            warning("This recording does not list its syscalls. Sogen recordings do; "
-                    "a Microsoft TTD recording does not know where one began.");
+            warning("This recording's backend cannot list its syscalls.");
             return 1;
         }
         std::vector<SyscallEvent> calls;

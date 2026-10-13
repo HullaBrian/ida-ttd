@@ -140,7 +140,7 @@ namespace idattd
 
     // Ask the recording's backend for every allocation, protection change and
     // free (ITraceBackend::query_mapping_changes): Microsoft TTD reconstructs
-    // them by replaying with ntdll's memory syscalls watched, Sogen reads the
+    // them from the memory syscalls the recording made, Sogen reads the
     // map it recorded.
     //
     // Shows a cancellable progress box; safe to call from a UI action. Returns

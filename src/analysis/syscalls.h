@@ -7,8 +7,9 @@ namespace idattd
 {
     class TraceManager;
 
-    // The syscalls the recording dispatched, for a backend that records them
-    // (capabilities().syscalls -- Sogen). Runs behind a cancellable wait box.
+    // The syscalls the recording made, for a backend that can list them
+    // (capabilities().syscalls: Sogen records them, Microsoft TTD's are its
+    // transitions into the kernel). Runs behind a cancellable wait box.
     //
     // Returns false when it could not run at all; 'cancelled' leaves 'out'
     // holding what was gathered so far.
