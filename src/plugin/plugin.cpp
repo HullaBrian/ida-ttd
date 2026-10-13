@@ -52,7 +52,6 @@ namespace idattd
     static const char *SUB_CODE     = "TTDCode";
     static const char *SUB_ANALYSIS = "TTDAnalysis";
     static const char *SUB_FORKS    = "TTDForks";
-    static const char *SUB_CLEAR    = "TTDClear";
     struct SubmenuDesc
     {
         const char *name;
@@ -64,7 +63,6 @@ namespace idattd
         { SUB_CODE,     "Code",     true  },
         { SUB_ANALYSIS, "Analysis", false },
         { SUB_FORKS,    "Forks",    true  },
-        { SUB_CLEAR,    "Clear",    true  },
     };
 
     // A separator goes above a menu item, not above a submenu. The one above
@@ -72,7 +70,7 @@ namespace idattd
     // submenu (an action goes on a menu once).
     static const char *const SUBMENU_SEP_ACTIONS[] =
     {
-        "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2", "idattd:menu_sep_3",
+        "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2",
     };
     struct MenuSepHandler : public action_handler_t
     {
@@ -159,7 +157,7 @@ namespace idattd
     {
         Plugin *p = static_cast<Plugin *>(ud);
         if ( p->manager().is_active() && get_process_state() == DSTATE_SUSP
-          && p->manager().modules().apply_finished_pdbs() != 0 )
+          && p->manager().modules().apply_finished_pdbs(true) != 0 )
             refresh_idaview_anyway();
         return 1000;
     }
@@ -223,6 +221,9 @@ namespace idattd
         m_icons[ICO_FUNC_SEARCH]     = svg(icons_function_search_svg, sizeof(icons_function_search_svg) - 1);
         m_icons[ICO_BOOKMARK_ADD]    = svg(icons_bookmark_add_svg,    sizeof(icons_bookmark_add_svg) - 1);
         m_icons[ICO_BOOKMARKS]       = svg(icons_bookmarks_svg,       sizeof(icons_bookmarks_svg) - 1);
+        m_icons[ICO_FUNCTION]        = svg(icons_function_svg,        sizeof(icons_function_svg) - 1);
+        m_icons[ICO_CALL_TREE]       = svg(icons_call_tree_svg,       sizeof(icons_call_tree_svg) - 1);
+        m_icons[ICO_MEMORY]          = svg(icons_memory_svg,          sizeof(icons_memory_svg) - 1);
     }
 
     // Every TTD command, in the order it appears on the TTD menu. Adding one
@@ -254,7 +255,7 @@ namespace idattd
             { actions::TRACE_FUNC, "Find all calls to this function", &m_traceFunc, "Ctrl+Shift+C",
               "Find all calls to this function: sweep the whole trace and list every "
               "call with its arguments and return value",
-              NO_ICON, GROUP, MENU },
+              m_icons[ICO_FUNCTION], GROUP, MENU },
             { actions::TRACE_PAT, "Find calls by name/pattern...", &m_tracePat, "Ctrl+Shift+F",
               "Find calls by name/pattern: trace every function matching a wildcard "
               "like 'kernel32!Virtual*' in one sweep",
@@ -262,11 +263,11 @@ namespace idattd
             { actions::CALL_TREE, "Call tree of this function", &m_callTree, nullptr,
               "Call tree: every call the function at the cursor made during this run "
               "of it, nested, from its entry to its return",
-              NO_ICON, ITEM, MENU },
+              m_icons[ICO_CALL_TREE], ITEM, MENU },
             { actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, "Ctrl+Shift+M",
               "Find memory accesses: every read, write or execute of an address "
               "anywhere in the recording",
-              NO_ICON, ITEM, MENU },
+              m_icons[ICO_MEMORY], ITEM, MENU },
 
             // Code: what the recording says about the code in front of you,
             // written into the database.
@@ -278,9 +279,17 @@ namespace idattd
               "Highlight executed code: replay the recording and color every "
               "instruction in the chosen scope that actually ran",
               NO_ICON, ITEM, MENU, SUB_CODE },
+            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
+              "Clear execution highlight: remove the coverage color from the whole "
+              "database",
+              NO_ICON, ITEM, MENU, SUB_CODE },
             { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
               "Resolve indirect calls: record where each one actually went, as a "
               "comment and a cross-reference",
+              NO_ICON, ITEM, MENU, SUB_CODE },
+            { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
+              "Clear resolved indirect calls: remove the comments and cross-references "
+              "a previous run added",
               NO_ICON, ITEM, MENU, SUB_CODE },
             // The one automatic behavior.
             { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
@@ -314,6 +323,10 @@ namespace idattd
               "Re-read memory: discard what IDA cached for the selected range, rebuild "
               "it from the recording and disassemble it again",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, nullptr,
+              "Clear memory map: forget the reconstructed regions and go back to one "
+              "range over user space",
+              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
 
             // Forks, in a section of their own.
             { actions::FORK, "Fork here", &m_fork, nullptr,
@@ -338,20 +351,6 @@ namespace idattd
             { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
               "Take the selected fork out of the graph (its file stays)",
               NO_ICON, ITEM, TOOLBAR_ONLY },
-
-            // Undoing what the commands above wrote into the database.
-            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
-              "Clear execution highlight: remove the coverage color from the whole "
-              "database",
-              NO_ICON, ITEM, MENU, SUB_CLEAR },
-            { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
-              "Clear resolved indirect calls: remove the comments and cross-references "
-              "a previous run added",
-              NO_ICON, ITEM, MENU, SUB_CLEAR },
-            { actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, nullptr,
-              "Clear memory map: forget the reconstructed regions and go back to one "
-              "range over user space",
-              NO_ICON, ITEM, MENU, SUB_CLEAR },
 
             // Toolbar only. The backward movement and run-to-cursor actions sit
             // on the TTD toolbar beside their forward counterparts, which is
@@ -764,12 +763,14 @@ namespace idattd
         // none given, IDA appends the menu to the menu bar.
         create_menu(TTD_MENU, "TTD");
         CASSERT(qnumber(SUBMENU_SEP_ACTIONS) >= qnumber(TTD_SUBMENUS));
+        // A recording that cannot be forked (Microsoft's) gets no Forks menu.
+        const bool can_fork = can_fork_recording();
         int wanted = 0, attached = 0;
         const char *open_sub = nullptr;     // the submenu the last row went in
         qstring path = TTD_MENU_PATH;
         for ( const ActionDesc &d : m_actions )
         {
-            if ( !d.on_menu )
+            if ( !d.on_menu || (d.submenu == SUB_FORKS && !can_fork) )
                 continue;
             if ( d.submenu != open_sub )
             {
@@ -892,7 +893,8 @@ namespace idattd
         // --- bookmarks, next to the position they record ---
         attach_action_to_toolbar(TTD_TOOLBAR, actions::ADD_BOOKMARK);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::BOOKMARKS);
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::FORK_MANAGER);
+        if ( can_fork_recording() )
+            attach_action_to_toolbar(TTD_TOOLBAR, actions::FORK_MANAGER);
         // --- forward ---
         attach_action_to_toolbar(TTD_TOOLBAR, "ProcessStart");           // Continue
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepInto");         // Step into
@@ -1113,6 +1115,9 @@ namespace idattd
         // rather than running inside IDA's stop notification.
         if ( m_mgr.is_active() )
             coverage_settle_recording_change();
+        // The stop may have shown a function painted since its pseudocode
+        // was last printed.
+        refresh_pseudocode_views();
         reopen_fork_manager();
         // Which recording is being replayed may have changed: redraw it here,
         // never at the session's start or end (see switch_exit).

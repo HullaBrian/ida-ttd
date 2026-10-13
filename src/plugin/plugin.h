@@ -126,6 +126,10 @@ namespace idattd
 
     private:
         void register_actions();
+        bool can_fork_recording() const
+        {
+            return m_mgr.backend() != nullptr && m_mgr.backend()->capabilities().fork;
+        }
         void unregister_actions();
         void restore_native_icons();          // give IDA's movement actions their own icons back
         void load_icons();
@@ -232,6 +236,9 @@ namespace idattd
             ICO_FUNC_SEARCH,
             ICO_BOOKMARK_ADD,
             ICO_BOOKMARKS,
+            ICO_FUNCTION,
+            ICO_CALL_TREE,
+            ICO_MEMORY,
             ICO_COUNT
         };
         // One array rather than 13 handles, so the destructor frees them all
