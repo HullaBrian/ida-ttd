@@ -127,7 +127,7 @@ namespace idattd
         qstring                 m_title;  // owned: chooser_base_t keeps the pointer
     };
 
-    // The syscalls the recording dispatched (Sogen records them), with their
+    // The syscalls the recording made, with their
     // result and first four arguments. Enter time-travels to the call.
     class SyscallChooser : public chooser_t
     {
@@ -201,25 +201,6 @@ namespace idattd
         TraceManager            *m_mgr;
         std::vector<BufferHit>   m_hits;
         qstring                  m_title;  // owned: chooser_base_t keeps the pointer
-    };
-
-    // The calls the function at the cursor made during this run of it,
-    // indented by nesting. Selecting a row shows the call site; Enter
-    // time-travels to the call.
-    class CallTreeChooser : public chooser_t
-    {
-    public:
-        CallTreeChooser(TraceManager *mgr, CallTree &&tree);
-
-        size_t  idaapi get_count() const override;
-        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        ea_t    idaapi get_ea(size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
-
-    private:
-        TraceManager *m_mgr;
-        CallTree      m_tree;
-        qstring       m_title;  // owned: chooser_base_t keeps the pointer
     };
 
     // The reconstructed memory map, as a timeline. One row per allocation,
