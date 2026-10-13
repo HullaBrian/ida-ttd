@@ -582,6 +582,12 @@ namespace idattd
     {
         if ( m_switchTo.empty() || get_process_state() == DSTATE_NOTASK )
             return;
+        // Close the Fork manager now, while the session is still an ordinary
+        // one, rather than leave it to IDA to tear down as the session ends:
+        // a graph redrawn around then left IDA a deferred refresh of a graph
+        // that was gone, which stopped it with internal error 40183. It is
+        // opened again at the new session's first stop.
+        close_fork_manager_window();
         if ( !exit_process() )
         {
             msg("[ida-ttd] could not end the replay to switch to %s.\n", m_switchTo.c_str());
@@ -1055,6 +1061,9 @@ namespace idattd
         if ( m_mgr.is_active() )
             coverage_settle_recording_change();
         reopen_fork_manager();
+        // Which recording is being replayed may have changed: redraw it here,
+        // never at the session's start or end (see switch_exit).
+        refresh_fork_manager();
         TWidget *from = m_stepView;
         if ( from == nullptr )
         {
@@ -1224,7 +1233,6 @@ namespace idattd
                     trace_link_mark_start(false);   // the start survived
                     p->reset_step_state();
                     p->show_actions();   // (re)build the toolbar inside the now-active debugger desktop
-                    refresh_fork_manager();
                 }
                 p->update_position_label();
                 break;
@@ -1263,7 +1271,6 @@ namespace idattd
                 // debugger backend itself is unloaded.
                 p->hide_actions();
                 p->manager().end_travel_wait();
-                refresh_fork_manager();
                 break;
             default:
                 break;

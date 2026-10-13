@@ -403,6 +403,18 @@ namespace idattd
         return fm_open();
     }
 
+    void close_fork_manager_window()
+    {
+        if ( g_refreshTimer != nullptr )
+        {
+            unregister_timer(g_refreshTimer);
+            g_refreshTimer = nullptr;
+        }
+        if ( fm_open() )
+            close_widget(g_fm.gv, 0);
+        g_fm.gv = nullptr;
+    }
+
     void close_fork_manager()
     {
         if ( g_refreshTimer != nullptr )

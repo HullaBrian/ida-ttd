@@ -456,6 +456,8 @@ namespace idattd
     bool fork_manager_widget(TWidget *w);
     // The Fork manager is open.
     bool fork_manager_is_open();
+    // Close its window (the plugin stays). For a switch, before the session ends.
+    void close_fork_manager_window();
     // Close it and drop its hold on the plugin (the plugin is going away).
     void close_fork_manager();
     // The views showed a fork's changes, and the fork is gone or begun:
