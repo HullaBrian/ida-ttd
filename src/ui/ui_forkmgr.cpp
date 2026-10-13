@@ -374,10 +374,23 @@ namespace idattd
         return node >= 0 && g_fm.nodes[node].record >= 0 ? AST_ENABLE : AST_DISABLE;
     }
 
-    void refresh_fork_manager()
+    // Redrawn from a timer, never on the spot: the callers include IDA's
+    // process start and exit notifications, and refreshing a graph viewer
+    // from inside the exit one stopped IDA with internal error 40183.
+    static qtimer_t g_refreshTimer = nullptr;
+
+    static int idaapi refresh_cb(void *)
     {
+        g_refreshTimer = nullptr;
         if ( fm_open() )
             refresh_viewer(g_fm.gv);
+        return -1;                      // once
+    }
+
+    void refresh_fork_manager()
+    {
+        if ( g_refreshTimer == nullptr && fm_open() )
+            g_refreshTimer = register_timer(50, refresh_cb, nullptr);
     }
 
     bool fork_manager_widget(TWidget *w)
@@ -392,6 +405,11 @@ namespace idattd
 
     void close_fork_manager()
     {
+        if ( g_refreshTimer != nullptr )
+        {
+            unregister_timer(g_refreshTimer);
+            g_refreshTimer = nullptr;
+        }
         if ( fm_open() )
             close_widget(g_fm.gv, 0);
         g_fm = ForkGraph();
