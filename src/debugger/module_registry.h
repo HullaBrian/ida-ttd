@@ -89,6 +89,10 @@ namespace idattd
         // read and for addresses outside any recorded function. Populated as a
         // side effect of resolve_symbols().
         bool function_range_at(ea_t pc, ea_t &start, ea_t &end) const;
+        // "kernel32!SleepStub" for an export at 'ea', or empty: a name for a
+        // listing when IDA has none yet (the module is not mapped where the
+        // user is).
+        qstring export_name_at(ea_t ea);
 
         // Resolve a name pattern to the set of matching function addresses.
         // Shell-style wildcards (* and ?), case-insensitive, with an optional

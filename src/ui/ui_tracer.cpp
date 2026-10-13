@@ -5,6 +5,21 @@
 
 namespace idattd
 {
+    // IDA's name for a traced function, or the export it is when IDA has no
+    // name there yet: a module that is not mapped where the user is has no
+    // names in the database, but its exports matched the pattern by name.
+    static qstring traced_name(TraceManager *mgr, ea_t ea)
+    {
+        qstring n = func_display_name(ea);
+        if ( n.length() > 2 && n[0] == '0' && n[1] == 'x' && mgr != nullptr )
+        {
+            qstring e = mgr->modules().export_name_at(ea);
+            if ( !e.empty() )
+                return e;
+        }
+        return n;
+    }
+
     //=======================================================================
     // TracedFunctionsChooser
     //=======================================================================
@@ -30,7 +45,7 @@ namespace idattd
             return;
         ea_t ea = m_tracer->traced_at(n);
         cols->at(0).sprnt("0x%llX", (uint64_t)ea);
-        cols->at(1) = func_display_name(ea);
+        cols->at(1) = traced_name(m_mgr, ea);
     }
 
     ea_t idaapi TracedFunctionsChooser::get_ea(size_t n) const
@@ -155,7 +170,7 @@ namespace idattd
         // ExitProcess, an unwind) says so rather than leaving a gap.
         cols->at(1) = ev.has_ret ? format_position(ev.end_pos) : qstring("no return");
         cols->at(2).sprnt("%X", ev.tid);
-        cols->at(3) = func_display_name(ev.func_ea);
+        cols->at(3) = traced_name(m_mgr, ev.func_ea);
 
         if ( per_arg )
         {

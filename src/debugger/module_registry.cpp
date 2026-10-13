@@ -268,6 +268,12 @@ namespace idattd
             if ( nm == nullptr || !wildcard_match(namepat.c_str(), nm) )
                 continue;
             ea_t ea = get_nlist_ea(i);
+            // A module's import slots and CFG pointers are named data in it
+            // (__imp_memset, __guard_dispatch_icall_fptr). Followed, they
+            // would list every call to another module's function under this
+            // module's pattern.
+            if ( is_data(get_flags(ea)) || strncmp(nm, "__imp_", 6) == 0 || strncmp(nm, "__guard_", 8) == 0 )
+                continue;
 
             if ( !modpat.empty() )
             {
@@ -308,6 +314,21 @@ namespace idattd
                     out.push_back(e.first);
         }
         return out;
+    }
+
+    qstring ModuleRegistry::export_name_at(ea_t ea)
+    {
+        size_t idx = index_at(ea);
+        if ( idx == (size_t)-1 )
+            return qstring();
+        for ( const auto &e : exports_of(m_spans[idx].base) )
+            if ( e.first == ea )
+            {
+                qstring out;
+                out.sprnt("%s!%s", m_spans[idx].name.c_str(), e.second.c_str());
+                return out;
+            }
+        return qstring();
     }
 
     const std::vector<std::pair<ea_t, std::string>> &ModuleRegistry::exports_of(ea_t base)

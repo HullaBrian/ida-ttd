@@ -898,7 +898,10 @@ namespace idattd
                 args.add(q);
             }
             JObj o;
-            o.hex("func", v[i].func_ea).str("pos", format_position(v[i].pos))
+            qstring name;
+            if ( get_name(&name, v[i].func_ea) <= 0 || name.empty() )
+                name = mgr().modules().export_name_at(v[i].func_ea);
+            o.hex("func", v[i].func_ea).str("name", name).str("pos", format_position(v[i].pos))
              .str("end", v[i].has_ret ? format_position(v[i].end_pos) : qstring())
              .num("tid", v[i].tid).raw("args", args.done()).str("ret", v[i].retval);
             arr.add(o.done());
