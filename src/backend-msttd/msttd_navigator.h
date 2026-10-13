@@ -71,6 +71,11 @@ namespace idattd
         // started; the ABI's stop is at that instruction.
         bool data_breakpoints_armed() const;
         bool data_hit_just_before();
+        // A movement does not stop on an access made by the instruction it
+        // starts on -- that is where the last stop left it, and stopping
+        // there again would never move. Executes that one instruction when it
+        // makes such an access; true when it did.
+        bool step_past_own_access();
         // Records, for every watchpoint that stops a replay, whether it was a
         // data access: the program counter alone cannot say, since an execute
         // breakpoint on any byte of an instruction stops on its first.

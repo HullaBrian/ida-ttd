@@ -128,6 +128,23 @@ namespace idattd
         return hit;
     }
 
+    bool MsTtdNavigator::step_past_own_access()
+    {
+        if ( !data_breakpoints_armed() )
+            return false;
+        const TtdPosition here = cur()->GetPosition();
+        m_lastHitData = false;
+        ICursorView::ReplayResult r = cur()->ReplayForward(TtdPosition::Max, StepCount{ 1 });
+        if ( r.StopReason == EventType::MemoryWatchpoint && m_lastHitData )
+        {
+            m_lastHitData = false;
+            return true;
+        }
+        cur()->SetPosition(here);
+        m_lastHitData = false;
+        return false;
+    }
+
     StopReason MsTtdNavigator::settle(EventType sr, bool forward, ea_t target)
     {
         // Do this FIRST and unconditionally: a run that reached either end of
@@ -158,13 +175,22 @@ namespace idattd
 
     StopReason MsTtdNavigator::step(bool forward)
     {
-        return settle(navigate_steps(forward, StepCount{ 1 }), forward);
+        EventType sr = navigate_steps(forward, StepCount{ 1 });
+        // The access is the stepped instruction's own: the step completed.
+        if ( sr == EventType::MemoryWatchpoint && m_lastHitData )
+        {
+            m_lastHitData = false;
+            sr = EventType::Position;
+        }
+        return settle(sr, forward);
     }
 
     StopReason MsTtdNavigator::run(bool forward)
     {
         if ( !forward && data_hit_just_before() )
             return StopReason::Breakpoint;
+        if ( forward )
+            step_past_own_access();
         return settle(navigate_steps(forward, StepCount::Max), forward);
     }
 
@@ -188,6 +214,9 @@ namespace idattd
     {
         if ( !forward && data_hit_just_before() )
             return StopReason::Breakpoint;
+        if ( forward && step_past_own_access()
+          && (ea_t)(uint64_t)cur()->GetProgramCounter() == addr )
+            return StopReason::Stepped;
         EventType sr = forward ? navigate_forward_to(addr) : navigate_backward_to(addr);
         StopReason r = settle(sr, forward, addr);
         // The target is a temporary watchpoint, so reaching it reads as a
@@ -362,6 +391,9 @@ namespace idattd
                 // the frame's entry level, so guarding on start_sp would
                 // reject the very return being waited for.
                 uint64_t call_sp = (uint64_t)cur()->GetStackPointer();
+                // The call's own push is not a stop (step_past_own_access).
+                if ( iters == 1 )
+                    step_past_own_access();
                 RunStop oc = run_to_addr_guarded((ea_t)((uint64_t)pc + len), call_sp, utid);
                 if ( oc == RunStop::Breakpoint ) { hit_bpt = true; break; }
                 if ( oc == RunStop::TraceBoundary ) { boundary = true; break; }
@@ -369,7 +401,11 @@ namespace idattd
             else
             {
                 ICursorView::ReplayResult r = cur()->ReplayForward(TtdPosition::Max, StepCount{ 1 });
-                if ( r.StopReason == EventType::MemoryWatchpoint ) { hit_bpt = true; break; }
+                // On the first instruction an access is its own, not a stop;
+                // later in a step-out it is one.
+                bool own = iters == 1 && m_lastHitData;
+                if ( r.StopReason == EventType::MemoryWatchpoint && !own ) { hit_bpt = true; break; }
+                m_lastHitData = false;
                 if ( r.StopReason == EventType::Position
                   || r.StopReason == EventType::Process
                   || r.StopReason == EventType::Error )

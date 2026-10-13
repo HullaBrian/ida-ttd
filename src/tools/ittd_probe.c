@@ -369,6 +369,44 @@ int main(int argc, char **argv)
                     printf("    ... run backward into it: stop %d at %s\n", stop, pos_text(landed));
                     check(stop == ITTD_STOP_BREAKPOINT && landed.lo == e->pos.lo && landed.hi == e->pos.hi,
                           "  running backward into the write stops at the call too");
+
+                    /* Stopped on the write by the breakpoint, movement goes on:
+                       a step completes and a run does not stop on the same
+                       instruction again. */
+                    {
+                        ittd_position on = e->pos;
+                        api->cursor_seek(c, on);
+                        api->nav_breakpoints(c, &bp, 1);
+                        stop = -1;
+                        api->nav_step(c, 1, &stop);
+                        api->cursor_position(c, &landed);
+                        check(!(landed.hi == on.hi && landed.lo == on.lo),
+                              "  a step from the writing instruction moves on");
+                        api->cursor_seek(c, on);
+                        stop = -1;
+                        api->nav_run(c, 1, &stop);
+                        api->cursor_position(c, &landed);
+                        api->nav_breakpoints(c, NULL, 0);
+                        check(!(landed.hi == on.hi && landed.lo == on.lo),
+                              "  and so does a run");
+                    }
+
+                    /* From a few instructions further on, where the write is
+                       not the instruction right before the start. */
+                    {
+                        int k2;
+                        api->cursor_seek(c, e->entry_pos);
+                        for ( k2 = 0; k2 < 3; k2++ )
+                            api->nav_step(c, 1, &stop);
+                        api->nav_breakpoints(c, &bp, 1);
+                        stop = -1;
+                        api->nav_run(c, 0, &stop);
+                        api->cursor_position(c, &landed);
+                        api->nav_breakpoints(c, NULL, 0);
+                        printf("    ... from three instructions on: stop %d at %s\n", stop, pos_text(landed));
+                        check(stop == ITTD_STOP_BREAKPOINT && landed.lo == e->pos.lo && landed.hi == e->pos.hi,
+                              "  and from further on");
+                    }
                 }
             }
             if ( !is_none(e->pos) && !is_none(e->ret_pos) && is_call && api->nav_step_over != NULL )
