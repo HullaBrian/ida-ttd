@@ -56,8 +56,12 @@ That builds 129 objects (most of them Unicorn) into ten static libraries under
 
 ## 2. Build the backend and the probe
 
+`-t:Rebuild` because MSBuild does not notice when Sogen's libraries change --
+neither by name nor by full path -- and would keep a backend linked against
+the old reader. It is one source file.
+
 ```bat
-msbuild msbuild\backend-sogen.vcxproj -p:Configuration=Release -p:Platform=x64 ^
+msbuild msbuild\backend-sogen.vcxproj -t:Rebuild -p:Configuration=Release -p:Platform=x64 ^
         -p:SogenRoot=%SOGEN% -p:SogenBuild=%SOGEN_BUILD%
 msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
 ```

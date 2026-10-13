@@ -248,6 +248,12 @@ namespace
         return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(s)));
     }
 
+    // Decoded checkpoints each reader keeps (Sogen's default is four). Each is
+    // about the size of the program's committed memory, and there is a
+    // reader per cursor: four each took a session on a large recording past
+    // half a gigabyte. Two cover a pass between a call and its return.
+    constexpr size_t kCheckpointsPerReader = 2;
+
     std::unique_ptr<ttd::trace> open_trace(const std::filesystem::path &path)
     {
         auto version = ttd::trace_file_version(path);
@@ -329,6 +335,7 @@ namespace
         {
             b->path  = utf8_path(path);
             b->trace = open_trace(b->path);
+            b->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             return ITTD_OK;
         });
         if ( rc != ITTD_OK )
@@ -433,6 +440,7 @@ namespace
         {
             c->owner    = b;
             c->trace    = open_trace(b->path);
+            c->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             c->position = first_position(*c->trace);
             return ITTD_OK;
         });
