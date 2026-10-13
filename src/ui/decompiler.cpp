@@ -207,15 +207,6 @@ namespace idattd
         }
     }
 
-    static pseudocode_opened_fn g_opened_fn = nullptr;
-    static void                *g_opened_ud = nullptr;
-
-    void set_pseudocode_opened_handler(pseudocode_opened_fn fn, void *ud)
-    {
-        g_opened_fn = fn;
-        g_opened_ud = ud;
-    }
-
     static ssize_t idaapi hx_callback(void *, hexrays_event_t ev, va_list va)
     {
         switch ( ev )
@@ -224,14 +215,6 @@ namespace idattd
                 // The text has just been generated; sv is ours to colour now.
                 paint(va_arg(va, cfunc_t *));
                 break;
-
-            case hxe_open_pseudocode:
-            {
-                vdui_t *vu = va_arg(va, vdui_t *);
-                if ( g_opened_fn != nullptr && vu != nullptr && vu->toplevel != nullptr )
-                    g_opened_fn(vu->toplevel, g_opened_ud);
-                break;
-            }
 
             default:
                 break;
@@ -303,6 +286,19 @@ namespace idattd
             // -- so regenerating it would be wasted work as well as ineffective.
             paint(vu->cfunc);
             refresh_custom_viewer(vu->ct);
+        }
+    }
+
+    void list_pseudocode_views(std::vector<TWidget *> &out)
+    {
+        out.clear();
+        for ( char c = 'A'; c <= 'Z'; c++ )
+        {
+            char title[16];
+            qsnprintf(title, sizeof(title), "Pseudocode-%c", c);
+            TWidget *w = find_widget(title);
+            if ( w != nullptr && get_widget_type(w) == BWN_PSEUDOCODE )
+                out.push_back(w);
         }
     }
 

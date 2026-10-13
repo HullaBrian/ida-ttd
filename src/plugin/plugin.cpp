@@ -105,9 +105,6 @@ namespace idattd
         // Everything about it is optional: without Hex-Rays the plugin behaves
         // exactly as it did before.
         m_haveDecompiler = init_decompiler();
-        set_pseudocode_opened_handler(
-            [](TWidget *w, void *ud) { static_cast<Plugin *>(ud)->pseudocode_opened(w); },
-            this);
         hook_event_listener(HT_IDD, this);
         hook_event_listener(HT_DBG, &m_dbgEvents);
         hook_event_listener(HT_UI,  &m_uiEvents);
@@ -151,7 +148,6 @@ namespace idattd
         hide_actions();     // toolbar + actions, if a session was still open
         // After hide_actions(): it closes pseudocode views of runtime-allocated
         // code, and that check is a no-op once the Hex-Rays hook is gone.
-        set_pseudocode_opened_handler(nullptr, nullptr);
         term_decompiler();
         if ( m_attachRegistered )
         {
@@ -729,108 +725,81 @@ namespace idattd
         update_action_label(actions::POS_LABEL, label.c_str());
     }
 
-    // Remember which code view the user is in. The preference only changes on a
-    // genuine user focus change; while m_ignoreWidgetChanges is set (the re-focus
-    // window around a debugger stop) the debugger's forced switch to disassembly is
-    // recorded but does not flip the preference.
-    void Plugin::track_widget(TWidget *cur)
+    // The first resume after a stop has settled is the user starting a
+    // movement, and the widget with focus is the one they started it from:
+    // the key or toolbar button that asked for it does not move the focus.
+    // Later resumes before the stop settles belong to the same movement.
+    void Plugin::begin_movement()
     {
-        if ( cur == nullptr )
+        if ( m_mgr.resume_serial() != m_settledResume )
             return;
-        int t = get_widget_type(cur);
-        if ( t == BWN_PSEUDOCODE )
-        {
-            // A view the movement opened is about to be closed again; it must
-            // not become the one the user is taken back to.
-            if ( std::find(m_strayPseudo.begin(), m_strayPseudo.end(), cur)
-                 != m_strayPseudo.end() )
-                return;
-            m_pseudoWidget = cur;
-            if ( !m_ignoreWidgetChanges )
-                m_userPrefersDecomp = true;
-        }
-        else if ( t == BWN_DISASM )
-        {
-            if ( !m_ignoreWidgetChanges )
-                m_userPrefersDecomp = false;
-        }
+        TWidget *cur = get_current_widget();
+        m_stepView = cur != nullptr && get_widget_type(cur) == BWN_PSEUDOCODE ? cur : nullptr;
+        list_pseudocode_views(m_viewsBefore);
     }
 
     void Plugin::widget_closing(TWidget *w)
     {
-        if ( w == m_pseudoWidget )
-            m_pseudoWidget = nullptr;
-        m_strayPseudo.erase(std::remove(m_strayPseudo.begin(), m_strayPseudo.end(), w),
-                            m_strayPseudo.end());
-    }
-
-    // Stepping from pseudocode into another function used to leave a new
-    // Pseudocode-B, -C, ... behind for every call entered: something on IDA's
-    // side of the stop opens the function landed in as a new window. Only
-    // views opened while a movement is in flight are collected, and only when
-    // the user was stepping in the decompiler; anything opened once the stop
-    // has settled is the user's and is left alone.
-    void Plugin::pseudocode_opened(TWidget *w)
-    {
-        if ( !m_mgr.is_active() || !m_userPrefersDecomp || m_pseudoWidget == nullptr
-          || w == m_pseudoWidget )
-        {
-            diag("pseudocode opened %p: ignored (active %d, prefers %d, view %p)",
-                 w, (int)m_mgr.is_active(), (int)m_userPrefersDecomp, m_pseudoWidget);
-            return;
-        }
-        if ( m_mgr.resume_serial() == m_settledResume )
-        {
-            diag("pseudocode opened %p: the user's (stop settled)", w);
-            return;
-        }
-        diag("pseudocode opened %p during a movement: stray", w);
-        if ( std::find(m_strayPseudo.begin(), m_strayPseudo.end(), w) == m_strayPseudo.end() )
-            m_strayPseudo.push_back(w);
+        if ( w == m_stepView )
+            m_stepView = nullptr;
     }
 
     void Plugin::settle_stop()
     {
-        m_strayPseudo.clear();
         m_settledResume = m_mgr.resume_serial();
-        m_ignoreWidgetChanges = false;
     }
 
     int idaapi Plugin::refocus_cb(void *ud)
     {
         static_cast<Plugin *>(ud)->do_refocus();
-        return -1;  // one-shot: unregister
+        return -1;  // one-shot
     }
 
+    // Leave exactly one pseudocode view on the stop, and bring it to the front.
+    //
+    // Stepping from pseudocode into another function, IDA's source-level
+    // debugging opens that function in a view of its own, so every call stepped
+    // into left one more window behind. IDA then reuses that view while the
+    // steps stay in the function, and would only open another if it were
+    // closed -- so its view is the one kept, and the one the step started from
+    // is closed. When IDA opened nothing, the view the step started from is
+    // moved to the function instead.
     void Plugin::do_refocus()
     {
-        if ( m_pseudoWidget != nullptr && m_userPrefersDecomp )
-        {
-            // Move the user's own view to where the stop is, then drop the
-            // windows the movement opened. In that order: if the function
-            // cannot be decompiled, the view the movement opened is the only
-            // one showing the right place, and the user keeps it.
-            ea_t pc = m_mgr.current_pc_ea();
-            func_entry_info_t fi;
-            bool moved = pc != BADADDR && get_func_entry_info(&fi, pc)
-                      && (pseudocode_function(m_pseudoWidget) == fi.start_ea
-                       || show_in_pseudocode(m_pseudoWidget, pc));
-            diag("refocus: view %p shows %llX, pc %llX, moved %d, %d stray",
-                 m_pseudoWidget, (unsigned long long)pseudocode_function(m_pseudoWidget),
-                 (unsigned long long)pc,
-                 (int)moved, (int)m_strayPseudo.size());
-            if ( moved )
-            {
-                // Copied: closing a widget reaches widget_closing(), which
-                // edits the list.
-                std::vector<TWidget *> strays = m_strayPseudo;
-                for ( TWidget *w : strays )
-                    close_widget(w, 0);
-            }
-            if ( m_pseudoWidget != nullptr )
-                activate_widget(m_pseudoWidget, true);
-        }
         settle_stop();
+        TWidget *from = m_stepView;
+        if ( from == nullptr )
+            return;
+
+        std::vector<TWidget *> now;
+        list_pseudocode_views(now);
+        std::vector<TWidget *> opened;
+        for ( TWidget *w : now )
+            if ( w != from && std::find(m_viewsBefore.begin(), m_viewsBefore.end(), w)
+                              == m_viewsBefore.end() )
+                opened.push_back(w);
+
+        ea_t pc = m_mgr.current_pc_ea();
+        TWidget *keep = from;
+        if ( !opened.empty() )
+        {
+            keep = opened.back();
+            for ( TWidget *w : opened )
+                if ( w != keep )
+                    close_widget(w, 0);
+            close_widget(from, 0);      // reaches widget_closing()
+        }
+        else if ( pc != BADADDR )
+        {
+            func_entry_info_t fi;
+            if ( get_func_entry_info(&fi, pc) && pseudocode_function(from) != fi.start_ea )
+                show_in_pseudocode(from, pc);
+        }
+        diag("refocus: from %p, %d opened, kept %p showing %llX, pc %llX",
+             from, (int)opened.size(), keep,
+             (unsigned long long)pseudocode_function(keep), (unsigned long long)pc);
+        m_stepView = keep;
+        activate_widget(keep, true);
     }
 
     void Plugin::try_hook_decompiler()
@@ -932,12 +901,11 @@ namespace idattd
     // short timer (the callback runs on the UI thread once IDA has settled).
     void Plugin::keep_decompiler_focused()
     {
-        if ( !m_userPrefersDecomp || m_pseudoWidget == nullptr )
+        if ( m_stepView == nullptr )
         {
             settle_stop();
             return;
         }
-        m_ignoreWidgetChanges = true;          // ignore IDA's forced disasm switch
         m_refocusTimer.arm(DEFER_MS, refocus_cb, this);
     }
 
@@ -1055,14 +1023,6 @@ namespace idattd
                 if ( trace_link_present() )
                     p->schedule_trace_offer();
                 break;
-            case ui_current_widget_changed:
-            {
-                // Track which code view the user is in so we can keep the decompiler
-                // focused across debugger stops.
-                TWidget *cur = va_arg(va, TWidget *);
-                p->track_widget(cur);
-                break;
-            }
             case ui_widget_invisible:
             {
                 TWidget *w = va_arg(va, TWidget *);
@@ -1196,6 +1156,7 @@ namespace idattd
             case debugger_t::ev_resume:
             {
                 debug_event_t *event = va_arg(va, debug_event_t *);
+                begin_movement();
                 return m_mgr.on_resume(event);
             }
 

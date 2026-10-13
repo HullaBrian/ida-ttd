@@ -66,12 +66,11 @@ namespace idattd
         bool actions_visible() const { return m_actionsRegistered; }
         void update_position_label();   // refresh the live "Seq:Steps" toolbar readout
 
-        // --- keep the decompiler focused across stops (HT_UI driven) ----------
+        // --- keep the decompiler focused across stops --------------------------
         // IDA forces the disassembly view to the front on every debugger stop. If
-        // the user was viewing the decompiler, we re-assert it after the stop.
-        void track_widget(TWidget *cur);      // remember the user's active code view
+        // the user stepped from the decompiler, we re-assert it after the stop.
+        void begin_movement();                // ev_resume: note where the user stepped from
         void widget_closing(TWidget *w);      // drop a closed widget pointer
-        void pseudocode_opened(TWidget *w);   // Hex-Rays opened a view (maybe a movement did)
         void keep_decompiler_focused();       // schedule a re-focus after a stop (if wanted)
 
         // Queue a coverage sweep of the function we just stopped in, if that is
@@ -228,20 +227,15 @@ namespace idattd
         int  m_nativeSaved[ICO_NATIVE_COUNT]   = { -1, -1, -1, -1, -1, -1 };
         bool m_nativeSavedOk[ICO_NATIVE_COUNT] = { false, false, false, false, false, false };
 
-        // Decompiler-focus tracking. m_userPrefersDecomp is sticky: it only flips on
-        // a user focus change (not the debugger's forced disasm switch, which we
-        // ignore while m_ignoreWidgetChanges is set during the re-focus window).
-        TWidget *m_pseudoWidget   = nullptr;  // last-seen Pseudocode widget
-        bool     m_userPrefersDecomp = false; // user was last in the decompiler
-        bool     m_ignoreWidgetChanges = false; // freeze preference during a stop
+        // Decompiler-focus tracking, decided when a movement starts: the view
+        // that has focus when the user steps is where they are stepping from.
+        // Watching focus changes instead cannot work -- IDA's own switches to
+        // the disassembly, and to views it opens, look the same as the user's.
+        TWidget *m_stepView = nullptr;        // pseudocode view the movement started in
+        std::vector<TWidget *> m_viewsBefore; // pseudocode views open when it started
+        uint64   m_settledResume = 0;         // resume_serial() when the last stop settled
         OneShotTimer m_refocusTimer;          // deferred re-focus
-        // Pseudocode views opened by a movement rather than by the user, closed
-        // at the re-focus once the user's own view has been moved along. A view
-        // opened before the stop that follows the last resume has settled is
-        // the movement's: the user cannot open one in that window.
-        std::vector<TWidget *> m_strayPseudo;
-        uint64                 m_settledResume = 0;  // resume_serial() at the last settle
-        void settle_stop();                   // the stop is done: later opens are the user's
+        void settle_stop();                   // the stop is done: the next resume is a new movement
 
         // Automatic per-function coverage. Functions the user cancelled out of
         // are remembered for the session only, so a sweep they stopped is not
