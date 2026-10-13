@@ -820,6 +820,69 @@ int main(int argc, char **argv)
         free(sm);
     }
 
+    /* ---- a fork ------------------------------------------------------------------
+       Needs the registry hives the recording ran against, so it only runs when
+       ITTD_PROBE_FORK_REGISTRY names their folder. Replays to the middle of the
+       recording, changes r11, records a few thousand instructions into
+       ITTD_PROBE_FORK_OUT (default fork.sogttd) and opens that: it must start at
+       the fork's position, with the parent's RIP and the changed r11. */
+    if ( (info.capabilities & ITTD_CAP_FORK) != 0 && getenv("ITTD_PROBE_FORK_REGISTRY") != NULL
+      && offsetof(ittd_backend_api, fork_close) + sizeof(api->fork_close) <= api->size
+      && api->fork_open != NULL )
+    {
+        const char *out_path = getenv("ITTD_PROBE_FORK_OUT") != NULL ? getenv("ITTD_PROBE_FORK_OUT") : "fork.sogttd";
+        const uint64_t patched = 0x1122334455667788ull;
+        ittd_fork_settings fs;
+        ittd_fork *fk = NULL;
+        ittd_position mid = info.first;
+        ittd_regs fr;
+        uint64_t parent_rip, ran = 0;
+        int rc;
+        memset(&fs, 0, sizeof(fs));
+        fs.size = sizeof(fs);
+        fs.registry_dir = getenv("ITTD_PROBE_FORK_REGISTRY");
+        mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+        parent_rip = rip_at(c, mid);
+
+        t0 = now_ms();
+        rc = api->fork_open(B, mid, &fs, NULL, &fk);
+        printf("\nfork at %s: %s, %.1f ms\n", pos_text(mid), rc == ITTD_OK ? "open" : api->last_error(B), now_ms() - t0);
+        check(rc == ITTD_OK, "  fork_open replays to the position");
+        if ( rc == ITTD_OK )
+        {
+            check(api->fork_regs(fk, &fr) == ITTD_OK && fr.gp[ITTD_REG_RIP] == parent_rip,
+                  "  the fork's rip is the recording's at that position");
+            fr.gp[11] = patched;
+            check(api->fork_set_regs(fk, &fr) == ITTD_OK, "  registers can be changed");
+            t0 = now_ms();
+            rc = api->fork_record(fk, out_path, 20000, "probe: r11", NULL, &ran);
+            printf("  recorded %llu instruction(s) into %s, %.1f ms%s%s\n", (unsigned long long)ran, out_path,
+                   now_ms() - t0, rc == ITTD_OK ? "" : ": ", rc == ITTD_OK ? "" : api->last_error(B));
+            check(rc == ITTD_OK && ran > 0, "  the fork records");
+            api->fork_close(fk);
+        }
+        if ( rc == ITTD_OK )
+        {
+            ittd_backend *child = api->open(out_path);
+            check(child != NULL, "  the fork opens as a recording of its own");
+            if ( child != NULL )
+            {
+                ittd_trace_info ci;
+                ittd_cursor *cc = api->cursor_open(child);
+                ittd_regs cr;
+                api->info(child, &ci);
+                printf("  fork: positions %s..%s\n", pos_text(ci.first), pos_text(ci.last));
+                check(ci.first.lo == mid.lo, "  it starts at the fork's position");
+                check(cc != NULL && api->cursor_seek(cc, ci.first) == ITTD_OK && api->cursor_regs(cc, &cr) == ITTD_OK
+                      && cr.gp[ITTD_REG_RIP] == parent_rip && cr.gp[11] == patched,
+                      "  with the parent's rip and the changed register");
+                if ( cc != NULL )
+                    api->cursor_close(cc);
+                api->close(child);
+            }
+        }
+    }
+
     api->cursor_close(c);
     api->close(B);
     free(mods);

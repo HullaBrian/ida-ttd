@@ -28,6 +28,14 @@
 #include <ttd_trace.hpp>
 #include <ttd_view.hpp>
 
+// Forks: the emulator, Sogen's replay and recorder, and the headless UI a
+// replay delivers recorded window input to.
+#include <windows_emulator.hpp>
+#include <ttd_session.hpp>
+#include <ttd_ui.hpp>
+#include <unicorn_x86_64_emulator.hpp>
+#include <platform/ui_backend.hpp>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -88,6 +96,16 @@ namespace
         std::vector<ittd_breakpoint> breakpoints;
         // The CPU at 'position', built on first use and dropped on every move.
         std::unique_ptr<ttd::cpu_view> view;
+    };
+
+    // A recording replayed to a position and held there (fork_open).
+    struct fork_t
+    {
+        backend_t *owner = nullptr;
+        std::unique_ptr<ttd::trace> trace;               // its own reader: seek needs one
+        std::unique_ptr<sogen::windows_emulator> emu;
+        uint64_t position = 0;
+        bool     recorded = false;                       // fork_record runs once
     };
 
     std::string g_module_error;     // last_error(NULL)
@@ -345,6 +363,7 @@ namespace
 
     backend_t *B(ittd_backend *b) { return reinterpret_cast<backend_t *>(b); }
     cursor_t  *C(ittd_cursor *c)  { return reinterpret_cast<cursor_t *>(c); }
+    fork_t    *F(ittd_fork *f)    { return reinterpret_cast<fork_t *>(f); }
 
     void close(ittd_backend *b)
     {
@@ -376,6 +395,9 @@ namespace
             // Every Sogen recording can be asked; one recorded without write
             // or execute events answers with an error that says so.
             out->capabilities |= ITTD_CAP_SELF_MODIFYING;
+            // Any recording can be replayed to a position; whether the
+            // replay holds on this machine is fork_open's to find out.
+            out->capabilities |= ITTD_CAP_FORK;
             // The memory map with protections, for traces recorded since
             // Sogen kept it (section 17). Older ones only say that a range was
             // mapped or unmapped, which is not enough to draw a map from.
@@ -1601,6 +1623,201 @@ namespace
         });
     }
 
+    // ------------------------------------------------------------ forks
+
+    // The folder this DLL was loaded from: the default registry folder is a
+    // "registry" folder next to it.
+    std::filesystem::path module_dir()
+    {
+        HMODULE self = nullptr;
+        wchar_t buf[MAX_PATH] = {};
+        if ( GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                              | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(&module_dir), &self)
+          && GetModuleFileNameW(self, buf, MAX_PATH) != 0 )
+            return std::filesystem::path(buf).parent_path();
+        return std::filesystem::current_path();
+    }
+
+    std::string manifest_value(const ttd::trace &t, std::string_view key)
+    {
+        for ( const auto &[k, v] : t.manifest() )
+            if ( k == key )
+                return v;
+        return std::string();
+    }
+
+    // The setting if the caller's struct is new enough to carry it.
+    template <typename T>
+    const T *setting(const ittd_fork_settings *s, const T *field)
+    {
+        if ( s == nullptr )
+            return nullptr;
+        size_t end = reinterpret_cast<const char *>(field) - reinterpret_cast<const char *>(s) + sizeof(T);
+        return end <= s->size ? field : nullptr;
+    }
+
+    // Seek a fresh emulator to the position: a checkpoint restore and up to a
+    // checkpoint interval of replay, verified against the recording.
+    int fork_open(ittd_backend *hb, ittd_position at_pos, const ittd_fork_settings *settings,
+                  const ittd_progress *progress, ittd_fork **out)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr || out == nullptr )
+            return ITTD_E_BAD_ARG;
+        *out = nullptr;
+        return guarded(b->error, [&]()
+        {
+            auto f = std::make_unique<fork_t>();
+            f->owner = b;
+            f->trace = open_trace(b->path);
+            f->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
+            if ( !resolve(*f->trace, at_pos, &f->position) )
+                return ITTD_E_NO_POSITION;
+
+            std::filesystem::path registry = module_dir() / "registry";
+            std::filesystem::path root = manifest_value(*f->trace, "emulation_root");
+            bool strict = false;
+            if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr && **v != '\0' )
+                registry = utf8_path(*v);
+            if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
+                root = utf8_path(*v);
+            if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
+                strict = (*v & ITTD_FORK_STRICT) != 0;
+            if ( !std::filesystem::is_directory(registry) )
+                throw std::runtime_error("no registry hives at " + registry.string()
+                                         + ": a fork's emulator loads the registry the recording ran against");
+
+            sogen::emulator_settings es{};
+            es.disable_logging    = true;
+            es.use_relative_time  = true;
+            es.emulation_root     = root;
+            es.registry_directory = registry;
+            sogen::emulator_interfaces ifs{};
+            ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
+            f->emu = std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), es,
+                                                               sogen::emulator_callbacks{}, std::move(ifs));
+            ttd::install_cpuid_overrides(*f->emu);
+            ttd::require_deterministic(*f->emu);
+            ttd::seek(*f->emu, *f->trace, f->position, strict, control(progress));
+            *out = reinterpret_cast<ittd_fork *>(f.release());
+            return ITTD_OK;
+        });
+    }
+
+    const x86_register kGp[ITTD_REG_GP_COUNT] = {
+        x86_register::rax, x86_register::rcx, x86_register::rdx, x86_register::rbx,
+        x86_register::rsp, x86_register::rbp, x86_register::rsi, x86_register::rdi,
+        x86_register::r8,  x86_register::r9,  x86_register::r10, x86_register::r11,
+        x86_register::r12, x86_register::r13, x86_register::r14, x86_register::r15,
+        x86_register::rip,
+    };
+
+    int fork_regs(ittd_fork *hf, ittd_regs *out)
+    {
+        fork_t *f = F(hf);
+        if ( f == nullptr || out == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(f->owner->error, [&]()
+        {
+            auto &cpu = f->emu->emu();
+            *out = ittd_regs{};
+            for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
+                out->gp[i] = cpu.reg<uint64_t>(kGp[i]);
+            out->rflags  = cpu.reg<uint64_t>(x86_register::rflags);
+            out->fs_base = cpu.reg<uint64_t>(x86_register::fs_base);
+            out->gs_base = cpu.reg<uint64_t>(x86_register::gs_base);
+            out->have = ITTD_REGS_GP;
+            return ITTD_OK;
+        });
+    }
+
+    int fork_set_regs(ittd_fork *hf, const ittd_regs *regs)
+    {
+        fork_t *f = F(hf);
+        if ( f == nullptr || regs == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(f->owner->error, [&]()
+        {
+            if ( f->recorded )
+                throw std::runtime_error("this fork has already run");
+            auto &cpu = f->emu->emu();
+            if ( (regs->have & ITTD_REGS_GP) != 0 )
+            {
+                for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
+                    cpu.reg<uint64_t>(kGp[i], regs->gp[i]);
+                cpu.reg<uint64_t>(x86_register::rflags, regs->rflags);
+            }
+            if ( (regs->have & ITTD_REGS_SEG) != 0 )
+            {
+                cpu.reg<uint64_t>(x86_register::fs_base, regs->fs_base);
+                cpu.reg<uint64_t>(x86_register::gs_base, regs->gs_base);
+            }
+            return ITTD_OK;
+        });
+    }
+
+    int fork_write_memory(ittd_fork *hf, uint64_t ea, const void *buf, size_t size)
+    {
+        fork_t *f = F(hf);
+        if ( f == nullptr || (buf == nullptr && size != 0) )
+            return ITTD_E_BAD_ARG;
+        return guarded(f->owner->error, [&]()
+        {
+            if ( f->recorded )
+                throw std::runtime_error("this fork has already run");
+            if ( !f->emu->memory.try_write_memory(ea, buf, size) )
+                throw std::runtime_error("that memory is not mapped writable in the fork");
+            return ITTD_OK;
+        });
+    }
+
+    int fork_record(ittd_fork *hf, const char *path, uint64_t max_instructions, const char *note,
+                    const ittd_progress *progress, uint64_t *out_instructions)
+    {
+        fork_t *f = F(hf);
+        if ( f == nullptr || path == nullptr || *path == '\0' )
+            return ITTD_E_BAD_ARG;
+        return guarded(f->owner->error, [&]()
+        {
+            if ( f->recorded )
+                throw std::runtime_error("this fork has already run");
+            f->recorded = true;
+            ttd::record_settings rs{};
+            rs.path             = utf8_path(path);
+            rs.max_instructions = max_instructions;
+            rs.manifest = {
+                { "tool", "ida-ttd" },
+                { "parent", f->owner->path.u8string().empty() ? std::string()
+                            : std::string(reinterpret_cast<const char *>(f->owner->path.u8string().c_str())) },
+                { "parent_id", f->trace->id() },
+                { "fork_position", std::to_string(f->position) },
+            };
+            if ( note != nullptr && *note != '\0' )
+                rs.manifest.emplace_back("fork_changes", note);
+            bool stopped = false;
+            std::function<bool()> interrupted;
+            if ( progress != nullptr && progress->cancelled != nullptr )
+                interrupted = [progress, &stopped]()
+                {
+                    stopped = stopped || progress->cancelled(progress->ud) != 0;
+                    return stopped;
+                };
+            uint64_t before = f->emu->get_executed_instructions();
+            ttd::record(*f->emu, rs, interrupted);
+            if ( out_instructions != nullptr )
+                *out_instructions = f->emu->get_executed_instructions() - before;
+            // A cancelled recording is still a finished, readable trace of
+            // what ran before the stop.
+            return ITTD_OK;
+        });
+    }
+
+    void fork_close(ittd_fork *hf)
+    {
+        delete F(hf);
+    }
+
     // The instruction stream of one thread (or all) over a range of positions,
     // straight from the execute events: no replay, so a long window costs only
     // the events it reads. Stops after 'cap'.
@@ -1909,6 +2126,12 @@ namespace
         a.query_exceptions   = query_exceptions;
         a.query_syscalls     = query_syscalls;
         a.query_self_modifying = query_self_modifying;
+        a.fork_open          = fork_open;
+        a.fork_regs          = fork_regs;
+        a.fork_set_regs      = fork_set_regs;
+        a.fork_write_memory  = fork_write_memory;
+        a.fork_record        = fork_record;
+        a.fork_close         = fork_close;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;
         a.position_add       = position_add;

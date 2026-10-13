@@ -41,7 +41,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
-    <CharacterSet>Unicode</CharacterSet>
+    <CharacterSet>NotSet</CharacterSet>
     <PlatformToolset Condition="'$(PlatformToolset)' == ''">$(DefaultPlatformToolset)</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
@@ -55,7 +55,7 @@
   <Target Name="RequireSogen" BeforeTargets="PrepareForBuild">
     <Error Condition="'$(SogenRoot)' == '' Or !Exists('$(SogenRoot)\src\windows-ttd\reader\ttd_trace.hpp')"
            Text="Set -p:SogenRoot= to a Sogen checkout (one with src\windows-ttd\reader)." />
-    <Error Condition="'$(SogenBuild)' == '' Or !Exists('$(SogenArtifacts)\windows-ttd-view.lib')"
+    <Error Condition="'$(SogenBuild)' == '' Or !Exists('$(SogenArtifacts)\windows-ttd.lib')"
            Text="Set -p:SogenBuild= to a CMake build of Sogen's windows-ttd-view target; see the comment at the top of backend-sogen.vcxproj." />
   </Target>
 
@@ -68,7 +68,7 @@
       <ExceptionHandling>Async</ExceptionHandling>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(SrcDir);$(SogenRoot)\src\windows-ttd\reader;$(SogenRoot)\src\windows-ttd\view;$(SogenRoot)\src\common;$(SogenRoot)\src\emulator-platform;$(SogenRoot)\src;$(SogenRoot)\src\emulator;$(SogenRoot)\src\backends\unicorn-emulator;$(SogenRoot)\deps\zstd\lib;$(SogenRoot)\deps\minidump_cpp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SrcDir);$(SogenRoot)\src\windows-ttd\reader;$(SogenRoot)\src\windows-ttd\view;$(SogenRoot)\src\windows-ttd;$(SogenRoot)\src\windows-emulator;$(SogenRoot)\src\process-manager;$(SogenRoot)\src\common;$(SogenRoot)\src\emulator-platform;$(SogenRoot)\src;$(SogenRoot)\src\emulator;$(SogenRoot)\src\backends\unicorn-emulator;$(SogenRoot)\deps\zstd\lib;$(SogenRoot)\deps\minidump_cpp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>SOGEN_BUILD_STATIC=1;SOGEN_ENABLE_REFLECTION=1;SOGEN_ENABLE_RUST_CODE=0;SOGEN_REFLECTION_LEVEL=0;ZSTD_MULTITHREAD;_CRT_NONSTDC_NO_WARNINGS;_CRT_SECURE_NO_WARNINGS;NDEBUG;WIN32;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <!-- Sogen's default: the dynamic release CRT, shared allocators. -->
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -80,7 +80,7 @@
       <AdditionalLibraryDirectories>$(SogenArtifacts);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <!-- Full paths, so a rebuilt Sogen library relinks the backend. By bare
            name through the library path, MSBuild's link tracking missed it. -->
-      <AdditionalDependencies>$(SogenArtifacts)\windows-ttd-view.lib;$(SogenArtifacts)\windows-ttd-reader.lib;$(SogenArtifacts)\unicorn-emulator.lib;$(SogenArtifacts)\emulator.lib;$(SogenArtifacts)\emulator-common.lib;$(SogenArtifacts)\minidump.lib;$(SogenArtifacts)\unicorn.lib;$(SogenArtifacts)\x86_64-softmmu.lib;$(SogenArtifacts)\unicorn-common.lib;$(SogenArtifacts)\zstd_static.lib;ws2_32.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SogenArtifacts)\windows-ttd.lib;$(SogenArtifacts)\windows-emulator.lib;$(SogenArtifacts)\process-manager.lib;$(SogenArtifacts)\disassembler.lib;$(SogenArtifacts)\mbedtls.lib;$(SogenArtifacts)\mbedx509.lib;$(SogenArtifacts)\mbedcrypto.lib;$(SogenArtifacts)\sogen_everest.lib;$(SogenArtifacts)\sogen_p256m.lib;$(SogenArtifacts)\flatbuffers.lib;$(SogenArtifacts)\windows-ttd-view.lib;$(SogenArtifacts)\windows-ttd-reader.lib;$(SogenArtifacts)\unicorn-emulator.lib;$(SogenArtifacts)\emulator.lib;$(SogenArtifacts)\emulator-common.lib;$(SogenArtifacts)\minidump.lib;$(SogenArtifacts)\unicorn.lib;$(SogenArtifacts)\x86_64-softmmu.lib;$(SogenArtifacts)\unicorn-common.lib;$(SogenArtifacts)\zstd_static.lib;ws2_32.lib;ntdll.lib;crypt32.lib;bcrypt.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>

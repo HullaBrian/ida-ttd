@@ -143,6 +143,9 @@ typedef struct ittd_position_range
 /* query_self_modifying answers: the recording has the write and execute
  * events to find code the program wrote before running it. */
 #define ITTD_CAP_SELF_MODIFYING   0x0400u
+/* The recording can be forked: replayed to a position, changed there, and run
+ * on into a new recording (fork_open and the fork_* calls). */
+#define ITTD_CAP_FORK             0x0800u
 
 #define ITTD_NAME_MAX  256
 #define ITTD_PATH_MAX  520
@@ -499,6 +502,38 @@ typedef struct ittd_regs
     uint8_t  xmm[16][16];
 } ittd_regs;
 
+/* ------------------------------------------------------------------- forks */
+
+/*
+ * A fork is the recorded program brought back to life at a position: an
+ * emulator replayed to it, whose registers and memory can then be changed
+ * before it runs on, recording, into a new trace of its own. The new trace
+ * starts at the fork's position; the parent is not touched.
+ *
+ * Replaying needs what the recording ran against outside its checkpoints: the
+ * registry hives, and for a recording made against the host (no emulation
+ * root) the host's own system DLLs. A replay elsewhere may diverge from the
+ * recording before reaching the position; fork_open then fails, naming what
+ * differs.
+ */
+typedef struct ittd_fork ittd_fork;   /* opaque */
+
+/* A syscall or host write whose result differs from the recording is a
+ * divergence, instead of taking the recorded result. */
+#define ITTD_FORK_STRICT  0x1u
+
+typedef struct ittd_fork_settings
+{
+    uint32_t    size;               /* sizeof(ittd_fork_settings) */
+    uint32_t    flags;              /* ITTD_FORK_* */
+    /* The folder holding the registry hives (SYSTEM, SOFTWARE, SAM, SECURITY,
+     * HARDWARE, NTUSER.DAT). NULL or empty: the backend's default. */
+    const char *registry_dir;
+    /* The emulation root. NULL: the one the recording was made with (empty
+     * for a recording made against the host). */
+    const char *emulation_root;
+} ittd_fork_settings;
+
 /* ------------------------------------------------------- progress and stop */
 
 /*
@@ -830,6 +865,25 @@ typedef struct ittd_backend_api
     int (*query_self_modifying)(ittd_backend *b,
                                 ittd_selfmod *buf, size_t cap, size_t *out_count,
                                 int *out_truncated, const ittd_progress *progress);
+
+    /* ---- forks (ITTD_CAP_FORK) ---------------------------------------- */
+
+    /* Replay to 'at' and hold the program there. Expensive: a checkpoint
+     * restore and up to a checkpoint interval of verified replay. */
+    int (*fork_open)(ittd_backend *b, ittd_position at, const ittd_fork_settings *settings,
+                     const ittd_progress *progress, ittd_fork **out);
+    /* The registers of the thread that runs next, which a set changes. */
+    int (*fork_regs)(ittd_fork *f, ittd_regs *out);
+    /* The groups 'have' names are written: GP (with rflags) and SEG bases. */
+    int (*fork_set_regs)(ittd_fork *f, const ittd_regs *regs);
+    int (*fork_write_memory)(ittd_fork *f, uint64_t ea, const void *buf, size_t size);
+    /* Run on from the fork, recording into 'path', until the program exits or
+     * 'max_instructions' ran (0: no limit). 'note' goes into the new trace's
+     * manifest. Can be called once per fork. */
+    int (*fork_record)(ittd_fork *f, const char *path, uint64_t max_instructions,
+                       const char *note, const ittd_progress *progress,
+                       uint64_t *out_instructions);
+    void (*fork_close)(ittd_fork *f);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */
