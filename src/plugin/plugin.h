@@ -182,6 +182,8 @@ namespace idattd
         SyscallsHandler           m_syscalls;
         SelfModHandler            m_selfMod;
         ForkHandler               m_fork;
+        RecoverStringsHandler     m_recoverStrings;
+        RecoverBuffersHandler     m_recoverBuffers;
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
         ClearMemoryMapHandler     m_memMapClear;

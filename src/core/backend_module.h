@@ -65,6 +65,10 @@ namespace idattd
         QueryResult query_self_modifying(std::vector<SelfModHit> *out,
                                          ProgressSink *progress) override;
         ForkResult  record_fork(const ForkRequest &req, ProgressSink *progress) override;
+        QueryResult query_strings(const ReplaySettings &settings, uint32_t min_length,
+                                  std::vector<StringHit> *out, ProgressSink *progress) override;
+        QueryResult query_buffers(const ReplaySettings &settings,
+                                  std::vector<BufferHit> *out, ProgressSink *progress) override;
         QueryResult query_mapping_changes(std::vector<ittd_mapping_change> *out,
                                           std::vector<qstring> *files,
                                           ProgressSink *progress) override;
@@ -83,7 +87,7 @@ namespace idattd
         // The file the module was loaded from, for messages.
         const qstring &path() const { return m_path; }
         // The backend's own reason for its last failure on the open trace.
-        qstring last_error() const;
+        qstring last_error() const override;
 
     private:
         const ittd_backend_api *m_api = nullptr;

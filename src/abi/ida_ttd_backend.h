@@ -146,6 +146,9 @@ typedef struct ittd_position_range
 /* The recording can be forked: replayed to a position, changed there, and run
  * on into a new recording (fork_open and the fork_* calls). */
 #define ITTD_CAP_FORK             0x0800u
+/* query_strings and query_buffers answer: the recording is replayed from
+ * start to end with a scanner watching memory. Needs what a fork needs. */
+#define ITTD_CAP_REPLAY_SCANS     0x1000u
 
 #define ITTD_NAME_MAX  256
 #define ITTD_PATH_MAX  520
@@ -520,7 +523,12 @@ typedef struct ittd_fork ittd_fork;   /* opaque */
 
 /* A syscall or host write whose result differs from the recording is a
  * divergence, instead of taking the recorded result. */
-#define ITTD_FORK_STRICT  0x1u
+#define ITTD_FORK_STRICT      0x1u
+/* Replay a recording made against the host (no emulation root). Its program
+ * runs again with this machine's files and network: whatever it created,
+ * renamed, deleted or sent, it does again. Without the flag a backend refuses
+ * such a replay. */
+#define ITTD_FORK_ALLOW_HOST  0x2u
 
 typedef struct ittd_fork_settings
 {
@@ -533,6 +541,34 @@ typedef struct ittd_fork_settings
      * for a recording made against the host). */
     const char *emulation_root;
 } ittd_fork_settings;
+
+/* A string the program had in memory at some point: ASCII or UTF-16LE text
+ * of at least the asked-for length, found by watching every write during a
+ * replay (and the memory at the start). */
+typedef struct ittd_string_hit
+{
+    uint64_t      address;
+    /* At the write that completed it; the start of the recording for text
+     * that was there from the beginning. */
+    ittd_position pos;
+    uint32_t      wide;             /* 1: UTF-16LE in memory */
+    uint32_t      length;           /* in characters */
+    char          text[ITTD_NAME_MAX];   /* UTF-8, cut to fit */
+} ittd_string_hit;
+
+/* A buffer the program filled: a run of memory written by the same code,
+ * classified by what it holds ("pe", "text", ...). */
+typedef struct ittd_buffer_hit
+{
+    uint64_t      address;
+    uint64_t      size;
+    ittd_position first_pos;        /* at its first write */
+    ittd_position last_pos;         /* at its last write */
+    uint64_t      writer_ip;        /* the instruction that wrote it */
+    uint64_t      writes;
+    char          kind[32];
+    char          preview[ITTD_NAME_MAX];
+} ittd_buffer_hit;
 
 /* ------------------------------------------------------- progress and stop */
 
@@ -884,6 +920,18 @@ typedef struct ittd_backend_api
                        const char *note, const ittd_progress *progress,
                        uint64_t *out_instructions);
     void (*fork_close)(ittd_fork *f);
+
+    /* ---- replay scans (ITTD_CAP_REPLAY_SCANS) ------------------------- */
+
+    /* Count queries over a full replay of the recording -- tens of seconds on
+     * a large one. 'settings' as for fork_open. A backend keeps the answer, so
+     * the second call of count-then-fill costs nothing. */
+    int (*query_strings)(ittd_backend *b, const ittd_fork_settings *settings, uint32_t min_length,
+                         ittd_string_hit *buf, size_t cap, size_t *out_count,
+                         int *out_truncated, const ittd_progress *progress);
+    int (*query_buffers)(ittd_backend *b, const ittd_fork_settings *settings,
+                         ittd_buffer_hit *buf, size_t cap, size_t *out_count,
+                         int *out_truncated, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* ------------------------------------------------------------ entry point */

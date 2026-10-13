@@ -840,9 +840,22 @@ int main(int argc, char **argv)
         int rc;
         memset(&fs, 0, sizeof(fs));
         fs.size = sizeof(fs);
+        fs.flags = ITTD_FORK_ALLOW_HOST;   /* the reference traces were recorded against the host */
         fs.registry_dir = getenv("ITTD_PROBE_FORK_REGISTRY");
         mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
         parent_rip = rip_at(c, mid);
+
+        /* Without consent, a recording made against the host is not replayed
+           (the reference traces all are). */
+        fs.flags = 0;
+        rc = api->fork_open(B, mid, &fs, NULL, &fk);
+        printf("\nwithout ITTD_FORK_ALLOW_HOST: %s\n", rc == ITTD_OK ? "opened" : api->last_error(B));
+        if ( rc == ITTD_OK )
+            api->fork_close(fk);
+        check(rc != ITTD_OK && strstr(api->last_error(B), "against the host") != NULL,
+              "  a host recording is not replayed without consent");
+        fs.flags = ITTD_FORK_ALLOW_HOST;
+        fk = NULL;
 
         t0 = now_ms();
         rc = api->fork_open(B, mid, &fs, NULL, &fk);
@@ -881,6 +894,71 @@ int main(int argc, char **argv)
                 api->close(child);
             }
         }
+    }
+
+    /* ---- replay scans: strings and buffers --------------------------------------
+       A full replay each, so also gated on ITTD_PROBE_FORK_REGISTRY. A string
+       recovered after the start must be in memory just after the position it
+       is reported at (the write that completed it). */
+    if ( (info.capabilities & ITTD_CAP_REPLAY_SCANS) != 0 && getenv("ITTD_PROBE_FORK_REGISTRY") != NULL
+      && offsetof(ittd_backend_api, query_buffers) + sizeof(api->query_buffers) <= api->size
+      && api->query_strings != NULL )
+    {
+        ittd_fork_settings fs;
+        ittd_string_hit *sh;
+        ittd_buffer_hit *bh;
+        size_t n = 0, k, sampled = 0, there = 0;
+        int trunc = 0, rc;
+        memset(&fs, 0, sizeof(fs));
+        fs.size = sizeof(fs);
+        fs.flags = ITTD_FORK_ALLOW_HOST;
+        fs.registry_dir = getenv("ITTD_PROBE_FORK_REGISTRY");
+
+        t0 = now_ms();
+        rc = api->query_strings(B, &fs, 8, NULL, 0, &n, &trunc, NULL);
+        printf("\nstrings (8+): %zu, %.1f ms%s%s\n", n, now_ms() - t0,
+               rc == ITTD_OK ? "" : ", failed: ", rc == ITTD_OK ? "" : api->last_error(B));
+        check(rc == ITTD_OK, "  the string scan replays the recording");
+        sh = (ittd_string_hit *)calloc(n ? n : 1, sizeof(*sh));
+        t0 = now_ms();
+        if ( rc == ITTD_OK && api->query_strings(B, &fs, 8, sh, n, &n, &trunc, NULL) == ITTD_OK )
+        {
+            printf("  again: %.1f ms (kept)\n", now_ms() - t0);
+            for ( k = 0; k < n && k < 5; k++ )
+                printf("  %s  %llx  %s\"%.60s\"\n", pos_text(sh[k].pos), (unsigned long long)sh[k].address,
+                       sh[k].wide ? "L" : "", sh[k].text);
+            for ( k = 0; k < n; k += n / 32 + 1 )
+            {
+                uint8_t mem[8], kn[8];
+                size_t got = 0;
+                ittd_position after = sh[k].pos;
+                if ( sh[k].wide || sh[k].pos.lo == info.first.lo )
+                    continue;
+                after.lo++;
+                sampled++;
+                if ( api->cursor_seek(c, after) == ITTD_OK
+                  && api->cursor_read_memory(c, sh[k].address, mem, kn, 4, &got) == ITTD_OK
+                  && got == 4 && memcmp(mem, sh[k].text, 4) == 0 )
+                    there++;
+            }
+            printf("  %zu of %zu sampled ASCII strings in memory just after their position\n", there, sampled);
+            check(there == sampled, "  a string is in memory after the write that completed it");
+        }
+        free(sh);
+
+        t0 = now_ms();
+        rc = api->query_buffers(B, &fs, NULL, 0, &n, &trunc, NULL);
+        printf("buffers: %zu, %.1f ms%s%s\n", n, now_ms() - t0,
+               rc == ITTD_OK ? "" : ", failed: ", rc == ITTD_OK ? "" : api->last_error(B));
+        check(rc == ITTD_OK, "  the buffer scan replays the recording");
+        bh = (ittd_buffer_hit *)calloc(n ? n : 1, sizeof(*bh));
+        if ( rc == ITTD_OK && api->query_buffers(B, &fs, bh, n, &n, &trunc, NULL) == ITTD_OK )
+            for ( k = 0; k < n && k < 5; k++ )
+                printf("  %llx +%llx  %s  written %s..%s by %llx (%llu)  %.50s\n",
+                       (unsigned long long)bh[k].address, (unsigned long long)bh[k].size, bh[k].kind,
+                       pos_text(bh[k].first_pos), pos_text(bh[k].last_pos),
+                       (unsigned long long)bh[k].writer_ip, (unsigned long long)bh[k].writes, bh[k].preview);
+        free(bh);
     }
 
     api->cursor_close(c);

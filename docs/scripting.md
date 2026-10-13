@@ -76,6 +76,8 @@ database. The scope is given here instead of in a dialog.
 | `an.memmap [MAX]` | build the memory map; the regions as they stand at the playhead |
 | `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
+| `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
+| `an.buffers [MAX] [registry=DIR] [strict]` | replay the recording (Sogen) and list the buffers it filled |
 | `an.fork PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
 
 `help` lists every command with its arguments, and `backends` lists the loaded

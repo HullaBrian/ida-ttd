@@ -261,6 +261,14 @@ namespace idattd
               "Self-modifying code: every instruction the program wrote before "
               "running it, with the write (recordings that can tell: Sogen)",
               NO_ICON, ITEM, MENU },
+            { actions::STRINGS, "Recover strings...", &m_recoverStrings, nullptr,
+              "Recover strings: replay the recording and list every string the "
+              "program had in memory, with where it appeared (Sogen)",
+              NO_ICON, ITEM, MENU },
+            { actions::BUFFERS, "Recover buffers...", &m_recoverBuffers, nullptr,
+              "Recover buffers: replay the recording and list every buffer the "
+              "program filled, with the code that wrote it (Sogen)",
+              NO_ICON, ITEM, MENU },
             { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
               "Memory map: every allocation, protection change and free the recording "
               "made, with each live region as a segment",

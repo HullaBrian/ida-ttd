@@ -10,6 +10,7 @@
 #include "analysis/memmap.h"
 #include "analysis/syscalls.h"
 #include "analysis/fork.h"
+#include "analysis/replay_scans.h"
 
 #include <expr.hpp>
 
@@ -922,6 +923,8 @@ namespace idattd
                 req.registry_dir = t.substr(9);
             else if ( t == "strict" )
                 req.strict = true;
+            else if ( t == "host" )
+                req.allow_host = true;
             else if ( t.starts_with("mem:") )
                 mem.cat_sprnt("%s;", t.c_str() + 4);
             else
@@ -936,6 +939,76 @@ namespace idattd
         out.boolean("ok", r.ok).boolean("cancelled", r.cancelled)
            .num("instructions", (int64_t)r.instructions).str("error", r.error)
            .str("at", format_position(req.at)).str("path", req.path);
+    }
+
+    // Trailing "registry=DIR" and "strict" words set what the replay needs.
+    static ReplaySettings replay_args(const Args &a, size_t from)
+    {
+        ReplaySettings rs;
+        rs.registry_dir = saved_registry_dir();
+        for ( size_t i = from; i < a.count(); i++ )
+        {
+            const qstring &t = a.at(i);
+            if ( t.starts_with("registry=") )
+                rs.registry_dir = t.substr(9);
+            else if ( t == "strict" )
+                rs.strict = true;
+            else if ( t == "host" )
+                rs.allow_host = true;
+        }
+        return rs;
+    }
+
+    static size_t plain_args(const Args &a)
+    {
+        size_t n = 0;
+        while ( n < a.count() && !a.at(n).starts_with("registry=") && a.at(n) != "strict" && a.at(n) != "host" )
+            n++;
+        return n;
+    }
+
+    static void cmd_an_strings(const Args &a, JObj &out)
+    {
+        need_session();
+        size_t np = plain_args(a);
+        uint32_t min_len = np > 0 ? (uint32_t)a.u64(0) : 6;
+        uint64_t max = np > 1 ? a.u64(1) : 50;
+        std::vector<StringHit> v;
+        bool cancelled = false;
+        qstring err;
+        if ( !recover_strings(&mgr(), replay_args(a, np), min_len, &v, &cancelled, &err) )
+            fail("the replay did not run: %s", err.c_str());
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.str("pos", format_position(v[i].pos)).hex("address", v[i].address)
+             .boolean("wide", v[i].wide).str("text", v[i].text);
+            arr.add(o.done());
+        }
+        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("strings", arr.done());
+    }
+
+    static void cmd_an_buffers(const Args &a, JObj &out)
+    {
+        need_session();
+        size_t np = plain_args(a);
+        uint64_t max = np > 0 ? a.u64(0) : 50;
+        std::vector<BufferHit> v;
+        bool cancelled = false;
+        qstring err;
+        if ( !recover_buffers(&mgr(), replay_args(a, np), &v, &cancelled, &err) )
+            fail("the replay did not run: %s", err.c_str());
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.hex("address", v[i].address).hex("size", v[i].size).str("kind", v[i].kind)
+             .str("first", format_position(v[i].first_pos)).str("last", format_position(v[i].last_pos))
+             .hex("writer", v[i].writer_ip).num("writes", (int64_t)v[i].writes).str("preview", v[i].preview);
+            arr.add(o.done());
+        }
+        out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("buffers", arr.done());
     }
 
     static void cmd_an_coverage(const Args &a, JObj &out)
@@ -1073,6 +1146,8 @@ namespace idattd
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
+        { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
+        { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
         { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...] fork here" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },

@@ -4,8 +4,6 @@
 
 namespace idattd
 {
-    static const char FORK_REGKEY[] = "ida-ttd";
-
     static bool backend_forks(TraceManager *mgr)
     {
         return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr
@@ -28,6 +26,10 @@ namespace idattd
             "Replay the program to this position, change registers and memory, and let\n"
             "it run on, recording into a new trace. This recording is not touched.\n"
             "\n"
+            "A recording made against the host (no emulation root) runs its program's\n"
+            "file and network operations on this machine again -- only allow that for\n"
+            "programs you trust.\n"
+            "\n"
             "Registers belong to the thread that runs next. Memory changes are\n"
             "ADDRESS = 90 90 C3, or ADDRESS = q:VALUE for a 64-bit value; separate\n"
             "several with semicolons.\n"
@@ -37,17 +39,16 @@ namespace idattd
             "<~R~egisters (rax=1 rcx=0x10):q::64::>\n"
             "<~M~emory:q::64::>\n"
             "<Registry ~h~ives folder (empty: next to the Sogen backend):F::64::>\n"
-            "<##Replay##~S~trict (stop where the replay differs from the recording):C>>\n"
+            "<##Replay##~S~trict (stop where the replay differs from the recording):C>\n"
+            "<~A~llow a recording made against the host to touch this machine:C>>\n"
             "\n";
 
         char path[QMAXPATH];
         qstrncpy(path, default_fork_path(mgr()).c_str(), sizeof(path));
         static sval_t count = 1000000;
         static qstring regs_text, mem_text;
-        char registry[QMAXPATH] = "";
-        qstring saved;
-        if ( reg_read_string(&saved, "ForkRegistryDir", FORK_REGKEY) )
-            qstrncpy(registry, saved.c_str(), sizeof(registry));
+        char registry[QMAXPATH];
+        qstrncpy(registry, saved_registry_dir().c_str(), sizeof(registry));
         ushort strict = 0;
 
         ForkRequest req;
@@ -72,13 +73,14 @@ namespace idattd
                 continue;
             break;
         }
-        reg_write_string("ForkRegistryDir", registry, FORK_REGKEY);
+        save_registry_dir(registry);
 
         req.at               = mgr()->current_position();
         req.path             = path;
         req.max_instructions = count > 0 ? (uint64_t)count : 0;
         req.registry_dir     = registry;
-        req.strict           = strict != 0;
+        req.strict           = (strict & 1) != 0;
+        req.allow_host       = (strict & 2) != 0;
         req.note.sprnt("forked at %s", format_position(req.at).c_str());
         if ( !regs_text.empty() )
             req.note.cat_sprnt("; registers: %s", regs_text.c_str());

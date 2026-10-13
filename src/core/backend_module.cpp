@@ -393,6 +393,7 @@ namespace idattd
         m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0
                                && ITTD_HAS(m_api, query_self_modifying);
         m_caps.fork             = (c & ITTD_CAP_FORK) != 0 && ITTD_HAS(m_api, fork_close);
+        m_caps.replay_scans     = (c & ITTD_CAP_REPLAY_SCANS) != 0 && ITTD_HAS(m_api, query_buffers);
         m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
         return true;
     }
@@ -736,6 +737,75 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
+    static ittd_fork_settings replay_settings(const ReplaySettings &s)
+    {
+        ittd_fork_settings fs{};
+        fs.size  = sizeof(fs);
+        fs.flags = (s.strict ? ITTD_FORK_STRICT : 0) | (s.allow_host ? ITTD_FORK_ALLOW_HOST : 0);
+        fs.registry_dir   = s.registry_dir.empty() ? nullptr : s.registry_dir.c_str();
+        fs.emulation_root = nullptr;
+        return fs;
+    }
+
+    QueryResult BackendModule::query_strings(const ReplaySettings &settings, uint32_t min_length,
+                                             std::vector<StringHit> *out, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_strings", 0);
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_strings) || out == nullptr )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        ittd_fork_settings fs = replay_settings(settings);
+        int trunc = 0;
+        std::vector<ittd_string_hit> v;
+        int rc = count_fill(&v, [&](ittd_string_hit *b, size_t cap, size_t *n)
+        {
+            return m_api->query_strings(m_handle, &fs, min_length, b, cap, n, &trunc, pb.get());
+        });
+        out->reserve(v.size());
+        for ( const ittd_string_hit &x : v )
+        {
+            StringHit h;
+            h.address = (ea_t)x.address;
+            h.pos     = from_abi(x.pos);
+            h.wide    = x.wide != 0;
+            h.length  = x.length;
+            h.text    = qstring(x.text, strnlen(x.text, sizeof(x.text)));
+            out->push_back(std::move(h));
+        }
+        return result_of(rc, trunc);
+    }
+
+    QueryResult BackendModule::query_buffers(const ReplaySettings &settings,
+                                             std::vector<BufferHit> *out, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_buffers", 0);
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_buffers) || out == nullptr )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        ittd_fork_settings fs = replay_settings(settings);
+        int trunc = 0;
+        std::vector<ittd_buffer_hit> v;
+        int rc = count_fill(&v, [&](ittd_buffer_hit *b, size_t cap, size_t *n)
+        {
+            return m_api->query_buffers(m_handle, &fs, b, cap, n, &trunc, pb.get());
+        });
+        out->reserve(v.size());
+        for ( const ittd_buffer_hit &x : v )
+        {
+            BufferHit h;
+            h.address   = (ea_t)x.address;
+            h.size      = x.size;
+            h.first_pos = from_abi(x.first_pos);
+            h.last_pos  = from_abi(x.last_pos);
+            h.writer_ip = (ea_t)x.writer_ip;
+            h.writes    = x.writes;
+            h.kind      = qstring(x.kind, strnlen(x.kind, sizeof(x.kind)));
+            h.preview   = qstring(x.preview, strnlen(x.preview, sizeof(x.preview)));
+            out->push_back(std::move(h));
+        }
+        return result_of(rc, trunc);
+    }
+
     ForkResult BackendModule::record_fork(const ForkRequest &req, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.record_fork", 0);
@@ -756,7 +826,7 @@ namespace idattd
         ProgressBridge pb(progress);
         ittd_fork_settings fs{};
         fs.size  = sizeof(fs);
-        fs.flags = req.strict ? ITTD_FORK_STRICT : 0;
+        fs.flags = (req.strict ? ITTD_FORK_STRICT : 0) | (req.allow_host ? ITTD_FORK_ALLOW_HOST : 0);
         fs.registry_dir   = req.registry_dir.empty() ? nullptr : req.registry_dir.c_str();
         fs.emulation_root = nullptr;
         ittd_fork *f = nullptr;

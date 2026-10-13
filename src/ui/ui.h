@@ -7,6 +7,7 @@
 #include "analysis/memsearch.h"
 #include "analysis/memmap.h"
 #include "analysis/syscalls.h"
+#include "analysis/replay_scans.h"
 
 namespace idattd
 {
@@ -183,6 +184,42 @@ namespace idattd
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
     };
 
+    // Strings recovered by replaying the recording. Selecting a row shows the
+    // address; Enter time-travels to where the string appeared.
+    class StringsChooser : public chooser_t
+    {
+    public:
+        StringsChooser(TraceManager *mgr, std::vector<StringHit> &&hits);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+
+    private:
+        TraceManager            *m_mgr;
+        std::vector<StringHit>   m_hits;
+        qstring                  m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
+    // Buffers recovered by replaying the recording. Enter time-travels to the
+    // last write, where the buffer is complete.
+    class BuffersChooser : public chooser_t
+    {
+    public:
+        BuffersChooser(TraceManager *mgr, std::vector<BufferHit> &&hits);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+
+    private:
+        TraceManager            *m_mgr;
+        std::vector<BufferHit>   m_hits;
+        qstring                  m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
     // The reconstructed memory map, as a timeline. One row per allocation,
     // protection change or free the recording made, in the order they happened.
     // Enter time-travels to the call that made the change.
@@ -337,6 +374,18 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
+    // The replay scans. Enabled only for a backend that can replay.
+    struct RecoverStringsHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+    struct RecoverBuffersHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     // Fork the recording at the current position into a new one. Enabled only
     // for a backend that can.
     struct ForkHandler : public TtdAction
@@ -399,6 +448,8 @@ namespace idattd
         constexpr const char *SYSCALLS      = "idattd:syscalls";
         constexpr const char *SELF_MOD      = "idattd:self_modifying";
         constexpr const char *FORK          = "idattd:fork";
+        constexpr const char *STRINGS       = "idattd:recover_strings";
+        constexpr const char *BUFFERS       = "idattd:recover_buffers";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
         constexpr const char *REREAD        = "idattd:reread_memory";

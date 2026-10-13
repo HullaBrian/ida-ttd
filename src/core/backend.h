@@ -75,6 +75,9 @@ namespace idattd
         bool self_modifying   = false;
         // The recording can be forked into a new one (record_fork).
         bool fork             = false;
+        // Strings and buffers can be recovered by replaying the recording
+        // (query_strings, query_buffers).
+        bool replay_scans     = false;
     };
 
     // ------------------------------------------------------------- the trace
@@ -207,6 +210,39 @@ namespace idattd
         uint64_t executions  = 0;
     };
 
+    // What replaying the recording needs beyond the recording itself.
+    struct ReplaySettings
+    {
+        qstring registry_dir;               // empty: the backend's default
+        bool    strict = false;
+        // Replay a recording made against the host, whose program then touches
+        // this machine's files and network again (ITTD_FORK_ALLOW_HOST).
+        bool    allow_host = false;
+    };
+
+    // A string the program had in memory (ittd_string_hit).
+    struct StringHit
+    {
+        ea_t     address = BADADDR;
+        Position pos;                       // the write that completed it
+        bool     wide    = false;           // UTF-16LE in memory
+        uint32_t length  = 0;               // characters
+        qstring  text;                      // UTF-8
+    };
+
+    // A buffer the program filled (ittd_buffer_hit).
+    struct BufferHit
+    {
+        ea_t     address   = BADADDR;
+        uint64_t size      = 0;
+        Position first_pos;
+        Position last_pos;
+        ea_t     writer_ip = BADADDR;
+        uint64_t writes    = 0;
+        qstring  kind;
+        qstring  preview;
+    };
+
     // A fork: replay to 'at', change registers and memory there, and run on,
     // recording into a new trace at 'path' (ITTD_CAP_FORK).
     struct ForkRequest
@@ -216,6 +252,7 @@ namespace idattd
         uint64_t max_instructions = 0;      // 0: until the program exits
         qstring  registry_dir;              // empty: the backend's default
         bool     strict = false;
+        bool     allow_host = false;        // see ReplaySettings::allow_host
         std::vector<std::pair<int, uint64_t>>   regs;     // ITTD_REG_* index (or FORK_REG_RFLAGS), value
         std::vector<std::pair<ea_t, bytevec_t>> memory;   // address, bytes
         qstring  note;                      // goes into the new trace's manifest
@@ -517,6 +554,28 @@ namespace idattd
             qnotused(out); qnotused(progress);
             return QueryResult{};
         }
+
+        // Every string the program had in memory, of at least 'min_length'
+        // characters, by replaying the whole recording. Requires
+        // capabilities().replay_scans.
+        virtual QueryResult query_strings(const ReplaySettings &settings, uint32_t min_length,
+                                          std::vector<StringHit> *out, ProgressSink *progress)
+        {
+            qnotused(settings); qnotused(min_length); qnotused(out); qnotused(progress);
+            return QueryResult{};
+        }
+
+        // Every buffer the program filled, by replaying the whole recording.
+        // Requires capabilities().replay_scans.
+        virtual QueryResult query_buffers(const ReplaySettings &settings,
+                                          std::vector<BufferHit> *out, ProgressSink *progress)
+        {
+            qnotused(settings); qnotused(out); qnotused(progress);
+            return QueryResult{};
+        }
+
+        // Why the last call failed, when the backend says; empty otherwise.
+        virtual qstring last_error() const { return qstring(); }
 
         // Fork the recording (see ForkRequest). Requires capabilities().fork.
         // Long: a replay to the position, then the recording.

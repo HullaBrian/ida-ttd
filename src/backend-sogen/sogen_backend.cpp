@@ -35,6 +35,8 @@
 #include <ttd_ui.hpp>
 #include <unicorn_x86_64_emulator.hpp>
 #include <platform/ui_backend.hpp>
+#include <ttd_string_scan.hpp>
+#include <ttd_buffer_scan.hpp>
 
 #include <algorithm>
 #include <cstdio>
@@ -86,6 +88,12 @@ namespace
         std::mutex mtx;                      // guards 'trace'
         std::string error;
         page_cache pages;                    // shared by this backend's cursors
+        // Replay scan results: each is a full replay, and count-then-fill
+        // asks twice. Guarded by their own mutex, not 'mtx', so a scan does
+        // not hold up the other queries.
+        std::mutex scan_mtx;
+        std::map<uint32_t, std::vector<ittd_string_hit>> strings;   // by minimum length
+        std::optional<std::vector<ittd_buffer_hit>>        buffers;
     };
 
     struct cursor_t
@@ -159,6 +167,9 @@ namespace
     void copy_str(char *dst, size_t cap, const std::string &src)
     {
         size_t n = std::min(src.size(), cap - 1);
+        // Cut on a character boundary, never inside a UTF-8 sequence.
+        while ( n > 0 && n < src.size() && (static_cast<unsigned char>(src[n]) & 0xC0) == 0x80 )
+            n--;
         std::memcpy(dst, src.data(), n);
         dst[n] = '\0';
     }
@@ -397,7 +408,7 @@ namespace
             out->capabilities |= ITTD_CAP_SELF_MODIFYING;
             // Any recording can be replayed to a position; whether the
             // replay holds on this machine is fork_open's to find out.
-            out->capabilities |= ITTD_CAP_FORK;
+            out->capabilities |= ITTD_CAP_FORK | ITTD_CAP_REPLAY_SCANS;
             // The memory map with protections, for traces recorded since
             // Sogen kept it (section 17). Older ones only say that a range was
             // mapped or unmapped, which is not enough to draw a map from.
@@ -1657,6 +1668,49 @@ namespace
         return end <= s->size ? field : nullptr;
     }
 
+    // An emulator set up to replay 't' the way Sogen records: Unicorn, the
+    // relative clock, the CPUID overrides, and a headless UI that takes the
+    // recorded window input. 'strict' is set from the settings.
+    std::unique_ptr<sogen::windows_emulator> replay_emulator(const ttd::trace &t, const ittd_fork_settings *settings,
+                                                             bool *strict)
+    {
+        std::filesystem::path registry = module_dir() / "registry";
+        std::filesystem::path root = manifest_value(t, "emulation_root");
+        *strict = false;
+        if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr && **v != '\0' )
+            registry = utf8_path(*v);
+        if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
+            root = utf8_path(*v);
+        bool allow_host = false;
+        if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
+        {
+            *strict    = (*v & ITTD_FORK_STRICT) != 0;
+            allow_host = (*v & ITTD_FORK_ALLOW_HOST) != 0;
+        }
+        // Against the host, the program's file and network operations reach
+        // this machine for real. Only on request.
+        if ( root.empty() && !allow_host )
+            throw std::runtime_error("this recording was made against the host, not an emulation root: "
+                                     "replaying it runs the program's file and network operations on this "
+                                     "machine again. Allow that explicitly to go ahead");
+        if ( !std::filesystem::is_directory(registry) )
+            throw std::runtime_error("no registry hives at " + registry.string()
+                                     + ": replaying the program loads the registry it ran against");
+
+        sogen::emulator_settings es{};
+        es.disable_logging    = true;
+        es.use_relative_time  = true;
+        es.emulation_root     = root;
+        es.registry_directory = registry;
+        sogen::emulator_interfaces ifs{};
+        ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
+        auto emu = std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), es,
+                                                             sogen::emulator_callbacks{}, std::move(ifs));
+        ttd::install_cpuid_overrides(*emu);
+        ttd::require_deterministic(*emu);
+        return emu;
+    }
+
     // Seek a fresh emulator to the position: a checkpoint restore and up to a
     // checkpoint interval of replay, verified against the recording.
     int fork_open(ittd_backend *hb, ittd_position at_pos, const ittd_fork_settings *settings,
@@ -1674,31 +1728,8 @@ namespace
             f->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             if ( !resolve(*f->trace, at_pos, &f->position) )
                 return ITTD_E_NO_POSITION;
-
-            std::filesystem::path registry = module_dir() / "registry";
-            std::filesystem::path root = manifest_value(*f->trace, "emulation_root");
             bool strict = false;
-            if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr && **v != '\0' )
-                registry = utf8_path(*v);
-            if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
-                root = utf8_path(*v);
-            if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
-                strict = (*v & ITTD_FORK_STRICT) != 0;
-            if ( !std::filesystem::is_directory(registry) )
-                throw std::runtime_error("no registry hives at " + registry.string()
-                                         + ": a fork's emulator loads the registry the recording ran against");
-
-            sogen::emulator_settings es{};
-            es.disable_logging    = true;
-            es.use_relative_time  = true;
-            es.emulation_root     = root;
-            es.registry_directory = registry;
-            sogen::emulator_interfaces ifs{};
-            ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
-            f->emu = std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), es,
-                                                               sogen::emulator_callbacks{}, std::move(ifs));
-            ttd::install_cpuid_overrides(*f->emu);
-            ttd::require_deterministic(*f->emu);
+            f->emu = replay_emulator(*f->trace, settings, &strict);
             ttd::seek(*f->emu, *f->trace, f->position, strict, control(progress));
             *out = reinterpret_cast<ittd_fork *>(f.release());
             return ITTD_OK;
@@ -1816,6 +1847,100 @@ namespace
     void fork_close(ittd_fork *hf)
     {
         delete F(hf);
+    }
+
+    // ------------------------------------------------------------ replay scans
+
+    // The position of text that appeared at 'step' (0: there from the start).
+    ittd_position appeared_at(const ttd::trace &t, uint64_t step)
+    {
+        return step == 0 ? at(first_position(t)) : before_step(step);
+    }
+
+    int query_strings(ittd_backend *hb, const ittd_fork_settings *settings, uint32_t min_length,
+                      ittd_string_hit *buf, size_t cap, size_t *out_count,
+                      int *out_truncated, const ittd_progress *progress)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        if ( min_length < 2 )
+            min_length = 2;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->scan_mtx);
+            auto found = b->strings.find(min_length);
+            if ( found == b->strings.end() )
+            {
+                std::unique_ptr<ttd::trace> t = open_trace(b->path);
+                bool strict = false;
+                auto emu = replay_emulator(*t, settings, &strict);
+                std::optional<ttd::string_scanner> scanner;
+                ttd::replay_to_end(*emu, *t, [&]()
+                {
+                    scanner.emplace(*emu, min_length);
+                    scanner->scan_initial_memory();
+                }, strict, true, control(progress));
+                scanner->finish();
+                std::vector<ittd_string_hit> v;
+                for ( const ttd::recovered_string &s : scanner->results() )
+                {
+                    ittd_string_hit h{};
+                    h.address = s.address;
+                    h.pos     = appeared_at(*t, s.step);
+                    h.wide    = s.encoding.find("16") != std::string::npos ? 1 : 0;
+                    copy_str(h.text, sizeof(h.text), s.value);
+                    // Characters, not bytes: UTF-8 continuation bytes do not count.
+                    for ( unsigned char ch : s.value )
+                        if ( (ch & 0xC0) != 0x80 )
+                            h.length++;
+                    v.push_back(h);
+                }
+                found = b->strings.emplace(min_length, std::move(v)).first;
+            }
+            set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
+            return fill(found->second, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
+        });
+    }
+
+    int query_buffers(ittd_backend *hb, const ittd_fork_settings *settings,
+                      ittd_buffer_hit *buf, size_t cap, size_t *out_count,
+                      int *out_truncated, const ittd_progress *progress)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->scan_mtx);
+            if ( !b->buffers )
+            {
+                std::unique_ptr<ttd::trace> t = open_trace(b->path);
+                bool strict = false;
+                auto emu = replay_emulator(*t, settings, &strict);
+                std::optional<ttd::buffer_scanner> scanner;
+                ttd::replay_to_end(*emu, *t, [&]() { scanner.emplace(*emu, *t); },
+                                   strict, true, control(progress));
+                scanner->finish();
+                std::vector<ittd_buffer_hit> v;
+                for ( const ttd::recovered_buffer &r : scanner->results() )
+                {
+                    ittd_buffer_hit h{};
+                    h.address   = r.address;
+                    h.size      = r.size;
+                    h.first_pos = before_step(r.first_step);
+                    h.last_pos  = before_step(r.last_step);
+                    h.writer_ip = r.writer_ip;
+                    h.writes    = r.writes;
+                    copy_str(h.kind, sizeof(h.kind), r.kind);
+                    copy_str(h.preview, sizeof(h.preview), r.preview);
+                    v.push_back(h);
+                }
+                b->buffers = std::move(v);
+            }
+            set_truncated(out_truncated, b->buffers->size(), cap, buf != nullptr);
+            return fill(*b->buffers, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
+        });
     }
 
     // The instruction stream of one thread (or all) over a range of positions,
@@ -2132,6 +2257,8 @@ namespace
         a.fork_write_memory  = fork_write_memory;
         a.fork_record        = fork_record;
         a.fork_close         = fork_close;
+        a.query_strings      = query_strings;
+        a.query_buffers      = query_buffers;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;
         a.position_add       = position_add;
