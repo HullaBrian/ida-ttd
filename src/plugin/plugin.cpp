@@ -537,7 +537,8 @@ namespace idattd
         m_switchTo       = path;
         // Ending the session closes the debugging session's windows; the
         // Fork manager is opened again at the new session's first stop.
-        m_reopenForkManager = fork_manager_is_open();
+        // A reopen still pending from the last switch carries over.
+        m_reopenForkManager = m_reopenForkManager || fork_manager_is_open();
         m_switchExitSent = false;
         m_switchTimer.cancel();
         m_switchTimer.arm(10, switch_cb, this);
