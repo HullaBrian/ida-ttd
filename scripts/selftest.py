@@ -73,6 +73,20 @@ def run(base=None):
     r = T("out back")
     chk("step out backwards from main's entry lands on the call", pc(r) == B + 0x196A, r.get("pc"))
 
+    # A write breakpoint on the global, as a user sets one: it stops on the
+    # store itself, running forward from main and backward from past it.
+    import ida_dbg
+    import ida_idd
+    T("runto %X" % (B + 0x13F0))
+    chk("write breakpoint accepted", ida_dbg.add_bpt(G, 8, ida_idd.BPT_WRITE))
+    r = T("run")
+    chk("write breakpoint stops on the store", pc(r) == B + 0x14E7, r.get("pc"))
+    T("step")
+    T("step")
+    r = T("run back")
+    chk("... and running back into it too", pc(r) == B + 0x14E7, r.get("pc"))
+    ida_dbg.del_bpt(G)
+
     a = T("an.search %X %X rw" % (G, G + 8))
     chk("memory search: one write, one read", a.get("count") == 2 and a["accesses"][0]["kind"] == "Write")
     a = T("an.coverage %X %X" % (B + 0x1000, B + 0x2578))

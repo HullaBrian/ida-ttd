@@ -103,7 +103,7 @@ helper module, since the plugin is loaded in the worker either way.
 
 `scripts/selftest.py` drives a full session over the reference sample in the
 `ttd-traces` folder and checks every movement and analysis against what that
-program is known to do: 21 checks, the same for a Microsoft and a Sogen
+program is known to do: 24 checks, the same for a Microsoft and a Sogen
 recording of it. Open either trace, then `exec` the file and call `run()`.
 
 ## When IDA hangs

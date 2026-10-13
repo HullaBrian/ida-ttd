@@ -88,7 +88,13 @@ namespace idattd
                   | DBG_FLAG_DEBUG_DLL
                   | DBG_FLAG_TTD
                   | DBG_HAS_GET_PROCESSES
-                  | DBG_HAS_SET_RESUME_MODE;
+                  | DBG_HAS_SET_RESUME_MODE
+                  // Read and write breakpoints of any size and alignment:
+                  // both backends watch a byte range, with no debug
+                  // registers to run out of. Without these IDA refused a
+                  // data breakpoint before ever passing it on.
+                  | DBG_FLAG_ANYSIZE_HWBPT
+                  | DBG_HAS_CHECK_BPT;
 
         dbg.regclasses         = g_reg_classes;
         dbg.default_regclasses = REGCLASS_GENERAL;

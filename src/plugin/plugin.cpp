@@ -1170,6 +1170,17 @@ namespace idattd
                 return m_mgr.on_read_memory(nbytes, ea, buffer, size);
             }
 
+            case debugger_t::ev_check_bpt:
+            {
+                // Every kind IDA has -- execute, read, write, read/write --
+                // at any address and size; whether the engine can arm it is
+                // answered by ev_update_bpts, per breakpoint.
+                int *bptvc = va_arg(va, int *);
+                if ( bptvc != nullptr )
+                    *bptvc = BPT_OK;
+                return DRC_OK;
+            }
+
             case debugger_t::ev_update_bpts:
             {
                 int               *nbpts = va_arg(va, int *);
