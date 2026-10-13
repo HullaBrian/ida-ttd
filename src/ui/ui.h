@@ -436,12 +436,24 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
-    // The Fork manager: this database's recording and the forks recorded
-    // from it, as a tree.
+    // The Fork manager: a graph of this database's recording and the forks
+    // recorded from it. Open / Forget act on the node selected in it.
     struct ForkManagerHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
+    struct ForkOpenHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+    struct ForkForgetHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
     // Redraw the Fork manager, if it is open (a fork recorded, a switch).
     void refresh_fork_manager();
+    // The widget is the Fork manager's graph (or the window holding it).
+    bool fork_manager_widget(TWidget *w);
     // Close it and drop its hold on the plugin (the plugin is going away).
     void close_fork_manager();
     // The views showed a fork's changes, and the fork is gone or begun:
@@ -512,6 +524,8 @@ namespace idattd
         constexpr const char *FORK_RECORD   = "idattd:fork_record";
         constexpr const char *FORK_DISCARD  = "idattd:fork_discard";
         constexpr const char *FORK_MANAGER  = "idattd:fork_manager";
+        constexpr const char *FORK_OPEN     = "idattd:fork_open";
+        constexpr const char *FORK_FORGET   = "idattd:fork_forget";
         constexpr const char *STRINGS       = "idattd:recover_strings";
         constexpr const char *CALL_TREE     = "idattd:call_tree";
         constexpr const char *BUFFERS       = "idattd:recover_buffers";

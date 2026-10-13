@@ -218,9 +218,16 @@ namespace idattd
               "Discard fork: drop the fork and its changes",
               NO_ICON, ITEM, MENU },
             { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
-              "Fork manager: this recording and the forks recorded from it, as a tree; "
+              "Fork manager: this recording and the forks recorded from it, as a graph; "
               "double-click one to switch to it",
               NO_ICON, ITEM, MENU },
+            // On the Fork manager's popup only.
+            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
+              "Switch this IDA to the selected recording, or open it in a new IDA",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
+            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
+              "Take the selected fork out of the graph (its file stays)",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
 
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
               "Bookmark this position: save the current trace position, with a name "
@@ -534,6 +541,51 @@ namespace idattd
         m_switchTimer.arm(10, switch_cb, this);
     }
 
+    // Both halves of a switch run from IDA's request queue, like the
+    // automatic start (start_request_t): ending a session and starting one
+    // from inside a timer callback is what made IDA stop with internal
+    // error 40183.
+    struct switch_exit_request_t : public ui_request_t
+    {
+        Plugin *p;
+        explicit switch_exit_request_t(Plugin *plugin) : p(plugin) {}
+        bool idaapi run() override
+        {
+            p->switch_exit();
+            return false;
+        }
+    };
+
+    struct switch_start_request_t : public ui_request_t
+    {
+        Plugin *p;
+        qstring path;
+        switch_start_request_t(Plugin *plugin, const qstring &to) : p(plugin), path(to) {}
+        bool idaapi run() override
+        {
+            if ( get_process_state() != DSTATE_NOTASK )
+            {
+                msg("[ida-ttd] a session is running again; not switching to %s.\n", path.c_str());
+                return false;
+            }
+            msg("[ida-ttd] switching the replay to %s\n", path.c_str());
+            if ( !p->start_trace_at(path.c_str()) )
+                warning("Could not start the replay of %s: the TTD debugger could not be selected.", path.c_str());
+            return false;
+        }
+    };
+
+    void Plugin::switch_exit()
+    {
+        if ( m_switchTo.empty() || get_process_state() == DSTATE_NOTASK )
+            return;
+        if ( !exit_process() )
+        {
+            msg("[ida-ttd] could not end the replay to switch to %s.\n", m_switchTo.c_str());
+            m_switchTo.clear();
+        }
+    }
+
     int idaapi Plugin::switch_cb(void *ud)
     {
         Plugin *p = static_cast<Plugin *>(ud);
@@ -544,12 +596,7 @@ namespace idattd
             if ( !p->m_switchExitSent )
             {
                 p->m_switchExitSent = true;
-                if ( !exit_process() )
-                {
-                    msg("[ida-ttd] could not end the replay to switch to %s.\n", p->m_switchTo.c_str());
-                    p->m_switchTo.clear();
-                    return -1;
-                }
+                execute_ui_requests(new switch_exit_request_t(p), nullptr);
             }
             // About ten seconds for IDA to finish with the old session.
             if ( ++p->m_switchPolls > 200 )
@@ -562,9 +609,7 @@ namespace idattd
         }
         qstring path;
         path.swap(p->m_switchTo);
-        msg("[ida-ttd] switching the replay to %s\n", path.c_str());
-        if ( !p->start_trace_at(path.c_str()) )
-            warning("Could not start the replay of %s: the TTD debugger could not be selected.", path.c_str());
+        execute_ui_requests(new switch_start_request_t(p, path), nullptr);
         return -1;
     }
 
@@ -1228,6 +1273,12 @@ namespace idattd
                 // (action_activation_ctx_t* ctx follows; not needed here)
                 if ( widget == nullptr )
                     break;
+                if ( fork_manager_widget(widget) )
+                {
+                    attach_action_to_popup(widget, popup, actions::FORK_OPEN);
+                    attach_action_to_popup(widget, popup, actions::FORK_FORGET);
+                    break;
+                }
                 int wt = get_widget_type(widget);
                 if ( wt == BWN_DISASM || wt == BWN_PSEUDOCODE )
                 {

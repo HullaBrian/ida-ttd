@@ -99,6 +99,8 @@ namespace idattd
         // which is safe while the analysis queue is still draining.
         void schedule_trace_offer();
         void switch_trace(const qstring &path);
+        // A switch's first half, from the request queue: end the session.
+        void switch_exit();
         // Start the replay of 'path' in this database (a fork of its
         // recording). False when the debugger could not be selected.
         bool start_trace_at(const char *path);
@@ -192,6 +194,8 @@ namespace idattd
         ForkRecordHandler         m_forkRecord;
         ForkDiscardHandler        m_forkDiscard;
         ForkManagerHandler        m_forkManager;
+        ForkOpenHandler           m_forkOpen;
+        ForkForgetHandler         m_forkForget;
         RecoverStringsHandler     m_recoverStrings;
         RecoverBuffersHandler     m_recoverBuffers;
         CallTreeHandler           m_callTree;
