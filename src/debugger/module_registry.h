@@ -117,7 +117,9 @@ namespace idattd
         void load_pdb(ea_t base, bool stopped_here = false);
         // Hand every PDB that finished downloading since the last call to IDA.
         // Main thread only; called once per stop.
-        size_t apply_finished_pdbs();     // how many were handed to IDA
+        // How many were handed to IDA. With 'wait_box', each behind one: a
+        // big PDB takes seconds (only from a timer, not a debugger event).
+        size_t apply_finished_pdbs(bool wait_box = false);
 
         // ---- on-disk images ------------------------------------------------
         //

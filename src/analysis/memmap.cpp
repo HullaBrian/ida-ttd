@@ -494,8 +494,14 @@ namespace idattd
                         bases.insert(mlo);
                 }
             }
+            // A PDB can take seconds to apply (combase's, a dozen), and the
+            // map is not shown until they are in.
+            show_wait_box("HIDECANCEL\nNaming the code the memory calls came from...");
+            size_t done = 0;
             for ( ea_t b : bases )
             {
+                replace_wait_box("HIDECANCEL\nNaming the code the memory calls came from: %s (%u of %u)...",
+                                 mgr->modules().name_at(b).c_str(), (unsigned)++done, (unsigned)bases.size());
                 mgr->modules().resolve_symbols(b);
                 // Exports alone are not enough here. The code that allocates is
                 // usually an internal helper, and the nearest export below it
@@ -503,6 +509,7 @@ namespace idattd
                 // one. Silent and deduplicated.
                 mgr->modules().load_pdb(b);
             }
+            hide_wait_box();
         }
 
         std::vector<RegionChange> changes;

@@ -615,7 +615,7 @@ namespace idattd
             pdb.name.c_str(), pdb.signature.c_str(), pdb.name.c_str());
     }
 
-    size_t ModuleRegistry::apply_finished_pdbs()
+    size_t ModuleRegistry::apply_finished_pdbs(bool wait_box)
     {
         std::vector<FetchResult> done;
         if ( symsrv_take_completed(&done) == 0 )
@@ -637,7 +637,13 @@ namespace idattd
 
             GuestPdbInfo pdb;
             if ( pdb_identity(r.base, &pdb) )
+            {
+                if ( wait_box )
+                    show_wait_box("HIDECANCEL\nLoading symbols for %s...", base_name(path).c_str());
                 apply_pdb(r.base, path, pdb);
+                if ( wait_box )
+                    hide_wait_box();
+            }
         }
         return done.size();
     }
