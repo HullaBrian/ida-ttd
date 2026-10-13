@@ -317,12 +317,13 @@ int main(int argc, char **argv)
             printf("  #%zu tid %u site %llx pos %s entry %s ret %s%s\n", k, e->tid,
                    (unsigned long long)e->site, pos_text(e->pos), pos_text(e->entry_pos),
                    pos_text(e->ret_pos), (e->flags & ITTD_CALL_F_NOT_CALL) ? " (jump)" : "");
+            int is_call = (e->flags & ITTD_CALL_F_NOT_CALL) == 0;
             if ( !is_none(e->pos) )
                 check(at_pos == e->site, "  rip at pos is the call site");
             check(at_entry == e->target, "  rip at entry_pos is the target");
             /* At the callee's first instruction, the frame was entered by this
                very call. */
-            if ( k == 0 && !is_none(e->pos) && api->query_frame_entry != NULL )
+            if ( k == 0 && !is_none(e->pos) && is_call && api->query_frame_entry != NULL )
             {
                 ittd_position fc;
                 uint64_t fe = 0;
@@ -334,7 +335,7 @@ int main(int argc, char **argv)
             }
             /* A write breakpoint on the slot the call pushes its return address
                into stops at the call, run forward from just before it. */
-            if ( k == 0 && !is_none(e->pos) && e->pos.lo > 0 && api->nav_breakpoints != NULL )
+            if ( k == 0 && !is_none(e->pos) && is_call && e->pos.lo > 0 && api->nav_breakpoints != NULL )
             {
                 ittd_regs rr;
                 ittd_breakpoint bp;
@@ -358,7 +359,7 @@ int main(int argc, char **argv)
                           "  a write breakpoint on the return-address slot stops at the call");
                 }
             }
-            if ( !is_none(e->pos) && !is_none(e->ret_pos) && api->nav_step_over != NULL )
+            if ( !is_none(e->pos) && !is_none(e->ret_pos) && is_call && api->nav_step_over != NULL )
             {
                 ittd_position landed;
                 int stop = -1;
@@ -423,7 +424,8 @@ int main(int argc, char **argv)
             if ( !is_none(e->ret_pos) )
             {
                 at_ret = rip_at(c, e->ret_pos);
-                check(at_ret > e->site && at_ret <= e->site + 15, "  rip at ret_pos is just past the site");
+                if ( is_call )
+                    check(at_ret > e->site && at_ret <= e->site + 15, "  rip at ret_pos is just past the site");
                 if ( at_ret != ITTD_BADADDR && api->cursor_regs(c, &r) == ITTD_OK )
                     printf("    returned rax %llx\n", (unsigned long long)r.gp[ITTD_REG_RAX]);
             }

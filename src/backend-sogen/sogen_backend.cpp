@@ -1368,6 +1368,34 @@ namespace
         });
     }
 
+    // The return of a function entered by a jump -- a tail call, an import
+    // thunk, the CFG dispatcher's 'jmp rax' -- which calls_to cannot pair,
+    // having no call of its own to pair with. At the entry, [rsp] is the
+    // return address the original call pushed, so the function returns at the
+    // first ret that reads that slot. UINT64_MAX when none does (it never
+    // returned, or unwound past it).
+    uint64_t return_of_jump_entry(ttd::trace &t, uint64_t entry_step, uint32_t tid)
+    {
+        if ( entry_step == 0 || entry_step == UINT64_MAX )
+            return UINT64_MAX;
+        std::optional<uint64_t> sp = sp_at(t, entry_step - 1);
+        if ( !sp )
+            return UINT64_MAX;
+        const uint64_t R = (uint64_t)ttd::access_kind::read;
+        uint64_t s = entry_step;
+        for ( int k = 0; k < 64; k++ )
+        {
+            std::optional<ttd::access_event> ev = t.next_access(*sp, 8, s, R);
+            if ( !ev )
+                return UINT64_MAX;
+            std::optional<ttd::access_event> insn = t.next_instruction(ev->step - 1, tid);
+            if ( insn && insn->step == ev->step && is_ret_insn(*insn) )
+                return ev->step;
+            s = ev->step;
+        }
+        return UINT64_MAX;
+    }
+
     int query_calls(ittd_backend *hb, const uint64_t *targets, size_t ntargets,
                     ittd_position_range when, ittd_call *buf, size_t cap,
                     size_t *out_count, int *out_truncated, const ittd_progress *progress)
@@ -1386,11 +1414,26 @@ namespace
             ttd::trace &t = *b->trace;
             uint64_t s0 = 0, s1 = 0;
             step_range(t, when, &s0, &s1);
-            ttd::operation_control ctl = control(progress);
             std::vector<ttd::call_event> all;
             for ( size_t i = 0; i < ntargets; i++ )
             {
+                // Each target's share of the whole: a pattern can name
+                // thousands, and reported one by one the bar ran 0 to 100%
+                // over and over.
+                ttd::operation_control ctl = control(progress);
+                if ( ctl.progress )
+                {
+                    auto whole = ctl.progress;
+                    ctl.progress = [whole, i, ntargets](uint64_t done, uint64_t total)
+                    {
+                        uint64_t part = total == 0 ? 0 : std::min<uint64_t>(1000, done * 1000 / total);
+                        whole((uint64_t)i * 1000 + part, (uint64_t)ntargets * 1000);
+                    };
+                }
                 std::vector<ttd::call_event> v = t.calls_to(targets[i], s0, s1, ctl);
+                for ( ttd::call_event &e : v )
+                    if ( !e.is_call && e.return_step == UINT64_MAX )
+                        e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
                 all.insert(all.end(), v.begin(), v.end());
             }
             std::sort(all.begin(), all.end(), [](const ttd::call_event &a, const ttd::call_event &b)

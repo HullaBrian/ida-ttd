@@ -151,8 +151,9 @@ namespace idattd
         const FunctionInvocation &ev = m_events[n];
 
         cols->at(0) = format_position(ev.pos);
-        if ( ev.has_ret )
-            cols->at(1) = format_position(ev.end_pos);
+        // A call with no return in the recording (a thread that exited in it,
+        // ExitProcess, an unwind) says so rather than leaving a gap.
+        cols->at(1) = ev.has_ret ? format_position(ev.end_pos) : qstring("no return");
         cols->at(2).sprnt("%X", ev.tid);
         cols->at(3) = func_display_name(ev.func_ea);
 

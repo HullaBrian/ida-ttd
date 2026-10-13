@@ -314,6 +314,12 @@ namespace idattd
         DiagTimer diag_timer("module symbols", what);
         if ( m_backend == nullptr || base == BADADDR )
             return;
+        // Not before the module has a segment: names set on memory IDA does
+        // not have are dropped, and remembering the module as done would
+        // leave it unnamed for the rest of the session. The next stop tries
+        // again (resolve_loaded).
+        if ( get_segment_ea(base) == BADADDR )
+            return;
         if ( !m_resolvedBases.insert(base).second )
             return;     // already attempted for this module
 
