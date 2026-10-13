@@ -317,4 +317,110 @@ namespace idattd
         }
         return BADADDR;
     }
+
+    size_t read_guest_exports(const GuestRead &cursor, ea_t base, bool is64,
+                              std::vector<std::pair<ea_t, std::string>> *out)
+    {
+        if ( cursor == nullptr || base == BADADDR )
+            return 0;
+
+        uint64_t b = (uint64_t)base;
+
+        // DOS header -> NT headers offset.
+        IMAGE_DOS_HEADER dos{};
+        if ( !pe_read_val(cursor, b, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
+            return 0;
+
+        uint64_t ntAddr = b + (uint32_t)dos.e_lfanew;
+
+        // The export data directory location differs between PE32 and PE32+.
+        uint32_t exportRva = 0;
+        uint32_t exportSize = 0;
+        if ( is64 )
+        {
+            IMAGE_NT_HEADERS64 nt{};
+            if ( !pe_read_val(cursor, ntAddr, &nt) || nt.Signature != IMAGE_NT_SIGNATURE )
+                return 0;
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            exportRva  = dd.VirtualAddress;
+            exportSize = dd.Size;
+        }
+        else
+        {
+            IMAGE_NT_HEADERS32 nt{};
+            if ( !pe_read_val(cursor, ntAddr, &nt) || nt.Signature != IMAGE_NT_SIGNATURE )
+                return 0;
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            exportRva  = dd.VirtualAddress;
+            exportSize = dd.Size;
+        }
+
+        if ( exportRva == 0 || exportSize == 0 )
+            return 0;
+
+        IMAGE_EXPORT_DIRECTORY exp{};
+        if ( !pe_read_val(cursor, b + exportRva, &exp) )
+            return 0;
+
+        if ( exp.NumberOfNames == 0
+          || exp.AddressOfNames == 0
+          || exp.AddressOfNameOrdinals == 0
+          || exp.AddressOfFunctions == 0 )
+            return 0;
+
+        // Pull the three parallel arrays in one query each instead of three
+        // queries per export. ntdll alone exports ~2400 names, and this runs for
+        // every module in the trace, so the per-entry form cost tens of thousands
+        // of engine round-trips at trace-load time.
+        // The counts come from the PE header, i.e. untrusted input: clamp them
+        // before sizing any buffer.
+        static const uint32_t kMaxExports = 1u << 20;
+        uint32_t nNames = exp.NumberOfNames < kMaxExports ? exp.NumberOfNames : kMaxExports;
+        uint32_t nFuncs = exp.NumberOfFunctions < kMaxExports ? exp.NumberOfFunctions : kMaxExports;
+        if ( nNames == 0 || nFuncs == 0 )
+            return 0;
+
+        std::vector<uint32_t> nameRvas(nNames);
+        std::vector<uint16_t> ordinals(nNames);
+        std::vector<uint32_t> funcRvas(nFuncs);
+
+        size_t mbN = cursor(b + exp.AddressOfNames, nameRvas.data(), (size_t)nNames * sizeof(uint32_t));
+        size_t mbO = cursor(b + exp.AddressOfNameOrdinals, ordinals.data(), (size_t)nNames * sizeof(uint16_t));
+        size_t mbF = cursor(b + exp.AddressOfFunctions, funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t));
+
+        // Each array may come back short (TTD only records accessed memory); use
+        // whatever prefix actually resolved.
+        size_t gotNames = mbN / sizeof(uint32_t);
+        size_t gotOrds  = mbO / sizeof(uint16_t);
+        size_t gotFuncs = mbF / sizeof(uint32_t);
+        size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
+
+        size_t found = 0;
+        for ( size_t i = 0; i < usable; i++ )
+        {
+            uint32_t nameRva = nameRvas[i];
+            uint16_t ordinal = ordinals[i];
+            if ( (size_t)ordinal >= gotFuncs )
+                continue;
+
+            uint32_t funcRva = funcRvas[ordinal];
+            if ( funcRva == 0 )
+                continue;
+
+            // Forwarder exports point back inside the export directory; skip them
+            // (the real target lives in another module).
+            if ( funcRva >= exportRva && funcRva < exportRva + exportSize )
+                continue;
+
+            std::string name = pe_read_cstr(cursor, b + nameRva);
+            if ( name.empty() )
+                continue;
+
+            if ( out != nullptr )
+                out->emplace_back((ea_t)(b + funcRva), std::move(name));
+            found++;
+        }
+
+        return found;
+    }
 }

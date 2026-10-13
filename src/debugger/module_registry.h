@@ -132,6 +132,8 @@ namespace idattd
         void apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb);
         void keep_names_only(ea_t base);
         size_t function_ranges(ea_t base);
+        // The named exports of the module at 'base', read once.
+        const std::vector<std::pair<ea_t, std::string>> &exports_of(ea_t base);
         void report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb);
 
         ITraceBackend *m_backend = nullptr;
@@ -149,6 +151,7 @@ namespace idattd
         // sorted by start address.
         std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
         std::set<ea_t> m_funcTried;     // function_ranges() ran for these
+        std::map<ea_t, std::vector<std::pair<ea_t, std::string>>> m_exports;
 
         // Per-module on-disk image cache, keyed by module base. An entry with
         // ok == false means the file was already tried and rejected.

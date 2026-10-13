@@ -19,6 +19,12 @@ namespace idattd
     // A NUL-terminated string of at most 'maxlen' bytes; empty when unreadable.
     std::string pe_read_cstr(const GuestRead &c, uint64_t addr, size_t maxlen = 512);
 
+    // Every named export of the module mapped at 'base', as (address, name),
+    // forwarders left out. Reads the export directory from guest memory, so
+    // the cursor must be where the module is mapped. Returns how many.
+    size_t read_guest_exports(const GuestRead &cursor, ea_t base, bool is64,
+                              std::vector<std::pair<ea_t, std::string>> *out);
+
     // ---- reading a module's PE headers straight out of the recording -------
     //
     // The loader and the memory-map sweep both need to know things about a module

@@ -106,6 +106,7 @@ namespace idattd
         m_pdbBases.clear();
         m_funcRanges.clear();
         m_funcTried.clear();
+        m_exports.clear();
         m_moduleImages.clear();
         m_targetName.clear();
     }
@@ -287,7 +288,49 @@ namespace idattd
             if ( seen.insert(key).second )
                 out.push_back(key);
         }
+
+        // IDA names a module once it is mapped where the user is, so a module
+        // loaded later in the recording -- kernel32, from the very start --
+        // has no names yet. Its exports are known all the same: the
+        // recording's own list, or the export directory read where it loaded.
+        ModuleRegistry *self = const_cast<ModuleRegistry *>(this);
+        for ( const ModuleInfo &m : m_modules )
+        {
+            if ( !modpat.empty() )
+            {
+                std::string file = base_name(m.path.empty() ? m.name.c_str() : m.path.c_str());
+                std::string stem = file.substr(0, file.find_last_of('.'));
+                if ( !wildcard_match(modpat.c_str(), file.c_str()) && !wildcard_match(modpat.c_str(), stem.c_str()) )
+                    continue;
+            }
+            for ( const auto &e : self->exports_of(m.base) )
+                if ( wildcard_match(namepat.c_str(), e.second.c_str()) && seen.insert(e.first).second )
+                    out.push_back(e.first);
+        }
         return out;
+    }
+
+    const std::vector<std::pair<ea_t, std::string>> &ModuleRegistry::exports_of(ea_t base)
+    {
+        auto it = m_exports.find(base);
+        if ( it != m_exports.end() )
+            return it->second;
+        std::vector<std::pair<ea_t, std::string>> &v = m_exports[base];
+        if ( m_backend->capabilities().recorded_exports )
+        {
+            for ( const ITraceBackend::Symbol &s : m_backend->module_symbols(base) )
+                if ( s.is_export )
+                    v.emplace_back(s.ea, s.name.c_str());
+        }
+        else
+        {
+            const ModuleInfo *m = record_at(base);
+            bool is64 = m != nullptr && m->machine != 0 ? m->machine == 0x8664 : m_is64;
+            GuestRead rd = read_at_load(base);
+            if ( rd )
+                read_guest_exports(rd, base, is64, &v);
+        }
+        return v;
     }
 
     //=======================================================================
