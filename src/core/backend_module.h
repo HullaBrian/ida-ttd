@@ -89,8 +89,9 @@ namespace idattd
         Capabilities  m_caps;
     };
 
-    // Load every backend DLL in IDA's plugins/ida-ttd-backends directories --
-    // the installation's and the user's -- and add the ones that answer for
+    // Load every backend DLL in IDA's plugins/ida-ttd-backends and
+    // plugins/ida-ttd/ida-ttd-backends directories -- the user's and the
+    // installation's -- and add the ones that answer for
     // this core's ABI version to BackendRegistry. A module that fails to load,
     // or answers for another version, is named in the output window and
     // skipped. Safe to call more than once; later calls do nothing.

@@ -130,9 +130,11 @@ registers.
 
 ## What it does not do yet
 
+Stepping is complete: step over and step out in both directions walk the
+thread's instructions back to the call that entered a frame, and pair it
+with its `ret` through `calls_to`.
+
 | | Why |
 | --- | --- |
-| `nav_step_over` backward, `nav_step_out` | Both need the entry of the current frame, which no single reader query gives. Forward step over is done: it pairs the call with its `ret` through `calls_to` (0.2 ms, exact under recursion) |
 | `module_functions` | Sogen records no `.pdata`; the core reads it from the file on disk |
-| Thread stacks and the module machine | Read when the trace has them (sections 15 and 16); the test traces predate both |
 | `prepare` | Nothing to prepare: a seek is a `cpu_view`, with no keyframes |

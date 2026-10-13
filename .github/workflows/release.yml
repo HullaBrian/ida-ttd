@@ -50,6 +50,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
           Copy-Item ida-plugin.json $stage
           Copy-Item build\Release\ida-ttd.dll $stage
+          # The Microsoft TTD backend: a DLL of its own since phase 4, found
+          # in ida-ttd-backends\ next to the plugin. (The Sogen backend needs
+          # a Sogen build and ships separately.)
+          New-Item -ItemType Directory -Force -Path "$stage\ida-ttd-backends" | Out-Null
+          Copy-Item build\Release\backends\ida-ttd-msttd.dll "$stage\ida-ttd-backends"
           Compress-Archive -Path "$stage\*" -DestinationPath dist\ida-ttd.zip -Force
 
           # The trace loader is not part of the plugin package: IDA looks for
@@ -60,7 +65,7 @@ jobs:
           # Symbols, so a crash report from a release build can be read. Kept
           # out of the plugin zip (IDA would install them next to the DLL) and
           # published as one archive of their own.
-          Compress-Archive -Path build\Release\ida-ttd.pdb, build\Release\ttd-loader.pdb `
+          Compress-Archive -Path build\Release\ida-ttd.pdb, build\Release\ttd-loader.pdb, build\Release\backends\ida-ttd-msttd.pdb `
                            -DestinationPath dist\ida-ttd-pdb.zip -Force
 
       - name: Upload build artifacts

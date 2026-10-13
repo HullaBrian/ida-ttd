@@ -918,15 +918,27 @@ namespace idattd
             return;
         done = true;
 
-        // Not plugins\ itself: IDA loads everything there as a plugin.
+        // Not plugins\ itself: IDA loads everything there as a plugin. And
+        // both places a plugin can be: plugins\ida-ttd-backends\ beside a
+        // hand-installed ida-ttd.dll, and plugins\ida-ttd\ida-ttd-backends\
+        // inside the folder IDA's plugin manager installs the package into.
+        // The loader looks in the same places, having no plugin path of its
+        // own to go by.
         qstring user = get_user_idadir();
-        user.append("\\plugins\\ida-ttd-backends");
+        user.append("\\plugins");
         qstring install = idadir(PLG_SUBDIR);
-        install.append("\\ida-ttd-backends");
 
-        // The user's directory first, so a backend they built themselves wins
-        // over one an installation shipped.
-        load_dir(user);
-        load_dir(install);
+        // The user's directories first, so a backend they built themselves
+        // wins over one an installation shipped (a second module with the
+        // same id is skipped).
+        for ( const qstring &root : { user, install } )
+        {
+            qstring flat = root;
+            flat.append("\\ida-ttd-backends");
+            load_dir(flat);
+            qstring packaged = root;
+            packaged.append("\\ida-ttd\\ida-ttd-backends");
+            load_dir(packaged);
+        }
     }
 }

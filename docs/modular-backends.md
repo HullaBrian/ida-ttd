@@ -555,12 +555,41 @@ time; each is independently landable. By the end of this phase the Microsoft
 code is reached only through the interface, which is what makes phase 4 a move
 rather than a rewrite.
 
+*Landed.* `TraceManager` drives one `ITraceBackend` and its navigator; the
+five analyses are backend queries (`analysis/query_runner` runs each behind a
+wait box); the loader opens any backend's recording. Driving the plugin
+through the IDA MCP with `ttd("...")` (docs/scripting.md) found what testing
+by hand had not: step-out in both directions, a session that froze after a
+step crossed a DLL load, and Sogen's backward step over --
+`scripts/selftest.py` now checks all of it on both backends.
+
 **Phase 4 — the folder and project split, and the C ABI.** Move the files, add
 the project files, and put `BackendModule` between the core and the C ABI:
 `MsTtdBackend` stops implementing `ITraceBackend` directly and starts exporting
 `ida_ttd_backend`, with the adapter in the core translating. The step that
 proves it is `grep`: no Microsoft TTD type, and no TTD NuGet import, anywhere
 outside `src/backend-msttd/`.
+
+*Landed*, and the grep holds. Where it differs from the sketch:
+
+- `ida-ttd-msttd.dll` does not link `ida.lib` at all, so the probe drives it
+  outside IDA like Sogen's. `msttd_ida_shim.cpp` supplies the few kernel
+  functions `qstring` and `qvector` need; logging, progress and Cancel come
+  through the ABI (`set_log`, `nav_set_progress`), and the navigator decodes
+  calls and returns itself (`msttd_x86`) instead of with IDA's decoder.
+- The backend keeps its C++ `ITraceBackend` implementation;
+  `core/abi_export` turns any such backend into the C table, the inverse of
+  `BackendModule`. It keeps a count query's answer between its count and fill
+  calls, since a replay engine would otherwise answer it twice.
+- The ABI grew at its end, behind a size field: `set_log`, `prepared`,
+  `cursor_thread_regs`, `cursor_rebuild_range`, `nav_take_notice`,
+  `nav_set_progress`, and `ITTD_CAP_CHEAP_READS` (whether the core lets IDA
+  analyse whole library modules). Version 2 changed `ittd_module`.
+- Project files stay in `msbuild/`, and there is no separate core static
+  library: the plugin and the loader compile the core sources they need.
+- Backends load from `plugins\ida-ttd-backends\` and from
+  `plugins\ida-ttd\ida-ttd-backends\`, where IDA's plugin manager puts a
+  packaged plugin; the release zip ships the Microsoft backend there.
 
 **Phase 5 — the Sogen backend.** A second DLL against the same ABI, in the
 order given in §6. The ABI having been exercised by the Microsoft backend
@@ -581,6 +610,12 @@ has the build steps and the measurements. What it proved about the ABI:
 the three call positions and the "before the instruction at the PC" rule
 hold up against a second engine, with the off-by-one contained in the
 backend. The core does not load the DLL yet: that is still phase 4.
+
+*Since phase 4* the core loads it like the Microsoft one, and both pass the
+same self-test in IDA. Sogen answered four rounds of requests along the way
+(`docs/sogen-ttd-requests*.md`); the last two made `memory_at` read from
+checkpoint memory and the writes since, which is what made a Sogen session
+usable in the GUI.
 
 The project file is `msbuild/backend-sogen.vcxproj`, next to the others
 rather than in `src/backend-sogen/` as §5 sketched, and outside the solution.

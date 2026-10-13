@@ -1,6 +1,7 @@
 # ida-ttd
 
-Analyze Microsoft Time Travel Debugging traces inside IDA Pro.
+Analyze time travel debugging traces inside IDA Pro: Microsoft TTD recordings
+(`.run`), and Sogen recordings (`.sogttd`) with the Sogen backend.
 
 A TTD recording contains every instruction a process executed, so the answer to
 "where did this pointer come from" or "what wrote these bytes" is already in the
@@ -14,13 +15,15 @@ often the only artifact you have. `ida-ttd` disassembles that code, names it,
 shows which parts actually ran, and reconstructs the memory regions it lived in
 along with their protections.
 
-Built against the IDA SDK 9.4 and the Microsoft TTD Replay SDK.
+Built against the IDA SDK 9.4. Each kind of recording is read by a backend, a
+DLL of its own behind a small C interface (`src/abi/ida_ttd_backend.h`): the
+Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 
 ## Features
 
 **Navigation**
 
-- Replay a `.run` trace forwards and backwards, including reverse-continue,
+- Replay a trace forwards and backwards, including reverse-continue,
   step out backwards, and run to cursor in either direction.
 - Timeline view of thread and module events, and jump to an exact
   `Sequence:Steps` position.
@@ -51,7 +54,7 @@ Built against the IDA SDK 9.4 and the Microsoft TTD Replay SDK.
 
 **Opening traces**
 
-- Open a `.run` file directly from `File > Open`. The recorded program's image
+- Open a `.run` or `.sogttd` file directly from `File > Open`. The recorded program's image
   is read out of the trace, so no copy of the original binary is needed.
 - Or attach a trace to a database you already have.
 
@@ -66,19 +69,29 @@ Built against the IDA SDK 9.4 and the Microsoft TTD Replay SDK.
 
 1. Download `ida-ttd.zip` from the
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
-   `ida-ttd.dll` into your IDA `plugins` directory.
-2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` into the IDA install root, next
-   to `ida.exe`.
+   it into your IDA `plugins` directory: `ida-ttd.dll`, and the
+   `ida-ttd-backends` folder with `ida-ttd-msttd.dll`, the Microsoft TTD
+   backend. (IDA's plugin manager puts both in `plugins\ida-ttd\`; that works
+   too.)
+2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` next to `ida.exe`, or into
+   `plugins\ida-ttd-backends\` beside the backend.
 3. Optional: copy `ttd-loader.dll` into your IDA `loaders` directory. This is
-   what makes `File > Open` recognize a `.run` file. Everything else works
+   what makes `File > Open` recognize a trace file. Everything else works
    without it.
+4. Optional, for Sogen recordings: build `ida-ttd-sogen.dll`
+   ([docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
+   and put it in `plugins\ida-ttd-backends\`.
+
+The output window names each backend as it loads, and says why when one does
+not.
 
 ## Usage
 
 ### Open a trace directly
 
-`File > Open` the `.run` file and choose **Microsoft TTD trace (.run)**. IDA
-builds a database from the recording and starts replaying it.
+`File > Open` the `.run` (or `.sogttd`) file and choose **Microsoft TTD trace
+(.run)** (or **Sogen recording**). IDA builds a database from the recording and
+starts replaying it.
 
 To open the database without replaying, turn off **Debugger > Replay the TTD
 trace when this database opens**. **Debugger > Start the TTD replay for this
@@ -93,7 +106,7 @@ replay instead.
 
 1. Open the IDB for the recorded binary.
 2. `Debugger > Switch debugger` and choose **TTD trace replayer**.
-3. Start debugging and give the `.run` file as the application.
+3. Start debugging and give the trace file as the application.
 
 ### Move through the recording
 
@@ -161,23 +174,38 @@ msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
 ```
 
 Build serially (`-m:1`): parallel compiler instances racing on the shared PDB
-can produce a `C1041` error. Output is `build\Release\ida-ttd.dll` and
-`build\Release\ttd-loader.dll`.
+can produce a `C1041` error. Output is `build\Release\ida-ttd.dll`,
+`build\Release\ttd-loader.dll` and `build\Release\backends\ida-ttd-msttd.dll`.
+Only the Microsoft backend needs the TTD Replay SDK restored by `nuget`; the
+plugin and the loader need the IDA SDK alone.
+
+The Sogen backend is not in the solution, since it needs a Sogen build:
+[docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md).
+`build\Release\ittd-probe.exe` drives any backend DLL outside IDA and checks it
+against the interface (`ittd-probe <backend.dll> <trace> [export|0xADDR]`).
 
 ## Repository layout
 
 ```
-src/common/     opening a recording, the .run link record, PE and symbol
-                reading -- the part the plugin and the loader both use
-src/debugger/   the IDA debugger backend: engine and cursor ownership, trace
-                navigation, registers, calling conventions
-src/analysis/   whole-trace passes -- call tracing, coverage, memory search,
-                memory map, indirect calls, bookmarks -- and the shared replay
-                sweep driver they all run on
-src/ui/         choosers, action handlers, pseudocode highlighting
-src/plugin/     the plugmod_t, the event listeners, the actions and the toolbar
-src/loader/     ttd-loader.dll, which makes File > Open recognise a .run
-msbuild/        the two project files and the settings they share
+src/abi/           the C interface between the core and a backend DLL
+src/core/          ITraceBackend and positions; BackendModule, which adapts a
+                   backend DLL to it; abi_export, which does the reverse for a
+                   backend written in C++
+src/backend-msttd/ ida-ttd-msttd.dll: Microsoft TTD, the only code that sees
+                   the TTD Replay SDK
+src/backend-sogen/ ida-ttd-sogen.dll: Sogen, against Sogen's trace reader
+src/common/        the trace link record, PE parsing and symbols, strings
+src/debugger/      the IDA debugger session over ITraceBackend: modules,
+                   memory, code layout, registers, calling conventions
+src/analysis/      whole-trace analyses -- call tracing, coverage, memory
+                   search, memory map, indirect calls, bookmarks -- each a
+                   backend query run behind a wait box
+src/ui/            choosers, action handlers, pseudocode highlighting
+src/plugin/        the plugmod_t, the event listeners, the actions, the toolbar
+                   and the ttd("...") script API (docs/scripting.md)
+src/loader/        ttd-loader.dll, which makes File > Open recognise a trace
+src/tools/         ittd-probe, a backend checker that runs outside IDA
+msbuild/           the project files and the settings they share
 ```
 
 `src/` is the single include root, so every local include names its folder
