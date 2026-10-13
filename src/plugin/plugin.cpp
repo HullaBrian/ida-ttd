@@ -539,7 +539,6 @@ namespace idattd
         // Fork manager is opened again at the new session's first stop.
         m_reopenForkManager = fork_manager_is_open();
         m_switchExitSent = false;
-        m_switchPolls    = 0;
         m_switchTimer.cancel();
         m_switchTimer.arm(10, switch_cb, this);
     }
@@ -582,17 +581,21 @@ namespace idattd
     {
         if ( m_switchTo.empty() || get_process_state() == DSTATE_NOTASK )
             return;
+        qstring path;
+        path.swap(m_switchTo);
         // Close the Fork manager now, while the session is still an ordinary
-        // one, rather than leave it to IDA to tear down as the session ends:
-        // a graph redrawn around then left IDA a deferred refresh of a graph
-        // that was gone, which stopped it with internal error 40183. It is
-        // opened again at the new session's first stop.
+        // one, rather than leave it to IDA to tear down as the session ends.
+        // It is opened again at the new session's first stop.
         close_fork_manager_window();
-        if ( !exit_process() )
-        {
-            msg("[ida-ttd] could not end the replay to switch to %s.\n", m_switchTo.c_str());
-            m_switchTo.clear();
-        }
+        // IDA's own request queue chains the two: the start runs only once
+        // IDA is done with the old session. Starting it ourselves as soon as
+        // the process state read "no process" raced IDA's end-of-session work
+        // and now and then stopped it with internal error 40183.
+        set_process_options(path.c_str(), "", nullptr, "", "", "", -1);
+        msg("[ida-ttd] switching the replay to %s\n", path.c_str());
+        request_exit_process();
+        request_start_process(path.c_str(), "", "");
+        run_requests();
     }
 
     int idaapi Plugin::switch_cb(void *ud)
@@ -602,19 +605,14 @@ namespace idattd
             return -1;
         if ( get_process_state() != DSTATE_NOTASK )
         {
+            // A session is running: end it and start the new one through
+            // IDA's request queue (switch_exit).
             if ( !p->m_switchExitSent )
             {
                 p->m_switchExitSent = true;
                 execute_ui_requests(new switch_exit_request_t(p), nullptr);
             }
-            // About ten seconds for IDA to finish with the old session.
-            if ( ++p->m_switchPolls > 200 )
-            {
-                msg("[ida-ttd] the replay did not end; not switching to %s.\n", p->m_switchTo.c_str());
-                p->m_switchTo.clear();
-                return -1;
-            }
-            return 50;
+            return -1;
         }
         qstring path;
         path.swap(p->m_switchTo);

@@ -287,7 +287,6 @@ namespace idattd
         qstring         m_switchTo;
         bool            m_switchExitSent = false;
         bool            m_reopenForkManager = false;   // it was open when a switch began
-        int             m_switchPolls = 0;
         OneShotTimer    m_switchTimer;
         static int idaapi switch_cb(void *ud);
         OneShotTimer    m_pdbTimer;          // applies downloaded PDBs while paused
