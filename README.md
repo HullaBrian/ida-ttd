@@ -64,9 +64,10 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   where it was opened and where it was closed.
 - Where a value came from: a register or memory followed back through the
   instructions that copied it -- moves, pushes and pops, string and SSE copies
-  -- to the instruction that computed it, a constant, or the syscall whose
-  result it was. From an instruction that computed it, Ctrl+E in the list
-  follows one of the values it read, and so on back.
+  -- and through computations made from a single value (`lea rax, [rdi+0Dh]`,
+  `inc rdi`), to the instruction that combined several values, a constant, or
+  the syscall whose result it was. There, Ctrl+E in the list follows the value
+  you pick, and so on back.
 - A memory heatmap: which pages the program read, wrote and ran from, and when.
 - A Python API (`import ida_ttd`) over all of it, for scripts and AI agents;
   see [docs/python.md](docs/python.md).

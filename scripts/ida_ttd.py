@@ -208,12 +208,13 @@ class Session(object):
         hi = lo + 1 if hi is None else hi
         return py(call("an.search", lo, hi, _kinds(kinds), limit)["accesses"])
 
-    def origin(self, what, size=8, at=None):
+    def origin(self, what, size=8, at=None, through=True):
         """Where a value came from: what is a register name ("rax", "xmm0") or
         an address (with 'size' bytes), as of the current position, or of
         'at' (a position) when given. The chain of hops back to where the
-        value was made, the first hop first."""
-        tail = ["from=" + at] if at else []
+        value was made, the first hop first. It goes through computations
+        made from a single value; through=False stops at every computation."""
+        tail = (["from=" + at] if at else []) + ([] if through else ["stop"])
         if isinstance(what, str):
             return py(call("an.origin", what, *tail)["chain"])
         return py(call("an.origin", "mem", what, size, *tail)["chain"])

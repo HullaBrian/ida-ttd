@@ -290,9 +290,13 @@ namespace idattd
 
         // From the instruction that set the value, the next thing to follow:
         // fills 'next' and returns true for a copy, or sets hop.kind and the
-        // note and returns false.
-        bool next_source(const OriginHop &hop, const Search &s, OriginHop *out, OriginTarget *next)
+        // note and returns false. 'made_here' is set when the instruction
+        // computed the value into its destination -- not a register it
+        // changed on the side -- so that what it read is what it was made of.
+        bool next_source(const OriginHop &hop, const Search &s, OriginHop *out, OriginTarget *next,
+                         bool *made_here)
         {
+            *made_here = false;
             insn_t ins;
             if ( decode_insn(&ins, s.pc) <= 0 )
             {
@@ -400,6 +404,7 @@ namespace idattd
             {
                 out->kind = OriginKind::Computed;
                 out->note = "computed by this instruction";
+                *made_here = true;
                 return false;
             }
             if ( src != nullptr && src->type == o_imm )
@@ -526,8 +531,32 @@ namespace idattd
         }
     }
 
+    // A computation made from a single value -- lea rax, [rdi+0Dh], inc rdi,
+    // add [mem], 2 -- is gone through: the value it read is followed as if
+    // copied. Not the stack pointer: a stack address's history is only the
+    // frames that moved it.
+    static bool single_input(TraceManager *mgr, Position at, OriginTarget *next)
+    {
+        std::vector<OriginInput> inputs;
+        if ( !origin_inputs(mgr, at, &inputs) )
+            return false;
+        const OriginInput *only = nullptr;
+        for ( const OriginInput &in : inputs )
+        {
+            if ( in.address )
+                continue;
+            if ( only != nullptr )
+                return false;
+            only = &in;
+        }
+        if ( only == nullptr || (only->what.is_reg && only->what.reg == ITTD_REG_RSP) )
+            return false;
+        *next = only->what;
+        return true;
+    }
+
     static bool trace_from(TraceManager *mgr, const OriginTarget &what, Position start, uint32_t start_tid,
-                           size_t max_hops, std::vector<OriginHop> *out)
+                           size_t max_hops, bool through_computations, std::vector<OriginHop> *out)
     {
         ITraceBackend *b = mgr->backend();
         SyscallCache syscalls;
@@ -609,7 +638,13 @@ namespace idattd
             }
 
             OriginTarget next;
-            const bool more = next_source(hop, s, &hop, &next);
+            bool made_here = false;
+            bool more = next_source(hop, s, &hop, &next, &made_here);
+            if ( !more && made_here && through_computations && single_input(mgr, s.pos, &next) )
+            {
+                hop.note.sprnt("computed from %s", origin_target_text(next).c_str());
+                more = true;
+            }
             out->push_back(hop);
             if ( !more )
                 return true;
@@ -630,16 +665,17 @@ namespace idattd
     }
 
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
-                            std::vector<OriginHop> *out)
+                            std::vector<OriginHop> *out, bool through_computations)
     {
         out->clear();
         if ( !session_ready(mgr) )
             return false;
-        return trace_from(mgr, what, mgr->current_position(), mgr->cursor()->thread_id(), max_hops, out);
+        return trace_from(mgr, what, mgr->current_position(), mgr->cursor()->thread_id(), max_hops,
+                          through_computations, out);
     }
 
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
-                            std::vector<OriginHop> *out)
+                            std::vector<OriginHop> *out, bool through_computations)
     {
         out->clear();
         if ( !session_ready(mgr) )
@@ -647,7 +683,7 @@ namespace idattd
         CursorPtr cur = mgr->backend()->make_cursor();
         if ( !cur || !cur->seek(at) )
             return false;
-        return trace_from(mgr, what, at, cur->thread_id(), max_hops, out);
+        return trace_from(mgr, what, at, cur->thread_id(), max_hops, through_computations, out);
     }
 
     bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out)

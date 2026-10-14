@@ -18,7 +18,9 @@ namespace idattd
     // system (a syscall's result, or memory the system wrote), at a constant
     // in the code, or where nothing in the recording changed it.
     //
-    // Where it ends at a computation, the walk goes on by hand: the values the
+    // A computation made from one value (lea rax, [rdi+0Dh]; inc rdi) is
+    // gone through as well, following that value. Where it ends at a
+    // computation of several, the walk goes on by hand: the values the
     // instruction read (origin_inputs) are each a chain of their own, from
     // just before it ran.
 
@@ -65,12 +67,13 @@ namespace idattd
 
     // Follow 'what' back from the playhead, at most 'max_hops' hops. Each hop's
     // search runs behind a cancellable wait box. False when there is no
-    // session.
+    // session. 'through_computations' false stops at every computation, even
+    // of a single value.
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
-                            std::vector<OriginHop> *out);
+                            std::vector<OriginHop> *out, bool through_computations = true);
     // The same from 'at' instead of the playhead, on the thread running there.
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
-                            std::vector<OriginHop> *out);
+                            std::vector<OriginHop> *out, bool through_computations = true);
 
     // A value an instruction read, as it stood just before the instruction ran.
     struct OriginInput

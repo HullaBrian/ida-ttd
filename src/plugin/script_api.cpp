@@ -1405,6 +1405,14 @@ namespace idattd
         Args a = args;
         Position from;
         const bool has_from = from_arg(&a, &from);
+        bool through = true;
+        for ( size_t i = 1; i < a.v.size(); i++ )
+            if ( a.v[i] == "stop" )
+            {
+                through = false;
+                a.v.erase(a.v.begin() + i);
+                break;
+            }
         OriginTarget t;
         uint32_t reg = 0;
         if ( a.count() >= 2 && a.at(0) == "mem" )
@@ -1422,8 +1430,8 @@ namespace idattd
             fail("usage: an.origin REG | an.origin mem ADDR [SIZE], then from=POS to start there");
         }
         std::vector<OriginHop> hops;
-        if ( !(has_from ? trace_value_origin(&mgr(), t, from, 24, &hops)
-                        : trace_value_origin(&mgr(), t, 24, &hops)) )
+        if ( !(has_from ? trace_value_origin(&mgr(), t, from, 40, &hops, through)
+                        : trace_value_origin(&mgr(), t, 40, &hops, through)) )
             fail("not traced");
         JArr arr;
         for ( const OriginHop &h : hops )
@@ -1549,7 +1557,7 @@ namespace idattd
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
         { "an.handles",     cmd_an_handles,     "[MAX] the handles the program opened and closed" },
-        { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] [from=POS] where the value at the playhead (or POS) came from" },
+        { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] [from=POS] [stop] where the value at the playhead (or POS) came from; stop: at every computation" },
         { "an.inputs",      cmd_an_inputs,      "[POS] the values the instruction about to run there read" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },

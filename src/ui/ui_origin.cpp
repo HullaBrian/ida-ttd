@@ -10,6 +10,9 @@ namespace idattd
     // "Seen at": where the row looks at the value (where it was asked about,
     // or where the previous row's instruction read it). "Written at": the
     // last instruction before that which wrote it.
+    // How long a chain may get: each hop is a search of the recording.
+    static const size_t kOriginHops = 40;
+
     static const int   g_vo_widths[] = { 3, 20, 26, 14, 14, 40, 44 };
     static const char *g_vo_header[] = { "#", "Value", "In", "Seen at", "Written at", "By", "How" };
 
@@ -137,7 +140,7 @@ namespace idattd
         // From just before the instruction ran: by_pos is where it is about
         // to, on its thread.
         std::vector<OriginHop> more;
-        if ( !trace_value_origin(m_mgr, inputs[pick].what, h.by_pos, 24, &more) || more.empty() )
+        if ( !trace_value_origin(m_mgr, inputs[pick].what, h.by_pos, kOriginHops, &more) || more.empty() )
             return cbret_t(n, NOTHING_CHANGED);
         const size_t first = m_hops.size();
         m_input_of.push_back((ssize_t)n);
@@ -244,7 +247,8 @@ namespace idattd
         {
             static qstring last = "rax";
             qstring text = last;
-            if ( !ask_str(&text, HIST_IDENT,
+            // Not HIST_IDENT: IDA refuses a register name as an identifier.
+            if ( !ask_str(&text, HIST_SRCH,
                           "Where did this value come from? A register (rax, ecx, xmm0, ...), "
                           "or memory as an address and a size (0x1234 8)") )
                 return 1;
@@ -257,7 +261,7 @@ namespace idattd
         }
 
         std::vector<OriginHop> hops;
-        if ( !trace_value_origin(mgr(), t, 24, &hops) || hops.empty() )
+        if ( !trace_value_origin(mgr(), t, kOriginHops, &hops) || hops.empty() )
             return 1;
         const OriginHop &end = hops.back();
         msg("[ida-ttd] %s = %s: %d hop%s, ending %s%s%s.\n",

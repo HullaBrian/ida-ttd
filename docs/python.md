@@ -87,7 +87,7 @@ session or in the database, and answer at once the next time.
 | `s.syscalls(limit)` | `pos`, `tid`, `number`, `name`, `result`, `args` (the first four) | |
 | `s.calls_to(target, limit)` | `func`, `name`, `pos`, `end`, `tid`, `args`, `ret` | `target` is an address or `"module!Glob*"`. Arguments are decoded from the Win32/phnt metadata where it has the function, else from IDA's types: each is text (`"PAGE_READWRITE"`, `"0x1524B8F8A0 -> 2"`) or, where it is a plain number, an int |
 | `s.accesses(lo, hi, kinds, limit)` | `pos`, `pc`, `addr`, `size`, `tid`, `kind` | every read (`"r"`), write (`"w"`) and execute (`"x"`) of `[lo, hi)`; `hi` defaults to `lo + 1` |
-| `s.origin(what, size, at)` | `what`, `value`, `at`, `kind`, `by_pos`, `by_pc`, `insn`, `note` | where a value came from, as of the current position or `at`; see below |
+| `s.origin(what, size, at, through)` | `what`, `value`, `at`, `kind`, `by_pos`, `by_pc`, `insn`, `note` | where a value came from, as of the current position or `at`; see below |
 | `s.inputs(at)` | `what`, `value`, `address`, and `reg` or `addr` and `size` | what the instruction about to run at `at` (default: the current position) read |
 | `s.handles(limit)` | `handle`, `type`, `name`, `opened`, `by`, `closed` | every handle the program opened and closed; `opened` is empty for one opened before the recording, `closed` for one still open at the end |
 | `s.memory_map(limit)` | `base`, `size`, `protect`, `type`, `use`, `since` | the address space at the current position |
@@ -118,11 +118,15 @@ rbx                      0x1585a77d940  copied  3A:2B  mov rbx, [rsp+48h]     co
 Each hop is one instruction that set the value; `by_pos` is where it ran
 (before it ran -- `s.goto(hop["by_pos"])` lands on it). The chain goes on while
 the instructions only copy the value (moves, push and pop, string and SSE
-copies) and ends with `kind` saying why:
+copies), and through computations made from a single value (`lea rax,
+[rdi+0Dh]`, `inc rdi`, `add [mem], 2`): such a hop is `computed`, its note
+naming the value followed ("computed from rdi"). `through=False` stops at every
+computation instead. The stack pointer is not followed. The chain ends with
+`kind` saying why:
 
 | `kind` | The value was |
 | --- | --- |
-| `computed` | made by the instruction (arithmetic, a `lea`, a register changed on the side) |
+| `computed` | made by the instruction from several values, or a register it changed on the side |
 | `constant` | an immediate in the code, or a register zeroed by combining it with itself (`xor eax, eax`) |
 | `system` | a syscall's result, or memory a syscall wrote (`note` names it) |
 | `unchanged` | never changed in what was searched: since the thread began, or from the start of the recording |
@@ -130,17 +134,18 @@ copies) and ends with `kind` saying why:
 Registers are named as in IDA (`rax`, `eax`, `al`, `r12d`, `xmm0`); memory is an
 address and a size up to 64 bytes.
 
-A chain that ends at `computed` is where the value was made from other values.
-`s.inputs(hop["by_pos"])` lists what that instruction read, as it stood just
-before it ran: its operands (memory as the recording has the read), the implicit
-ones of `mul`, `div`, `cdq` and the like, then the registers that only formed an
-address (`address` true). Each is a chain of its own, from the same position:
+A chain that ends at `computed` is where the value was made from several
+values. `s.inputs(hop["by_pos"])` lists what that instruction read, as it stood
+just before it ran: its operands (memory as the recording has the read), the
+implicit ones of `mul`, `div`, `cdq` and the like, then the registers that only
+formed an address (`address` true). Each is a chain of its own, from the same
+position:
 
 ```python
-hop = s.origin("rcx")[-1]           # lea rcx, [r8-1] -- computed
+hop = s.origin("rax")[-1]           # lea rax, [rdi+0Dh], inc rdi, then sub rdi, rcx
 for i in s.inputs(hop["by_pos"]):
     print(i["what"], hex(i["value"]), "(address)" if i["address"] else "")
-s.origin("r8", at=hop["by_pos"])    # xor r8d, r8d -- the constant 0
+s.origin("rdi", at=hop["by_pos"])   # follow one of them
 ```
 
 For memory, pass the input's address and size: `s.origin(i["addr"], i["size"], at=...)`.
