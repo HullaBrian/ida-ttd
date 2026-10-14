@@ -448,6 +448,65 @@ namespace idattd
                 }
                 extract_args(view, ev.func_ea, m_is64, ev.args);
             }
+
+            // An integer out parameter that reads the same at the return as
+            // at the call may be Microsoft TTD not having the kernel's write
+            // yet: the backend looks for it from the return on, where it
+            // surfaces. One the callee wrote itself reads changed and is
+            // recorded as it is.
+            std::vector<OutSlot> oslots;
+            std::vector<std::pair<size_t, size_t>> owner;     // (call, parameter)
+            for ( size_t i = 0; i < calls.size() && !cancelled; i++ )
+            {
+                const DecodedCall &d = decoded[i];
+                if ( !keep[i] || d.sig == nullptr || !slot[i].has_ret )
+                    continue;
+                for ( const auto &[p, width] : api_int_outs(d) )
+                {
+                    const DecodedArg &a = d.args[p];
+                    if ( a.pointee_before.has_value() && a.pointee_after.has_value()
+                      && *a.pointee_before != *a.pointee_after )
+                        continue;
+                    OutSlot s;
+                    s.call   = slot[i].end_pos;
+                    s.addr   = (ea_t)a.raw;
+                    s.before = a.pointee_after.value_or(0);
+                    s.tid    = slot[i].tid;
+                    s.width  = width;
+                    oslots.push_back(s);
+                    owner.emplace_back(i, p);
+                }
+            }
+            if ( !oslots.empty() )
+            {
+                std::vector<std::optional<uint64_t>> values;
+                bool searched = false;
+                run_query("Finding what the calls wrote back", [&](ProgressSink *p)
+                {
+                    searched = backend->query_out_values(oslots, &values, p);
+                    QueryResult r;
+                    r.ran = true;
+                    return r;
+                });
+                std::set<size_t> touched;
+                for ( size_t k = 0; searched && k < oslots.size() && k < values.size(); k++ )
+                {
+                    if ( !values[k].has_value() )
+                        continue;
+                    DecodedCall &d = decoded[owner[k].first];
+                    d.out_values.resize(d.args.size());
+                    d.out_values[owner[k].second] = values[k];
+                    touched.insert(owner[k].first);
+                }
+                for ( size_t i : touched )
+                {
+                    decode_api_outs(GuestView{}, &decoded[i]);
+                    slot[i].args.clear();
+                    for ( const DecodedArg &a : decoded[i].args )
+                        slot[i].args.push_back(a.text);
+                }
+            }
+
             for ( size_t i = 0; i < calls.size(); i++ )
                 if ( keep[i] )
                     built.push_back(std::move(slot[i]));

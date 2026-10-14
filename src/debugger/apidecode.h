@@ -29,6 +29,10 @@ namespace idattd
         qstring  text;                  // as shown
         uint64_t raw = 0;               // the argument's own value
         bool     out = false;           // read again at the return
+        // An out parameter pointing at an integer: the integer at the call,
+        // and as read at the return. Equal values may be Microsoft TTD not
+        // having the kernel's write yet (ITraceBackend::query_out_values).
+        std::optional<uint64_t> pointee_before, pointee_after;
     };
 
     struct DecodedCall

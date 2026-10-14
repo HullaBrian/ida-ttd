@@ -157,6 +157,31 @@ namespace idattd
             return s;
         }
 
+        qstring int_text(const ParamSig &p, uint64_t val)
+        {
+            if ( p.hasEnum() )
+            {
+                std::vector<std::string> names = win32meta::index().decodeEnum(p.enumIndex, val);
+                if ( !names.empty() )
+                {
+                    qstring s;
+                    for ( size_t k = 0; k < names.size(); k++ )
+                    {
+                        if ( k != 0 )
+                            s.append('|');
+                        s.append(names[k].c_str());
+                    }
+                    return s;
+                }
+            }
+            return number(val);
+        }
+
+        uint32_t pointee_width(const ParamSig &p, bool is64)
+        {
+            return p.pointeeSize >= 1 && p.pointeeSize <= 8 ? p.pointeeSize : (is64 ? 8 : 4);
+        }
+
         // A buffer's length in bytes, from the parameter that holds it.
         uint64_t buffer_bytes(const DecodedCall &c, const ParamSig &p, const GuestView *at_return)
         {
@@ -313,9 +338,8 @@ namespace idattd
                 case ArgKind::PtrToInt:
                 {
                     bool ok = false;
-                    size_t n = p.pointeeSize >= 1 && p.pointeeSize <= 8 ? p.pointeeSize : (is64 ? 8 : 4);
-                    uint64_t val = read_uint(v, x, n, &ok);
-                    return ok ? hex(x) + " -> " + number(val) : hex(x);
+                    uint64_t val = read_uint(v, x, pointee_width(p, is64), &ok);
+                    return ok ? hex(x) + " -> " + int_text(p, val) : hex(x);
                 }
                 case ArgKind::Guid:
                 {
@@ -477,6 +501,13 @@ namespace idattd
             }
             // An out parameter is only its address until the callee has run.
             a.text = a.out ? (a.raw == 0 ? qstring("NULL") : hex(a.raw)) : render(v, *out, p, a.raw, nullptr);
+            if ( a.out && a.raw != 0 && p.kind == ArgKind::PtrToInt )
+            {
+                bool ok = false;
+                uint64_t val = read_uint(v, a.raw, pointee_width(p, is64), &ok);
+                if ( ok )
+                    a.pointee_before = val;
+            }
         }
     }
 
@@ -520,28 +551,19 @@ namespace idattd
             const ParamSig &p = call->sig->params[i];
             if ( p.kind == ArgKind::PtrToInt && i < call->out_values.size() && call->out_values[i].has_value() )
             {
-                const uint64_t val = *call->out_values[i];
-                qstring shown = number(val);
-                if ( p.hasEnum() )
-                {
-                    std::vector<std::string> names = win32meta::index().decodeEnum(p.enumIndex, val);
-                    if ( !names.empty() )
-                    {
-                        shown.qclear();
-                        for ( size_t k = 0; k < names.size(); k++ )
-                        {
-                            if ( k != 0 )
-                                shown.append('|');
-                            shown.append(names[k].c_str());
-                        }
-                    }
-                }
-                a.text = hex(a.raw) + " -> " + shown;
+                a.text = hex(a.raw) + " -> " + int_text(p, *call->out_values[i]);
                 continue;
             }
             if ( !v.read )
                 continue;
             a.text = render(v, *call, p, a.raw, &v);
+            if ( p.kind == ArgKind::PtrToInt )
+            {
+                bool ok = false;
+                uint64_t val = read_uint(v, a.raw, pointee_width(p, call->is64), &ok);
+                if ( ok )
+                    a.pointee_after = val;
+            }
         }
     }
 

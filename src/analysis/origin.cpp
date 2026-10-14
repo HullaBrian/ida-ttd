@@ -580,7 +580,7 @@ namespace idattd
             hop.by_pc  = s.pc;
             hop.by_tid = s.tid;
             qstring line;
-            if ( generate_disasm_line(&line, s.pc, GENDSM_REMOVE_TAGS) )
+            if ( generate_disasm_line(&line, s.pc, GENDSM_REMOVE_TAGS | GENDSM_FORCE_CODE) )
             {
                 line.trim2();
                 hop.insn = line;
