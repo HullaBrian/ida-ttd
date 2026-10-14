@@ -1,6 +1,6 @@
 """Drive the ida-ttd plugin from Python inside IDA.
 
-Installed as plugins\ida-ttd-python\ida_ttd.py; the plugin puts that folder
+Installed as plugins/ida-ttd-python/ida_ttd.py; the plugin puts that folder
 on sys.path when it loads, so in the IDAPython console, a script, or an MCP
 server's Python:
 
