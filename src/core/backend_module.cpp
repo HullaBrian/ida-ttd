@@ -945,6 +945,42 @@ namespace idattd
         return true;
     }
 
+    QueryResult BackendModule::query_access_heat(uint32_t page_shift, uint32_t slices,
+                                                 std::vector<HeatCell> *out, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_access_heat", 0);
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_access_heat) || out == nullptr )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        int trunc = 0;
+        std::vector<ittd_heat_cell> v;
+        int rc = count_fill(&v, [&](ittd_heat_cell *b, size_t cap, size_t *n)
+        {
+            return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, &trunc, pb.get());
+        });
+        out->reserve(v.size());
+        for ( const ittd_heat_cell &x : v )
+        {
+            HeatCell c;
+            c.page     = x.page;
+            c.slice    = x.slice;
+            c.reads    = x.reads;
+            c.writes   = x.writes;
+            c.executes = x.executes;
+            out->push_back(c);
+        }
+        return result_of(rc, trunc);
+    }
+
+    Position BackendModule::heat_slice_position(uint32_t slices, uint32_t slice)
+    {
+        ittd_position p{};
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, heat_slice_position)
+          || m_api->heat_slice_position(m_handle, slices, slice, &p) != ITTD_OK )
+            return Position::none();
+        return from_abi(p);
+    }
+
     bool BackendModule::query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
                                               Position *where, bool *found, ProgressSink *progress)
     {

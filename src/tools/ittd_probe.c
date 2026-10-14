@@ -1188,6 +1188,40 @@ int main(int argc, char **argv)
         free(bh);
     }
 
+    /* ---- the memory heatmap (ITTD_PROBE_HEAT=1: a whole-recording pass) -------- */
+    if ( getenv("ITTD_PROBE_HEAT") != NULL
+      && offsetof(ittd_backend_api, heat_slice_position) + sizeof(api->heat_slice_position) <= api->size
+      && api->query_access_heat != NULL )
+    {
+        size_t n = 0, k, pages = 0;
+        int trunc = 0, rc;
+        uint64_t reads = 0, writes = 0, execs = 0, last_page = ~0ull;
+        ittd_heat_cell *cells;
+        ittd_position p0, p1;
+        t0 = now_ms();
+        rc = api->query_access_heat(B, 12, 256, NULL, 0, &n, &trunc, NULL);
+        printf("\nheatmap: %zu cell(s), %.1f ms%s\n", n, now_ms() - t0, rc == ITTD_OK ? "" : " (failed)");
+        cells = (ittd_heat_cell *)calloc(n ? n : 1, sizeof(*cells));
+        if ( rc == ITTD_OK && api->query_access_heat(B, 12, 256, cells, n, &n, &trunc, NULL) == ITTD_OK )
+        {
+            for ( k = 0; k < n; k++ )
+            {
+                reads += cells[k].reads;
+                writes += cells[k].writes;
+                execs += cells[k].executes;
+                pages += cells[k].page != last_page;
+                last_page = cells[k].page;
+            }
+            printf("  %zu page(s): %llu reads, %llu writes, %llu executes\n", pages,
+                   (unsigned long long)reads, (unsigned long long)writes, (unsigned long long)execs);
+            check(execs > 0 && writes > 0 && reads > 0, "  the heatmap counts reads, writes and executes");
+        }
+        free(cells);
+        api->heat_slice_position(B, 256, 0, &p0);
+        api->heat_slice_position(B, 256, 128, &p1);
+        printf("  slice 0 at %s, slice 128 at %s\n", pos_text(p0), pos_text(p1));
+    }
+
     api->cursor_close(c);
     api->close(B);
     free(mods);

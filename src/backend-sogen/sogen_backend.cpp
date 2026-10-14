@@ -99,6 +99,8 @@ namespace
         // minimum length too: a strict run must not be answered by a lenient one.
         std::map<std::string, std::vector<ittd_string_hit>> strings;
         std::map<std::string, std::vector<ittd_buffer_hit>> buffers;
+        // query_access_heat's answers, by page shift and slice count.
+        std::map<std::string, std::vector<ittd_heat_cell>> heat;
         // What each cached scan skipped (scan_notice), by the same keys, and
         // the last scan's.
         std::map<std::string, std::string> scan_notes;
@@ -2549,6 +2551,87 @@ namespace
     // The instruction stream of one thread (or all) over a range of positions,
     // straight from the execute events: no replay, so a long window costs only
     // the events it reads. Stops after 'cap'.
+    // ------------------------------------------------------------ the memory heatmap
+    //
+    // Every recorded access, counted by page and by slice of the recording's
+    // steps: one pass over the event stream.
+    int query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
+                          ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                          int *out_truncated, const ittd_progress *progress)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr || slices == 0 || slices > 4096 || page_shift < 8 || page_shift > 30 )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->scan_mtx);
+            const std::string key = std::to_string(page_shift) + "|" + std::to_string(slices);
+            auto found = b->heat.find(key);
+            if ( found == b->heat.end() )
+            {
+                std::unique_ptr<ttd::trace> own = open_trace(b->path);
+                ttd::trace &t = *own;
+                const uint64_t start = t.start_position();
+                const uint64_t span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), start), 1);
+                const uint64_t total = std::max<uint64_t>(t.metadata().event_count, 1);
+                std::unordered_map<uint64_t, ittd_heat_cell> cells;
+                ttd::event_reader reader(t, 0);
+                uint64_t seen = 0;
+                while ( std::optional<ttd::access_event> ev = reader.next() )
+                {
+                    if ( (++seen & 0xFFFF) == 0 && progress != nullptr )
+                    {
+                        if ( progress->cancelled != nullptr && progress->cancelled(progress->ud) != 0 )
+                            throw ttd::operation_cancelled();
+                        if ( progress->report != nullptr )
+                            progress->report(progress->ud,
+                                             (uint32_t)std::min<uint64_t>(1000, reader.last_number() * 1000 / total));
+                    }
+                    uint64_t slice = (ev->step - std::min(ev->step, start)) * slices / span;
+                    if ( slice >= slices )
+                        slice = slices - 1;
+                    const uint64_t page = ev->address >> page_shift;
+                    ittd_heat_cell &c = cells[(page << 12) | slice];
+                    c.page  = page;
+                    c.slice = (uint32_t)slice;
+                    switch ( ev->kind )
+                    {
+                        case ttd::access_kind::read:    c.reads++;    break;
+                        case ttd::access_kind::execute: c.executes++; break;
+                        default:                        c.writes++;   break;
+                    }
+                }
+                std::vector<ittd_heat_cell> v;
+                v.reserve(cells.size());
+                for ( const auto &[k, c] : cells )
+                    v.push_back(c);
+                std::sort(v.begin(), v.end(), [](const ittd_heat_cell &a, const ittd_heat_cell &c)
+                {
+                    return a.page != c.page ? a.page < c.page : a.slice < c.slice;
+                });
+                found = b->heat.emplace(key, std::move(v)).first;
+            }
+            set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
+            return fill(found->second, buf, cap, out_count, [](const ittd_heat_cell &c) { return c; });
+        });
+    }
+
+    int heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr || out == nullptr || slices == 0 )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::lock_guard<std::mutex> lock(b->mtx);
+            const ttd::trace &t = *b->trace;
+            const uint64_t start = t.start_position();
+            const uint64_t span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), start), 1);
+            *out = at(start + std::min<uint64_t>(slice, slices) * span / slices);
+            return ITTD_OK;
+        });
+    }
+
     int query_instructions(ittd_backend *hb, ittd_position_range when, uint32_t tid,
                            ittd_access *buf, size_t cap, size_t *out_count,
                            int *out_truncated, const ittd_progress *progress)
@@ -2862,6 +2945,8 @@ namespace
         a.fork_close         = fork_close;
         a.query_strings      = query_strings;
         a.query_buffers      = query_buffers;
+        a.query_access_heat  = query_access_heat;
+        a.heat_slice_position = heat_slice_position;
         a.scan_notice        = scan_notice;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;

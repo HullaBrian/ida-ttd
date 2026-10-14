@@ -417,6 +417,15 @@ namespace idattd
     struct MemoryMapHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
+    // The memory heatmap: count every access by page and slice of time, and
+    // open the window that draws it (IDAPython with PySide6).
+    struct HeatmapHandler : public TtdAction
+    { int idaapi activate(action_activation_ctx_t *) override; };
+    // The counts the window draws, as ttd("ui.heat") hands them over; empty
+    // until build_heatmap() ran.
+    const qstring &heatmap_json();
+    bool build_heatmap(TraceManager *mgr, qstring *err);
+
     // The handles the program opened and closed.
     struct HandlesHandler : public TtdAction
     {
@@ -590,6 +599,7 @@ namespace idattd
         constexpr const char *MEM_TIMELINE  = "idattd:memory_timeline";
         constexpr const char *VALUE_ORIGIN  = "idattd:value_origin";
         constexpr const char *HANDLES       = "idattd:handles";
+        constexpr const char *HEATMAP       = "idattd:heatmap";
         constexpr const char *REREAD        = "idattd:reread_memory";
         constexpr const char *INDIRECT      = "idattd:indirect_calls";
         constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";

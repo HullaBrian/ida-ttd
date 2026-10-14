@@ -337,6 +337,17 @@ typedef struct ittd_syscall
     char          name[64];         /* "NtCreateFile"; empty when unknown */
 } ittd_syscall;
 
+/* One cell of query_access_heat: the accesses to one page in one slice of
+ * the recording's time. */
+typedef struct ittd_heat_cell
+{
+    uint64_t page;                  /* address >> page_shift */
+    uint32_t slice;                 /* 0 .. slices - 1 */
+    uint32_t reads;
+    uint32_t writes;                /* the program's and the system's */
+    uint32_t executes;              /* instructions run from the page */
+} ittd_heat_cell;
+
 /*
  * Code the program wrote and then ran: an executed instruction some of whose
  * bytes an earlier instruction of the program wrote. Writes the system made
@@ -956,10 +967,23 @@ typedef struct ittd_backend_api
     int (*query_register_change)(ittd_backend *b, ittd_position at, uint32_t tid, uint32_t reg,
                                  uint64_t max_back, ittd_position *out_pos, int *out_found,
                                  const ittd_progress *progress);
+
+    /* ---- the memory heatmap ------------------------------------------- */
+
+    /* Every access the recording made, counted by page (1 << page_shift
+     * bytes) and by slice of time: 'slices' equal stretches of the recording
+     * on the backend's own clock. Cells with no access are left out. A count
+     * query over the whole recording; expect seconds. Optional. */
+    int (*query_access_heat)(ittd_backend *b, uint32_t page_shift, uint32_t slices,
+                             ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                             int *out_truncated, const ittd_progress *progress);
+    /* Where slice 'slice' of 'slices' begins. */
+    int (*heat_slice_position)(ittd_backend *b, uint32_t slices, uint32_t slice, ittd_position *out);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */
 #define ITTD_ORIGIN_XMM0 32u
+
 
 /* ------------------------------------------------------------ entry point */
 

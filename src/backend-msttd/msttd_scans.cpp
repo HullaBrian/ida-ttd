@@ -549,4 +549,97 @@ namespace idattd
         r.truncated = m_scans.p->truncated;
         return r;
     }
+
+    //=======================================================================
+    // The memory heatmap
+    //=======================================================================
+    // One replay with a watchpoint for reads, writes and executions over the
+    // whole address space, each access counted against its page and its slice
+    // of time. Time is sliced by sequence number: the engine's own clock,
+    // which advances with every thread switch and so with the program's
+    // progress.
+    QueryResult MsTtdBackend::query_access_heat(uint32_t page_shift, uint32_t slices,
+                                                std::vector<HeatCell> *out, ProgressSink *progress)
+    {
+        QueryResult r;
+        if ( !m_engine || out == nullptr || slices == 0 || slices > 4096 || page_shift < 8 || page_shift > 30 )
+            return r;
+        UniqueCursor cur = new_engine_cursor();
+        if ( !cur )
+            return r;
+        r.ran = true;
+        const TtdPosition first = m_engine->GetFirstPosition();
+        const TtdPosition last  = m_engine->GetLastPosition();
+        const uint64_t s0   = (uint64_t)first.Sequence;
+        const uint64_t span = std::max<uint64_t>((uint64_t)last.Sequence - s0 + 1, 1);
+        const uint64_t space = m_info.is64 ? 0x800000000000ull : 0x100000000ull;
+
+        std::unordered_map<uint64_t, HeatCell> cells;
+        bool capped = false;
+        auto on_hit = [&](ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept -> bool
+        {
+            const DataAccessType k = w.AccessType;
+            if ( k != DataAccessType::Read && k != DataAccessType::Write && k != DataAccessType::Execute )
+                return false;
+            const uint64_t seq   = (uint64_t)t->GetPosition().Sequence;
+            uint64_t       slice = (seq - s0) * slices / span;
+            if ( slice >= slices )
+                slice = slices - 1;
+            const uint64_t page = (uint64_t)w.Address >> page_shift;
+            try
+            {
+                HeatCell &c = cells[(page << 12) | slice];
+                c.page  = page;
+                c.slice = (uint32_t)slice;
+                if ( k == DataAccessType::Read )
+                    c.reads++;
+                else if ( k == DataAccessType::Write )
+                    c.writes++;
+                else
+                    c.executes++;
+            }
+            catch ( ... )
+            {
+                capped = true;
+            }
+            return false;
+        };
+        MemoryWatchpointData wp{};
+        wp.Address    = GuestAddress{ 0 };
+        wp.Size       = space;
+        wp.AccessMask = (DataAccessMask)((uint8_t)DataAccessMask::Read | (uint8_t)DataAccessMask::Write
+                                       | (uint8_t)DataAccessMask::Execute);
+        cur->AddMemoryWatchpoint(wp);
+        cur->SetMemoryWatchpointCallback(on_hit);
+        cur->SetEventMask(EventMask::MemoryWatchpoint);
+        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
+        const bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, progress);
+        cur->SetMemoryWatchpointCallback(nullptr, 0);
+        r.cancelled = !complete;
+        r.truncated = capped;
+        out->reserve(cells.size());
+        for ( const auto &[key, c] : cells )
+            out->push_back(c);
+        std::sort(out->begin(), out->end(), [](const HeatCell &a, const HeatCell &b)
+        {
+            return a.page != b.page ? a.page < b.page : a.slice < b.slice;
+        });
+        return r;
+    }
+
+    Position MsTtdBackend::heat_slice_position(uint32_t slices, uint32_t slice)
+    {
+        if ( !m_engine || slices == 0 )
+            return Position::none();
+        const TtdPosition first = m_engine->GetFirstPosition();
+        const TtdPosition last  = m_engine->GetLastPosition();
+        const uint64_t s0   = (uint64_t)first.Sequence;
+        const uint64_t span = std::max<uint64_t>((uint64_t)last.Sequence - s0 + 1, 1);
+        TtdPosition p;
+        p.Sequence = (SequenceId)(s0 + std::min<uint64_t>(slice, slices) * span / slices);
+        p.Steps    = StepCount::Zero;
+        if ( !(first < p) )
+            p = first;
+        return to_core(p);
+    }
 }

@@ -1109,6 +1109,53 @@ namespace idattd
         });
     }
 
+    static int x_query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
+                                   ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                                   int *out_truncated, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            return answer<ittd_heat_cell>(h, "heat|" + std::to_string(page_shift) + "|" + std::to_string(slices),
+                                          buf, cap, out_count, out_truncated,
+                                          [&](std::vector<ittd_heat_cell> *out)
+            {
+                std::vector<HeatCell> v;
+                AbiSink sink(progress);
+                QueryResult r = h->b->query_access_heat(page_shift, slices, &v, &sink);
+                out->reserve(v.size());
+                for ( const HeatCell &c : v )
+                {
+                    ittd_heat_cell x{};
+                    x.page     = c.page;
+                    x.slice    = c.slice;
+                    x.reads    = c.reads;
+                    x.writes   = c.writes;
+                    x.executes = c.executes;
+                    out->push_back(x);
+                }
+                return r;
+            });
+        });
+    }
+
+    static int x_heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr || out == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            Position p = h->b->heat_slice_position(slices, slice);
+            if ( !p.is_valid() )
+                return ITTD_E_FAILED;
+            *out = to_abi(p);
+            return ITTD_OK;
+        });
+    }
+
     static void x_set_log(void (*log)(void *ud, const char *line), void *ud)
     {
         if ( g_set_log != nullptr )
@@ -1184,6 +1231,8 @@ namespace idattd
         a.query_strings         = x_query_strings;
         a.query_buffers         = x_query_buffers;
         a.query_register_change = x_query_register_change;
+        a.query_access_heat     = x_query_access_heat;
+        a.heat_slice_position   = x_heat_slice_position;
         built = true;
         return &a;
     }

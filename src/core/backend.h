@@ -199,6 +199,14 @@ namespace idattd
         qstring  name;              // empty when unknown
     };
 
+    // The accesses to one page in one slice of time (ittd_heat_cell).
+    struct HeatCell
+    {
+        uint64_t page = 0;
+        uint32_t slice = 0;
+        uint32_t reads = 0, writes = 0, executes = 0;
+    };
+
     // An instruction the program wrote before running it (ittd_selfmod).
     struct SelfModHit
     {
@@ -642,6 +650,22 @@ namespace idattd
         {
             qnotused(at); qnotused(tid); qnotused(max_back); qnotused(call_pos); qnotused(entry);
             return false;
+        }
+
+        // Every access counted by page (1 << page_shift bytes) and by slice of
+        // the recording's time; empty cells left out. ran == false when the
+        // backend cannot.
+        virtual QueryResult query_access_heat(uint32_t page_shift, uint32_t slices,
+                                              std::vector<HeatCell> *out, ProgressSink *progress)
+        {
+            qnotused(page_shift); qnotused(slices); qnotused(out); qnotused(progress);
+            return QueryResult{};
+        }
+        // Where slice 'slice' of 'slices' begins; none() when unknown.
+        virtual Position heat_slice_position(uint32_t slices, uint32_t slice)
+        {
+            qnotused(slices); qnotused(slice);
+            return Position::none();
         }
 
         // The last instruction of thread 'tid' before 'at' that changed

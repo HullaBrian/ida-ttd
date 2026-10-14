@@ -291,6 +291,9 @@
     <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_heatmap.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\scope.cpp">
       <Filter>ui</Filter>
     </ClCompile>

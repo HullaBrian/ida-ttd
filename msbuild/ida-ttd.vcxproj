@@ -134,6 +134,7 @@
     <ClCompile Include="$(SrcDir)\ui\names.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_heatmap.cpp" />
     <ClCompile Include="$(SrcDir)\ui\scope.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_bookmarks.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_callsites.cpp" />

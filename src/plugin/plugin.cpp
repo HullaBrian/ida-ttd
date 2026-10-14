@@ -340,6 +340,10 @@ namespace idattd
               "Recover buffers: replay the recording and list every buffer the "
               "program filled, with the code that wrote it",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::HEATMAP, "Memory heatmap", &m_heatmap, nullptr,
+              "Memory heatmap: which pages the program read, wrote and ran from, and when, "
+              "drawn as a grid of address against time",
+              NO_ICON, GROUP, MENU, SUB_ANALYSIS },
             { actions::MEM_TIMELINE, "Memory timeline", &m_memTimeline, nullptr,
               "Memory timeline: every allocation, protection change and free the "
               "recording made, in order, with each live region as a segment",

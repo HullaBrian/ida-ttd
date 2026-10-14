@@ -211,6 +211,7 @@ namespace idattd
         MemoryTimelineHandler     m_memTimeline;
         ValueOriginHandler        m_valueOrigin;
         HandlesHandler            m_handles;
+        HeatmapHandler            m_heatmap;
         IndirectCallsHandler      m_indirect;
         ClearIndirectCallsHandler m_indirectClear;
         AutoIndirectCallsHandler  m_indirectAuto;

@@ -1203,6 +1203,36 @@ namespace idattd
         out.raw("tree", j);
     }
 
+    // The heatmap's counts, for its window.
+    static void cmd_ui_heat(const Args &, JObj &out)
+    {
+        const qstring &j = heatmap_json();
+        if ( j.empty() )
+            fail("no heatmap has been built");
+        out.raw("heat", j);
+    }
+
+    // Build the heatmap's counts, as the menu does; their size.
+    static void cmd_an_heat(const Args &, JObj &out)
+    {
+        need_session();
+        qstring err;
+        if ( !build_heatmap(&mgr(), &err) )
+            fail("%s", err.c_str());
+        out.num("json_bytes", (int64_t)heatmap_json().length());
+    }
+
+    // Travel, then show EA in the hex view, as a double-click in the heatmap does.
+    static void cmd_ui_showbytes(const Args &a, JObj &out)
+    {
+        need_session();
+        Position p;
+        if ( !parse_position(a.at(0).c_str(), &p) )
+            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
+        bool hex = travel_and_show_bytes(&mgr(), p, (ea_t)a.u64(1));
+        out.boolean("hex_view", hex);
+    }
+
     // Travel the way a double-click in a list does: returns at once.
     static void cmd_ui_travel(const Args &a, JObj &out)
     {
@@ -1466,6 +1496,9 @@ namespace idattd
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
         { "ui.calltree",    cmd_ui_calltree,    "the call tree last built by the TTD menu (for its window)" },
+        { "ui.heat",        cmd_ui_heat,        "the memory heatmap's counts (for its window)" },
+        { "ui.showbytes",   cmd_ui_showbytes,   "POS EA travel there and show EA in the hex view" },
+        { "an.heat",        cmd_an_heat,        "count every access by page and slice of time (the heatmap)" },
         { "ui.travel",      cmd_ui_travel,      "POS travel there, returning at once (as a double-click does)" },
         { "switch.ui",      cmd_switch_ui,      "PATH the same, the way the Fork manager does it (returns at once)" },
         { "an.forks",       cmd_an_forks,       "the forks recorded in this database" },
