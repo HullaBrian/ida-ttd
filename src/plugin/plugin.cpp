@@ -1,4 +1,5 @@
 #include "plugin/plugin.h"
+#include "analysis/callsites.h"
 #include "analysis/fork_registry.h"
 #include "common/trace_link.h"
 #include "common/symsrv.h"
@@ -117,6 +118,7 @@ namespace idattd
                 // time-travel to them.
                 m_tracer.reset();
                 coverage_session_ended();
+                callsites_session_ended();
             },
         });
 
@@ -277,8 +279,8 @@ namespace idattd
               "arguments",
               m_icons[ICO_SYSCALLS], GROUP, MENU },
             { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
-              "Memory map: every allocation, protection change and free the recording "
-              "made, with each live region as a segment",
+              "Memory map: every region of memory at this position, with its "
+              "protection, its type and what it is used for",
               m_icons[ICO_MEMORY_MAP], ITEM, MENU },
 
             // Code: what the recording says about the code in front of you,
@@ -295,11 +297,15 @@ namespace idattd
               "Resolve indirect calls: record where each one actually went, as a "
               "comment and a cross-reference",
               NO_ICON, ITEM, MENU, SUB_CODE },
-            // The one automatic behavior.
+            // The automatic behaviors.
             { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
               "Highlight functions automatically: measure and color each function "
               "the first time you stop in it",
               NO_ICON, GROUP, MENU, SUB_CODE },
+            { actions::INDIRECT_AUTO, "Resolve indirect calls automatically", &m_indirectAuto, nullptr,
+              "Resolve indirect calls automatically: annotate the indirect calls of "
+              "each function the first time you stop in it (one replay per module)",
+              NO_ICON, ITEM, MENU, SUB_CODE },
             // Undoing the above, in a section of their own.
             { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
               "Clear execution highlight: remove the coverage color from the whole "
@@ -324,6 +330,10 @@ namespace idattd
               "Recover buffers: replay the recording and list every buffer the "
               "program filled, with the code that wrote it",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            { actions::MEM_TIMELINE, "Memory timeline", &m_memTimeline, nullptr,
+              "Memory timeline: every allocation, protection change and free the "
+              "recording made, in order, with each live region as a segment",
+              NO_ICON, GROUP, MENU, SUB_ANALYSIS },
             // On the disassembly's right-click menu only.
             { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
               "Re-read memory: discard what IDA cached for the selected range, rebuild "
@@ -753,6 +763,8 @@ namespace idattd
         // Checkable menu entry, ticked from the database's own setting.
         update_action_checkable(actions::COVERAGE_AUTO, true);
         update_action_checked(actions::COVERAGE_AUTO, coverage_auto_enabled());
+        update_action_checkable(actions::INDIRECT_AUTO, true);
+        update_action_checked(actions::INDIRECT_AUTO, callsites_auto_enabled());
 
         // Top-level TTD menu, created before anything is attached to it.
         //
@@ -1124,6 +1136,9 @@ namespace idattd
         // Which recording is being replayed may have changed: redraw it here,
         // never at the session's start or end (see switch_exit).
         refresh_fork_manager();
+        // The memory map follows the playhead.
+        if ( m_mgr.is_active() )
+            MemoryMapChooser::refresh_open();
         TWidget *from = m_stepView;
         if ( from == nullptr )
         {
@@ -1218,7 +1233,9 @@ namespace idattd
     void Plugin::schedule_auto_coverage()
     {
         m_autoCoverFunc = BADADDR;
-        if ( !m_actionsRegistered || !m_mgr.is_active() || !coverage_auto_enabled() )
+        if ( !m_actionsRegistered || !m_mgr.is_active() )
+            return;
+        if ( !coverage_auto_enabled() && !callsites_auto_enabled() )
             return;
         ea_t pc = m_mgr.current_pc_ea();
         if ( pc == BADADDR )
@@ -1226,11 +1243,22 @@ namespace idattd
         func_entry_info_t fi;
         if ( !get_func_entry_info(&fi, pc) )
             return;                                  // no function to measure yet
-        if ( coverage_function_done(fi.start_ea)
-          || m_autoCoverDeclined.find(fi.start_ea) != m_autoCoverDeclined.end() )
-            return;                                  // measured, or the user said no
+        if ( m_autoCoverDeclined.find(fi.start_ea) != m_autoCoverDeclined.end() )
+            return;                                  // the user said no
+        if ( !auto_coverage_wanted(fi.start_ea) && !auto_indirect_wanted(fi.start_ea) )
+            return;                                  // nothing left to do there
         m_autoCoverFunc = fi.start_ea;
         m_autoCoverTimer.arm(DEFER_MS, autocover_cb, this);
+    }
+
+    bool Plugin::auto_coverage_wanted(ea_t start) const
+    {
+        return coverage_auto_enabled() && !coverage_function_done(start);
+    }
+
+    bool Plugin::auto_indirect_wanted(ea_t start) const
+    {
+        return callsites_auto_enabled() && !callsites_function_done(start);
     }
 
     void Plugin::do_auto_coverage()
@@ -1245,18 +1273,38 @@ namespace idattd
         func_entry_info_t fi;
         if ( !get_func_entry_info(&fi, start) || fi.start_ea != start )
             return;
-        if ( coverage_function_done(start) )
-            return;
-        if ( !cover_function(&m_mgr, fi.start_ea, fi.end_ea) )
+        bool changed = false, retyped = false;
+        if ( auto_coverage_wanted(start) )
         {
-            // Cancelled, or it could not run. Do not ask again this session --
-            // otherwise the next single step inside the same function re-offers
-            // the sweep the user just stopped.
-            m_autoCoverDeclined.insert(start);
-            return;
+            if ( !cover_function(&m_mgr, fi.start_ea, fi.end_ea) )
+            {
+                // Cancelled, or it could not run. Do not ask again this session --
+                // otherwise the next single step inside the same function re-offers
+                // the sweep the user just stopped.
+                m_autoCoverDeclined.insert(start);
+                return;
+            }
+            changed = true;
         }
-        refresh_idaview_anyway();
-        refresh_pseudocode_views();
+        if ( auto_indirect_wanted(start) )
+        {
+            if ( !auto_annotate_function(&m_mgr, fi.start_ea, fi.end_ea) )
+            {
+                m_autoCoverDeclined.insert(start);
+                return;
+            }
+            changed = retyped = true;
+        }
+        if ( changed )
+        {
+            refresh_idaview_anyway();
+            // New call types change what the decompiler writes, not just
+            // how it is painted.
+            if ( retyped )
+                redecompile_pseudocode_views();
+            else
+                refresh_pseudocode_views();
+        }
     }
 
     // Called from the stop handler. IDA brings the disassembly to the front,

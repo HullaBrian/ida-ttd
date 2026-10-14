@@ -1317,6 +1317,49 @@ namespace idattd
            .num("regions", (int64_t)regions.size()).raw("at_playhead", arr.done());
     }
 
+    // What the automatic indirect-call resolution does on a stop in the
+    // function at EA.
+    static void cmd_an_autocalls(const Args &a, JObj &out)
+    {
+        need_session();
+        ea_t ea = (ea_t)a.u64(0);
+        func_entry_info_t fi;
+        if ( !get_func_entry_info(&fi, ea) )
+            fail("no function there");
+        bool ok = auto_annotate_function(&mgr(), fi.start_ea, fi.end_ea);
+        out.boolean("done", ok).hex("start", fi.start_ea).hex("end", fi.end_ea);
+    }
+
+    // The Memory map listing's rows. Builds the session's change timeline
+    // first when it has none (as the menu does, without asking).
+    static void cmd_an_regions(const Args &a, JObj &out)
+    {
+        need_session();
+        uint64_t max = a.u64_or(0, 200);
+        MemoryMap &mm = mgr().memmap_for_update();
+        if ( mm.empty() )
+        {
+            bool cancelled = false;
+            build_memory_map(&mgr(), &mm, &cancelled);
+        }
+        std::vector<AddressRegion> regions;
+        address_space_at(&mgr(), &regions);
+        JArr arr;
+        for ( size_t i = 0; i < regions.size() && i < max; i++ )
+        {
+            const AddressRegion &r = regions[i];
+            JObj o;
+            o.hex("base", r.base).hex("size", (ea_t)r.size)
+             .str("protect", r.reserved ? qstring("reserved")
+                           : r.protect != 0 ? protection_text(r.protect) : qstring())
+             .str("type", region_type_name(r.type)).str("use", r.use)
+             .str("since", r.since.is_valid() ? format_position(r.since) : qstring());
+            arr.add(o.done());
+        }
+        out.num("changes", (int64_t)mm.size()).num("count", (int64_t)regions.size())
+           .raw("regions", arr.done());
+    }
+
     // ------------------------------------------------------------------ dispatch
 
     using Handler = void (*)(const Args &, JObj &);
@@ -1352,6 +1395,8 @@ namespace idattd
         { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
+        { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
+        { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },

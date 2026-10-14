@@ -94,6 +94,13 @@ namespace idattd
         uint64_t size = 0;
         uint32_t protect = 0;
         uint8_t  origin = RC_ALLOC;   // RC_ALLOC, RC_MAPVIEW or RC_PROTECT
+        // ITTD_REGION_*: what the memory is, when the recording says (Sogen),
+        // else what the call that made it implies.
+        uint32_t type = 0;
+        bool     reserved = false;    // reserved, not committed (when known)
+        // Where the call that made the region was made: what a listing
+        // travels to. Invalid for a region the recording reported as it was.
+        Position since = Position::none();
         ea_t     end() const { return (ea_t)(base + size); }
     };
 

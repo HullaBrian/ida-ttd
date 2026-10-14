@@ -6,6 +6,7 @@
 #include "analysis/bookmarks.h"
 #include "analysis/memsearch.h"
 #include "analysis/memmap.h"
+#include "analysis/address_space.h"
 #include "analysis/syscalls.h"
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
@@ -206,10 +207,10 @@ namespace idattd
     // The reconstructed memory map, as a timeline. One row per allocation,
     // protection change or free the recording made, in the order they happened.
     // Enter time-travels to the call that made the change.
-    class MemoryMapChooser : public chooser_t
+    class MemoryTimelineChooser : public chooser_t
     {
     public:
-        MemoryMapChooser(TraceManager *mgr, std::vector<RegionChange> &&rows);
+        MemoryTimelineChooser(TraceManager *mgr, std::vector<RegionChange> &&rows);
 
         size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
@@ -220,6 +221,34 @@ namespace idattd
         TraceManager             *m_mgr;
         std::vector<RegionChange> m_rows;   // frozen snapshot
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
+    // The memory map at the playhead: every region with its protection, kind
+    // and use (see address_space_at). Follows the playhead: each stop
+    // refreshes it. Enter jumps to the region; travelling to where it was
+    // made is on the context menu.
+    class MemoryMapChooser : public chooser_t
+    {
+    public:
+        static const char *const TITLE;
+        explicit MemoryMapChooser(TraceManager *mgr);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        ea_t    idaapi get_ea(size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+        cbret_t idaapi edit(size_t n) override;
+        cbret_t idaapi refresh(ssize_t n) override;
+
+        // Refresh the open listing, if there is one, for a new position.
+        static void refresh_open();
+
+    private:
+        void rebuild() const;
+
+        TraceManager *m_mgr;
+        mutable std::vector<AddressRegion> m_rows;
+        mutable Position                   m_at = Position::none();
     };
 
     // ---- TTD-specific action handlers --------------------------------------
@@ -335,6 +364,10 @@ namespace idattd
     };
 
     // Build the memory-region timeline and open it as a listing.
+    struct MemoryTimelineHandler : public TtdAction
+    { int idaapi activate(action_activation_ctx_t *) override; };
+
+    // The memory map at the playhead.
     struct MemoryMapHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
@@ -444,6 +477,13 @@ namespace idattd
     struct ClearIndirectCallsHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
+    // Toggle: resolve the indirect calls of each function you stop in.
+    struct AutoIndirectCallsHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
+
     // Start the replay for a database that was created from a .run file. This is
     // the one TTD action that exists while no trace is loaded, so it lives on
     // the Debugger menu rather than the TTD menu (which the plugin only builds
@@ -488,9 +528,11 @@ namespace idattd
         constexpr const char *CALL_TREE     = "idattd:call_tree";
         constexpr const char *BUFFERS       = "idattd:recover_buffers";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
+        constexpr const char *MEM_TIMELINE  = "idattd:memory_timeline";
         constexpr const char *REREAD        = "idattd:reread_memory";
         constexpr const char *INDIRECT      = "idattd:indirect_calls";
         constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";
+        constexpr const char *INDIRECT_AUTO = "idattd:indirect_calls_auto";
         constexpr const char *RUN_BACK     = "idattd:run_back";
         constexpr const char *STEP_OUT_BACK = "idattd:step_out_back";
         constexpr const char *RUN_TO_CUR_BACK = "idattd:run_to_cursor_back";

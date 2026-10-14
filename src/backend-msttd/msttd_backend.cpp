@@ -648,6 +648,13 @@ namespace idattd
             ti.tid     = (uint32_t)list[i]->Id;
             ti.created = to_core(list[i]->Lifetime.Min);
             ti.exited  = to_core(list[i]->Lifetime.Max);
+            // Only the 32-bit side of a WoW64 process is recorded, so an x86
+            // recording's TEB is the 32-bit one.
+            ea_t teb = (ea_t)(uint64_t)m_exec->GetTebAddress(list[i]->Id);
+            if ( m_owner->is64() )
+                ti.teb = teb;
+            else
+                ti.teb32 = teb;
             out.push_back(ti);
         }
         return out;

@@ -137,6 +137,8 @@ namespace idattd
         void do_after_stop();                    // timer body: re-activate the decompiler
         static int idaapi refocus_cb(void *ud);
         void do_auto_coverage();              // timer body: sweep the current function
+        bool auto_coverage_wanted(ea_t start) const;
+        bool auto_indirect_wanted(ea_t start) const;
         static int idaapi autocover_cb(void *ud);
         static int idaapi attach_cb(void *ud);  // timer body: wait for analysis, then offer
 
@@ -206,8 +208,10 @@ namespace idattd
         CallTreeHandler           m_callTree;
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
+        MemoryTimelineHandler     m_memTimeline;
         IndirectCallsHandler      m_indirect;
         ClearIndirectCallsHandler m_indirectClear;
+        AutoIndirectCallsHandler  m_indirectAuto;
 
         // Every TTD command, in menu order. Built once in the constructor.
         std::vector<ActionDesc> m_actions;

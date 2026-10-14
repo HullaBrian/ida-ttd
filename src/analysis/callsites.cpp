@@ -2,6 +2,7 @@
 #include "analysis/query_runner.h"
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
+#include "debugger/module_registry.h"
 
 namespace idattd
 {
@@ -106,6 +107,142 @@ namespace idattd
         nn.setblob(raw.data(), raw.size() * sizeof(uint64_t), (nodeidx_t)site, CS_TGTS_TAG);
     }
 
+    // Take off annotations a different recording of this program left. They
+    // cannot just be forgotten -- the comments and cross-references they wrote
+    // are in the database and the store is the only record of which ones were
+    // ours -- so they come off before a sweep writes its own.
+    static void clear_stale_annotations()
+    {
+        netnode nn(CS_NODE);
+        if ( nn != BADNODE && !trace_store_matches(nn) )
+        {
+            size_t stale = clear_indirect_call_annotations();
+            if ( stale != 0 )
+                msg("[ida-ttd] indirect calls: removed %d annotation(s) left "
+                    "from a different recording of this program.\n", (int)stale);
+        }
+    }
+
+    // Call site -> the targets it reached.
+    typedef std::map<ea_t, std::set<ea_t>> SiteTargets;
+
+    // Replay the recording and gather the indirect calls made from inside
+    // 'spans' (sorted). False when the backend could not answer.
+    static bool collect_sites(TraceManager *mgr, const std::vector<std::pair<ea_t, ea_t>> &spans,
+                              SiteTargets *seen, QueryResult *qr_out)
+    {
+        ITraceBackend *backend = mgr->backend();
+        std::map<ea_t, std::vector<IndirectTarget>> found;
+        QueryResult qr = run_query("Watching where indirect calls go", [&](ProgressSink *p)
+        {
+            return backend->query_indirect_targets(spans, false, &found, p);
+        });
+        if ( !qr.ran )
+        {
+            if ( qr_out != nullptr )
+                *qr_out = qr;
+            return false;
+        }
+
+        // A backend may report direct calls too (the decode below drops them),
+        // so the caps apply to what survives that.
+        for ( const auto &kv : found )
+        {
+            if ( seen->size() >= kMaxSites )
+            {
+                qr.truncated = true;
+                break;
+            }
+            insn_t insn;
+            if ( decode_insn(&insn, kv.first) <= 0 || !is_indirect_call(insn) )
+                continue;
+            // A site that reaches a great many targets is a dispatcher, and
+            // listing hundreds of them helps nobody. Keep the most frequent few.
+            std::vector<IndirectTarget> v = kv.second;
+            std::stable_sort(v.begin(), v.end(), [](const IndirectTarget &x, const IndirectTarget &y)
+                             { return x.hits > y.hits; });
+            std::set<ea_t> &dst = (*seen)[kv.first];
+            for ( const IndirectTarget &t : v )
+            {
+                if ( dst.size() >= kMaxTargetsPerSite )
+                    break;
+                if ( t.is_call && t.target != BADADDR )
+                    dst.insert(t.target);
+            }
+        }
+        if ( qr_out != nullptr )
+            *qr_out = qr;
+        return true;
+    }
+
+    // Write the answers for the sites in [lo, hi) into the database.
+    static void write_annotations(TraceManager *mgr, const SiteTargets &seen,
+                                  ea_t lo, ea_t hi, CallSiteResult *res)
+    {
+        for ( auto it = seen.lower_bound(lo); it != seen.end() && it->first < hi; ++it )
+        {
+            ea_t site = it->first;
+            insn_t insn;
+            // Only annotate an address that is still an indirect call: a direct
+            // call already names its target, and an address IDA no longer has
+            // code at is not a call site.
+            if ( decode_insn(&insn, site) <= 0 || !is_indirect_call(insn) )
+                continue;
+
+            std::vector<ea_t> targets(it->second.begin(), it->second.end());
+            if ( targets.empty() )
+                continue;
+
+            // decode_insn() will happily decode bytes that are not a defined
+            // instruction, and a cross-reference from an address with no item at
+            // it is rejected outright ("bad call add_cref: no defined item at
+            // 'from'"). Define the instruction first, and if the address still
+            // will not become one, annotate nothing there.
+            if ( !is_code(get_flags(site)) || get_item_head(site) != site )
+                create_insn(site);
+            if ( !is_code(get_flags(site)) || get_item_head(site) != site )
+            {
+                res->undefined++;
+                continue;
+            }
+
+            qstring cmt;
+            if ( targets.size() == 1 )
+            {
+                cmt.sprnt("TTD: calls %s", target_name(mgr, targets[0]).c_str());
+            }
+            else
+            {
+                cmt.sprnt("TTD: calls %d different targets:", (int)targets.size());
+                for ( ea_t t : targets )
+                {
+                    cmt.append("\n  ");
+                    cmt.append(target_name(mgr, t));
+                }
+                res->polymorphic++;
+            }
+            set_cmt(site, cmt.c_str(), true);
+
+            // The cross-reference is the part that makes this more than a note:
+            // it puts the target in the xref list and joins the graph up.
+            for ( ea_t t : targets )
+                add_cref(site, t, fl_CN);
+
+            // The call type, for a site with one target and nothing set there.
+            tinfo_t existing, proto;
+            if ( targets.size() == 1 && !get_tinfo(&existing, site)
+              && callee_type(targets[0], &proto) && set_tinfo(site, &proto) )
+            {
+                remember_type(site);
+                res->typed++;
+            }
+
+            remember(site, targets);
+            res->sites++;
+            res->targets += targets.size();
+        }
+    }
+
     bool annotate_indirect_calls(TraceManager *mgr,
                                  const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                  CallSiteResult *out)
@@ -131,133 +268,120 @@ namespace idattd
             return false;
         }
 
-        // Annotations recorded against a different recording describe calls that
-        // this one did not make. They cannot just be forgotten -- the comments
-        // and cross-references they wrote are in the database and the store is
-        // the only record of which ones were ours -- so they are taken back off
-        // before this sweep writes its own.
-        {
-            netnode nn(CS_NODE);
-            if ( nn != BADNODE && !trace_store_matches(nn) )
-            {
-                size_t stale = clear_indirect_call_annotations();
-                if ( stale != 0 )
-                    msg("[ida-ttd] indirect calls: removed %d annotation(s) left "
-                        "from a different recording of this program.\n", (int)stale);
-            }
-        }
+        clear_stale_annotations();
 
-        ITraceBackend *backend = mgr->backend();
-        std::map<ea_t, std::vector<IndirectTarget>> found;
-        QueryResult qr = run_query("Watching where indirect calls go", [&](ProgressSink *p)
-        {
-            return backend->query_indirect_targets(spans, false, &found, p);
-        });
-        if ( !qr.ran )
+        SiteTargets seen;
+        QueryResult qr;
+        if ( !collect_sites(mgr, spans, &seen, &qr) )
         {
             warning("This recording's backend could not report indirect call targets.");
             return false;
         }
 
-        // A backend may report direct calls too (the decode below drops them),
-        // so the caps apply to what survives that.
-        std::map<ea_t, std::set<ea_t>> seen;   // call site -> targets it reached
-        bool hit_cap = qr.truncated;
-        for ( const auto &kv : found )
-        {
-            if ( seen.size() >= kMaxSites )
-            {
-                hit_cap = true;
-                break;
-            }
-            insn_t insn;
-            if ( decode_insn(&insn, kv.first) <= 0 || !is_indirect_call(insn) )
-                continue;
-            // A site that reaches a great many targets is a dispatcher, and
-            // listing hundreds of them helps nobody. Keep the most frequent few.
-            std::vector<IndirectTarget> v = kv.second;
-            std::stable_sort(v.begin(), v.end(), [](const IndirectTarget &x, const IndirectTarget &y)
-                             { return x.hits > y.hits; });
-            std::set<ea_t> &dst = seen[kv.first];
-            for ( const IndirectTarget &t : v )
-            {
-                if ( dst.size() >= kMaxTargetsPerSite )
-                    break;
-                if ( t.is_call && t.target != BADADDR )
-                    dst.insert(t.target);
-            }
-        }
-
-        // ---- write the answers into the database ----
         show_wait_box("HIDECANCEL\nAnnotating call sites...");
-        for ( const auto &kv : seen )
-        {
-            ea_t site = kv.first;
-            insn_t insn;
-            // Only annotate an address that is still an indirect call: a direct
-            // call already names its target, and an address IDA no longer has
-            // code at is not a call site.
-            if ( decode_insn(&insn, site) <= 0 || !is_indirect_call(insn) )
-                continue;
-
-            std::vector<ea_t> targets(kv.second.begin(), kv.second.end());
-            if ( targets.empty() )
-                continue;
-
-            // decode_insn() will happily decode bytes that are not a defined
-            // instruction, and a cross-reference from an address with no item at
-            // it is rejected outright ("bad call add_cref: no defined item at
-            // 'from'"). Define the instruction first, and if the address still
-            // will not become one, annotate nothing there.
-            if ( !is_code(get_flags(site)) || get_item_head(site) != site )
-                create_insn(site);
-            if ( !is_code(get_flags(site)) || get_item_head(site) != site )
-            {
-                res.undefined++;
-                continue;
-            }
-
-            qstring cmt;
-            if ( targets.size() == 1 )
-            {
-                cmt.sprnt("TTD: calls %s", target_name(mgr, targets[0]).c_str());
-            }
-            else
-            {
-                cmt.sprnt("TTD: calls %d different targets:", (int)targets.size());
-                for ( ea_t t : targets )
-                {
-                    cmt.append("\n  ");
-                    cmt.append(target_name(mgr, t));
-                }
-                res.polymorphic++;
-            }
-            set_cmt(site, cmt.c_str(), true);
-
-            // The cross-reference is the part that makes this more than a note:
-            // it puts the target in the xref list and joins the graph up.
-            for ( ea_t t : targets )
-                add_cref(site, t, fl_CN);
-
-            // The call type, for a site with one target and nothing set there.
-            tinfo_t existing, proto;
-            if ( targets.size() == 1 && !get_tinfo(&existing, site)
-              && callee_type(targets[0], &proto) && set_tinfo(site, &proto) )
-            {
-                remember_type(site);
-                res.typed++;
-            }
-
-            remember(site, targets);
-            res.sites++;
-            res.targets += targets.size();
-        }
+        write_annotations(mgr, seen, 0, BADADDR, &res);
         hide_wait_box();
 
-        res.truncated = hit_cap;
+        res.truncated = qr.truncated;
         res.cancelled = qr.cancelled;
         if ( out != nullptr )
             *out = res;
+        return true;
+    }
+
+    //=======================================================================
+    // Automatic resolution in the function you stop in
+    //=======================================================================
+    // The sweep cannot be narrowed (see annotate_indirect_calls), so one is
+    // paid per module rather than per function: the first stop in a module
+    // collects every indirect call made from it, and each function stopped in
+    // afterwards is annotated from that. Code in no module is one more scope:
+    // everything between the modules.
+    static const nodeidx_t CS_AUTO_IDX = 0;
+    static const uchar     CS_AUTO_TAG = 'A';
+
+    struct AutoScope
+    {
+        bool        ran = false;
+        SiteTargets sites;
+    };
+    static std::map<ea_t, AutoScope> g_autoScopes;   // module base, or 0
+    static std::set<ea_t>            g_autoDone;     // functions annotated
+
+    bool callsites_auto_enabled()
+    {
+        netnode nn(CS_NODE);
+        return nn != BADNODE && nn.altval(CS_AUTO_IDX, CS_AUTO_TAG) == 2;   // off by default
+    }
+
+    void set_callsites_auto_enabled(bool on)
+    {
+        netnode nn(CS_NODE, 0, true);
+        if ( nn != BADNODE )
+            nn.altset(CS_AUTO_IDX, on ? 2 : 1, CS_AUTO_TAG);
+    }
+
+    bool callsites_function_done(ea_t start)
+    {
+        return g_autoDone.find(start) != g_autoDone.end();
+    }
+
+    void callsites_session_ended()
+    {
+        g_autoScopes.clear();
+        g_autoDone.clear();
+    }
+
+    bool auto_annotate_function(TraceManager *mgr, ea_t start, ea_t end)
+    {
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr || end <= start )
+            return false;
+
+        // The scope the function belongs to.
+        const ModuleRegistry &mods = mgr->modules();
+        ea_t key = 0;
+        std::vector<std::pair<ea_t, ea_t>> spans;
+        ea_t mlo = 0, mhi = 0;
+        if ( mods.range_at(start, mlo, mhi) )
+        {
+            key = mlo;
+            spans.push_back({ mlo, mhi });
+        }
+        else
+        {
+            const ea_t HI = mgr->is64() ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
+            ea_t cur = 0x10000;
+            for ( const ModuleRegistry::Span &sp : mods.spans() )
+            {
+                if ( sp.base > cur )
+                    spans.push_back({ cur, sp.base });
+                if ( sp.end > cur )
+                    cur = sp.end;
+            }
+            if ( cur < HI )
+                spans.push_back({ cur, HI });
+        }
+
+        AutoScope &sc = g_autoScopes[key];
+        if ( !sc.ran )
+        {
+            clear_stale_annotations();
+            QueryResult qr;
+            if ( !collect_sites(mgr, spans, &sc.sites, &qr) || qr.cancelled )
+            {
+                // Keep nothing from a sweep that did not finish.
+                sc.sites.clear();
+                return false;
+            }
+            sc.ran = true;
+        }
+
+        CallSiteResult res;
+        write_annotations(mgr, sc.sites, start, end, &res);
+        g_autoDone.insert(start);
+        if ( res.sites != 0 )
+            msg("[ida-ttd] resolved %d indirect call(s) in the function at %a.\n",
+                (int)res.sites, start);
         return true;
     }
 
@@ -296,6 +420,9 @@ namespace idattd
             i = next;
         }
         hide_wait_box();
+        // What was annotated automatically is gone, so stopping there again
+        // should put it back.
+        g_autoDone.clear();
         return n;
     }
 }

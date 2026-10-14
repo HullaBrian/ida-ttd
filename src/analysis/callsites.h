@@ -42,4 +42,19 @@ namespace idattd
     // Remove the comments, cross-references and call types a previous run
     // wrote.
     size_t clear_indirect_call_annotations();
+
+    // Automatic resolution in the function you stop in. Off by default,
+    // remembered per database.
+    bool callsites_auto_enabled();
+    void set_callsites_auto_enabled(bool on);
+    // Annotated by auto_annotate_function() in this session.
+    bool callsites_function_done(ea_t start);
+    // The session ended: drop the sweeps kept for it.
+    void callsites_session_ended();
+
+    // Annotate the indirect calls made from [start, end). The first function
+    // in a module pays for a sweep of that whole module (or of all code in no
+    // module), shown behind a cancellable wait box; later ones in it are
+    // answered from that sweep. False when it did not complete.
+    bool auto_annotate_function(TraceManager *mgr, ea_t start, ea_t end);
 }

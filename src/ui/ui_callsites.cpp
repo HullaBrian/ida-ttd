@@ -69,4 +69,21 @@ namespace idattd
         redecompile_pseudocode_views();
         return 1;
     }
+
+    int idaapi AutoIndirectCallsHandler::activate(action_activation_ctx_t *)
+    {
+        bool on = !callsites_auto_enabled();
+        set_callsites_auto_enabled(on);
+        update_action_checked(actions::INDIRECT_AUTO, on);
+        msg("[ida-ttd] automatic resolution of indirect calls in the function you "
+            "stop in is now %s.\n", on ? "on" : "off");
+        return 1;
+    }
+
+    action_state_t idaapi AutoIndirectCallsHandler::update(action_update_ctx_t *)
+    {
+        // As for automatic highlighting: the answer lives in the database.
+        update_action_checked(actions::INDIRECT_AUTO, callsites_auto_enabled());
+        return AST_ENABLE_ALWAYS;
+    }
 }

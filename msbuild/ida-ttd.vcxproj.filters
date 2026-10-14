@@ -91,6 +91,9 @@
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h">
       <Filter>debugger</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\address_space.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -218,6 +221,9 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\core\diag.cpp">
       <Filter>core</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\address_space.cpp">
+      <Filter>analysis</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp">
       <Filter>analysis</Filter>

@@ -138,6 +138,8 @@ namespace idattd
                 r.size    = c.size;
                 r.protect = c.protect;
                 r.origin  = c.kind;
+                r.type    = c.kind == RC_MAPVIEW ? ITTD_REGION_MAPPED : ITTD_REGION_PRIVATE;
+                r.since   = c.call_pos.is_valid() ? c.call_pos : c.pos;
                 live[r.base] = r;
                 break;
             }
@@ -164,6 +166,7 @@ namespace idattd
                     r.size    = c.size;
                     r.protect = c.protect;
                     r.origin  = RC_PROTECT;
+                    r.since   = c.call_pos.is_valid() ? c.call_pos : c.pos;
                     live[r.base] = r;
                     return;
                 }
@@ -203,7 +206,8 @@ namespace idattd
                 // The range is now what the entry says, whatever it was before.
                 if ( c.size == 0 )
                     return;
-                carve(live, c.base, (ea_t)(c.base + c.size), nullptr);
+                std::vector<Region> was;
+                carve(live, c.base, (ea_t)(c.base + c.size), &was);
                 static const uint32_t MEM_FREE_ = 0x10000, MEM_COMMIT_ = 0x1000;
                 if ( c.state == MEM_FREE_ )
                     return;
@@ -214,6 +218,14 @@ namespace idattd
                 r.protect = c.state == MEM_COMMIT_ ? c.protect : 0x01 /* PAGE_NOACCESS */;
                 r.origin  = c.region_type == ITTD_REGION_MAPPED || c.region_type == ITTD_REGION_SECTION
                           ? RC_MAPVIEW : RC_ALLOC;
+                r.type     = c.region_type;
+                r.reserved = c.state != MEM_COMMIT_;
+                // A commit or protection change inside a region keeps the
+                // position the region first appeared at.
+                r.since    = c.pos;
+                for ( const Region &w : was )
+                    if ( w.base <= r.base && w.type == r.type && w.since.is_valid() && w.since < r.since )
+                        r.since = w.since;
                 live[r.base] = r;
                 break;
             }

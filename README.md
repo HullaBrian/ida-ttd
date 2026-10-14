@@ -41,27 +41,30 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 - Execution coverage colors the instructions that actually ran, in both the
   disassembly and the decompiler.
 - Indirect calls are resolved to the targets they really reached and written
-  back as comments and cross-references.
+  back as comments and cross-references -- on request, or automatically for
+  each function you stop in.
 
 **Trace-wide queries**
 
 - Find every call to a function, or to a wildcard pattern such as
   `kernel32!Virtual*`, with arguments and return values.
 - Find every read, write or execute of an address or range.
-- Reconstruct the process memory map: every allocation, protection change and
-  free, with each live region exposed as an IDA segment carrying its real
-  permissions.
-
-**Sogen recordings only**
-
+- The memory map at the current position: every region with its base, size,
+  protection, type and use -- module sections, stacks, TEBs, the PEB, heaps,
+  and what the program allocated -- following the playhead as you step.
+- The memory timeline: every allocation, protection change and free, with each
+  live region exposed as an IDA segment carrying its real permissions.
 - Every syscall the program made, with its result and arguments.
 - Self-modifying code: every instruction the program wrote before running it,
   with the write that made it.
 - Strings and buffers recovered by replaying the recording: every string the
   program had in memory and every buffer it filled, with when and by what.
-  Where the replay cannot follow the recording on this machine (its files
+  Where a Sogen replay cannot follow the recording on this machine (its files
   differ from the ones the recording ran against), the scan goes on from the
   next checkpoint and says how much it skipped.
+
+**Sogen recordings only**
+
 - Fork the recording: TTD > Fork here makes the current position a fork.
   Change registers (the registers window) and memory (the hex view, or Edit >
   Patch program) as on a live target; the views show the changes there, and
@@ -158,11 +161,16 @@ the call.
 
 ### Map allocated memory
 
-Run **TTD > Memory map**. The plugin replays the recording once and lists every
-allocation, protection change and free, with the code that requested it. Regions
-live at the current position become named IDA segments with their real
-permissions, so an RWX buffer is visible as one. The map is saved in the
-database.
+Run **TTD > Memory map** for the address space at the current position: each
+region's base, size, protection, type and use, with writable-and-executable
+memory in bold. It follows the playhead as you step. Double-click a region to go
+to it; Ctrl+E travels to where it was allocated.
+
+**TTD > Analysis > Memory timeline** lists every allocation, protection change
+and free in order, with the code that requested it. Building it replays the
+recording once and is saved in the database. Regions live at the current
+position become named IDA segments with their real permissions, so an RWX
+buffer is visible as one.
 
 ### Re-read memory the database got wrong
 
