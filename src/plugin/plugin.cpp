@@ -8,6 +8,8 @@
 #include "plugin/script_api.h"
 #include "debugger/registers.h"
 #include "core/diag.h"
+#include "plugin/ida_ttd_module.hh"
+#include <expr.hpp>
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
 // actions, including the "continue backwards" action IDA has no native icon for.
@@ -80,6 +82,34 @@ namespace idattd
     };
     static MenuSepHandler g_menuSep;
 
+    // `import ida_ttd` in IDAPython, with nothing installed: the module
+    // (scripts/ida_ttd.py, embedded by msbuild/gen_python_module.py) goes into
+    // sys.modules. A module of that name loaded from a file of the user's
+    // own is left alone; an earlier copy of ours is replaced. Safe to call
+    // more than once, and a no-op without IDAPython.
+    static void register_python_module()
+    {
+        extlang_object_t py = find_extlang_by_name("Python");
+        if ( py == nullptr || py->eval_snippet == nullptr )
+            return;
+        qstring code =
+            "def _ida_ttd_register(b64):\n"
+            "    import base64, sys, types\n"
+            "    old = sys.modules.get('ida_ttd')\n"
+            "    if old is not None and getattr(old, '__file__', '') != '<ida-ttd plugin>':\n"
+            "        return\n"
+            "    m = types.ModuleType('ida_ttd')\n"
+            "    m.__file__ = '<ida-ttd plugin>'\n"
+            "    exec(compile(base64.b64decode(b64).decode('utf-8'), 'ida_ttd.py', 'exec'), m.__dict__)\n"
+            "    sys.modules['ida_ttd'] = m\n"
+            "_ida_ttd_register('";
+        code.append(IDA_TTD_MODULE_B64);
+        code.append("')\n");
+        qstring err;
+        if ( !py->eval_snippet(code.c_str(), &err) )
+            msg("[ida-ttd] the ida_ttd Python module could not be registered: %s\n", err.c_str());
+    }
+
     // Flag the call stack + stack views for refresh. We build the widget mask by
     // hand instead of via IWID_*/builtin_widget_mask_from_id, whose uint128 <<
     // is defined out-of-line and not present in ida.lib (link error on MSVC).
@@ -100,6 +130,9 @@ namespace idattd
         // ttd("...") for scripts: how the plugin is driven and tested without
         // a person at the UI (plugin/script_api.h).
         install_script_api(this);
+        // In an idalib worker no ui_ready_to_run follows; IDAPython is
+        // loaded already when it is there at all.
+        register_python_module();
 
         configure_debugger(m_debugger, inf_is_64bit());
         m_tracer.set_manager(&m_mgr);
@@ -1479,6 +1512,8 @@ namespace idattd
                 // Everything is loaded by now, decompiler included. This is the
                 // point the SDK documents for plugins that need the finished UI.
                 p->try_hook_decompiler();
+                // IDAPython is surely loaded by now.
+                register_python_module();
                 // Starting a debugger session from inside a UI notification is
                 // asking for reentrancy, and the prompt is modal. Hand it back to
                 // the message loop and do it a turn later.

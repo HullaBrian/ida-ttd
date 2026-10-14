@@ -7,18 +7,47 @@ ttd("command arg arg ...")   ->   JSON string
 ```
 
 Anything that can evaluate IDC can drive it: IDAPython, the IDC command line,
-or an MCP server that runs Python inside IDA. It exists so the plugin can be
-tested by a script instead of by someone describing what they saw. The
-`scripts/ida_ttd.py` module wraps it for Python.
+or an MCP server that runs Python inside IDA -- a person's script or an AI
+agent's. The `ida_ttd` Python module wraps it.
+
+## The Python module
+
+The plugin registers `ida_ttd` with IDAPython when it loads, so nothing needs
+installing: `import ida_ttd` works in the console, in a script and in an MCP
+server's Python. (Its source is `scripts/ida_ttd.py`; where the plugin is not
+loaded, exec() that file and call `ensure_loaded()`.)
 
 ```python
-import ida_ttd                       # or exec() the file's source
-ida_ttd.ensure_loaded()              # an idalib worker may not load plugins itself
+import ida_ttd
+
+s = ida_ttd.Session()                # the TTD debugger session in this IDA
+s.start()                            # replay this database's recording
+s.position, hex(s.pc)
+s.step(); s.step_over(back=True); s.goto("1A:2F")
+s.regs()["rax"]                      # ints, not strings
+s.read(s.reg("rsp"), 0x40)           # bytes
+[c["name"] for c in s.syscalls()]
+s.calls_to("kernel32!CreateFileW")   # each call, with arguments and return value
+s.accesses(0x1234, 0x1238, "w")      # every write to those bytes
+s.origin("rax")                      # where rax's value came from, hop by hop
+s.origin(0x1234, 8)                  # ... or 8 bytes of memory
+s.handles(); s.memory_map(); s.self_modifying()
+s.strings(8); s.buffers(); s.call_tree(); s.heat()
+
+with ida_ttd.Recording(r"C:\traces\run.sogttd") as r:   # no debugger at all
+    r.seek("first"); r.step(); r.regs(); r.read(0x401000, 16)
+    r.breakpoints((0x404000, 8, "w")); r.run()
+```
+
+Answers come back as Python values: every `"0x..."` string becomes an int,
+memory becomes `bytes`. Positions stay strings in the recording's own syntax
+and are passed back as they are. A failure raises `ida_ttd.TtdError` with
+the plugin's reason. Below the classes, `ida_ttd.call(command, *args)` sends
+any command and returns its JSON answer as a dict:
+
+```python
 ida_ttd.call("backends")
-ida_ttd.call("drv.open", r"C:\traces\run.sogttd")
 ida_ttd.call("drv.seek", "f4240")    # 1,000,000: numbers are hex
-r = ida_ttd.call("drv.regs")["regs"]
-ida_ttd.h(r["rip"])
 ```
 
 ## Conventions

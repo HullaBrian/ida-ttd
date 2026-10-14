@@ -55,6 +55,16 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 - The memory timeline: every allocation, protection change and free, with each
   live region exposed as an IDA segment carrying its real permissions.
 - Every syscall the program made, with its result and arguments.
+- Every handle the program opened and closed -- files, registry keys,
+  sockets, pipes, processes, threads, sections and the rest -- with its name,
+  where it was opened and where it was closed.
+- Where a value came from: a register or memory followed back through the
+  instructions that copied it -- moves, pushes and pops, string and SSE copies
+  -- to the instruction that computed it, a constant, or the syscall whose
+  result it was.
+- A memory heatmap: which pages the program read, wrote and ran from, and when.
+- A Python API (`import ida_ttd`) over all of it, for scripts and AI agents;
+  see [docs/scripting.md](docs/scripting.md).
 - Self-modifying code: every instruction the program wrote before running it,
   with the write that made it.
 - Strings and buffers recovered from the recording's memory writes: every
