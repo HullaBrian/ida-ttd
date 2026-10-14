@@ -206,7 +206,6 @@ namespace idattd
         CallTreeHandler           m_callTree;
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
-        ClearMemoryMapHandler     m_memMapClear;
         IndirectCallsHandler      m_indirect;
         ClearIndirectCallsHandler m_indirectClear;
 
@@ -239,6 +238,8 @@ namespace idattd
             ICO_FUNCTION,
             ICO_CALL_TREE,
             ICO_MEMORY,
+            ICO_SYSCALLS,
+            ICO_MEMORY_MAP,
             ICO_COUNT
         };
         // One array rather than 13 handles, so the destructor frees them all

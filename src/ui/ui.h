@@ -338,9 +338,6 @@ namespace idattd
     struct MemoryMapHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
-    struct ClearMemoryMapHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
-
     // Find every read, write or execute of an address over the whole trace.
     struct MemSearchHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
@@ -491,7 +488,6 @@ namespace idattd
         constexpr const char *CALL_TREE     = "idattd:call_tree";
         constexpr const char *BUFFERS       = "idattd:recover_buffers";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
-        constexpr const char *MEM_MAP_CLR   = "idattd:memory_map_clear";
         constexpr const char *REREAD        = "idattd:reread_memory";
         constexpr const char *INDIRECT      = "idattd:indirect_calls";
         constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";

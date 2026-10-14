@@ -170,9 +170,9 @@ IDA caches the bytes at an address the first time it shows them. A range read
 before its module was mapped, or before the write that produced its contents was
 replayed, keeps that first answer.
 
-Select the range and run **TTD > Re-read memory from the recording**, also on the
-disassembly right-click menu. The cached bytes are discarded, the range is
-rebuilt from the recording's writes, and it is disassembled again.
+Select the range, right-click it and choose **TTD > Re-read memory from the recording**.
+The cached bytes are discarded, the range is rebuilt from the recording's
+writes, and it is disassembled again.
 
 ### Default shortcuts
 

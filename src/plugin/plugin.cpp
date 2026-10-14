@@ -224,6 +224,8 @@ namespace idattd
         m_icons[ICO_FUNCTION]        = svg(icons_function_svg,        sizeof(icons_function_svg) - 1);
         m_icons[ICO_CALL_TREE]       = svg(icons_call_tree_svg,       sizeof(icons_call_tree_svg) - 1);
         m_icons[ICO_MEMORY]          = svg(icons_memory_svg,          sizeof(icons_memory_svg) - 1);
+        m_icons[ICO_SYSCALLS]        = svg(icons_syscalls_svg,        sizeof(icons_syscalls_svg) - 1);
+        m_icons[ICO_MEMORY_MAP]      = svg(icons_memory_map_svg,      sizeof(icons_memory_map_svg) - 1);
     }
 
     // Every TTD command, in the order it appears on the TTD menu. Adding one
@@ -269,6 +271,16 @@ namespace idattd
               "anywhere in the recording",
               m_icons[ICO_MEMORY], ITEM, MENU },
 
+            // What the program asked of the system, over the whole recording.
+            { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
+              "Syscalls: every syscall the program made, with its result and "
+              "arguments",
+              m_icons[ICO_SYSCALLS], GROUP, MENU },
+            { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
+              "Memory map: every allocation, protection change and free the recording "
+              "made, with each live region as a segment",
+              m_icons[ICO_MEMORY_MAP], ITEM, MENU },
+
             // Code: what the recording says about the code in front of you,
             // written into the database.
             { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
@@ -279,30 +291,27 @@ namespace idattd
               "Highlight executed code: replay the recording and color every "
               "instruction in the chosen scope that actually ran",
               NO_ICON, ITEM, MENU, SUB_CODE },
-            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
-              "Clear execution highlight: remove the coverage color from the whole "
-              "database",
-              NO_ICON, ITEM, MENU, SUB_CODE },
             { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
               "Resolve indirect calls: record where each one actually went, as a "
               "comment and a cross-reference",
-              NO_ICON, ITEM, MENU, SUB_CODE },
-            { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
-              "Clear resolved indirect calls: remove the comments and cross-references "
-              "a previous run added",
               NO_ICON, ITEM, MENU, SUB_CODE },
             // The one automatic behavior.
             { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
               "Highlight functions automatically: measure and color each function "
               "the first time you stop in it",
               NO_ICON, GROUP, MENU, SUB_CODE },
+            // Undoing the above, in a section of their own.
+            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
+              "Clear execution highlight: remove the coverage color from the whole "
+              "database",
+              NO_ICON, GROUP, MENU, SUB_CODE },
+            { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
+              "Clear resolved indirect calls: remove the comments and cross-references "
+              "a previous run added",
+              NO_ICON, ITEM, MENU, SUB_CODE },
 
-            // Analysis: what the program did, recovered from the whole
-            // recording.
-            { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
-              "Syscalls: every syscall the program made, with its result and "
-              "arguments",
-              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+            // Analysis: what the program did, recovered by replaying the
+            // whole recording.
             { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
               "Self-modifying code: every instruction the program wrote before "
               "running it, with the write",
@@ -315,18 +324,11 @@ namespace idattd
               "Recover buffers: replay the recording and list every buffer the "
               "program filled, with the code that wrote it",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
-            { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
-              "Memory map: every allocation, protection change and free the recording "
-              "made, with each live region as a segment",
-              NO_ICON, GROUP, MENU, SUB_ANALYSIS },
+            // On the disassembly's right-click menu only.
             { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
               "Re-read memory: discard what IDA cached for the selected range, rebuild "
               "it from the recording and disassemble it again",
-              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
-            { actions::MEM_MAP_CLR, "Clear memory map", &m_memMapClear, nullptr,
-              "Clear memory map: forget the reconstructed regions and go back to one "
-              "range over user space",
-              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
+              NO_ICON, ITEM, TOOLBAR_ONLY },
 
             // Forks, in a section of their own.
             { actions::FORK, "Fork here", &m_fork, nullptr,

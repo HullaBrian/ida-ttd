@@ -223,20 +223,4 @@ namespace idattd
         ch->choose();
         return 1;
     }
-
-    int idaapi ClearMemoryMapHandler::activate(action_activation_ctx_t *)
-    {
-        MemoryMap::erase();
-        if ( mgr() != nullptr )
-        {
-            mgr()->memmap_for_update().clear();
-            // Back to one flat range over user space, which is what the debugger
-            // reported before any of this existed.
-            invalidate_dbgmem_config();
-        }
-        msg("[ida-ttd] memory map cleared; the debugger is back to reporting user "
-            "space as a single range.\n");
-        refresh_idaview_anyway();
-        return 1;
-    }
 }
