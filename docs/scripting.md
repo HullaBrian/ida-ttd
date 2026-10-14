@@ -12,6 +12,8 @@ agent's. The `ida_ttd` Python module wraps it.
 
 ## The Python module
 
+[python.md](python.md) is the guide to it; this is the short version.
+
 The module is `scripts/ida_ttd.py`, installed as
 `plugins\ida-ttd-python\ida_ttd.py`. The plugin puts that folder on
 IDAPython's `sys.path` when it loads, so `import ida_ttd` works in the

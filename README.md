@@ -68,7 +68,7 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   result it was.
 - A memory heatmap: which pages the program read, wrote and ran from, and when.
 - A Python API (`import ida_ttd`) over all of it, for scripts and AI agents;
-  see [docs/scripting.md](docs/scripting.md).
+  see [docs/python.md](docs/python.md).
 - Self-modifying code: every instruction the program wrote before running it,
   with the write that made it.
 - Strings and buffers recovered from the recording's memory writes: every
