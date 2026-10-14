@@ -36,7 +36,18 @@ namespace idattd
         const win32meta::FuncSig *sig = nullptr;
         bool                      is64 = true;
         std::vector<DecodedArg>   args;
+        // Values found for out parameters that point at an integer or a
+        // handle, by parameter (ITraceBackend::query_out_values): used in
+        // place of reading memory at the return, where Microsoft TTD does not
+        // have the kernel's writes.
+        std::vector<std::optional<uint64_t>> out_values;
     };
+
+    // The out parameters of a decoded call that point at an integer or a
+    // handle: parameter index and the integer's width.
+    std::vector<std::pair<size_t, uint32_t>> api_int_outs(const DecodedCall &call);
+    // "name=value, ..." of a decoded call.
+    qstring api_args_text(const DecodedCall &call);
 
     // At the call site, before the call: every parameter of 'sig'. 'is64' is
     // the calling convention (x64, or x86 stdcall/cdecl).

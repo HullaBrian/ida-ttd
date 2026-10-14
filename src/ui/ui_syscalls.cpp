@@ -7,23 +7,30 @@ namespace idattd
     //=======================================================================
     // SyscallChooser
     //=======================================================================
-    static const int   g_sc_widths[] = { 16, 8, 30, 36, 60, 80 };
-    static const char *g_sc_header[] = { "Position", "Thread", "Syscall", "Result",
-                                         "Arguments (r10, rdx, r8, r9)", "Decoded (Ctrl+E)" };
+    static const int   g_sc_widths[] = { 16, 8, 30, 36, 100 };
+    static const char *g_sc_header[] = { "Position", "Thread", "Syscall", "Result", "Arguments" };
 
-    // Arguments are read in chunks as rows are shown: each one is a register
-    // reconstruction, and a long recording makes tens of thousands of calls.
+    // A call without a decoding shows its registers, read in chunks as rows
+    // are drawn: each is a register reconstruction.
     static const size_t ARG_CHUNK = 64;
 
-    SyscallChooser::SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls)
-        : chooser_t(CH_CAN_EDIT, qnumber(g_sc_widths), g_sc_widths, g_sc_header, nullptr),
-          m_mgr(mgr), m_calls(std::move(calls))
+    SyscallChooser::SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls,
+                                   std::vector<qstring> &&decoded)
+        : chooser_t(CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_sc_widths), g_sc_widths, g_sc_header, nullptr),
+          m_mgr(mgr), m_calls(std::move(calls)), m_decoded(std::move(decoded))
     {
-        popup_names[POPUP_EDIT] = "Decode arguments";
+        popup_names[POPUP_EDIT]    = "Decode arguments";
+        popup_names[POPUP_REFRESH] = "Rebuild from the recording";
         m_title.sprnt("TTD syscalls [%d]", (int)m_calls.size());
         title = m_title.c_str();
-        m_args.resize(m_calls.size());
-        m_argsRead.resize((m_calls.size() + ARG_CHUNK - 1) / ARG_CHUNK, false);
+        reset_rows();
+    }
+
+    void SyscallChooser::reset_rows()
+    {
+        m_decoded.resize(m_calls.size());
+        m_args.assign(m_calls.size(), std::nullopt);
+        m_argsRead.assign((m_calls.size() + ARG_CHUNK - 1) / ARG_CHUNK, false);
     }
 
     size_t idaapi SyscallChooser::get_count() const
@@ -70,70 +77,16 @@ namespace idattd
         if ( c.result <= 0xFFFFFFFFull && (st & 0xC0000000u) == 0xC0000000u && attrs != nullptr )
             attrs->color = 0xC0C0FF;     // BGR: light red
 
+        if ( !m_decoded[n].empty() )
+        {
+            cols->at(4) = m_decoded[n];
+            return;
+        }
         const std::optional<SyscallArgs> &a = args_of(n);
         if ( a.has_value() )
-            cols->at(4).sprnt("0x%llX, 0x%llX, 0x%llX, 0x%llX",
+            cols->at(4).sprnt("r10=0x%llX, rdx=0x%llX, r8=0x%llX, r9=0x%llX",
                               (uint64_t)(*a)[0], (uint64_t)(*a)[1],
                               (uint64_t)(*a)[2], (uint64_t)(*a)[3]);
-        auto d = m_decoded.find(n);
-        if ( d != m_decoded.end() )
-            cols->at(5) = d->second;
-    }
-
-    // Decoding one call costs two seeks -- the arguments at the call, the out
-    // parameters just after it -- which is too much to pay for every row
-    // drawn, so it is done when asked.
-    chooser_t::cbret_t idaapi SyscallChooser::edit(size_t n)
-    {
-        if ( n >= m_calls.size() || m_mgr == nullptr || !m_mgr->is_active() )
-            return cbret_t(n, NOTHING_CHANGED);
-        const SyscallEvent &c = m_calls[n];
-        const win32meta::FuncSig *sig = api_signature(c.name.c_str());
-        if ( sig == nullptr )
-        {
-            const qstring &why = api_metadata_error();
-            info("There is no signature for %s%s%s.", c.name.empty() ? "this syscall" : c.name.c_str(),
-                 why.empty() ? "" : ": ", why.c_str());
-            return cbret_t(n, NOTHING_CHANGED);
-        }
-        ITraceBackend *b = m_mgr->backend();
-        // The syscall convention, from the 64-bit side: always on Sogen; a
-        // Microsoft x86 recording holds the 32-bit side, arguments on the stack.
-        const bool wide = b->info().is64 || qstrcmp(b->id(), "sogen") == 0;
-        CursorPtr cur = b->make_cursor();
-        if ( !cur || !cur->seek(c.pos) )
-            return cbret_t(n, NOTHING_CHANGED);
-        // At the syscall instruction the arguments are where a callee finds
-        // them: r10 for rcx, and the stack one return address deep (two on
-        // x86: the return into the stub, then the stub's own). Seen from the
-        // call site, which is what the decoder reads.
-        GuestView v = guest_view(cur.get());
-        auto regs = v.regs;
-        v.regs = [regs, wide](ittd_regs *r)
-        {
-            if ( !regs || !regs(r) )
-                return false;
-            if ( wide )
-                r->gp[ITTD_REG_RCX] = r->gp[10];
-            r->gp[ITTD_REG_RSP] += 8;
-            return true;
-        };
-        DecodedCall dc;
-        decode_api_args(v, *sig, wide, &dc);
-        CursorPtr after = b->make_cursor();
-        if ( after && after->seek(b->position_add(c.pos, 1)) )
-            decode_api_outs(guest_view(after.get()), &dc);
-        qstring text;
-        for ( const DecodedArg &a : dc.args )
-        {
-            if ( !text.empty() )
-                text.append(", ");
-            text.cat_sprnt("%s=%s", a.name.c_str(), a.text.c_str());
-        }
-        m_decoded[n] = text;
-        msg("[ida-ttd] %s %s(%s) = %s\n", format_position(c.pos).c_str(), c.name.c_str(), text.c_str(),
-            decode_api_return(dc, c.result).c_str());
-        return cbret_t(n, ALL_CHANGED);
     }
 
     chooser_t::cbret_t idaapi SyscallChooser::enter(size_t n)
@@ -147,6 +100,44 @@ namespace idattd
         return cbret_t(n, NOTHING_CHANGED);
     }
 
+    // One call the full decoding did not reach (it was stopped).
+    chooser_t::cbret_t idaapi SyscallChooser::edit(size_t n)
+    {
+        if ( n >= m_calls.size() || m_mgr == nullptr || !m_mgr->is_active() )
+            return cbret_t(n, NOTHING_CHANGED);
+        if ( api_signature(m_calls[n].name.c_str()) == nullptr )
+        {
+            const qstring &why = api_metadata_error();
+            info("There is no signature for %s%s%s.",
+                 m_calls[n].name.empty() ? "this syscall" : m_calls[n].name.c_str(),
+                 why.empty() ? "" : ": ", why.c_str());
+            return cbret_t(n, NOTHING_CHANGED);
+        }
+        std::vector<SyscallEvent> one{ m_calls[n] };
+        std::vector<qstring> text;
+        bool cancelled = false;
+        if ( decode_syscalls(m_mgr, one, &text, &cancelled) && !cancelled && !text.empty() )
+            m_decoded[n] = text[0];
+        return cbret_t(n, ALL_CHANGED);
+    }
+
+    chooser_t::cbret_t idaapi SyscallChooser::refresh(ssize_t n)
+    {
+        std::vector<SyscallEvent> calls;
+        std::vector<qstring> decoded;
+        bool cancelled = false;
+        if ( m_mgr == nullptr || !m_mgr->is_active()
+          || !list_syscalls(m_mgr, &calls, &cancelled) || cancelled )
+            return cbret_t(n, NOTHING_CHANGED);
+        decode_syscalls(m_mgr, calls, &decoded, &cancelled);
+        if ( !cancelled )
+            save_syscalls(calls, decoded);
+        m_calls   = std::move(calls);
+        m_decoded = std::move(decoded);
+        reset_rows();
+        return cbret_t(n, ALL_CHANGED);
+    }
+
     //=======================================================================
     // Syscalls action
     //=======================================================================
@@ -156,6 +147,8 @@ namespace idattd
             && mgr->backend()->capabilities().syscalls;
     }
 
+    // The list saved in the database, else listed and decoded now -- once,
+    // behind a cancellable wait box -- and saved when that ran to the end.
     int idaapi SyscallsHandler::activate(action_activation_ctx_t *)
     {
         if ( !backend_lists_syscalls(mgr()) )
@@ -164,20 +157,38 @@ namespace idattd
             return 1;
         }
         std::vector<SyscallEvent> calls;
+        std::vector<qstring> decoded;
         bool cancelled = false;
-        if ( !list_syscalls(mgr(), &calls, &cancelled) )
+        if ( load_syscalls(&calls, &decoded) )
         {
-            warning("The recording's backend could not list its syscalls.");
-            return 1;
+            msg("[ida-ttd] %d syscall(s), as saved in the database; Refresh (Ctrl+U) in the list "
+                "rebuilds it.\n", (int)calls.size());
         }
-        msg("[ida-ttd] %d syscall(s) in the recording%s.\n", (int)calls.size(),
-            cancelled ? " (stopped early)" : "");
+        else
+        {
+            if ( !list_syscalls(mgr(), &calls, &cancelled) )
+            {
+                warning("The recording's backend could not list its syscalls.");
+                return 1;
+            }
+            if ( cancelled )
+            {
+                msg("[ida-ttd] syscalls: stopped.\n");
+                return 1;
+            }
+            decode_syscalls(mgr(), calls, &decoded, &cancelled);
+            if ( cancelled )
+                msg("[ida-ttd] %d syscall(s); decoding their arguments was stopped, so they are shown "
+                    "undecoded and not saved (Ctrl+E decodes one).\n", (int)calls.size());
+            else
+                save_syscalls(calls, decoded);
+        }
         if ( calls.empty() )
         {
             info("The recording made no syscalls.");
             return 1;
         }
-        SyscallChooser *ch = new SyscallChooser(mgr(), std::move(calls));
+        SyscallChooser *ch = new SyscallChooser(mgr(), std::move(calls), std::move(decoded));
         ch->choose();
         return 1;
     }

@@ -480,6 +480,34 @@ namespace idattd
         }
     }
 
+    std::vector<std::pair<size_t, uint32_t>> api_int_outs(const DecodedCall &call)
+    {
+        std::vector<std::pair<size_t, uint32_t>> v;
+        if ( call.sig == nullptr )
+            return v;
+        for ( size_t i = 0; i < call.args.size() && i < call.sig->paramCount; i++ )
+        {
+            const ParamSig &p = call.sig->params[i];
+            if ( !call.args[i].out || call.args[i].raw == 0 || p.kind != ArgKind::PtrToInt )
+                continue;
+            uint32_t w = p.pointeeSize == 4 || p.pointeeSize == 8 ? p.pointeeSize : (call.is64 ? 8 : 4);
+            v.emplace_back(i, w);
+        }
+        return v;
+    }
+
+    qstring api_args_text(const DecodedCall &call)
+    {
+        qstring text;
+        for ( const DecodedArg &a : call.args )
+        {
+            if ( !text.empty() )
+                text.append(", ");
+            text.cat_sprnt("%s=%s", a.name.c_str(), a.text.c_str());
+        }
+        return text;
+    }
+
     void decode_api_outs(const GuestView &v, DecodedCall *call)
     {
         if ( call->sig == nullptr )
@@ -489,7 +517,31 @@ namespace idattd
             DecodedArg &a = call->args[i];
             if ( !a.out || a.raw == 0 || a.text == "?" )
                 continue;
-            a.text = render(v, *call, call->sig->params[i], a.raw, &v);
+            const ParamSig &p = call->sig->params[i];
+            if ( p.kind == ArgKind::PtrToInt && i < call->out_values.size() && call->out_values[i].has_value() )
+            {
+                const uint64_t val = *call->out_values[i];
+                qstring shown = number(val);
+                if ( p.hasEnum() )
+                {
+                    std::vector<std::string> names = win32meta::index().decodeEnum(p.enumIndex, val);
+                    if ( !names.empty() )
+                    {
+                        shown.qclear();
+                        for ( size_t k = 0; k < names.size(); k++ )
+                        {
+                            if ( k != 0 )
+                                shown.append('|');
+                            shown.append(names[k].c_str());
+                        }
+                    }
+                }
+                a.text = hex(a.raw) + " -> " + shown;
+                continue;
+            }
+            if ( !v.read )
+                continue;
+            a.text = render(v, *call, p, a.raw, &v);
         }
     }
 

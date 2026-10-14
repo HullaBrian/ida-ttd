@@ -24,6 +24,17 @@ namespace idattd
                            size_t first, size_t count,
                            std::vector<std::optional<SyscallArgs>> *out);
 
+    // Every syscall's arguments decoded from the native API metadata (phnt):
+    // decoded[i] is "name=value, ..." for calls[i], empty where there is no
+    // signature. Each call's arguments are read at it, and what the kernel
+    // wrote back after it. Runs behind a cancellable wait box; 'cancelled'
+    // leaves 'decoded' empty.
+    bool decode_syscalls(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
+                         std::vector<qstring> *decoded, bool *cancelled);
+    // The list and its decoding, kept in the database against the recording.
+    void save_syscalls(const std::vector<SyscallEvent> &calls, const std::vector<qstring> &decoded);
+    bool load_syscalls(std::vector<SyscallEvent> *calls, std::vector<qstring> *decoded);
+
     // Every instruction the program wrote before running it, for a backend
     // that can look (capabilities().self_modifying). One pass over the whole
     // recording behind a cancellable wait box.

@@ -135,20 +135,26 @@ namespace idattd
     class SyscallChooser : public chooser_t
     {
     public:
-        SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls);
+        // 'decoded' lines up with 'calls': each call's arguments by name, or
+        // empty where the metadata has no signature (or decoding stopped).
+        SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls,
+                       std::vector<qstring> &&decoded);
 
         size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         cbret_t idaapi enter(size_t n) override;
-        // Ctrl+E: decode the call from the native API metadata.
+        // Ctrl+E: decode one call that was not (the decoding was stopped).
         cbret_t idaapi edit(size_t n) override;
+        // Refresh (Ctrl+U): list and decode them again from the recording.
+        cbret_t idaapi refresh(ssize_t n) override;
 
     private:
         const std::optional<SyscallArgs> &args_of(size_t n) const;
-        std::map<size_t, qstring> m_decoded;      // rows decoded on request
+        void reset_rows();
 
         TraceManager              *m_mgr;
         std::vector<SyscallEvent>  m_calls;
+        std::vector<qstring>       m_decoded;
         // Read a chunk at a time as rows are drawn; see ARG_CHUNK.
         mutable std::vector<std::optional<SyscallArgs>> m_args;
         mutable std::vector<bool>                       m_argsRead;
