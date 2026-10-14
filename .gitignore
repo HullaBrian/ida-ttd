@@ -430,3 +430,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# Local agent setup (machine-specific paths)
+CLAUDE.local.md
