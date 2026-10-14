@@ -219,6 +219,27 @@ class Session(object):
             return py(call("an.origin", what, *tail)["chain"])
         return py(call("an.origin", "mem", what, size, *tail)["chain"])
 
+    def origin_graph(self, what, size=8, at=None, max_nodes=60):
+        """Every chain at once, as the value origin graph draws it: at each
+        instruction that combined several values, each value it read is
+        followed (address registers and rsp are not). 'nodes' are hops as
+        origin() gives them, [0] the value asked about; each of 'edges' goes
+        'from' the hop that used a value 'to' the hop that set it ('input':
+        one of several the instruction read). 'truncated' when max_nodes cut
+        it short."""
+        tail = (["from=" + at] if at else []) + ["max=%x" % max_nodes]
+        if isinstance(what, str):
+            return py(call("an.origingraph", what, *tail))
+        return py(call("an.origingraph", "mem", what, size, *tail))
+
+    def show_origin_graph(self, what, size=8, at=None):
+        """Open the value origin graph window for a value, as the TTD menu
+        does, without asking for it."""
+        tail = ["from=" + at] if at else []
+        if isinstance(what, str):
+            return call("ui.origingraph", what, *tail)
+        return call("ui.origingraph", "mem", what, size, *tail)
+
     def inputs(self, at=None):
         """The values the instruction about to run at 'at' (default: the
         current position) read: each has 'what', 'value', 'address' (true for

@@ -67,7 +67,9 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   -- and through computations made from a single value (`lea rax, [rdi+0Dh]`,
   `inc rdi`), to the instruction that combined several values, a constant, or
   the syscall whose result it was. There, Ctrl+E in the list follows the value
-  you pick, and so on back.
+  you pick, and so on back. Or see it all at once as a graph (Ctrl+Shift+Alt+W):
+  every value an instruction combined is followed, down to the constants,
+  syscalls and untouched memory it was made of.
 - A memory heatmap: which pages the program read, wrote and ran from, and when.
 - A Python API (`import ida_ttd`) over all of it, for scripts and AI agents;
   see [docs/python.md](docs/python.md).
@@ -89,9 +91,15 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   like any other. Fork here is also on the context menu of the disassembly,
   pseudocode, hex view and registers.
 - Fork manager (TTD menu and toolbar): the recording and every fork recorded
-  from it, and from its forks, as a tree. Double-click one to switch this IDA
-  to it (the replay restarts on it, in the same database) or open it in a new
-  IDA; Delete takes a fork off the list.
+  from it, and from its forks, as a tree, each with the changes it was made
+  with. Double-click one to switch this IDA to it (the replay restarts on it,
+  in the same database) or open it in a new IDA; right-click to copy its path
+  or take it off the graph.
+
+The value origin graph and the fork manager are drawn by the plugin's own graph
+window (IDAPython with PySide6, like the call tree and the heatmap): drag to
+pan, Ctrl+wheel to zoom, F to fit, double-click or right-click a node. Without
+IDAPython the fork manager uses IDA's graph viewer.
 
 Replaying a recording made against the host (without an emulation root) runs
 the program's file and network operations on your machine again, so the

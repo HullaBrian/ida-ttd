@@ -63,6 +63,9 @@ namespace idattd
         uint32_t     by_tid = 0;
         qstring      insn;              // that instruction's disassembly
         qstring      note;              // in words: "copied from rsi", "written by NtReadFile"
+        // The instruction made the value from several others: the chain ends
+        // here, and origin_inputs(by_pos) is where it goes on.
+        bool         combined = false;
     };
 
     // Follow 'what' back from the playhead, at most 'max_hops' hops. Each hop's
@@ -89,4 +92,25 @@ namespace idattd
     // recording has. Empty for a syscall, or an instruction that reads
     // nothing, or one that cannot be decoded. False when there is no session.
     bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out);
+
+    // Every chain at once: from 'what' as of 'at', and at each instruction
+    // that combined several values, from each value it read (the registers
+    // that only formed an address, and the stack pointer, left out), breadth
+    // first, until 'max_nodes' hops. A value reached twice -- the same
+    // register or memory, seen at the same position -- is one node.
+    struct OriginGraph
+    {
+        std::vector<OriginHop> nodes;   // [0] is the value asked about
+        struct Edge
+        {
+            int  from = -1;             // the hop that used the value...
+            int  to   = -1;             // ...and the hop that set it
+            bool input = false;         // one of several the instruction read
+        };
+        std::vector<Edge> edges;
+        bool truncated = false;         // inputs left unfollowed at the limit
+        bool cancelled = false;
+    };
+    bool build_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_nodes,
+                            OriginGraph *out);
 }

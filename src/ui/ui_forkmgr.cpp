@@ -3,6 +3,10 @@
 // recording; double-clicking one switches this IDA to it or opens it in
 // another.
 //
+// Drawn by the plugin's graph window (graph_view.h) where IDAPython is
+// there, else by IDA's own graph viewer, which is what the rest of this file
+// is about.
+//
 // IDA 9.4 bug, worked around in guard_graph() below: after a step or a
 // register change, IDA updates the current instruction in every graph view
 // as if each one showed a disassembly graph, calling virtual functions that
@@ -14,12 +18,15 @@
 #include "analysis/fork.h"
 #include "analysis/fork_registry.h"
 #include "common/trace_link.h"
+#include "ui/clipboard.h"
+#include "ui/graph_view.h"
 
 #include <graph.hpp>
 
 namespace idattd
 {
     static const char FM_TITLE[] = "TTD forks";
+    static const char FM_KIND[]  = "forks";
     static const char FM_NODE[]  = "$ ida-ttd fork graph";
 
     namespace
@@ -254,6 +261,124 @@ namespace idattd
         }
     }
 
+    static void forget(int node)
+    {
+        if ( node < 0 || node >= (int)g_fm.nodes.size() || g_fm.nodes[node].record < 0 )
+            return;
+        const qstring path = g_fm.nodes[node].path;
+        if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nTake %s out of the fork graph?\n\n"
+                               "Its file stays where it is, and so do forks made from it.",
+                    path.c_str()) != ASKBTN_YES )
+            return;
+        remove_fork_record(path.c_str());
+        refresh_fork_manager();
+    }
+
+    //-----------------------------------------------------------------------
+    // The graph window's model
+    //-----------------------------------------------------------------------
+    static void graph_action(int node, const qstring &action)
+    {
+        if ( node < 0 || node >= (int)g_fm.nodes.size() )
+            return;
+        const qstring path = g_fm.nodes[node].path;
+        if ( action == "open" )
+        {
+            act_on(node);
+        }
+        else if ( action == "switch" )
+        {
+            if ( g_fm.ctx != nullptr && g_fm.ctx->switch_trace )
+                g_fm.ctx->switch_trace(path);
+        }
+        else if ( action == "newida" )
+        {
+            if ( !open_in_new_ida(path.c_str()) )
+                warning("Could not start another IDA. Open %s from IDA's File menu.", path.c_str());
+        }
+        else if ( action == "copypath" )
+        {
+            copy_to_clipboard(path.c_str());
+        }
+        else if ( action == "forget" )
+        {
+            forget(node);
+        }
+    }
+
+    static GraphModel fork_model()
+    {
+        GraphModel m;
+        m.title = FM_TITLE;
+        int forks = 0;
+        for ( const Node &n : g_fm.nodes )
+        {
+            GraphNode g;
+            g.title   = qbasename(n.path.c_str());
+            g.tooltip = n.hint;
+            if ( n.record >= 0 )
+            {
+                const ForkRecord &r = g_fm.records[n.record];
+                forks++;
+                g.code = r.changes;
+                g.lines.push_back(qstring().sprnt("%llu instructions", (unsigned long long)r.instructions));
+                char when[64] = {};
+                qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)r.time);
+                g.lines.push_back(qstring("recorded ") + when);
+                g.badge = "fork";
+                g.tone  = "muted";
+            }
+            else
+            {
+                g.lines.push_back("the recording this database was made from");
+                g.badge = "recording";
+                g.tone  = "accent";
+            }
+            if ( n.current )
+            {
+                g.badge    = "replaying";
+                g.tone     = "good";
+                g.emphasis = true;
+            }
+            if ( n.missing )
+            {
+                g.badge  = "missing";
+                g.tone   = "bad";
+                g.dashed = true;
+                g.lines.push_back("the file is not there any more");
+            }
+            if ( !n.current && !n.missing )
+            {
+                g.menu.emplace_back("Open...", "open");
+                g.menu.emplace_back("Switch this IDA to it", "switch");
+                g.menu.emplace_back("Open it in a new IDA", "newida");
+                g.menu.emplace_back("", "");
+            }
+            g.menu.emplace_back("Copy the path", "copypath");
+            if ( n.record >= 0 )
+                g.menu.emplace_back("Take it out of the fork graph...", "forget");
+            m.nodes.push_back(std::move(g));
+        }
+        for ( const auto &[src, dst] : g_fm.edges )
+        {
+            GraphEdge e;
+            e.src = src;
+            e.dst = dst;
+            const int rec = g_fm.nodes[dst].record;
+            if ( rec >= 0 )
+                e.label.sprnt("forked at %s", g_fm.records[rec].at.c_str());
+            m.edges.push_back(std::move(e));
+        }
+        if ( forks == 0 )
+            m.status = "No forks yet: Fork here (TTD menu, or right-click in the disassembly) starts one, "
+                       "on a Sogen recording.";
+        else
+            m.status.sprnt("%d fork%s. Double-click a recording to switch to it or open it in a new IDA; "
+                           "right-click for more. Ctrl+wheel zooms, F fits.", forks, forks == 1 ? "" : "s");
+        m.act = graph_action;
+        return m;
+    }
+
     static ssize_t idaapi fm_callback(void *, int code, va_list va)
     {
         switch ( code )
@@ -344,6 +469,7 @@ namespace idattd
         return 1;
     }
 
+
     action_state_t idaapi ForkOpenHandler::update(action_update_ctx_t *ctx)
     {
         if ( !fork_manager_widget(ctx->widget) )
@@ -353,16 +479,7 @@ namespace idattd
 
     int idaapi ForkForgetHandler::activate(action_activation_ctx_t *ctx)
     {
-        int node = selected_node(ctx);
-        if ( node < 0 || g_fm.nodes[node].record < 0 )
-            return 1;
-        const qstring path = g_fm.nodes[node].path;
-        if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nTake %s out of the fork graph?\n\n"
-                               "Its file stays where it is, and so do forks made from it.",
-                    path.c_str()) != ASKBTN_YES )
-            return 1;
-        remove_fork_record(path.c_str());
-        refresh_fork_manager();
+        forget(selected_node(ctx));
         return 1;
     }
 
@@ -384,12 +501,17 @@ namespace idattd
         g_refreshTimer = nullptr;
         if ( fm_open() )
             refresh_viewer(g_fm.gv);
+        if ( graph_is_open(FM_KIND) )
+        {
+            g_fm.rebuild();
+            refresh_graph(FM_KIND, fork_model());
+        }
         return -1;                      // once
     }
 
     void refresh_fork_manager()
     {
-        if ( g_refreshTimer == nullptr && fm_open() )
+        if ( g_refreshTimer == nullptr && (fm_open() || graph_is_open(FM_KIND)) )
             g_refreshTimer = register_timer(50, refresh_cb, nullptr);
     }
 
@@ -400,7 +522,7 @@ namespace idattd
 
     bool fork_manager_is_open()
     {
-        return fm_open();
+        return fm_open() || graph_is_open(FM_KIND);
     }
 
     void close_fork_manager_window()
@@ -413,6 +535,7 @@ namespace idattd
         if ( fm_open() )
             close_widget(g_fm.gv, 0);
         g_fm.gv = nullptr;
+        close_graph(FM_KIND);
     }
 
     void close_fork_manager()
@@ -424,12 +547,19 @@ namespace idattd
         }
         if ( fm_open() )
             close_widget(g_fm.gv, 0);
+        close_graph(FM_KIND);
         g_fm = ForkGraph();
     }
 
     int idaapi ForkManagerHandler::activate(action_activation_ctx_t *)
     {
         g_fm.ctx = ctx;
+        if ( graph_window_available() && !fm_open() )
+        {
+            g_fm.rebuild();
+            if ( show_graph(FM_KIND, fork_model()) )
+                return 1;
+        }
         if ( fm_open() )
         {
             refresh_fork_manager();

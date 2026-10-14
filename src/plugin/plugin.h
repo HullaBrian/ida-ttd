@@ -210,6 +210,7 @@ namespace idattd
         MemoryMapHandler          m_memMap;
         MemoryTimelineHandler     m_memTimeline;
         ValueOriginHandler        m_valueOrigin;
+        OriginGraphHandler        m_originGraph;
         HandlesHandler            m_handles;
         HeatmapHandler            m_heatmap;
         IndirectCallsHandler      m_indirect;

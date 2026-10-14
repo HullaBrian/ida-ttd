@@ -145,6 +145,12 @@
     <ClInclude Include="$(SrcDir)\ui\clipboard.h">
       <Filter>ui</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\graph_py.hh">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\graph_view.h">
+      <Filter>ui</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\ui\decompiler.h">
       <Filter>ui</Filter>
     </ClInclude>
@@ -298,6 +304,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\graph_view.cpp">
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp">

@@ -88,6 +88,7 @@ session or in the database, and answer at once the next time.
 | `s.calls_to(target, limit)` | `func`, `name`, `pos`, `end`, `tid`, `args`, `ret` | `target` is an address or `"module!Glob*"`. Arguments are decoded from the Win32/phnt metadata where it has the function, else from IDA's types: each is text (`"PAGE_READWRITE"`, `"0x1524B8F8A0 -> 2"`) or, where it is a plain number, an int |
 | `s.accesses(lo, hi, kinds, limit)` | `pos`, `pc`, `addr`, `size`, `tid`, `kind` | every read (`"r"`), write (`"w"`) and execute (`"x"`) of `[lo, hi)`; `hi` defaults to `lo + 1` |
 | `s.origin(what, size, at, through)` | `what`, `value`, `at`, `kind`, `by_pos`, `by_pc`, `insn`, `note` | where a value came from, as of the current position or `at`; see below |
+| `s.origin_graph(what, size, at, max_nodes)` | `nodes` (as `origin`, plus `combined`), `edges` (`from`, `to`, `input`), `truncated` | every chain at once; see below |
 | `s.inputs(at)` | `what`, `value`, `address`, and `reg` or `addr` and `size` | what the instruction about to run at `at` (default: the current position) read |
 | `s.handles(limit)` | `handle`, `type`, `name`, `opened`, `by`, `closed` | every handle the program opened and closed; `opened` is empty for one opened before the recording, `closed` for one still open at the end |
 | `s.memory_map(limit)` | `base`, `size`, `protect`, `type`, `use`, `since` | the address space at the current position |
@@ -150,6 +151,21 @@ s.origin("rdi", at=hop["by_pos"])   # follow one of them
 
 For memory, pass the input's address and size: `s.origin(i["addr"], i["size"], at=...)`.
 In the listing, Ctrl+E on a row does the same, appending the new chain.
+
+Or every chain at once, as the value origin graph draws it:
+
+```python
+g = s.origin_graph("rax")           # max_nodes=60 by default
+for e in g["edges"]:
+    used, made = g["nodes"][e["from"]], g["nodes"][e["to"]]
+    print(used["what"], "<-", made["what"], made["insn"], made["kind"])
+s.show_origin_graph("rax")          # the window, without the prompt
+```
+
+`nodes` are hops as `origin()` gives them, `[0]` the value asked about; each edge
+goes from the hop that used a value to the hop that set it (`input` true for
+one of several values an instruction combined). A value reached twice is one
+node. `truncated` says the limit cut it short.
 
 ### The heatmap
 

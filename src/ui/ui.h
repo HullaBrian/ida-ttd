@@ -457,6 +457,15 @@ namespace idattd
     // under the cursor), else asked for.
     struct ValueOriginHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
+    // The same as a graph: every chain at once, each input of an instruction
+    // that combined several values followed. From a value-origin listing's
+    // context menu, of the value it started from.
+    struct OriginGraphHandler : public TtdAction
+    { int idaapi activate(action_activation_ctx_t *) override; };
+    bool is_value_origin_listing(TWidget *w);
+    // Build the graph of 'what' as of 'at' and show it (the action, without
+    // asking: ttd("ui.origingraph")).
+    void show_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at);
 
     // Find every read, write or execute of an address over the whole trace.
     struct MemSearchHandler : public TtdAction
@@ -617,6 +626,7 @@ namespace idattd
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_TIMELINE  = "idattd:memory_timeline";
         constexpr const char *VALUE_ORIGIN  = "idattd:value_origin";
+        constexpr const char *ORIGIN_GRAPH  = "idattd:origin_graph";
         constexpr const char *HANDLES       = "idattd:handles";
         constexpr const char *HEATMAP       = "idattd:heatmap";
         constexpr const char *REREAD        = "idattd:reread_memory";

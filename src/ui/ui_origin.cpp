@@ -1,18 +1,32 @@
-// Where a value came from: the listing of the chain, and the action that asks.
+// Where a value came from: the listing of the chain, the graph of every
+// chain at once, and the actions that ask.
 #include "ui/ui.h"
 #include "ui/names.h"
+#include "ui/clipboard.h"
+#include "ui/graph_view.h"
 
 namespace idattd
 {
     //=======================================================================
     // ValueOriginChooser
     //=======================================================================
+    // How long a chain may get, and how many values a graph may have: each
+    // is a search of the recording.
+    static const size_t kOriginHops = 40;
+    static const size_t kGraphNodes = 60;
+
+    // What each listing started from, by its title: the graph action, run
+    // from a listing's context menu, draws that.
+    struct OriginRoot
+    {
+        OriginTarget what;
+        Position     at;
+    };
+    static std::map<qstring, OriginRoot> g_origin_roots;
+
     // "Seen at": where the row looks at the value (where it was asked about,
     // or where the previous row's instruction read it). "Written at": the
     // last instruction before that which wrote it.
-    // How long a chain may get: each hop is a search of the recording.
-    static const size_t kOriginHops = 40;
-
     static const int   g_vo_widths[] = { 3, 20, 26, 14, 14, 40, 44 };
     static const char *g_vo_header[] = { "#", "Value", "In", "Seen at", "Written at", "By", "How" };
 
@@ -25,6 +39,8 @@ namespace idattd
         m_title.sprnt("TTD value origin: %s [%d]",
                       m_hops.empty() ? "?" : origin_target_text(m_hops[0].what).c_str(), ++seq);
         title = m_title.c_str();
+        if ( !m_hops.empty() )
+            g_origin_roots[m_title] = OriginRoot{ m_hops[0].what, m_hops[0].at };
     }
 
     size_t idaapi ValueOriginChooser::get_count() const
@@ -53,7 +69,7 @@ namespace idattd
         cols->at(6) = h.note.empty() ? qstring(origin_kind_name(h.kind)) : h.note;
         // The rows a chain ends on are the answers.
         const bool chain_ends = n + 1 == m_hops.size() || (n + 1 < m_input_of.size() && m_input_of[n + 1] >= 0);
-        if ( chain_ends && h.kind == OriginKind::Computed )
+        if ( chain_ends && h.combined )
             cols->at(6).append(" (Ctrl+E follows what it read)");
         if ( attrs != nullptr && chain_ends && h.kind != OriginKind::Copied )
             attrs->flags |= CHITEM_BOLD;
@@ -235,14 +251,11 @@ namespace idattd
         return false;
     }
 
-    int idaapi ValueOriginHandler::activate(action_activation_ctx_t *ctx)
+    // What to follow: from the context, else asked for. False when the user
+    // backed out or the answer made no sense (they were told).
+    static bool pick_target(action_activation_ctx_t *ctx, OriginTarget *out)
     {
-        if ( mgr() == nullptr || !mgr()->is_active() )
-        {
-            warning("Finding where a value came from is only possible while replaying a trace.");
-            return 1;
-        }
-        OriginTarget t;
+        OriginTarget &t = *out;
         if ( !target_from_context(ctx, &t) )
         {
             static qstring last = "rax";
@@ -251,14 +264,27 @@ namespace idattd
             if ( !ask_str(&text, HIST_SRCH,
                           "Where did this value come from? A register (rax, ecx, xmm0, ...), "
                           "or memory as an address and a size (0x1234 8)") )
-                return 1;
+                return false;
             if ( !parse_target(text.c_str(), &t) )
             {
                 warning("'%s' is neither a register nor an address.", text.c_str());
-                return 1;
+                return false;
             }
             last = text;
         }
+        return true;
+    }
+
+    int idaapi ValueOriginHandler::activate(action_activation_ctx_t *ctx)
+    {
+        if ( mgr() == nullptr || !mgr()->is_active() )
+        {
+            warning("Finding where a value came from is only possible while replaying a trace.");
+            return 1;
+        }
+        OriginTarget t;
+        if ( !pick_target(ctx, &t) )
+            return 1;
 
         std::vector<OriginHop> hops;
         if ( !trace_value_origin(mgr(), t, kOriginHops, &hops) || hops.empty() )
@@ -271,5 +297,195 @@ namespace idattd
         ValueOriginChooser *ch = new ValueOriginChooser(mgr(), std::move(hops));
         ch->choose();
         return 1;
+    }
+
+    //=======================================================================
+    // The graph
+    //=======================================================================
+    static const char OG_KIND[]  = "origin";
+    static const char OG_TITLE[] = "TTD value origin graph";
+
+    namespace
+    {
+        TraceManager *g_og_mgr = nullptr;
+        OriginGraph   g_og;
+    }
+
+    static void travel_to(Position p)
+    {
+        if ( g_og_mgr == nullptr || !g_og_mgr->is_active() || !p.is_valid() )
+            return;
+        g_og_mgr->set_next_position(p);
+        request_continue_process();
+        run_requests();
+    }
+
+    static void og_action(int node, const qstring &action)
+    {
+        if ( node < 0 || node >= (int)g_og.nodes.size() )
+            return;
+        const OriginHop &h = g_og.nodes[node];
+        if ( action == "written" )
+        {
+            travel_to(h.by_pos);
+        }
+        else if ( action == "seen" )
+        {
+            travel_to(h.at);
+        }
+        else if ( action == "show" )
+        {
+            if ( h.by_pc != BADADDR )
+                jumpto(h.by_pc);
+        }
+        else if ( action == "copy" )
+        {
+            copy_to_clipboard(origin_value_text(h.value).c_str());
+        }
+        else if ( action == "list" )
+        {
+            if ( g_og_mgr == nullptr || !g_og_mgr->is_active() )
+                return;
+            std::vector<OriginHop> hops;
+            if ( trace_value_origin(g_og_mgr, h.what, h.at, kOriginHops, &hops) && !hops.empty() )
+                (new ValueOriginChooser(g_og_mgr, std::move(hops)))->choose();
+        }
+    }
+
+    static GraphNode og_node(TraceManager *mgr, const OriginHop &h, bool root)
+    {
+        GraphNode g;
+        g.title.sprnt("%s = %s", origin_target_text(h.what).c_str(), origin_value_text(h.value).c_str());
+        const bool written = h.by_pos.is_valid() && h.by_pc != BADADDR;
+        if ( written )
+        {
+            g.code = h.insn;
+            // A copy is one line: chains of them (spills and reloads) are
+            // long, and what matters is where they lead.
+            if ( h.kind == OriginKind::Copied )
+            {
+                g.lines.push_back(qstring().sprnt("%s, written at %s", describe_address(mgr, h.by_pc).c_str(),
+                                                  format_position(h.by_pos).c_str()));
+            }
+            else
+            {
+                g.lines.push_back(describe_address(mgr, h.by_pc));
+                g.lines.push_back(qstring().sprnt("written at %s, seen at %s",
+                                                  format_position(h.by_pos).c_str(), format_position(h.at).c_str()));
+            }
+        }
+        else
+        {
+            g.lines.push_back(qstring().sprnt("seen at %s", format_position(h.at).c_str()));
+        }
+        if ( !h.note.empty() && h.kind != OriginKind::Copied )
+            g.lines.push_back(h.note);
+
+        switch ( h.kind )
+        {
+            case OriginKind::Copied:    g.badge = "copy";      g.tone = "muted";  break;
+            case OriginKind::Constant:  g.badge = "constant";  g.tone = "good";   break;
+            case OriginKind::System:    g.badge = "system";    g.tone = "warn";   break;
+            case OriginKind::Unchanged: g.badge = "unchanged"; g.tone = "muted";  g.dashed = true; break;
+            case OriginKind::Computed:
+                g.badge = h.combined ? "combined" : "computed";
+                g.tone  = "accent";
+                break;
+            default:                    g.badge = origin_kind_name(h.kind); g.tone = "bad"; break;
+        }
+        g.emphasis = root;
+        g.tooltip  = h.note;
+        if ( written )
+        {
+            g.menu.emplace_back("Go to where it was written", "written");
+            g.menu.emplace_back("Go to where it was seen", "seen");
+            g.menu.emplace_back("Show the instruction", "show");
+        }
+        else
+        {
+            g.menu.emplace_back("Go to where it was seen", "seen");
+        }
+        g.menu.emplace_back("", "");
+        g.menu.emplace_back("Copy the value", "copy");
+        g.menu.emplace_back("Where did this come from? (list)", "list");
+        return g;
+    }
+
+    // Build the graph of 'what' as of 'at' and show it.
+    void show_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at)
+    {
+        if ( !graph_window_available() )
+        {
+            warning("The value origin graph needs IDAPython; the listing (Ctrl+Shift+W) works without it.");
+            return;
+        }
+        OriginGraph g;
+        if ( !build_origin_graph(mgr, what, at, kGraphNodes, &g) || g.nodes.empty() )
+            return;
+        g_og_mgr = mgr;
+        g_og     = std::move(g);
+
+        GraphModel m;
+        m.title     = OG_TITLE;
+        m.arrows_up = true;
+        int combined = 0;
+        for ( size_t i = 0; i < g_og.nodes.size(); i++ )
+        {
+            combined += g_og.nodes[i].combined ? 1 : 0;
+            m.nodes.push_back(og_node(mgr, g_og.nodes[i], i == 0));
+        }
+        for ( const OriginGraph::Edge &e : g_og.edges )
+        {
+            GraphEdge x;
+            x.src    = e.from;
+            x.dst    = e.to;
+            x.dashed = false;
+            m.edges.push_back(x);
+        }
+        m.status.sprnt("Where %s at %s came from: %d value%s; every input of the %d instruction%s that "
+                       "combined several was followed (registers that only formed an address, and rsp, "
+                       "were not).%s%s Double-click a value to go to where it was written.",
+                       origin_target_text(what).c_str(), format_position(at).c_str(),
+                       (int)g_og.nodes.size(), g_og.nodes.size() == 1 ? "" : "s",
+                       combined, combined == 1 ? "" : "s",
+                       g_og.truncated ? " Cut short at the size limit." : "",
+                       g_og.cancelled ? " Stopped before the end." : "");
+        m.act = og_action;
+        show_graph(OG_KIND, std::move(m));
+    }
+
+    int idaapi OriginGraphHandler::activate(action_activation_ctx_t *ctx)
+    {
+        if ( mgr() == nullptr || !mgr()->is_active() )
+        {
+            warning("Finding where a value came from is only possible while replaying a trace.");
+            return 1;
+        }
+        // From a listing: the value it started from.
+        if ( ctx != nullptr && ctx->widget != nullptr && ctx->widget_type == BWN_CHOOSER )
+        {
+            qstring title;
+            get_widget_title(&title, ctx->widget);
+            auto it = g_origin_roots.find(title);
+            if ( it != g_origin_roots.end() )
+            {
+                show_origin_graph(mgr(), it->second.what, it->second.at);
+                return 1;
+            }
+        }
+        OriginTarget t;
+        if ( !pick_target(ctx, &t) )
+            return 1;
+        show_origin_graph(mgr(), t, mgr()->current_position());
+        return 1;
+    }
+
+    bool is_value_origin_listing(TWidget *w)
+    {
+        if ( w == nullptr || get_widget_type(w) != BWN_CHOOSER )
+            return false;
+        qstring title;
+        get_widget_title(&title, w);
+        return g_origin_roots.find(title) != g_origin_roots.end();
     }
 }

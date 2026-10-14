@@ -531,28 +531,18 @@ namespace idattd
         }
     }
 
-    // A computation made from a single value -- lea rax, [rdi+0Dh], inc rdi,
-    // add [mem], 2 -- is gone through: the value it read is followed as if
-    // copied. Not the stack pointer: a stack address's history is only the
-    // frames that moved it.
-    static bool single_input(TraceManager *mgr, Position at, OriginTarget *next)
+    // How many values (not address registers) the instruction about to run
+    // at 'at' read, and the one when it is one.
+    static int value_inputs(TraceManager *mgr, Position at, OriginTarget *only)
     {
         std::vector<OriginInput> inputs;
         if ( !origin_inputs(mgr, at, &inputs) )
-            return false;
-        const OriginInput *only = nullptr;
+            return 0;
+        int n = 0;
         for ( const OriginInput &in : inputs )
-        {
-            if ( in.address )
-                continue;
-            if ( only != nullptr )
-                return false;
-            only = &in;
-        }
-        if ( only == nullptr || (only->what.is_reg && only->what.reg == ITTD_REG_RSP) )
-            return false;
-        *next = only->what;
-        return true;
+            if ( !in.address && n++ == 0 )
+                *only = in.what;
+        return n;
     }
 
     static bool trace_from(TraceManager *mgr, const OriginTarget &what, Position start, uint32_t start_tid,
@@ -640,10 +630,25 @@ namespace idattd
             OriginTarget next;
             bool made_here = false;
             bool more = next_source(hop, s, &hop, &next, &made_here);
-            if ( !more && made_here && through_computations && single_input(mgr, s.pos, &next) )
+            // A computation made from a single value -- lea rax, [rdi+0Dh],
+            // inc rdi, add [mem], 2 -- is gone through: the value it read is
+            // followed as if copied. Not the stack pointer: a stack
+            // address's history is only the frames that moved it.
+            if ( !more && made_here )
             {
-                hop.note.sprnt("computed from %s", origin_target_text(next).c_str());
-                more = true;
+                OriginTarget only;
+                const int n = through_computations ? value_inputs(mgr, s.pos, &only) : -1;
+                if ( n == 1 && only.is_reg && only.reg == ITTD_REG_RSP )
+                {
+                    hop.note = "computed from rsp: a stack address";
+                }
+                else if ( n == 1 )
+                {
+                    hop.note.sprnt("computed from %s", origin_target_text(only).c_str());
+                    next = only;
+                    more = true;
+                }
+                hop.combined = n >= 2 || n < 0;
             }
             out->push_back(hop);
             if ( !more )
@@ -684,6 +689,83 @@ namespace idattd
         if ( !cur || !cur->seek(at) )
             return false;
         return trace_from(mgr, what, at, cur->thread_id(), max_hops, through_computations, out);
+    }
+
+    bool build_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_nodes,
+                            OriginGraph *out)
+    {
+        *out = OriginGraph();
+        if ( !session_ready(mgr) )
+            return false;
+
+        struct Work
+        {
+            OriginTarget what;
+            Position     at;
+            int          from = -1;     // the node whose instruction read it
+        };
+        std::deque<Work> work;
+        work.push_back(Work{ what, at, -1 });
+        std::map<qstring, int> seen;    // "rax@3A:46", in effect -> node
+        auto key = [](const OriginHop &h)
+        {
+            return origin_target_text(h.what) + qstring().sprnt("@%llX:%llX", h.at.hi, h.at.lo);
+        };
+
+        while ( !work.empty() )
+        {
+            if ( out->nodes.size() >= max_nodes )
+            {
+                out->truncated = true;
+                break;
+            }
+            Work w = work.front();
+            work.pop_front();
+            std::vector<OriginHop> hops;
+            if ( !trace_value_origin(mgr, w.what, w.at, max_nodes - out->nodes.size(), &hops) || hops.empty() )
+                continue;
+            int prev = w.from;
+            bool input = w.from >= 0;
+            for ( OriginHop &h : hops )
+            {
+                if ( h.kind == OriginKind::Cancelled )
+                {
+                    out->cancelled = true;
+                    return true;
+                }
+                auto it = seen.find(key(h));
+                if ( it != seen.end() )
+                {
+                    if ( prev >= 0 )
+                        out->edges.push_back(OriginGraph::Edge{ prev, it->second, input });
+                    prev = -1;
+                    break;
+                }
+                const int idx = (int)out->nodes.size();
+                seen[key(h)] = idx;
+                if ( prev >= 0 )
+                    out->edges.push_back(OriginGraph::Edge{ prev, idx, input });
+                out->nodes.push_back(h);
+                prev  = idx;
+                input = false;
+            }
+            if ( prev < 0 )
+                continue;
+            const OriginHop &end = out->nodes[prev];
+            if ( !end.combined || !end.by_pos.is_valid() )
+                continue;
+            std::vector<OriginInput> inputs;
+            origin_inputs(mgr, end.by_pos, &inputs);
+            for ( const OriginInput &in : inputs )
+            {
+                if ( in.address || (in.what.is_reg && in.what.reg == ITTD_REG_RSP) )
+                    continue;
+                work.push_back(Work{ in.what, end.by_pos, prev });
+            }
+        }
+        if ( !work.empty() )
+            out->truncated = true;
+        return true;
     }
 
     bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out)

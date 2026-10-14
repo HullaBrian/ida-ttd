@@ -317,6 +317,11 @@ namespace idattd
               "Where did this value come from: follow a register or memory back through "
               "the instructions that copied it, to where it was made",
               m_icons[ICO_ORIGIN], ITEM, MENU },
+            { actions::ORIGIN_GRAPH, "Graph where this value came from...", &m_originGraph,
+              "Ctrl+Shift+Alt+W",
+              "Graph where this value came from: every chain at once, following each value an "
+              "instruction combined, to the constants, syscalls and inputs it was made of",
+              m_icons[ICO_ORIGIN], ITEM, MENU },
 
             // What the program asked of the system, over the whole recording.
             { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
@@ -1511,7 +1516,12 @@ namespace idattd
                     attach_action_to_popup(widget, popup, actions::MEM_SEARCH, "TTD/");
                 // Where a register's or memory's value came from.
                 if ( wt == BWN_CPUREGS || wt == BWN_HEXVIEW || wt == BWN_DISASM )
+                {
                     attach_action_to_popup(widget, popup, actions::VALUE_ORIGIN, "TTD/");
+                    attach_action_to_popup(widget, popup, actions::ORIGIN_GRAPH, "TTD/");
+                }
+                if ( is_value_origin_listing(widget) )
+                    attach_action_to_popup(widget, popup, actions::ORIGIN_GRAPH);
                 break;
             }
             case ui_ready_to_run:

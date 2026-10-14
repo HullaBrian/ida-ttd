@@ -16,6 +16,7 @@
 #include "analysis/calltree.h"
 #include "analysis/origin.h"
 #include "analysis/handles.h"
+#include "ui/graph_view.h"
 
 #include <expr.hpp>
 
@@ -1399,20 +1400,21 @@ namespace idattd
             o.hex("addr", t.addr).num("size", t.size);
     }
 
-    static void cmd_an_origin(const Args &args, JObj &out)
+    // A word among the arguments, taken off them: whether it was there.
+    static bool flag_arg(Args *a, const char *word)
     {
-        need_session();
-        Args a = args;
-        Position from;
-        const bool has_from = from_arg(&a, &from);
-        bool through = true;
-        for ( size_t i = 1; i < a.v.size(); i++ )
-            if ( a.v[i] == "stop" )
+        for ( size_t i = 1; i < a->v.size(); i++ )
+            if ( a->v[i] == word )
             {
-                through = false;
-                a.v.erase(a.v.begin() + i);
-                break;
+                a->v.erase(a->v.begin() + i);
+                return true;
             }
+        return false;
+    }
+
+    // REG, or mem ADDR [SIZE], from the front of the arguments.
+    static OriginTarget origin_target_arg(const Args &a, const char *cmd)
+    {
         OriginTarget t;
         uint32_t reg = 0;
         if ( a.count() >= 2 && a.at(0) == "mem" )
@@ -1427,23 +1429,100 @@ namespace idattd
         }
         else
         {
-            fail("usage: an.origin REG | an.origin mem ADDR [SIZE], then from=POS to start there");
+            fail("usage: %s REG | %s mem ADDR [SIZE], then from=POS to start there", cmd, cmd);
         }
+        return t;
+    }
+
+    static qstring hop_json(const OriginHop &h)
+    {
+        JObj o;
+        o.str("what", origin_target_text(h.what)).str("value", origin_value_text(h.value))
+         .str("at", format_position(h.at)).str("kind", origin_kind_name(h.kind))
+         .str("by_pos", h.by_pos.is_valid() ? format_position(h.by_pos) : qstring())
+         .hex("by_pc", h.by_pc).str("insn", h.insn).str("note", h.note).boolean("combined", h.combined);
+        return o.done();
+    }
+
+    static void cmd_an_origin(const Args &args, JObj &out)
+    {
+        need_session();
+        Args a = args;
+        Position from;
+        const bool has_from = from_arg(&a, &from);
+        const bool through  = !flag_arg(&a, "stop");
+        const OriginTarget t = origin_target_arg(a, "an.origin");
         std::vector<OriginHop> hops;
         if ( !(has_from ? trace_value_origin(&mgr(), t, from, 40, &hops, through)
                         : trace_value_origin(&mgr(), t, 40, &hops, through)) )
             fail("not traced");
         JArr arr;
         for ( const OriginHop &h : hops )
+            arr.add(hop_json(h));
+        out.num("hops", (int64_t)hops.size()).raw("chain", arr.done());
+    }
+
+    // Every chain at once, as the value origin graph draws it.
+    static void cmd_an_origingraph(const Args &args, JObj &out)
+    {
+        need_session();
+        Args a = args;
+        Position from = mgr().current_position();
+        from_arg(&a, &from);
+        size_t max_nodes = 60;
+        for ( size_t i = 1; i < a.v.size(); i++ )
+            if ( a.v[i].starts_with("max=") )
+            {
+                uint64_t n = 0;
+                if ( !parse_u64(a.v[i].substr(4), &n) || n == 0 )
+                    fail("max= takes a hex number of values");
+                max_nodes = (size_t)n;
+                a.v.erase(a.v.begin() + i);
+                break;
+            }
+        const OriginTarget t = origin_target_arg(a, "an.origingraph");
+        OriginGraph g;
+        if ( !build_origin_graph(&mgr(), t, from, max_nodes, &g) )
+            fail("not traced");
+        JArr nodes;
+        for ( const OriginHop &h : g.nodes )
+            nodes.add(hop_json(h));
+        JArr edges;
+        for ( const OriginGraph::Edge &e : g.edges )
         {
             JObj o;
-            o.str("what", origin_target_text(h.what)).str("value", origin_value_text(h.value))
-             .str("at", format_position(h.at)).str("kind", origin_kind_name(h.kind))
-             .str("by_pos", h.by_pos.is_valid() ? format_position(h.by_pos) : qstring())
-             .hex("by_pc", h.by_pc).str("insn", h.insn).str("note", h.note);
-            arr.add(o.done());
+            o.num("from", e.from).num("to", e.to).boolean("input", e.input);
+            edges.add(o.done());
         }
-        out.num("hops", (int64_t)hops.size()).raw("chain", arr.done());
+        out.raw("nodes", nodes.done()).raw("edges", edges.done())
+           .boolean("truncated", g.truncated).boolean("cancelled", g.cancelled);
+    }
+
+    // The value origin graph, shown as the TTD menu shows it.
+    static void cmd_ui_origingraph(const Args &args, JObj &out)
+    {
+        need_session();
+        Args a = args;
+        Position from = mgr().current_position();
+        from_arg(&a, &from);
+        const OriginTarget t = origin_target_arg(a, "ui.origingraph");
+        show_origin_graph(&mgr(), t, from);
+        out.boolean("shown", graph_is_open("origin"));
+    }
+
+    // The graph window's model, and a node's action.
+    static void cmd_ui_graph(const Args &a, JObj &out)
+    {
+        qstring j;
+        if ( !graph_json(a.at(0).c_str(), &j) )
+            fail("there is no '%s' graph", a.at(0).c_str());
+        out.raw("graph", j);
+    }
+
+    static void cmd_ui_graphact(const Args &a, JObj &)
+    {
+        if ( !graph_act(a.at(0).c_str(), (int)a.u64(1), a.count() > 2 ? a.at(2) : qstring()) )
+            fail("no such node");
     }
 
     // What the instruction about to run at a position read: the next links
@@ -1558,6 +1637,10 @@ namespace idattd
         { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
         { "an.handles",     cmd_an_handles,     "[MAX] the handles the program opened and closed" },
         { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] [from=POS] [stop] where the value at the playhead (or POS) came from; stop: at every computation" },
+        { "an.origingraph", cmd_an_origingraph, "REG | mem ADDR [SIZE] [from=POS] [max=N] every chain at once, as the graph draws it" },
+        { "ui.origingraph", cmd_ui_origingraph, "REG | mem ADDR [SIZE] [from=POS] show the value origin graph" },
+        { "ui.graph",       cmd_ui_graph,       "KIND the model of a graph window (forks, origin)" },
+        { "ui.graphact",    cmd_ui_graphact,    "KIND NODE ACTION run a graph node's action (NODE in hex, as every number)" },
         { "an.inputs",      cmd_an_inputs,      "[POS] the values the instruction about to run there read" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },

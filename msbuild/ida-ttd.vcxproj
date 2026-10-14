@@ -82,6 +82,8 @@
     <ClInclude Include="$(SrcDir)\analysis\trace_store.h" />
     <ClInclude Include="$(SrcDir)\analysis\tracer.h" />
     <ClInclude Include="$(SrcDir)\ui\clipboard.h" />
+    <ClInclude Include="$(SrcDir)\ui\graph_py.hh" />
+    <ClInclude Include="$(SrcDir)\ui\graph_view.h" />
     <ClInclude Include="$(SrcDir)\ui\decompiler.h" />
     <ClInclude Include="$(SrcDir)\ui\icons.hh" />
     <ClInclude Include="$(SrcDir)\ui\names.h" />
@@ -133,6 +135,7 @@
     <ClCompile Include="$(SrcDir)\ui\decompiler.cpp" />
     <ClCompile Include="$(SrcDir)\ui\names.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\graph_view.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_heatmap.cpp" />
     <ClCompile Include="$(SrcDir)\ui\scope.cpp" />
