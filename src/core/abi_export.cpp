@@ -838,6 +838,85 @@ namespace idattd
         });
     }
 
+    static ReplaySettings replay_settings(const ittd_fork_settings *s)
+    {
+        ReplaySettings rs;
+        if ( s != nullptr )
+        {
+            rs.registry_dir = s->registry_dir != nullptr ? s->registry_dir : "";
+            rs.strict       = (s->flags & ITTD_FORK_STRICT) != 0;
+            rs.allow_host   = (s->flags & ITTD_FORK_ALLOW_HOST) != 0;
+        }
+        return rs;
+    }
+
+    static int x_query_strings(ittd_backend *hb, const ittd_fork_settings *settings, uint32_t min_length,
+                               ittd_string_hit *buf, size_t cap, size_t *out_count,
+                               int *out_truncated, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            qstring key;
+            key.sprnt("strings:%u", min_length);
+            return answer<ittd_string_hit>(h, key.c_str(), buf, cap, out_count, out_truncated,
+                                           [&](std::vector<ittd_string_hit> *out)
+            {
+                std::vector<StringHit> v;
+                AbiSink sink(progress);
+                QueryResult r = h->b->query_strings(replay_settings(settings), min_length, &v, &sink);
+                out->reserve(v.size());
+                for ( const StringHit &e : v )
+                {
+                    ittd_string_hit x{};
+                    x.address = (uint64_t)e.address;
+                    x.pos     = to_abi(e.pos);
+                    x.wide    = e.wide ? 1 : 0;
+                    x.length  = e.length;
+                    copy_str(x.text, sizeof(x.text), e.text.c_str());
+                    out->push_back(x);
+                }
+                return r;
+            });
+        });
+    }
+
+    static int x_query_buffers(ittd_backend *hb, const ittd_fork_settings *settings,
+                               ittd_buffer_hit *buf, size_t cap, size_t *out_count,
+                               int *out_truncated, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            return answer<ittd_buffer_hit>(h, "buffers", buf, cap, out_count, out_truncated,
+                                           [&](std::vector<ittd_buffer_hit> *out)
+            {
+                std::vector<BufferHit> v;
+                AbiSink sink(progress);
+                QueryResult r = h->b->query_buffers(replay_settings(settings), &v, &sink);
+                out->reserve(v.size());
+                for ( const BufferHit &e : v )
+                {
+                    ittd_buffer_hit x{};
+                    x.address   = (uint64_t)e.address;
+                    x.size      = e.size;
+                    x.first_pos = to_abi(e.first_pos);
+                    x.last_pos  = to_abi(e.last_pos);
+                    x.writer_ip = (uint64_t)e.writer_ip;
+                    x.writes    = e.writes;
+                    copy_str(x.kind, sizeof(x.kind), e.kind.c_str());
+                    copy_str(x.preview, sizeof(x.preview), e.preview.c_str());
+                    out->push_back(x);
+                }
+                return r;
+            });
+        });
+    }
+
     static int x_query_self_modifying(ittd_backend *hb, ittd_selfmod *buf, size_t cap,
                                       size_t *out_count, int *out_truncated,
                                       const ittd_progress *progress)
@@ -1080,6 +1159,8 @@ namespace idattd
         a.nav_set_progress      = x_nav_set_progress;
         a.query_syscalls        = x_query_syscalls;
         a.query_self_modifying  = x_query_self_modifying;
+        a.query_strings         = x_query_strings;
+        a.query_buffers         = x_query_buffers;
         built = true;
         return &a;
     }

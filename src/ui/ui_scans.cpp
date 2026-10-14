@@ -168,8 +168,7 @@ namespace idattd
     {
         if ( !backend_scans(mgr()) )
         {
-            warning("Strings can only be recovered from a recording that can be replayed "
-                    "(Sogen recordings).");
+            warning("This recording's backend cannot recover strings.");
             return 1;
         }
         static const char form[] =
@@ -213,8 +212,7 @@ namespace idattd
     {
         if ( !backend_scans(mgr()) )
         {
-            warning("Buffers can only be recovered from a recording that can be replayed "
-                    "(Sogen recordings).");
+            warning("This recording's backend cannot recover buffers.");
             return 1;
         }
         // No questions up front: every buffer, replaying the whole recording

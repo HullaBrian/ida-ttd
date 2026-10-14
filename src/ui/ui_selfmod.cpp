@@ -83,8 +83,7 @@ namespace idattd
     {
         if ( !backend_finds_selfmod(mgr()) )
         {
-            warning("This recording's backend cannot look for self-modifying code. "
-                    "Sogen recordings can.");
+            warning("This recording's backend cannot look for self-modifying code.");
             return 1;
         }
         std::vector<SelfModHit> hits;

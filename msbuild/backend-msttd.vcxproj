@@ -78,6 +78,7 @@
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_memmap.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_sweep.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_syscalls.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_scans.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_trace_open.cpp" />
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_host.cpp" />

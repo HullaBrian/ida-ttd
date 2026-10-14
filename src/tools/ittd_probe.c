@@ -1059,7 +1059,7 @@ int main(int argc, char **argv)
                 uint8_t mem[8], kn[8];
                 size_t got = 0;
                 ittd_position after = sh[k].pos;
-                if ( sh[k].wide || sh[k].pos.lo == info.first.lo )
+                if ( sh[k].wide || (sh[k].pos.hi == info.first.hi && sh[k].pos.lo == info.first.lo) )
                     continue;
                 after.lo++;
                 sampled++;
@@ -1069,6 +1069,11 @@ int main(int argc, char **argv)
                     there++;
             }
             printf("  %zu of %zu sampled ASCII strings in memory just after their position\n", there, sampled);
+            if ( getenv("ITTD_PROBE_FIND") != NULL )
+                for ( k = 0; k < n; k++ )
+                    if ( strstr(sh[k].text, getenv("ITTD_PROBE_FIND")) != NULL )
+                        printf("  found at %llx, %s: %s\"%.80s\"\n", (unsigned long long)sh[k].address,
+                               pos_text(sh[k].pos), sh[k].wide ? "L" : "", sh[k].text);
             check(there == sampled, "  a string is in memory after the write that completed it");
         }
         free(sh);

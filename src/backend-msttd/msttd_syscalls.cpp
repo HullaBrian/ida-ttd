@@ -103,6 +103,48 @@ namespace idattd
         return false;
     }
 
+    // Every complete syscall stub in a module's image, by number. x64:
+    // mov r10, rcx; mov eax, n; ... syscall at +0x12. x86: mov eax, n;
+    // mov edx, Wow64Transition; call edx (one stub has a call $+5 between).
+    static size_t scan_stubs(ICursorView *c, const ModuleInfo &ml, bool is64,
+                             std::multimap<uint32_t, ea_t> *out)
+    {
+        std::vector<uint8_t> img(size_t(ml.size), 0);
+        const uint64_t chunk = 0x10000;
+        for ( uint64_t off = 0; off < ml.size; off += chunk )
+        {
+            size_t n = size_t(std::min<uint64_t>(chunk, ml.size - off));
+            c->QueryMemoryBuffer(GuestAddress{ ml.base + off }, BufferView{ img.data() + off, n },
+                                 QueryMemoryPolicy::GloballyAggressive);
+        }
+        size_t found = 0;
+        auto imm = [&img](size_t at) { uint32_t v; memcpy(&v, img.data() + at, 4); return v; };
+        for ( size_t i = 0; i + 0x20 < img.size(); i++ )
+        {
+            if ( is64 )
+            {
+                if ( img[i] == 0x4C && img[i + 1] == 0x8B && img[i + 2] == 0xD1 && img[i + 3] == 0xB8
+                  && img[i + 0x12] == 0x0F && img[i + 0x13] == 0x05 )
+                {
+                    out->emplace(imm(i + 4) & 0xFFFF, ml.base + i);
+                    found++;
+                }
+                continue;
+            }
+            if ( img[i] != 0xB8 )
+                continue;
+            size_t j = i + 5;
+            if ( img[j] == 0xE8 && imm(j + 1) == 0 )
+                j += 5;
+            if ( img[j] == 0xBA && img[j + 5] == 0xFF && img[j + 6] == 0xD2 )
+            {
+                out->emplace(imm(i + 1) & 0xFFFF, ml.base + i);
+                found++;
+            }
+        }
+        return found;
+    }
+
     bool build_syscall_table(const MsTtdBackend *backend, SyscallTable *out)
     {
         out->names.clear();
@@ -121,8 +163,12 @@ namespace idattd
             GuestRead rd = msttd_read_plain(sym.get());
             GuestPeInfo pe;
             bool is64 = read_guest_pe_info(rd, ml.base, &pe) ? pe.is64 : backend->is64();
+            // The names, from the exports. A 32-bit stub's number carries
+            // WoW64's argument-conversion index in the high word, which is
+            // not part of the syscall's number.
             std::vector<std::pair<ea_t, std::string>> exports;
             read_guest_exports(rd, ml.base, is64, &exports);
+            std::multimap<uint32_t, ea_t> by_export;
             for ( const auto &[ea, name] : exports )
             {
                 if ( name.size() < 3 || name[0] != 'N' || name[1] != 't' )
@@ -130,17 +176,16 @@ namespace idattd
                 uint32_t n = 0;
                 if ( !decode_stub(rd, ea, is64, &n) )
                     continue;
-                out->names.emplace(n, name);
-                out->stubs.emplace(n, ea);
-                // A 32-bit stub's number carries the argument-conversion
-                // index above the low word; the register at the syscall may
-                // not.
-                if ( !is64 && (n & 0xFFFF) != n )
-                {
-                    out->names.emplace(n & 0xFFFF, name);
-                    out->stubs.emplace(n & 0xFFFF, ea);
-                }
+                out->names.emplace(n & 0xFFFF, name);
+                by_export.emplace(n & 0xFFFF, ea);
             }
+            // The stubs themselves, from the image: a process can point
+            // its exports elsewhere (thunks in a private region), and
+            // then every syscall would look like one the program made
+            // itself. Some numbers have two stubs.
+            size_t found = scan_stubs(sym.get(), ml, is64, &out->stubs);
+            if ( found == 0 )
+                out->stubs.insert(by_export.begin(), by_export.end());
         }
         return !out->names.empty();
     }
@@ -190,11 +235,13 @@ namespace idattd
             return;
         }
         const X86_NT5_CONTEXT &c = ctx.X86Nt5Context;
-        k->number = (uint32_t)c.Eax;
-        // A 32-bit stub calls its way into the kernel (directly, or through
-        // WoW64's transition), so the kernel returns where that call
-        // returns: the word on top of the stack. Its arguments are where
-        // the stub's caller pushed them, past the stub's own return address.
+        // The high word is WoW64's; the number is the low one, the same
+        // numbering as x64's.
+        k->number = (uint32_t)c.Eax & 0xFFFF;
+        // The gap is at WoW64's transition, which the stub called: the word
+        // on top of the stack is the return into the stub, which is where
+        // the kernel's answer comes back. Argument n is at [esp+4+4n], past
+        // that and the stub's own return address.
         uint64_t ret = 0;
         if ( read_word(t, k->sp, 4, &ret) )
             k->ret_pc = ret;
@@ -342,11 +389,9 @@ namespace idattd
                 memcpy(k.gp, regs.gp, sizeof(k.gp));
                 k.rflags = regs.rflags;
                 k.name = table.name_of(k.number);
-                if ( k.name == nullptr && !is64 )
-                    k.name = table.name_of(k.number & 0xFFFF);
-                k.stub = table.stub_of(k.number, k.pc);
-                if ( k.stub == BADADDR && !is64 )
-                    k.stub = table.stub_of(k.number & 0xFFFF, k.pc);
+                // x86: the gap is at the transition, outside every module;
+                // the stub is where it returns to.
+                k.stub = table.stub_of(k.number, is64 ? k.pc : (ea_t)k.ret_pc);
                 if ( !opts.args_wanted || opts.args_wanted(k.number) )
                 {
                     read_kernel_call(t, is64, true, &k);
@@ -369,6 +414,9 @@ namespace idattd
                         for ( size_t i = sh->size(); i-- > 0 && k.chain_n < ITTD_CHAIN_MAX; )
                         {
                             ea_t   s  = sh->at(i).site;
+                            // The stub's own call into WoW64's transition.
+                            if ( k.stub != BADADDR && k.stub <= s && s < k.stub + kStubSpan )
+                                continue;
                             size_t mi = module_of(s);
                             if ( k.chain_n != 0 && mi == lastMod )
                                 continue;

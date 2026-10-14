@@ -90,6 +90,9 @@
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_syscalls.cpp">
       <Filter>backend-msttd</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\backend-msttd\msttd_scans.cpp">
+      <Filter>backend-msttd</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_guest.cpp">
       <Filter>backend-msttd</Filter>
     </ClCompile>

@@ -305,15 +305,15 @@ namespace idattd
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
             { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
               "Self-modifying code: every instruction the program wrote before "
-              "running it, with the write (recordings that can tell: Sogen)",
+              "running it, with the write",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
             { actions::STRINGS, "Recover strings...", &m_recoverStrings, nullptr,
               "Recover strings: replay the recording and list every string the "
-              "program had in memory, with where it appeared (Sogen)",
+              "program had in memory, with where it appeared",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
             { actions::BUFFERS, "Recover buffers...", &m_recoverBuffers, nullptr,
               "Recover buffers: replay the recording and list every buffer the "
-              "program filled, with the code that wrote it (Sogen)",
+              "program filled, with the code that wrote it",
               NO_ICON, ITEM, MENU, SUB_ANALYSIS },
             { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
               "Memory map: every allocation, protection change and free the recording "

@@ -8,8 +8,8 @@ namespace idattd
     class TraceManager;
 
     // Recovering what the program had in memory by replaying the whole
-    // recording with a scanner watching (capabilities().replay_scans --
-    // Sogen). Each runs behind a cancellable wait box and costs a full replay;
+    // recording with a scanner watching (capabilities().replay_scans: Sogen
+    // re-executes it, Microsoft TTD replays it with write watchpoints). Each runs behind a cancellable wait box and costs a full replay;
     // the backend keeps the answer for the session.
     //
     // False when it did not run; 'error' says why when the backend does.

@@ -152,6 +152,8 @@ namespace idattd
         m_caps.exceptions     = true;
         m_caps.cheap_reads    = true;      // the engine's memory index
         m_caps.syscalls       = true;      // KernelCall gaps (msttd_syscalls.cpp)
+        m_caps.self_modifying = true;      // replays watching writes (msttd_scans.cpp)
+        m_caps.replay_scans   = true;      // strings and buffers, from the same replays
         return true;
     }
 
@@ -162,6 +164,7 @@ namespace idattd
         m_insnScratch.reset();
         m_regsScratch.reset();
         m_syscallRegs.clear();
+        m_scans.reset();
         m_engine.reset();
         m_info = TraceInfo{};
         m_caps = Capabilities{};
