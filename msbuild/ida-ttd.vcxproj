@@ -169,6 +169,11 @@
   <Target Name="CopyApiMetadata" AfterTargets="Build">
     <Copy SourceFiles="@(ApiMetadata)" DestinationFolder="$(OutDir)ida-ttd-data" SkipUnchangedFiles="true" />
   </Target>
+  <!-- The ida_ttd Python module, in plugins\ida-ttd-python\, which the plugin
+       puts on IDAPython's sys.path. -->
+  <Target Name="CopyPythonModule" AfterTargets="Build">
+    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
+  </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -12,10 +12,11 @@ agent's. The `ida_ttd` Python module wraps it.
 
 ## The Python module
 
-The plugin registers `ida_ttd` with IDAPython when it loads, so nothing needs
-installing: `import ida_ttd` works in the console, in a script and in an MCP
-server's Python. (Its source is `scripts/ida_ttd.py`; where the plugin is not
-loaded, exec() that file and call `ensure_loaded()`.)
+The module is `scripts/ida_ttd.py`, installed as
+`plugins\ida-ttd-python\ida_ttd.py`. The plugin puts that folder on
+IDAPython's `sys.path` when it loads, so `import ida_ttd` works in the
+console, in a script and in an MCP server's Python. Where the plugin is not
+loaded, exec() the file and call `ensure_loaded()`.
 
 ```python
 import ida_ttd

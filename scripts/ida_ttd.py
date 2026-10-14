@@ -1,7 +1,8 @@
 """Drive the ida-ttd plugin from Python inside IDA.
 
-The plugin registers this module as `ida_ttd` whenever it loads, so in the
-IDAPython console, a script, or an MCP server's Python:
+Installed as plugins\ida-ttd-python\ida_ttd.py; the plugin puts that folder
+on sys.path when it loads, so in the IDAPython console, a script, or an MCP
+server's Python:
 
     import ida_ttd
     s = ida_ttd.Session()                # the TTD debugger session in this IDA

@@ -114,8 +114,9 @@ replay features ask before doing it.
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
    it into your IDA `plugins` directory: `ida-ttd.dll`, the
    `ida-ttd-backends` folder with `ida-ttd-msttd.dll`, the Microsoft TTD
-   backend, and the `ida-ttd-data` folder with the API metadata
-   (`win32-index.bin`, `phnt-index.bin`) that decodes API calls' arguments.
+   backend, the `ida-ttd-data` folder with the API metadata
+   (`win32-index.bin`, `phnt-index.bin`) that decodes API calls' arguments,
+   and the `ida-ttd-python` folder with the `ida_ttd` Python module.
    (IDA's plugin manager puts them all in `plugins\ida-ttd\`; that works too.)
 2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` next to `ida.exe`, or into
    `plugins\ida-ttd-backends\` beside the backend.

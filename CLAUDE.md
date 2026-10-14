@@ -72,9 +72,8 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   and the after-stop work (`do_after_stop`, run from a timer after IDA's own
   stop handling). `script_api.cpp` is the `ttd("cmd args")` IDC function.
 - **`scripts/ida_ttd.py`**: the Python API (`Session`, `Recording`, `call`).
-  The plugin embeds it and registers it as the module `ida_ttd`: after
-  editing it, run `python msbuild/gen_python_module.py` to regenerate
-  `src/plugin/ida_ttd_module.hh` (committed, so building needs no Python).
+  The build copies it to `ida-ttd-python/` beside the plugin, and the plugin
+  puts that folder on IDAPython's `sys.path` when it loads.
 - **`src/loader/`**: `ttd-loader.dll`, so File > Open accepts a recording.
 - **`src/tools/ittd_probe.c`**: drives any backend DLL through the ABI outside
   IDA and checks its promises.

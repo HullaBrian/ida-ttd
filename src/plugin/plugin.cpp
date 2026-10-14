@@ -8,7 +8,6 @@
 #include "plugin/script_api.h"
 #include "debugger/registers.h"
 #include "core/diag.h"
-#include "plugin/ida_ttd_module.hh"
 #include <expr.hpp>
 
 // Embedded Microsoft codicon debugger glyphs (SVG) for the debug-movement
@@ -82,32 +81,39 @@ namespace idattd
     };
     static MenuSepHandler g_menuSep;
 
-    // `import ida_ttd` in IDAPython, with nothing installed: the module
-    // (scripts/ida_ttd.py, embedded by msbuild/gen_python_module.py) goes into
-    // sys.modules. A module of that name loaded from a file of the user's
-    // own is left alone; an earlier copy of ours is replaced. Safe to call
-    // more than once, and a no-op without IDAPython.
+    // `import ida_ttd` in IDAPython: the module (scripts/ida_ttd.py) is
+    // installed in ida-ttd-python\ beside the plugin, and that folder goes on
+    // IDAPython's sys.path. Safe to call more than once, and a no-op without
+    // IDAPython or without the folder.
     static void register_python_module()
     {
         extlang_object_t py = find_extlang_by_name("Python");
         if ( py == nullptr || py->eval_snippet == nullptr )
             return;
-        qstring code =
-            "def _ida_ttd_register(b64):\n"
-            "    import base64, sys, types\n"
-            "    old = sys.modules.get('ida_ttd')\n"
-            "    if old is not None and getattr(old, '__file__', '') != '<ida-ttd plugin>':\n"
-            "        return\n"
-            "    m = types.ModuleType('ida_ttd')\n"
-            "    m.__file__ = '<ida-ttd plugin>'\n"
-            "    exec(compile(base64.b64decode(b64).decode('utf-8'), 'ida_ttd.py', 'exec'), m.__dict__)\n"
-            "    sys.modules['ida_ttd'] = m\n"
-            "_ida_ttd_register('";
-        code.append(IDA_TTD_MODULE_B64);
-        code.append("')\n");
+        HMODULE self = nullptr;
+        wchar_t buf[MAX_PATH * 2];
+        if ( !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                 reinterpret_cast<LPCWSTR>(&register_python_module), &self)
+          || GetModuleFileNameW(self, buf, qnumber(buf)) == 0 )
+            return;
+        qstring dir;
+        utf16_utf8(&dir, (const wchar16_t *)buf);
+        ssize_t slash = dir.rfind('\\');
+        if ( slash < 0 )
+            return;
+        dir.resize((size_t)slash);
+        dir.append("/ida-ttd-python");
+        dir.replace("\\", "/");     // a Python string literal without escapes
+        if ( !qisdir(dir.c_str()) )
+            return;
+        qstring code;
+        code.sprnt("import sys\n"
+                   "if '%s' not in sys.path:\n"
+                   "    sys.path.append('%s')\n", dir.c_str(), dir.c_str());
         qstring err;
         if ( !py->eval_snippet(code.c_str(), &err) )
-            msg("[ida-ttd] the ida_ttd Python module could not be registered: %s\n", err.c_str());
+            msg("[ida-ttd] could not put %s on IDAPython's path: %s\n", dir.c_str(), err.c_str());
     }
 
     // Flag the call stack + stack views for refresh. We build the widget mask by
