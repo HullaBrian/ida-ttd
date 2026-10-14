@@ -2,6 +2,7 @@
 // drive a sweep.
 #include "ui/ui.h"
 #include "ui/names.h"
+#include "debugger/apidecode.h"
 
 namespace idattd
 {
@@ -40,7 +41,15 @@ namespace idattd
             per_arg = true;
             tinfo_t          t;
             func_type_data_t fd;
-            if ( get_tinfo(&t, single) && t.is_func() && t.get_func_details(&fd) )
+            const win32meta::FuncSig *sig =
+                tracer->manager() != nullptr ? api_signature(&tracer->manager()->modules(), single) : nullptr;
+            if ( sig != nullptr )
+            {
+                argc = sig->paramCount;
+                for ( uint8_t i = 0; i < sig->paramCount; i++ )
+                    arg_names.push_back(qstring(sig->params[i].name));
+            }
+            else if ( get_tinfo(&t, single) && t.is_func() && t.get_func_details(&fd) )
             {
                 argc = (int)fd.size();
                 for ( size_t i = 0; i < fd.size(); i++ )
@@ -136,14 +145,20 @@ namespace idattd
             // parameter name (from the row's own signature) when available.
             tinfo_t          t;
             func_type_data_t fd;
-            bool named = get_tinfo(&t, ev.func_ea) && t.is_func() && t.get_func_details(&fd);
+            const win32meta::FuncSig *sig = api_signature(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
+            bool named = sig == nullptr && get_tinfo(&t, ev.func_ea) && t.is_func() && t.get_func_details(&fd);
 
             qstring joined;
             for ( size_t i = 0; i < ev.args.size(); i++ )
             {
                 if ( i != 0 )
                     joined.append(", ");
-                if ( named && i < fd.size() && !fd[i].name.empty() )
+                if ( sig != nullptr && i < sig->paramCount )
+                {
+                    joined.append(sig->params[i].name);
+                    joined.append("=");
+                }
+                else if ( named && i < fd.size() && !fd[i].name.empty() )
                 {
                     joined.append(fd[i].name);
                     joined.append("=");

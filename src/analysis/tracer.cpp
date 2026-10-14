@@ -1,5 +1,6 @@
 #include "analysis/tracer.h"
 #include "debugger/callconv.h"
+#include "debugger/apidecode.h"
 #include "analysis/query_runner.h"
 #include "debugger/trace_manager.h"
 
@@ -351,6 +352,18 @@ namespace idattd
             struct Visit { Position where; size_t call; bool ret; };
             std::vector<Visit> visits;
             std::vector<FunctionInvocation> slot(calls.size());
+            // A function the API metadata describes is decoded from it: flags
+            // by name, out parameters read again at the return. The rest from
+            // IDA's types.
+            std::vector<DecodedCall> decoded(calls.size());
+            std::map<ea_t, const win32meta::FuncSig *> sigs;
+            auto sig_of = [&](ea_t f) -> const win32meta::FuncSig *
+            {
+                auto it = sigs.find(f);
+                if ( it == sigs.end() )
+                    it = sigs.emplace(f, api_signature(&m_mgr->modules(), f)).first;
+                return it->second;
+            };
             std::vector<bool> keep(calls.size(), false);
             for ( size_t i = 0; i < calls.size(); i++ )
             {
@@ -394,8 +407,19 @@ namespace idattd
                 if ( v.ret )
                 {
                     ev.end_pos = v.where;
-                    ev.retval  = render_return(guest_view(cur.get()), ev.func_ea, m_is64);
                     ev.has_ret = true;
+                    DecodedCall &dc = decoded[v.call];
+                    if ( dc.sig != nullptr )
+                    {
+                        GuestView rv = guest_view(cur.get());
+                        decode_api_outs(rv, &dc);
+                        ev.args.clear();
+                        for ( const DecodedArg &a : dc.args )
+                            ev.args.push_back(a.text);
+                        ev.retval = decode_api_return(dc, get_return_value(rv, m_is64));
+                        continue;
+                    }
+                    ev.retval  = render_return(guest_view(cur.get()), ev.func_ea, m_is64);
                     continue;
                 }
                 GuestView view = guest_view(cur.get());
@@ -413,6 +437,14 @@ namespace idattd
                         r->gp[ITTD_REG_RSP] += ptr;
                         return true;
                     };
+                }
+                if ( const win32meta::FuncSig *sig = sig_of(ev.func_ea) )
+                {
+                    decode_api_args(view, *sig, m_is64, &decoded[v.call]);
+                    ev.args.clear();
+                    for ( const DecodedArg &a : decoded[v.call].args )
+                        ev.args.push_back(a.text);
+                    continue;
                 }
                 extract_args(view, ev.func_ea, m_is64, ev.args);
             }

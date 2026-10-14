@@ -11,6 +11,9 @@
     <Filter Include="common">
       <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="common\apimeta">
+      <UniqueIdentifier>{74D35605-D15F-0573-B8F1-409107E06EF8}</UniqueIdentifier>
+    </Filter>
     <Filter Include="core">
       <UniqueIdentifier>{FB556B44-F2C3-FD30-0F75-241C1B1475DC}</UniqueIdentifier>
     </Filter>
@@ -165,6 +168,15 @@
     </ClInclude>
     <ClInclude Include="$(SrcDir)\plugin\plugin.h">
       <Filter>plugin</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\apidecode.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\apimeta\win32meta.hpp">
+      <Filter>common\apimeta</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\apimeta\builtinsigs.hpp">
+      <Filter>common\apimeta</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -344,6 +356,15 @@
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp">
       <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\apidecode.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\apimeta\win32meta.cpp">
+      <Filter>common\apimeta</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\apimeta\builtinsigs.cpp">
+      <Filter>common\apimeta</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

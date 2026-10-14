@@ -29,6 +29,7 @@ namespace idattd
     {
     public:
         void set_manager(TraceManager *mgr) { m_mgr = mgr; }
+        TraceManager *manager() const       { return m_mgr; }
         void set_64bit(bool is64)           { m_is64 = is64; }
         void reset();   // forget all traced functions and events (trace closed)
 

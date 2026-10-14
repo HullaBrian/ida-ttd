@@ -47,6 +47,11 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 - **`src/common/`**: shared helpers. `write_scans.h` is header-only and
   standard-library-only on purpose: Sogen's string and buffer scanners, shared by
   both backends (the Sogen backend builds without the rest of the plugin).
+- **`src/common/apimeta/`** + **`data/*.bin`**: the Win32/phnt API metadata
+  indexes and their loader, ported from ttd-capa-cpp (same author, Apache-2.0;
+  keep them close to the original). `debugger/apidecode` decodes a call's
+  arguments from them; the build copies `data/` to `ida-ttd-data/` beside the
+  plugin, which is where the plugin looks.
 - **`src/debugger/`**: the IDA debugger over one backend. `TraceManager` owns
   the session (cursor, pending movement requests, event queue to IDA);
   `ModuleRegistry` (modules, exports, PDBs, function bounds), `MemoryReader`

@@ -47,7 +47,11 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 **Trace-wide queries**
 
 - Find every call to a function, or to a wildcard pattern such as
-  `kernel32!Virtual*`, with arguments and return values.
+  `kernel32!Virtual*`, with arguments and return values. Windows and native
+  APIs are decoded from Microsoft's Win32 metadata and phnt's headers (the
+  indexes [ttd-capa-cpp](https://github.com/HullaBrian/ttd-capa-cpp) builds):
+  flags by name, strings, buffers at their real length, and out parameters as
+  the callee filled them in.
 - Find every read, write or execute of an address or range.
 - The memory map at the current position: every region with its base, size,
   protection, type and use -- module sections, stacks, TEBs, the PEB, heaps,
@@ -108,10 +112,11 @@ replay features ask before doing it.
 
 1. Download `ida-ttd.zip` from the
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
-   it into your IDA `plugins` directory: `ida-ttd.dll`, and the
+   it into your IDA `plugins` directory: `ida-ttd.dll`, the
    `ida-ttd-backends` folder with `ida-ttd-msttd.dll`, the Microsoft TTD
-   backend. (IDA's plugin manager puts both in `plugins\ida-ttd\`; that works
-   too.)
+   backend, and the `ida-ttd-data` folder with the API metadata
+   (`win32-index.bin`, `phnt-index.bin`) that decodes API calls' arguments.
+   (IDA's plugin manager puts them all in `plugins\ida-ttd\`; that works too.)
 2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` next to `ida.exe`, or into
    `plugins\ida-ttd-backends\` beside the backend.
 3. Optional: copy `ttd-loader.dll` into your IDA `loaders` directory. This is

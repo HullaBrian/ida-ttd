@@ -152,7 +152,23 @@
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\script_api.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\apidecode.cpp" />
+    <ClCompile Include="$(SrcDir)\common\apimeta\win32meta.cpp" />
+    <ClCompile Include="$(SrcDir)\common\apimeta\builtinsigs.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\debugger\apidecode.h" />
+    <ClInclude Include="$(SrcDir)\common\apimeta\win32meta.hpp" />
+    <ClInclude Include="$(SrcDir)\common\apimeta\builtinsigs.hpp" />
+  </ItemGroup>
+  <!-- The API metadata indexes (data\, from ttd-capa-cpp) go beside the
+       plugin as IDA will have them: plugins\ida-ttd-data\. -->
+  <ItemGroup>
+    <ApiMetadata Include="$(RepoRoot)data\*.bin" />
+  </ItemGroup>
+  <Target Name="CopyApiMetadata" AfterTargets="Build">
+    <Copy SourceFiles="@(ApiMetadata)" DestinationFolder="$(OutDir)ida-ttd-data" SkipUnchangedFiles="true" />
+  </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
