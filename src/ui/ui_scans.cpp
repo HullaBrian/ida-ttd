@@ -1,4 +1,4 @@
-// Strings and buffers recovered by replaying the recording: the listings and
+// Strings and buffers recovered from the recording's writes: the listings and
 // the actions that open them.
 #include "ui/ui.h"
 #include "ui/names.h"
@@ -169,7 +169,7 @@ namespace idattd
             "\n"
             "\n"
             "Every ASCII and UTF-16 string the program had in memory, and where it appeared.\n"
-            "This replays the whole recording, seconds for a small one, minutes for a large one.\n"
+            "This reads the whole recording, seconds for a small one, minutes for a large one.\n"
             "\n"
             "<~M~inimum length:D::8::>\n"
             "\n";

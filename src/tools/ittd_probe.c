@@ -1075,6 +1075,18 @@ int main(int argc, char **argv)
                         printf("  found at %llx, %s: %s\"%.80s\"\n", (unsigned long long)sh[k].address,
                                pos_text(sh[k].pos), sh[k].wide ? "L" : "", sh[k].text);
             check(there == sampled, "  a string is in memory after the write that completed it");
+            if ( getenv("ITTD_PROBE_SCAN_DUMP") != NULL )
+            {
+                char path[1024];
+                FILE *f;
+                snprintf(path, sizeof(path), "%s.strings.tsv", getenv("ITTD_PROBE_SCAN_DUMP"));
+                f = fopen(path, "w");
+                for ( k = 0; f != NULL && k < n; k++ )
+                    fprintf(f, "%llx\t%s\t%s\t%s\n", (unsigned long long)sh[k].address,
+                            pos_text(sh[k].pos), sh[k].wide ? "L" : "A", sh[k].text);
+                if ( f != NULL )
+                    fclose(f);
+            }
         }
         free(sh);
 
@@ -1090,6 +1102,22 @@ int main(int argc, char **argv)
                        (unsigned long long)bh[k].address, (unsigned long long)bh[k].size, bh[k].kind,
                        pos_text(bh[k].first_pos), pos_text(bh[k].last_pos),
                        (unsigned long long)bh[k].writer_ip, (unsigned long long)bh[k].writes, bh[k].preview);
+        if ( rc == ITTD_OK && getenv("ITTD_PROBE_SCAN_DUMP") != NULL )
+        {
+            char path[1024];
+            FILE *f;
+            snprintf(path, sizeof(path), "%s.buffers.tsv", getenv("ITTD_PROBE_SCAN_DUMP"));
+            f = fopen(path, "w");
+            for ( k = 0; f != NULL && k < n; k++ )
+            {
+                fprintf(f, "%llx\t%llx\t%s\t%s\t", (unsigned long long)bh[k].address,
+                        (unsigned long long)bh[k].size, bh[k].kind, pos_text(bh[k].first_pos));
+                fprintf(f, "%s\t%llx\t%llu\t%s\n", pos_text(bh[k].last_pos),
+                        (unsigned long long)bh[k].writer_ip, (unsigned long long)bh[k].writes, bh[k].preview);
+            }
+            if ( f != NULL )
+                fclose(f);
+        }
         free(bh);
     }
 

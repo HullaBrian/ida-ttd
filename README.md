@@ -57,11 +57,11 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 - Every syscall the program made, with its result and arguments.
 - Self-modifying code: every instruction the program wrote before running it,
   with the write that made it.
-- Strings and buffers recovered by replaying the recording: every string the
-  program had in memory and every buffer it filled, with when and by what.
-  Where a Sogen replay cannot follow the recording on this machine (its files
-  differ from the ones the recording ran against), the scan goes on from the
-  next checkpoint and says how much it skipped.
+- Strings and buffers recovered from the recording's memory writes: every
+  string the program had in memory and every buffer it filled, with when and
+  by what. Nothing is re-run: the scan reads the writes the recording holds.
+  (A Sogen recording old enough not to store its written bytes is replayed in
+  Sogen's emulator instead, which needs its registry hives.)
 
 **Sogen recordings only**
 

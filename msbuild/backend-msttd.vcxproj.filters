@@ -70,6 +70,9 @@
     <ClInclude Include="$(SrcDir)\common\guest_pe.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\write_scans.h">
+      <Filter>common</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp">

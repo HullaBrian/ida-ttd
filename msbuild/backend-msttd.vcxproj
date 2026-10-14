@@ -70,6 +70,7 @@
     <ClInclude Include="$(SrcDir)\common\pch.h" />
     <ClInclude Include="$(SrcDir)\common\strings.h" />
     <ClInclude Include="$(SrcDir)\common\guest_pe.h" />
+    <ClInclude Include="$(SrcDir)\common\write_scans.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="$(SrcDir)\backend-msttd\msttd_backend.cpp" />

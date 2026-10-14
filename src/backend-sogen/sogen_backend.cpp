@@ -24,6 +24,7 @@
 //    second one costs about 25 ms to open, so nothing is shared.
 
 #include <abi/ida_ttd_backend.h>
+#include <common/write_scans.h>
 
 #include <ttd_trace.hpp>
 #include <ttd_view.hpp>
@@ -45,7 +46,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -2080,6 +2083,283 @@ namespace
         }
     }
 
+    // ------------------------------------------------------------ scans of the recorded writes
+    //
+    // A recording made with write events and their bytes (the chunked formats,
+    // 7 on) already holds everything a string or buffer scan looks at: every
+    // write, its step, the instruction that made it and what it stored. Read
+    // from there, the scans run nothing -- no registry, no emulation root, no
+    // program re-run on this machine -- and cannot diverge. The scanners are
+    // Sogen's (common/write_scans.h), fed what its emulator hooks would see:
+    //
+    //   - buffers: every guest write with its bytes, each execution, and each
+    //     mapping change, in recording order;
+    //   - strings: after each instruction that wrote, the bytes around what it
+    //     wrote, read from memory as it stood then; and at the start, all
+    //     committed memory.
+    //
+    // A recording without write data still gets the replay.
+
+    bool scans_from_recording(ttd::trace &t)
+    {
+        const uint64_t W = (uint64_t)ttd::access_kind::write;
+        return t.has_access_data() && (t.access_mask() & W) == W;
+    }
+
+    // Guest memory as it stood after some step, for the string scan's reads:
+    // a page is fetched from the recording the first time it is read, then
+    // kept current by every write after.
+    class ShadowMemory
+    {
+    public:
+        explicit ShadowMemory(ttd::trace &t) : m_t(t) {}
+
+        // [addr, addr + n) as of 'position'. False when any of it is not
+        // mapped, as the emulator's read would fail; those bytes read as 0xFF.
+        bool read(uint64_t addr, size_t n, uint8_t *out, uint64_t position)
+        {
+            bool all = true;
+            while ( n != 0 )
+            {
+                const uint64_t page = addr / kPage;
+                const size_t   off  = size_t(addr % kPage);
+                const size_t   take = std::min<size_t>(n, kPage - off);
+                const Page &p = fetch(page, position);
+                memcpy(out, p.bytes.data() + off, take);
+                if ( all && std::find(p.mapped.begin() + off, p.mapped.begin() + off + take, uint8_t(0))
+                            != p.mapped.begin() + off + take )
+                    all = false;
+                out += take;
+                addr += take;
+                n -= take;
+            }
+            return all;
+        }
+
+        // A write: applied to the pages held, the rest are fetched later
+        // with it already in them.
+        void apply(uint64_t addr, const uint8_t *b, size_t n)
+        {
+            while ( n != 0 )
+            {
+                const uint64_t page = addr / kPage;
+                const size_t   off  = size_t(addr % kPage);
+                const size_t   take = std::min<size_t>(n, kPage - off);
+                auto it = m_pages.find(page);
+                if ( it != m_pages.end() )
+                {
+                    memcpy(it->second.bytes.data() + off, b, take);
+                    std::fill_n(it->second.mapped.begin() + off, take, uint8_t(1));
+                }
+                b += take;
+                addr += take;
+                n -= take;
+            }
+        }
+
+        // A mapping change: what the pages held is no longer there.
+        void drop(uint64_t addr, uint64_t size)
+        {
+            if ( size == 0 )
+                return;
+            const uint64_t first = addr / kPage;
+            const uint64_t last  = (addr + size - 1) / kPage;
+            for ( auto it = m_pages.lower_bound(first); it != m_pages.end() && it->first <= last; )
+                it = m_pages.erase(it);
+        }
+
+    private:
+        static constexpr uint64_t kPage = 4096;
+        struct Page
+        {
+            std::vector<uint8_t> bytes, mapped;
+        };
+        ttd::trace &m_t;
+        std::map<uint64_t, Page> m_pages;
+
+        const Page &fetch(uint64_t page, uint64_t position)
+        {
+            auto it = m_pages.find(page);
+            if ( it != m_pages.end() )
+                return it->second;
+            Page p;
+            p.bytes.assign(kPage, 0xFF);
+            p.mapped.assign(kPage, 0);
+            std::vector<std::optional<uint8_t>> got = m_t.memory_at(position, page * kPage, kPage);
+            for ( size_t i = 0; i < got.size() && i < kPage; i++ )
+            {
+                if ( got[i] )
+                {
+                    p.bytes[i]  = *got[i];
+                    p.mapped[i] = 1;
+                }
+            }
+            return m_pages.emplace(page, std::move(p)).first->second;
+        }
+    };
+
+    // One pass over the recording for both answers. 'string_minimum' is the
+    // shortest string kept.
+    void scan_recorded_writes(const std::filesystem::path &path, size_t string_minimum,
+                              const ittd_progress *progress,
+                              std::vector<ittd_string_hit> *strings_out,
+                              std::vector<ittd_buffer_hit> *buffers_out)
+    {
+        std::unique_ptr<ttd::trace> own = open_trace(path);
+        ttd::trace &t = *own;
+        // The shadow's page reads go to a reader of their own, so they never
+        // disturb the event stream's.
+        std::unique_ptr<ttd::trace> mem_trace = open_trace(path);
+        ShadowMemory shadow(*mem_trace);
+
+        using namespace idattd::scans;
+        StringScan<uint64_t> strings(string_minimum);
+        BufferScan<uint64_t> buffers(250000);       // Sogen's: instructions
+
+        const uint64_t start = t.start_position();
+        const uint64_t last  = last_position(t);
+
+        auto scan_range = [&](uint64_t address, uint64_t size, uint64_t read_at, uint64_t step)
+        {
+            for ( uint64_t off = 0; off < size; off += kScanChunk )
+            {
+                const uint64_t b = off > kStringContext ? off - kStringContext : 0;
+                const uint64_t e = std::min<uint64_t>(size, off + kScanChunk + kStringContext);
+                std::vector<uint8_t> bytes(size_t(e - b));
+                if ( shadow.read(address + b, bytes.size(), bytes.data(), read_at) )
+                {
+                    strings.inspect(address + b, bytes, step);
+                    continue;
+                }
+                for ( uint64_t page = b; page < e; page += 4096 )
+                {
+                    bytes.resize(size_t(std::min<uint64_t>(4096, e - page)));
+                    if ( shadow.read(address + page, bytes.size(), bytes.data(), read_at) )
+                        strings.inspect(address + page, bytes, step);
+                }
+            }
+        };
+
+        // ---- what memory held at the start ------------------------------------
+        if ( t.has_memory_regions() )
+        {
+            for ( const ttd::memory_region &r : t.memory_regions().regions )
+            {
+                if ( r.event_number != 0 || r.step != start )
+                    continue;                           // a change, not the start map
+                static const uint32_t MEM_COMMIT_ = 0x1000;
+                if ( r.state != MEM_COMMIT_ || r.kind == 5 || r.kind == 6 )
+                    continue;                           // MMIO, host-reserved
+                scan_range(r.address, r.size, start, start);
+            }
+        }
+
+        // ---- the writes, in order ----------------------------------------------
+        const std::span<const ttd::mapping_change> maps =
+            t.has_mapping_changes() ? t.mapping_changes() : std::span<const ttd::mapping_change>();
+        size_t next_map = 0;
+
+        // The guest writes of the instruction being read, scanned for strings
+        // once it is done, as Sogen does at the next instruction.
+        std::vector<std::pair<uint64_t, uint64_t>> pending;
+        uint64_t pending_step = 0;
+        auto flush = [&]()
+        {
+            if ( pending.empty() )
+                return;
+            // The step after the writes, as the emulator counts it there.
+            const uint64_t step = std::min(pending_step + 1, std::max<uint64_t>(last, pending_step));
+            for ( const auto &[addr, size] : pending )
+            {
+                const uint64_t begin = addr > kStringContext ? addr - kStringContext : 0;
+                const uint64_t end   = addr + size;
+                scan_range(begin, end - begin + kStringContext, pending_step, step);
+            }
+            pending.clear();
+        };
+
+        const uint64_t kinds = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write
+                             | (uint64_t)ttd::access_kind::execute;
+        const uint64_t total_events = std::max<uint64_t>(t.metadata().event_count, 1);
+        ttd::event_reader reader(t, 0);
+        uint64_t seen = 0;
+        while ( std::optional<ttd::access_event> ev = reader.next(kinds) )
+        {
+            const uint64_t number = reader.last_number();
+            if ( (++seen & 0xFFFF) == 0 && progress != nullptr )
+            {
+                if ( progress->cancelled != nullptr && progress->cancelled(progress->ud) != 0 )
+                    throw ttd::operation_cancelled();
+                if ( progress->report != nullptr )
+                    progress->report(progress->ud, (uint32_t)std::min<uint64_t>(1000, number * 1000 / total_events));
+            }
+            if ( ev->step != pending_step )
+                flush();
+            while ( next_map < maps.size() && maps[next_map].event_number <= number )
+            {
+                const ttd::mapping_change &m = maps[next_map++];
+                shadow.drop(m.address, m.size);
+                buffers.mapping_changed(m.address, m.size);
+            }
+            pending_step = ev->step;
+
+            if ( ev->kind == ttd::access_kind::execute )
+            {
+                buffers.executed(ev->address, (size_t)ev->size);
+                continue;
+            }
+            if ( ev->size == 0 )
+                continue;
+            std::vector<std::byte> data = t.access_data(*ev);
+            if ( data.size() != ev->size )
+                continue;
+            const uint8_t *bytes = reinterpret_cast<const uint8_t *>(data.data());
+            shadow.apply(ev->address, bytes, data.size());
+            // Sogen's scanners hook the guest CPU's writes, not the ones Sogen
+            // makes for the program (a syscall filling a buffer).
+            if ( ev->kind != ttd::access_kind::write )
+                continue;
+            pending.emplace_back(ev->address, ev->size);
+            for ( size_t off = 0; off < data.size(); off += kMaximumRegion )
+            {
+                const size_t n = std::min(kMaximumRegion, data.size() - off);
+                buffers.ingest(ev->address + off, bytes + off, n, ev->step, ev->step, ev->ip);
+            }
+        }
+        flush();
+        buffers.finish();
+
+        if ( strings_out != nullptr )
+        {
+            strings.for_each([&](uint64_t address, const StringScan<uint64_t>::Entry &e)
+            {
+                ittd_string_hit h{};
+                h.address = address;
+                h.pos     = appeared_at(t, e.pos);
+                h.wide    = e.wide ? 1 : 0;
+                copy_str(h.text, sizeof(h.text), e.value);
+                h.length  = (uint32_t)e.value.size();
+                strings_out->push_back(h);
+            });
+        }
+        if ( buffers_out != nullptr )
+        {
+            for ( const FoundBuffer<uint64_t> &r : buffers.results )
+            {
+                ittd_buffer_hit h{};
+                h.address   = r.address;
+                h.size      = r.size;
+                h.first_pos = before_step(r.first);
+                h.last_pos  = before_step(r.last);
+                h.writer_ip = r.writer_ip;
+                h.writes    = r.writes;
+                copy_str(h.kind, sizeof(h.kind), r.kind);
+                copy_str(h.preview, sizeof(h.preview), r.preview);
+                buffers_out->push_back(h);
+            }
+        }
+    }
+
     std::string scan_key(const ittd_fork_settings *settings)
     {
         std::string key;
@@ -2094,6 +2374,30 @@ namespace
         return key;
     }
 
+    // Whether the open recording's scans read its writes (scans_from_recording).
+    bool recorded_scans(backend_t *b)
+    {
+        std::lock_guard<std::mutex> lock(b->mtx);
+        return scans_from_recording(*b->trace);
+    }
+
+    // The scan of the recorded writes for 'scan_min', run once and kept: both
+    // answers come from the one pass.
+    const std::vector<ittd_string_hit> &recorded_strings(backend_t *b, size_t scan_min, const ittd_progress *progress)
+    {
+        const std::string key = "recorded|" + std::to_string(scan_min);
+        auto found = b->strings.find(key);
+        if ( found == b->strings.end() )
+        {
+            std::vector<ittd_string_hit> s;
+            std::vector<ittd_buffer_hit> v;
+            scan_recorded_writes(b->path, scan_min, progress, &s, &v);
+            b->buffers.emplace("recorded", std::move(v));
+            found = b->strings.emplace(key, std::move(s)).first;
+        }
+        return found->second;
+    }
+
     int query_strings(ittd_backend *hb, const ittd_fork_settings *settings, uint32_t min_length,
                       ittd_string_hit *buf, size_t cap, size_t *out_count,
                       int *out_truncated, const ittd_progress *progress)
@@ -2106,6 +2410,20 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->scan_mtx);
+            if ( recorded_scans(b) )
+            {
+                // Kept at the shortest length anyone is likely to ask for,
+                // and filtered for this request.
+                const std::vector<ittd_string_hit> &all =
+                    recorded_strings(b, std::min<size_t>(min_length, 4), progress);
+                std::vector<ittd_string_hit> v;
+                for ( const ittd_string_hit &h : all )
+                    if ( h.length >= min_length )
+                        v.push_back(h);
+                b->scan_note.clear();
+                set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+                return fill(v, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
+            }
             const std::string key = std::to_string(min_length) + "|" + scan_key(settings);
             auto found = b->strings.find(key);
             if ( found == b->strings.end() )
@@ -2161,6 +2479,15 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->scan_mtx);
+            if ( recorded_scans(b) )
+            {
+                if ( b->buffers.find("recorded") == b->buffers.end() )
+                    recorded_strings(b, 4, progress);
+                const std::vector<ittd_buffer_hit> &v = b->buffers["recorded"];
+                b->scan_note.clear();
+                set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+                return fill(v, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
+            }
             const std::string key = scan_key(settings);
             auto found = b->buffers.find(key);
             if ( found == b->buffers.end() )

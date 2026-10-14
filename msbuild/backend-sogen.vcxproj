@@ -85,6 +85,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
+    <ClInclude Include="$(SrcDir)\common\write_scans.h" />
     <ClCompile Include="$(SrcDir)\backend-sogen\sogen_backend.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

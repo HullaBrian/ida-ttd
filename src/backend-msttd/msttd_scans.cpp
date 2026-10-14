@@ -16,14 +16,14 @@
 // Sogen leaves them out. The three answers come from the same two replays and
 // are kept, so whichever is asked for second costs nothing.
 //
-// The scanners follow Sogen's (sogen windows-ttd ttd_string_scan.cpp and
-// ttd_buffer_scan.cpp): the same tests and the same kinds, so a list reads
-// the same from either kind of recording. Every callback is noexcept and
-// guards its growth, as the other sweeps do.
+// The scanners are Sogen's (common/write_scans.h), shared with the Sogen
+// backend, so a list reads the same from either kind of recording. Every
+// callback is noexcept and guards its growth, as the other sweeps do.
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
 #include "backend-msttd/msttd_host.h"
+#include "common/write_scans.h"
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -34,16 +34,13 @@ namespace idattd
     {
         // ---- limits -------------------------------------------------------
         const size_t   kMaxStrings       = 500000;
-        const size_t   kMaxBuffers       = 20000;          // Sogen's
         const size_t   kMaxSelfMod       = 100000;
         const size_t   kMaxWriteNodes    = 4000000;        // the last-write map
         const size_t   kMaxExecRanges    = 4096;           // execute watchpoints
         const uint32_t kStringMinimum    = 4;              // kept; callers ask for more
-        const size_t   kStringMaximum    = 4096;           // Sogen's
-        const uint64_t kStringContext    = 512;            // Sogen's
         const uint64_t kStringWindowMax  = 64 * 1024;
 
-        bool printable(uint8_t c) { return c >= 0x20 && c <= 0x7E; }
+        using scans::kStringContext;
 
         // Two replays and a scan of the modules, as one percentage.
         class Stage : public ProgressSink
@@ -61,446 +58,12 @@ namespace idattd
             uint32_t      m_from, m_span;
         };
 
-        // ---- strings (ttd_string_scan.cpp) --------------------------------
-        class StringScan
-        {
-        public:
-            bool truncated = false;
-
-            // Every NUL-terminated ASCII or UTF-16LE run in 'bytes' of at least
-            // the minimum length.
-            void inspect(uint64_t address, const std::vector<uint8_t> &bytes, const TtdPosition &pos)
-            {
-                for ( size_t i = 0; i < bytes.size(); )
-                {
-                    if ( !printable(bytes[i]) )
-                    {
-                        ++i;
-                        continue;
-                    }
-                    size_t end = i;
-                    while ( end < bytes.size() && printable(bytes[end]) )
-                        ++end;
-                    if ( end - i >= kStringMinimum && end - i <= kStringMaximum && end < bytes.size() && bytes[end] == 0 )
-                        add(address + i, pos, false, std::string(bytes.begin() + i, bytes.begin() + end));
-                    i = end;
-                }
-                for ( size_t i = 0; i + 1 < bytes.size(); ++i )
-                {
-                    if ( !printable(bytes[i]) || bytes[i + 1] != 0 || (i >= 2 && printable(bytes[i - 2]) && bytes[i - 1] == 0) )
-                        continue;
-                    size_t end = i;
-                    std::string value;
-                    while ( end + 1 < bytes.size() && printable(bytes[end]) && bytes[end + 1] == 0 && value.size() < kStringMaximum )
-                    {
-                        value.push_back((char)bytes[end]);
-                        end += 2;
-                    }
-                    if ( value.size() >= kStringMinimum && end + 1 < bytes.size() && bytes[end] == 0 && bytes[end + 1] == 0 )
-                        add(address + i, pos, true, std::move(value));
-                }
-            }
-
-            void results(uint32_t min_length, std::vector<StringHit> *out) const
-            {
-                for ( const auto &[address, entries] : m_strings )
-                {
-                    for ( const Entry &e : entries )
-                    {
-                        if ( e.value.size() < min_length )
-                            continue;
-                        StringHit h;
-                        h.address = (ea_t)address;
-                        h.pos     = to_core(e.pos);
-                        h.wide    = e.wide;
-                        h.length  = (uint32_t)e.value.size();
-                        h.text    = e.value.c_str();
-                        out->push_back(std::move(h));
-                    }
-                }
-            }
-
-        private:
-            struct Entry
-            {
-                TtdPosition pos;
-                bool        wide;
-                std::string value;
-            };
-            std::map<uint64_t, std::vector<Entry>> m_strings;
-            size_t m_count = 0;
-
-            // A string that grew in place replaces what it grew from.
-            void add(uint64_t address, const TtdPosition &pos, bool wide, std::string value)
-            {
-                std::vector<Entry> &entries = m_strings[address];
-                for ( Entry &e : entries )
-                {
-                    if ( e.wide != wide )
-                        continue;
-                    if ( e.value == value )
-                        return;
-                    if ( value.size() > e.value.size() && value.compare(0, e.value.size(), e.value) == 0 )
-                    {
-                        e.value = std::move(value);
-                        e.pos   = pos;
-                        return;
-                    }
-                }
-                if ( m_count >= kMaxStrings )
-                {
-                    truncated = true;
-                    return;
-                }
-                entries.push_back(Entry{ pos, wide, std::move(value) });
-                m_count++;
-            }
-        };
-
-        // ---- buffers (ttd_buffer_scan.cpp) --------------------------------
-        const uint64_t kNearbyBytes        = 16;
         // Sogen measures "the same burst of writing" as 250,000 instructions;
         // the engine's callbacks count writes, about a fifth as many.
-        const uint64_t kNearbyWrites       = 50000;
-        const size_t   kMaximumRegion      = 256 * 1024;
-        const size_t   kMaximumActive      = 16384;
+        const uint64_t kNearbyWrites = 50000;
 
-        bool begins(const uint8_t *b, size_t n, std::initializer_list<uint8_t> prefix)
-        {
-            return n >= prefix.size() && std::equal(prefix.begin(), prefix.end(), b);
-        }
-
-        uint32_t little32(const uint8_t *b, size_t off)
-        {
-            return uint32_t(b[off]) | (uint32_t(b[off + 1]) << 8) | (uint32_t(b[off + 2]) << 16) | (uint32_t(b[off + 3]) << 24);
-        }
-
-        std::string signature(const uint8_t *b, size_t n)
-        {
-            if ( begins(b, n, { 'M', 'Z' }) && n >= 0x40 )
-            {
-                uint32_t pe = little32(b, 0x3C);
-                if ( pe <= n - 4 && begins(b + pe, n - pe, { 'P', 'E', 0, 0 }) )
-                    return "pe_image";
-            }
-            if ( begins(b, n, { 0x7F, 'E', 'L', 'F' }) )                         return "elf_image";
-            if ( begins(b, n, { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }) )  return "png_image";
-            if ( begins(b, n, { 0xFF, 0xD8, 0xFF }) )                            return "jpeg_image";
-            if ( begins(b, n, { 'G', 'I', 'F', '8' }) )                          return "gif_image";
-            if ( begins(b, n, { 'B', 'M' }) )                                    return "bmp_image";
-            if ( begins(b, n, { '%', 'P', 'D', 'F', '-' }) )                     return "pdf_document";
-            if ( begins(b, n, { 'P', 'K', 3, 4 }) )                              return "zip_archive";
-            if ( begins(b, n, { 0x1F, 0x8B, 0x08 }) )                            return "gzip_stream";
-            if ( begins(b, n, { 'S', 'Q', 'L', 'i', 't', 'e', ' ', 'f', 'o', 'r', 'm', 'a', 't', ' ', '3', 0 }) )
-                return "sqlite_database";
-            if ( begins(b, n, { '-', '-', '-', '-', '-', 'B', 'E', 'G', 'I', 'N', ' ' }) )
-            {
-                std::string text((const char *)b, std::min<size_t>(n, 128));
-                if ( text.find("PRIVATE KEY-----") != std::string::npos )
-                    return "pem_private_key";
-                if ( text.find("PUBLIC KEY-----") != std::string::npos )
-                    return "pem_public_key";
-            }
-            return std::string();
-        }
-
-        double entropy(const uint8_t *b, size_t n)
-        {
-            size_t counts[256] = { 0 };
-            for ( size_t i = 0; i < n; i++ )
-                counts[b[i]]++;
-            double v = 0;
-            for ( size_t c : counts )
-            {
-                if ( c != 0 )
-                {
-                    double p = double(c) / double(n);
-                    v -= p * std::log2(p);
-                }
-            }
-            return v;
-        }
-
-        std::string preview(const uint8_t *b, size_t n, bool as_text)
-        {
-            static const char hex[] = "0123456789abcdef";
-            std::string s;
-            for ( size_t i = 0; i < std::min<size_t>(n, 48); i++ )
-            {
-                if ( as_text )
-                {
-                    s.push_back(printable(b[i]) ? (char)b[i] : '.');
-                }
-                else
-                {
-                    s.push_back(hex[b[i] >> 4]);
-                    s.push_back(hex[b[i] & 15]);
-                }
-            }
-            return s;
-        }
-
-        class BufferScan
-        {
-        public:
-            bool truncated = false;
-
-            void ingest(uint64_t address, const uint8_t *bytes, size_t size, uint64_t clock,
-                        const TtdPosition &pos, uint64_t ip)
-            {
-                if ( size == 0 || address > UINT64_MAX - size )
-                    return;
-                const uint64_t end = address + size;
-                auto it = m_active.upper_bound(address);
-                if ( it != m_active.begin() )
-                {
-                    --it;
-                    const uint64_t old_end = it->first + it->second.bytes.size();
-                    if ( old_end + kNearbyBytes < address )
-                        ++it;
-                }
-                if ( it != m_active.end() && it->first <= end + kNearbyBytes )
-                {
-                    Region &cur = it->second;
-                    const uint64_t cbegin = std::min(it->first, address);
-                    const uint64_t cend   = std::max(it->first + cur.bytes.size(), end);
-                    bool changes_executed = false;
-                    if ( address < it->first + cur.bytes.size() )
-                    {
-                        const uint64_t ob = std::max(it->first, address);
-                        const uint64_t oe = std::min(it->first + cur.bytes.size(), end);
-                        for ( uint64_t a = ob; a < oe; ++a )
-                        {
-                            size_t off = size_t(a - it->first);
-                            if ( cur.executed[off] && cur.bytes[off] != bytes[a - address] )
-                            {
-                                changes_executed = true;
-                                break;
-                            }
-                        }
-                    }
-                    if ( changes_executed )
-                    {
-                        emit_at(it->first, std::move(cur));
-                        m_active.erase(it);
-                    }
-                    else if ( (address < it->first + cur.bytes.size() || clock - cur.last_clock <= kNearbyWrites)
-                           && cend - cbegin <= kMaximumRegion )
-                    {
-                        if ( cbegin < it->first )
-                        {
-                            size_t prefix = size_t(it->first - cbegin);
-                            cur.bytes.insert(cur.bytes.begin(), prefix, 0);
-                            cur.known.insert(cur.known.begin(), prefix, 0);
-                            cur.executed.insert(cur.executed.begin(), prefix, 0);
-                            auto node = m_active.extract(it);
-                            node.key() = cbegin;
-                            it = m_active.insert(std::move(node)).position;
-                        }
-                        Region &r = it->second;
-                        r.bytes.resize(size_t(cend - cbegin));
-                        r.known.resize(r.bytes.size());
-                        r.executed.resize(r.bytes.size());
-                        size_t off = size_t(address - cbegin);
-                        std::copy(bytes, bytes + size, r.bytes.begin() + off);
-                        std::fill_n(r.known.begin() + off, size, uint8_t(1));
-                        std::fill_n(r.executed.begin() + off, size, uint8_t(0));
-                        r.last_clock = clock;
-                        r.last_pos   = pos;
-                        r.writer_ip  = ip;
-                        r.writes++;
-                        return;
-                    }
-                    else if ( address < it->first + cur.bytes.size() )
-                    {
-                        emit_at(it->first, std::move(cur));
-                        m_active.erase(it);
-                    }
-                }
-                Region v;
-                v.bytes.assign(bytes, bytes + size);
-                v.known.assign(size, 1);
-                v.executed.assign(size, 0);
-                v.first_pos  = v.last_pos = pos;
-                v.last_clock = clock;
-                v.writer_ip  = ip;
-                v.writes     = 1;
-                auto existing = m_active.find(address);
-                if ( existing != m_active.end() )
-                {
-                    emit_at(existing->first, std::move(existing->second));
-                    m_active.erase(existing);
-                }
-                m_active.emplace(address, std::move(v));
-                if ( m_active.size() > kMaximumActive )
-                    evict_oldest();
-            }
-
-            void executed(uint64_t address, size_t size)
-            {
-                auto it = m_active.upper_bound(address);
-                while ( it != m_active.begin() )
-                {
-                    --it;
-                    if ( address - it->first >= kMaximumRegion )
-                        break;
-                    Region &r = it->second;
-                    if ( address - it->first < r.known.size() )
-                    {
-                        size_t off = size_t(address - it->first);
-                        for ( size_t b = off; b < std::min(r.known.size(), off + size); ++b )
-                            if ( r.known[b] )
-                                r.executed[b] = 1;
-                    }
-                }
-            }
-
-            void finish()
-            {
-                for ( auto &[a, r] : m_active )
-                    emit_at(a, std::move(r));
-                m_active.clear();
-            }
-
-            std::vector<BufferHit> results;
-
-        private:
-            struct Region
-            {
-                std::vector<uint8_t> bytes, known, executed;
-                TtdPosition first_pos, last_pos;
-                uint64_t last_clock = 0;
-                uint64_t writer_ip = 0;
-                uint64_t writes = 0;
-            };
-            std::map<uint64_t, Region> m_active;
-
-            void evict_oldest()
-            {
-                auto oldest = std::min_element(m_active.begin(), m_active.end(), [](const auto &a, const auto &b)
-                {
-                    bool as = a.second.bytes.size() < 512, bs = b.second.bytes.size() < 512;
-                    return as != bs ? as : a.second.last_clock < b.second.last_clock;
-                });
-                emit_at(oldest->first, std::move(oldest->second));
-                m_active.erase(oldest);
-            }
-
-            void add(uint64_t base, const Region &r, size_t begin, const uint8_t *b, size_t n, const char *kind,
-                     bool text, bool utf16 = false)
-            {
-                if ( n == 0 )
-                    return;
-                if ( results.size() >= kMaxBuffers )
-                {
-                    truncated = true;
-                    return;
-                }
-                std::string display = preview(b, n, text);
-                if ( utf16 )
-                {
-                    display.clear();
-                    for ( size_t i = 0; i + 1 < std::min<size_t>(n, 96); i += 2 )
-                        display.push_back((char)b[i]);
-                }
-                BufferHit h;
-                h.address   = (ea_t)(base + begin);
-                h.size      = n;
-                h.first_pos = to_core(r.first_pos);
-                h.last_pos  = to_core(r.last_pos);
-                h.writer_ip = (ea_t)r.writer_ip;
-                h.writes    = r.writes;
-                h.kind      = kind;
-                h.preview   = display.c_str();
-                results.push_back(std::move(h));
-            }
-
-            void emit_at(uint64_t base, Region &&r)
-            {
-                for ( size_t offset = 0; offset < r.known.size() && results.size() < kMaxBuffers; )
-                {
-                    while ( offset < r.known.size() && !r.known[offset] )
-                        ++offset;
-                    const size_t begin = offset;
-                    while ( offset < r.known.size() && r.known[offset] )
-                        ++offset;
-                    if ( offset - begin < 16 )
-                        continue;
-                    const uint8_t *b = r.bytes.data() + begin;
-                    const size_t   n = offset - begin;
-                    std::string kind = signature(b, n);
-                    const size_t text_count = (size_t)std::count_if(b, b + n, printable);
-                    const bool text = n >= 32 && text_count * 100 >= n * 90;
-                    if ( kind.empty() && std::any_of(r.executed.begin() + begin, r.executed.begin() + offset,
-                                                     [](uint8_t x) { return x != 0; }) )
-                        kind = "contains_executed_code";
-                    if ( kind.empty() && text )
-                        kind = "ascii_text";
-                    if ( kind.empty() && n >= 32 )
-                    {
-                        size_t pairs = 0;
-                        for ( size_t i = 0; i + 1 < n; i += 2 )
-                            pairs += printable(b[i]) && b[i + 1] == 0;
-                        if ( pairs * 100 >= (n / 2) * 85 )
-                            kind = "utf16le_text";
-                    }
-                    if ( kind.empty() && n >= 256 && entropy(b, n) >= 7.5 )
-                        kind = "high_entropy_buffer";
-                    if ( kind.empty() && n >= 512 )
-                        kind = "buffer";
-                    if ( !kind.empty() )
-                        add(base, r, begin, b, n, kind.c_str(), text);
-
-                    size_t strings = 0;
-                    for ( size_t i = 0; i < n && strings < 128 && results.size() < kMaxBuffers; )
-                    {
-                        if ( !printable(b[i]) )
-                        {
-                            ++i;
-                            continue;
-                        }
-                        size_t end = i;
-                        while ( end < n && printable(b[end]) )
-                            ++end;
-                        if ( end - i >= 16 && !(text && i == 0 && end == n) )
-                        {
-                            add(base, r, begin + i, b + i, end - i, "ascii_string", true);
-                            ++strings;
-                        }
-                        i = end;
-                    }
-                    strings = 0;
-                    for ( size_t i = 0; i + 1 < n && strings < 128 && results.size() < kMaxBuffers; ++i )
-                    {
-                        if ( !printable(b[i]) || b[i + 1] != 0 || (i >= 2 && printable(b[i - 2]) && b[i - 1] == 0) )
-                            continue;
-                        size_t end = i;
-                        while ( end + 1 < n && printable(b[end]) && b[end + 1] == 0 )
-                            end += 2;
-                        if ( end - i >= 24 )
-                        {
-                            add(base, r, begin + i, b + i, end - i, "utf16le_string", false, true);
-                            ++strings;
-                        }
-                        i = end - 1;
-                    }
-                    size_t signatures = 0;
-                    for ( size_t i = 1; i + 16 < n && signatures < 64 && results.size() < kMaxBuffers; ++i )
-                    {
-                        const uint8_t first = b[i];
-                        if ( first != 'M' && first != 0x89 && first != 'G' && first != '%' && first != 'P'
-                          && first != 'S' && first != '-' )
-                            continue;
-                        std::string embedded = signature(b + i, n - i);
-                        if ( !embedded.empty() && embedded != "bmp_image" && embedded != "jpeg_image" )
-                        {
-                            add(base, r, begin + i, b + i, n - i, embedded.c_str(), false);
-                            ++signatures;
-                        }
-                    }
-                }
-            }
-        };
+        using StringScan = scans::StringScan<TtdPosition>;
+        using BufferScan = scans::BufferScan<TtdPosition>;
 
         // ---- the last write to every byte ---------------------------------
         //
@@ -631,7 +194,7 @@ namespace idattd
     // What the two replays found, kept for the backend's lifetime.
     struct MsTtdScanResults
     {
-        StringScan               strings;
+        StringScan               strings{ kStringMinimum, kMaxStrings };
         std::vector<BufferHit>   buffers;
         std::vector<SelfModHit>  selfmod;
         bool                     truncated = false;
@@ -696,7 +259,7 @@ namespace idattd
 
         // ---- 2: the writes again, and what ran of them ------------------------
         std::unique_ptr<MsTtdScanResults> res(new MsTtdScanResults);
-        BufferScan  buffers;
+        BufferScan  buffers(kNearbyWrites);
         LastWrites  last;
         std::map<uint64_t, SelfModHit> selfmod;
         bool        truncated = capped || exec_capped;
@@ -909,7 +472,20 @@ namespace idattd
         }
 
         buffers.finish();
-        res->buffers = std::move(buffers.results);
+        res->buffers.reserve(buffers.results.size());
+        for ( const scans::FoundBuffer<TtdPosition> &f : buffers.results )
+        {
+            BufferHit h;
+            h.address   = (ea_t)f.address;
+            h.size      = f.size;
+            h.first_pos = to_core(f.first);
+            h.last_pos  = to_core(f.last);
+            h.writer_ip = (ea_t)f.writer_ip;
+            h.writes    = f.writes;
+            h.kind      = f.kind.c_str();
+            h.preview   = f.preview.c_str();
+            res->buffers.push_back(std::move(h));
+        }
         res->selfmod.reserve(selfmod.size());
         for ( auto &[a, h] : selfmod )
             res->selfmod.push_back(h);
@@ -943,7 +519,19 @@ namespace idattd
         r.ran = true;
         if ( !run_scans(progress, &r) )
             return r;
-        m_scans.p->strings.results(std::max(min_length, kStringMinimum), out);
+        const uint32_t want = std::max(min_length, kStringMinimum);
+        m_scans.p->strings.for_each([&](uint64_t address, const StringScan::Entry &e)
+        {
+            if ( e.value.size() < want )
+                return;
+            StringHit h;
+            h.address = (ea_t)address;
+            h.pos     = to_core(e.pos);
+            h.wide    = e.wide;
+            h.length  = (uint32_t)e.value.size();
+            h.text    = e.value.c_str();
+            out->push_back(std::move(h));
+        });
         r.truncated = m_scans.p->truncated;
         return r;
     }
