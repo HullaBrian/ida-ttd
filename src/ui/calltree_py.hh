@@ -118,7 +118,6 @@ def _ida_ttd_call_tree():
                 n += 1 + self.count_below(item.child(i))
             if item.parent() is not None and n:
                 item.setText(4, str(n))
-                item.setTextAlignment(4, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             return n
 
         def travel(self, item):
