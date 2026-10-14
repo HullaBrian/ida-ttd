@@ -210,6 +210,7 @@ namespace idattd
         MemoryMapHandler          m_memMap;
         MemoryTimelineHandler     m_memTimeline;
         ValueOriginHandler        m_valueOrigin;
+        HandlesHandler            m_handles;
         IndirectCallsHandler      m_indirect;
         ClearIndirectCallsHandler m_indirectClear;
         AutoIndirectCallsHandler  m_indirectAuto;
@@ -246,6 +247,7 @@ namespace idattd
             ICO_SYSCALLS,
             ICO_MEMORY_MAP,
             ICO_ORIGIN,
+            ICO_HANDLES,
             ICO_COUNT
         };
         // One array rather than 13 handles, so the destructor frees them all

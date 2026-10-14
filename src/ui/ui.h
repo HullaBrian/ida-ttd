@@ -8,6 +8,7 @@
 #include "analysis/memmap.h"
 #include "analysis/address_space.h"
 #include "analysis/origin.h"
+#include "analysis/handles.h"
 #include "analysis/syscalls.h"
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
@@ -243,6 +244,24 @@ namespace idattd
         qstring                m_title;  // owned: chooser_base_t keeps the pointer
     };
 
+    // The handles the program opened and closed. Enter travels to where one
+    // was opened; Edit (Ctrl+E) to where it was closed.
+    class HandlesChooser : public chooser_t
+    {
+    public:
+        HandlesChooser(TraceManager *mgr, std::vector<HandleRecord> &&rows);
+
+        size_t  idaapi get_count() const override;
+        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
+        cbret_t idaapi enter(size_t n) override;
+        cbret_t idaapi edit(size_t n) override;
+
+    private:
+        TraceManager             *m_mgr;
+        std::vector<HandleRecord> m_rows;
+        qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+    };
+
     // The memory map at the playhead: every region with its protection, kind
     // and use (see address_space_at). Follows the playhead: each stop
     // refreshes it. Enter jumps to the region; travelling to where it was
@@ -397,6 +416,13 @@ namespace idattd
     // The memory map at the playhead.
     struct MemoryMapHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
+
+    // The handles the program opened and closed.
+    struct HandlesHandler : public TtdAction
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override;
+    };
 
     // Where did this value come from? A register (the registers window, or
     // one under the cursor) or memory (the hex view's selection, or data
@@ -563,6 +589,7 @@ namespace idattd
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_TIMELINE  = "idattd:memory_timeline";
         constexpr const char *VALUE_ORIGIN  = "idattd:value_origin";
+        constexpr const char *HANDLES       = "idattd:handles";
         constexpr const char *REREAD        = "idattd:reread_memory";
         constexpr const char *INDIRECT      = "idattd:indirect_calls";
         constexpr const char *INDIRECT_CLR  = "idattd:indirect_calls_clear";

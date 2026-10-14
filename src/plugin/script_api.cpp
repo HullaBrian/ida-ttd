@@ -15,6 +15,7 @@
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
 #include "analysis/origin.h"
+#include "analysis/handles.h"
 
 #include <expr.hpp>
 
@@ -1367,6 +1368,28 @@ namespace idattd
         out.num("hops", (int64_t)hops.size()).raw("chain", arr.done());
     }
 
+    // The handle list.
+    static void cmd_an_handles(const Args &a, JObj &out)
+    {
+        need_session();
+        uint64_t max = a.u64_or(0, 200);
+        std::vector<HandleRecord> v;
+        bool cancelled = false;
+        if ( !list_handles(&mgr(), &v, &cancelled) )
+            fail("the recording's syscalls cannot be listed");
+        JArr arr;
+        for ( size_t i = 0; i < v.size() && i < max; i++ )
+        {
+            JObj o;
+            o.hex("handle", (ea_t)v[i].handle).str("type", v[i].type).str("name", v[i].name)
+             .str("opened", v[i].opened.is_valid() ? format_position(v[i].opened) : qstring())
+             .str("by", v[i].opened_by)
+             .str("closed", v[i].closed.is_valid() ? format_position(v[i].closed) : qstring());
+            arr.add(o.done());
+        }
+        out.num("count", (int64_t)v.size()).boolean("cancelled", cancelled).raw("handles", arr.done());
+    }
+
     // The Memory map listing's rows. Builds the session's change timeline
     // first when it has none (as the menu does, without asking).
     static void cmd_an_regions(const Args &a, JObj &out)
@@ -1433,6 +1456,7 @@ namespace idattd
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
+        { "an.handles",     cmd_an_handles,     "[MAX] the handles the program opened and closed" },
         { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] where the value at the playhead came from" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },

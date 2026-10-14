@@ -103,6 +103,9 @@
     <ClInclude Include="$(SrcDir)\analysis\callsites.h">
       <Filter>analysis</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\handles.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\coverage.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -237,6 +240,9 @@
     <ClCompile Include="$(SrcDir)\analysis\callsites.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\handles.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\coverage.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
@@ -280,6 +286,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp">
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\scope.cpp">

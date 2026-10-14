@@ -229,6 +229,7 @@ namespace idattd
         m_icons[ICO_SYSCALLS]        = svg(icons_syscalls_svg,        sizeof(icons_syscalls_svg) - 1);
         m_icons[ICO_MEMORY_MAP]      = svg(icons_memory_map_svg,      sizeof(icons_memory_map_svg) - 1);
         m_icons[ICO_ORIGIN]          = svg(icons_origin_svg,          sizeof(icons_origin_svg) - 1);
+        m_icons[ICO_HANDLES]         = svg(icons_handles_svg,         sizeof(icons_handles_svg) - 1);
     }
 
     // Every TTD command, in the order it appears on the TTD menu. Adding one
@@ -287,6 +288,10 @@ namespace idattd
               "Memory map: every region of memory at this position, with its "
               "protection, its type and what it is used for",
               m_icons[ICO_MEMORY_MAP], ITEM, MENU },
+            { actions::HANDLES, "Handles...", &m_handles, nullptr,
+              "Handles: every file, key, socket, pipe, process and other object the program "
+              "opened, with its name, where it was opened and where it was closed",
+              m_icons[ICO_HANDLES], ITEM, MENU },
 
             // Code: what the recording says about the code in front of you,
             // written into the database.

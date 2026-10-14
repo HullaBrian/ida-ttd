@@ -69,6 +69,7 @@
     <ClInclude Include="$(SrcDir)\analysis\address_space.h" />
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h" />
     <ClInclude Include="$(SrcDir)\analysis\callsites.h" />
+    <ClInclude Include="$(SrcDir)\analysis\handles.h" />
     <ClInclude Include="$(SrcDir)\analysis\coverage.h" />
     <ClInclude Include="$(SrcDir)\analysis\memmap.h" />
     <ClInclude Include="$(SrcDir)\analysis\memsearch.h" />
@@ -116,6 +117,7 @@
     <ClCompile Include="$(SrcDir)\analysis\address_space.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\callsites.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\handles.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\coverage.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\memmap.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\memsearch.cpp" />
@@ -131,6 +133,7 @@
     <ClCompile Include="$(SrcDir)\ui\decompiler.cpp" />
     <ClCompile Include="$(SrcDir)\ui\names.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp" />
     <ClCompile Include="$(SrcDir)\ui\scope.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_bookmarks.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_callsites.cpp" />
