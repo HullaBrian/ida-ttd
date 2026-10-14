@@ -2,6 +2,7 @@
 #include "core/diag.h"
 #include "common/strings.h"
 #include "common/symsrv.h"
+#include "analysis/query_runner.h"
 
 namespace idattd
 {
@@ -639,7 +640,11 @@ namespace idattd
             if ( pdb_identity(r.base, &pdb) )
             {
                 if ( wait_box )
-                    show_wait_box("HIDECANCEL\nLoading symbols for %s...", base_name(path).c_str());
+                {
+                    qstring text;
+                    text.sprnt("HIDECANCEL\nLoading symbols for %s...", base_name(path).c_str());
+                    show_wait_box_now(text.c_str());
+                }
                 apply_pdb(r.base, path, pdb);
                 if ( wait_box )
                     hide_wait_box();

@@ -476,42 +476,6 @@ namespace idattd
             return false;
         }
 
-        // Apply each calling module's export names once. Without this the
-        // listing can only show an address: the plugin names a module's exports
-        // when you stop inside it, and you have never stopped in most of these.
-        {
-            std::set<ea_t> bases;
-            for ( const ittd_mapping_change &m : found )
-            {
-                ea_t alo = 0, ahi = 0;
-                if ( m.api != ITTD_BADADDR && mgr->modules().range_at((ea_t)m.api, alo, ahi) )
-                    bases.insert(alo);
-                for ( uint32_t k = 0; k < m.chain_n && k < ITTD_CHAIN_MAX; k++ )
-                {
-                    ea_t mlo = 0, mhi = 0;
-                    if ( m.chain[k] != ITTD_BADADDR
-                      && mgr->modules().range_at((ea_t)m.chain[k], mlo, mhi) )
-                        bases.insert(mlo);
-                }
-            }
-            // A PDB can take seconds to apply (combase's, a dozen), and the
-            // map is not shown until they are in.
-            show_wait_box("HIDECANCEL\nNaming the code the memory calls came from...");
-            size_t done = 0;
-            for ( ea_t b : bases )
-            {
-                replace_wait_box("HIDECANCEL\nNaming the code the memory calls came from: %s (%u of %u)...",
-                                 mgr->modules().name_at(b).c_str(), (unsigned)++done, (unsigned)bases.size());
-                mgr->modules().resolve_symbols(b);
-                // Exports alone are not enough here. The code that allocates is
-                // usually an internal helper, and the nearest export below it
-                // can be a completely unrelated function. A PDB names the real
-                // one. Silent and deduplicated.
-                mgr->modules().load_pdb(b);
-            }
-            hide_wait_box();
-        }
-
         std::vector<RegionChange> changes;
         changes.reserve(found.size());
         for ( const ittd_mapping_change &m : found )
@@ -539,6 +503,49 @@ namespace idattd
             c.region_type   = m.region_type;
             c.alloc_base    = (ea_t)m.alloc_base;
             changes.push_back(c);
+        }
+
+        // Name what the listing shows, once per module: the routine called
+        // (an ntdll stub, which its exports name) and the code that wanted
+        // the memory. The plugin names a module when you stop inside it, and
+        // you have never stopped in most of these.
+        //
+        // A PDB only where that code is in a library. There exports alone
+        // name the wrong function -- the code that allocates is usually an
+        // internal helper -- but applying one blocks IDA for as long as it
+        // takes (combase's, a dozen seconds), so the libraries the chains
+        // merely pass through get none.
+        {
+            std::set<ea_t> exports, pdbs;
+            for ( const RegionChange &c : changes )
+            {
+                ea_t lo = 0, hi = 0;
+                if ( c.api != BADADDR && mgr->modules().range_at(c.api, lo, hi) )
+                    exports.insert(lo);
+                ea_t origin = chain_origin(mgr, c);
+                if ( origin != BADADDR && mgr->modules().range_at(origin, lo, hi) )
+                {
+                    exports.insert(lo);
+                    if ( mgr->modules().is_library_address(origin) )
+                        pdbs.insert(lo);
+                }
+            }
+            if ( !exports.empty() )
+            {
+                show_wait_box_now("HIDECANCEL\nNaming the code the memory calls came from...");
+                size_t done = 0;
+                for ( ea_t b : exports )
+                {
+                    replace_wait_box("HIDECANCEL\nNaming the code the memory calls came from: %s (%u of %u)...",
+                                     mgr->modules().name_at(b).c_str(), (unsigned)++done,
+                                     (unsigned)exports.size());
+                    repaint_wait_box();
+                    mgr->modules().resolve_symbols(b);
+                    if ( pdbs.count(b) != 0 )
+                        mgr->modules().load_pdb(b);    // silent and deduplicated
+                }
+                hide_wait_box();
+            }
         }
 
         if ( out != nullptr )

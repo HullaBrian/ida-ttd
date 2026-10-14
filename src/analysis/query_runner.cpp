@@ -77,6 +77,40 @@ namespace idattd
         return result;
     }
 
+    // Visible top-level windows of the calling thread. Only ever asked about
+    // the main thread's own windows, from the main thread: asking another
+    // thread's would be a cross-thread message.
+    static int visible_thread_windows()
+    {
+        int n = 0;
+        EnumThreadWindows(GetCurrentThreadId(), [](HWND h, LPARAM p) -> BOOL
+        {
+            if ( IsWindowVisible(h) )
+                ++*reinterpret_cast<int *>(p);
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&n));
+        return n;
+    }
+
+    void show_wait_box_now(const char *text)
+    {
+        const int before = visible_thread_windows();
+        show_wait_box("%s", text);
+        const ULONGLONG until = GetTickCount64() + 2000;
+        while ( visible_thread_windows() <= before && GetTickCount64() < until )
+        {
+            user_cancelled();       // runs the message loop
+            std::this_thread::sleep_for(std::chrono::milliseconds(15));
+        }
+        repaint_wait_box();
+    }
+
+    void repaint_wait_box()
+    {
+        for ( int i = 0; i < 3; i++ )
+            user_cancelled();
+    }
+
     bool prepare_backend(ITraceBackend *backend)
     {
         if ( backend == nullptr )

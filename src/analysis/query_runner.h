@@ -24,6 +24,15 @@ namespace idattd
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
                           bool cancellable = true);
 
+    // show_wait_box() for work that then blocks the UI thread without
+    // pumping it (applying a PDB): IDA shows a wait box only after a grace
+    // delay and only while its message loop runs, so a box shown just before
+    // such work never appears. This pumps until it is on screen (two seconds
+    // at most). 'text' is show_wait_box's, prefixes included.
+    void show_wait_box_now(const char *text);
+    // Let a box already shown repaint after replace_wait_box().
+    void repaint_wait_box();
+
     // Prepare the open recording (ITraceBackend::prepare) unless it already
     // is, behind a wait box. True when it is prepared afterwards.
     bool prepare_backend(ITraceBackend *backend);
