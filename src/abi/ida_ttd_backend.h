@@ -944,7 +944,22 @@ typedef struct ittd_backend_api
      * against) goes on from the next checkpoint, whose state is the
      * recording's own; this names the stretches it skipped. */
     const char *(*scan_notice)(ittd_backend *b);
+
+    /* ---- value origins ------------------------------------------------ */
+
+    /* The last instruction of thread 'tid' before position 'at' that changed
+     * register 'reg' (ITTD_REG_*, or ITTD_ORIGIN_XMM0 + n for xmm n), looking
+     * back at most about 'max_back' of the thread's steps. *out_pos is that
+     * instruction's position, before it ran; *out_found is zero when nothing
+     * in the window changed the register. Optional: without it the core steps
+     * back one instruction at a time. */
+    int (*query_register_change)(ittd_backend *b, ittd_position at, uint32_t tid, uint32_t reg,
+                                 uint64_t max_back, ittd_position *out_pos, int *out_found,
+                                 const ittd_progress *progress);
 } ittd_backend_api;
+
+/* query_register_change: xmm registers follow the general-purpose ones. */
+#define ITTD_ORIGIN_XMM0 32u
 
 /* ------------------------------------------------------------ entry point */
 

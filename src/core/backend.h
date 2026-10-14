@@ -644,6 +644,18 @@ namespace idattd
             return false;
         }
 
+        // The last instruction of thread 'tid' before 'at' that changed
+        // register 'reg' (ITTD_REG_*, or ITTD_ORIGIN_XMM0 + n), searching back
+        // about 'max_back' of its steps: *found, and *where (before it ran).
+        // False when the backend has no fast way; the caller steps back itself.
+        virtual bool query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
+                                           Position *where, bool *found, ProgressSink *progress)
+        {
+            qnotused(at); qnotused(tid); qnotused(reg); qnotused(max_back);
+            qnotused(where); qnotused(found); qnotused(progress);
+            return false;
+        }
+
         // The registers at each of 'positions', in the same order; an entry
         // whose 'have' is 0 could not be reconstructed. A batch because
         // neighbouring positions share work -- see ittd_backend_api::regs_at.

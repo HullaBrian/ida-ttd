@@ -285,6 +285,73 @@ int main(int argc, char **argv)
         api->cursor_position(c, &here);
         printf("  run back to rip: stop %d at %s, %.1f ms\n", stop, pos_text(here), now_ms() - t0);
         check(here.lo == mid.lo && stop == ITTD_STOP_STEPPED, "running backward to rip lands on this position");
+
+        /* What tracing a register's origin costs: single steps backward, which
+           must stay on one thread. ITTD_PROBE_BACKSTEPS=N. */
+        if ( getenv("ITTD_PROBE_BACKSTEPS") != NULL )
+        {
+            unsigned long steps = strtoul(getenv("ITTD_PROBE_BACKSTEPS"), NULL, 0), k, changed = 0;
+            uint32_t tid0 = 0, tidk = 0;
+            int same_thread = 1;
+            ittd_regs prev = r, now_regs;
+            api->cursor_thread(c, &tid0);
+            t0 = now_ms();
+            for ( k = 0; k < steps; k++ )
+            {
+                if ( api->nav_step(c, 0, &stop) != ITTD_OK || stop != ITTD_STOP_STEPPED )
+                    break;
+                api->cursor_thread(c, &tidk);
+                same_thread &= tidk == tid0;
+                api->cursor_regs(c, &now_regs);
+                changed += now_regs.gp[ITTD_REG_RAX] != prev.gp[ITTD_REG_RAX];
+                prev = now_regs;
+            }
+            printf("  %lu backward steps: %.3f ms each, rax changed %lu times\n",
+                   k, k ? (now_ms() - t0) / (double)k : 0.0, changed);
+            check(same_thread, "backward single steps stay on the thread");
+            api->cursor_seek(c, mid);
+
+            /* query_register_change against stepping back: the first step
+               back where the register differs is the instruction that set it. */
+            if ( offsetof(ittd_backend_api, query_register_change) + sizeof(api->query_register_change) <= api->size
+              && api->query_register_change != NULL )
+            {
+                static const uint32_t regs[] = { ITTD_REG_RAX, ITTD_REG_RBX, ITTD_REG_RSI, ITTD_ORIGIN_XMM0 };
+                size_t q;
+                for ( q = 0; q < sizeof(regs) / sizeof(regs[0]); q++ )
+                {
+                    ittd_position got, first_change;
+                    int found = 0, rc;
+                    unsigned long s;
+                    const uint32_t reg = regs[q];
+                    const int xmm = reg >= ITTD_ORIGIN_XMM0;
+                    t0 = now_ms();
+                    rc = api->query_register_change(B, mid, tid0, reg, 1000000, &got, &found, NULL);
+                    printf("  last change of register %u: rc %d, found %d at %s, %.1f ms\n",
+                           reg, rc, found, found ? pos_text(got) : "-", now_ms() - t0);
+                    first_change.hi = first_change.lo = UINT64_MAX;
+                    api->cursor_seek(c, mid);
+                    for ( s = 0; s < steps; s++ )
+                    {
+                        if ( api->nav_step(c, 0, &stop) != ITTD_OK || stop != ITTD_STOP_STEPPED )
+                            break;
+                        api->cursor_regs(c, &now_regs);
+                        if ( xmm ? memcmp(now_regs.xmm[0], r.xmm[0], 16) != 0
+                                 : now_regs.gp[reg] != r.gp[reg] )
+                        {
+                            api->cursor_position(c, &first_change);
+                            break;
+                        }
+                    }
+                    api->cursor_seek(c, mid);
+                    if ( first_change.hi != UINT64_MAX )
+                        check(rc == ITTD_OK && found && got.hi == first_change.hi && got.lo == first_change.lo,
+                              "  the register's last change is the one stepping back finds");
+                    else
+                        printf("  (no change within %lu steps back to compare)\n", steps);
+                }
+            }
+        }
     }
 
     /* ---- calls -------------------------------------------------------------- */

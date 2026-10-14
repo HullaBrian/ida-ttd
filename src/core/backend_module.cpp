@@ -945,6 +945,24 @@ namespace idattd
         return true;
     }
 
+    bool BackendModule::query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
+                                              Position *where, bool *found, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_register_change", 0);
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_register_change) )
+            return false;
+        ProgressBridge pb(progress);
+        ittd_position p{};
+        int f = 0;
+        if ( m_api->query_register_change(m_handle, to_abi(at), tid, reg, max_back, &p, &f, pb.get()) != ITTD_OK )
+            return false;
+        if ( found != nullptr )
+            *found = f != 0;
+        if ( where != nullptr )
+            *where = from_abi(p);
+        return true;
+    }
+
     QueryResult BackendModule::query_instructions(PositionRange when, uint32_t tid, size_t max,
                                                   std::vector<Access> *out, ProgressSink *progress)
     {

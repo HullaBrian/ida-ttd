@@ -91,6 +91,9 @@
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h">
       <Filter>debugger</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\origin.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\address_space.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -222,6 +225,9 @@
     <ClCompile Include="$(SrcDir)\core\diag.cpp">
       <Filter>core</Filter>
     </ClCompile>
+    <ClCompile Include="$(SrcDir)\analysis\origin.cpp">
+      <Filter>analysis</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\analysis\address_space.cpp">
       <Filter>analysis</Filter>
     </ClCompile>
@@ -271,6 +277,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\names.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp">
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\scope.cpp">

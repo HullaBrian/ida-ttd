@@ -228,6 +228,7 @@ namespace idattd
         m_icons[ICO_MEMORY]          = svg(icons_memory_svg,          sizeof(icons_memory_svg) - 1);
         m_icons[ICO_SYSCALLS]        = svg(icons_syscalls_svg,        sizeof(icons_syscalls_svg) - 1);
         m_icons[ICO_MEMORY_MAP]      = svg(icons_memory_map_svg,      sizeof(icons_memory_map_svg) - 1);
+        m_icons[ICO_ORIGIN]          = svg(icons_origin_svg,          sizeof(icons_origin_svg) - 1);
     }
 
     // Every TTD command, in the order it appears on the TTD menu. Adding one
@@ -272,6 +273,10 @@ namespace idattd
               "Find memory accesses: every read, write or execute of an address "
               "anywhere in the recording",
               m_icons[ICO_MEMORY], ITEM, MENU },
+            { actions::VALUE_ORIGIN, "Where did this value come from?...", &m_valueOrigin, "Ctrl+Shift+W",
+              "Where did this value come from: follow a register or memory back through "
+              "the instructions that copied it, to where it was made",
+              m_icons[ICO_ORIGIN], ITEM, MENU },
 
             // What the program asked of the system, over the whole recording.
             { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
@@ -1122,7 +1127,15 @@ namespace idattd
     // moved to the function instead.
     void Plugin::do_after_stop()
     {
-        unquiet_ui();
+        // Warnings stay in the output window until all of this is done, not
+        // just until it starts: activating, refreshing and moving pseudocode
+        // views below makes Hex-Rays decompile, and a function it cannot take
+        // would otherwise raise a "Decompilation failure" dialog per step.
+        struct Unquiet
+        {
+            Plugin *p;
+            ~Unquiet() { p->unquiet_ui(); }
+        } unquiet{ this };
         restore_renderers();
         settle_stop();
         // Both write to the database or open windows, so they wait for here
@@ -1448,6 +1461,9 @@ namespace idattd
                 // Highlight bytes, then find what read, wrote or ran them.
                 if ( wt == BWN_HEXVIEW )
                     attach_action_to_popup(widget, popup, actions::MEM_SEARCH, "TTD/");
+                // Where a register's or memory's value came from.
+                if ( wt == BWN_CPUREGS || wt == BWN_HEXVIEW || wt == BWN_DISASM )
+                    attach_action_to_popup(widget, popup, actions::VALUE_ORIGIN, "TTD/");
                 break;
             }
             case ui_ready_to_run:

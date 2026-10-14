@@ -14,6 +14,7 @@
 #include "analysis/fork_registry.h"
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
+#include "analysis/origin.h"
 
 #include <expr.hpp>
 
@@ -1330,6 +1331,42 @@ namespace idattd
         out.boolean("done", ok).hex("start", fi.start_ea).hex("end", fi.end_ea);
     }
 
+    // Where a value came from: "an.origin rax", "an.origin mem ADDR [SIZE]".
+    static void cmd_an_origin(const Args &a, JObj &out)
+    {
+        need_session();
+        OriginTarget t;
+        uint32_t reg = 0;
+        if ( a.count() >= 2 && a.at(0) == "mem" )
+        {
+            t.is_reg = false;
+            t.addr   = (ea_t)a.u64(1);
+            t.size   = (uint32_t)a.u64_or(2, 8);
+        }
+        else if ( a.count() >= 1 && parse_register(a.at(0).c_str(), &reg) )
+        {
+            t.reg = reg;
+        }
+        else
+        {
+            fail("usage: an.origin REG | an.origin mem ADDR [SIZE]");
+        }
+        std::vector<OriginHop> hops;
+        if ( !trace_value_origin(&mgr(), t, 24, &hops) )
+            fail("not traced");
+        JArr arr;
+        for ( const OriginHop &h : hops )
+        {
+            JObj o;
+            o.str("what", origin_target_text(h.what)).str("value", origin_value_text(h.value))
+             .str("at", format_position(h.at)).str("kind", origin_kind_name(h.kind))
+             .str("by_pos", h.by_pos.is_valid() ? format_position(h.by_pos) : qstring())
+             .hex("by_pc", h.by_pc).str("insn", h.insn).str("note", h.note);
+            arr.add(o.done());
+        }
+        out.num("hops", (int64_t)hops.size()).raw("chain", arr.done());
+    }
+
     // The Memory map listing's rows. Builds the session's change timeline
     // first when it has none (as the menu does, without asking).
     static void cmd_an_regions(const Args &a, JObj &out)
@@ -1396,6 +1433,7 @@ namespace idattd
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
+        { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] where the value at the playhead came from" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },

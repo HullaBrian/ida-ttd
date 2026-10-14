@@ -1,4 +1,5 @@
 #include "backend-msttd/msttd_backend.h"
+#include "backend-msttd/msttd_sweep.h"
 #include "backend-msttd/msttd_navigator.h"
 #include "backend-msttd/msttd_host.h"
 #include "backend-msttd/msttd_guest.h"
@@ -478,6 +479,137 @@ namespace idattd
         if ( last.IsValid() && t > last )
             t = last;
         return to_core(t);
+    }
+
+    // The last instruction of a thread that changed a register, without
+    // stepping backward (each backward step re-seeks a keyframe: tens of
+    // milliseconds). Instead, a window of the thread's steps before 'at' is
+    // replayed forward with an execute watchpoint over the whole address
+    // space, which calls back before every instruction with the thread's
+    // registers: the last instruction after which the register differed from
+    // before is the answer. A window with no change is followed by one four
+    // times longer further back, until 'max_back' steps have been searched.
+    bool MsTtdBackend::query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
+                                             Position *where, bool *found, ProgressSink *progress)
+    {
+        if ( !m_engine || !at.is_valid() )
+            return false;
+        const bool is_xmm = reg >= ITTD_ORIGIN_XMM0;
+        if ( is_xmm ? reg - ITTD_ORIGIN_XMM0 >= 16 : reg >= ITTD_REG_GP_COUNT )
+            return false;
+        UniqueCursor cur = new_engine_cursor();
+        if ( !cur )
+            return false;
+        const bool is64 = m_info.is64;
+        const uint64_t space = is64 ? 0x800000000000ull : 0x100000000ull;
+
+        // The register's 16 bytes (a general-purpose one in the first 8).
+        struct Value
+        {
+            uint8_t b[16] = { 0 };
+            bool operator!=(const Value &o) const { return memcmp(b, o.b, sizeof(b)) != 0; }
+        };
+        auto value_of = [&](const CROSS_PLATFORM_CONTEXT &ctx) -> Value
+        {
+            ittd_regs r{};
+            regs_from_context(ctx, is64, &r);
+            Value v;
+            if ( is_xmm )
+                memcpy(v.b, r.xmm[reg - ITTD_ORIGIN_XMM0], 16);
+            else
+                memcpy(v.b, &r.gp[reg], 8);
+            return v;
+        };
+
+        // The thread, by its unique id, standing at 'at'.
+        cur->SetPosition(from_core(at));
+        uint32_t utid = 0;
+        {
+            size_t n = m_engine->GetThreadCount();
+            const TTD::Replay::ThreadInfo *list = m_engine->GetThreadList();
+            for ( size_t i = 0; i < n; i++ )
+                if ( (uint32_t)list[i].Id == tid )
+                    utid = (uint32_t)list[i].UniqueId;
+        }
+        if ( utid == 0 )
+            return false;
+        if ( (uint32_t)cur->GetThreadInfo().UniqueId != utid )
+            cur->SetPositionOnThread((UniqueThreadId)utid, from_core(at));
+
+        TtdPosition end   = from_core(at);
+        Value       after = value_of(cur->GetCrossPlatformContext((ThreadId)tid));
+        uint64_t    searched = 0, window = 4096;
+        *found = false;
+
+        MemoryWatchpointData wp{};
+        wp.Address    = GuestAddress{ 0 };
+        wp.Size       = space;
+        wp.AccessMask = DataAccessMask::Execute;
+        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
+
+        while ( searched < max_back )
+        {
+            if ( progress != nullptr && progress->cancelled() )
+                return true;
+            // The window's start: 'window' of the thread's steps before 'end'.
+            cur->SetPositionOnThread((UniqueThreadId)utid, end);
+            cur->ReplayBackward(TtdPosition::Min, (StepCount)window);
+            const TtdPosition start = cur->GetPosition();
+            if ( !(start < end) )
+                return true;                            // the thread's beginning
+
+            bool        have = false;
+            Value       prev;
+            TtdPosition prev_pos = TtdPosition::Invalid;
+            TtdPosition change   = TtdPosition::Invalid;
+            Value       first;
+            bool        have_first = false;
+            auto on_exec = [&](ICursorView::MemoryWatchpointResult const &, IThreadView const *t) noexcept -> bool
+            {
+                if ( (uint32_t)t->GetThreadInfo().UniqueId != utid )
+                    return false;
+                const TtdPosition p = t->GetPosition();
+                if ( end < p )
+                    return false;
+                Value v = value_of(t->GetCrossPlatformContext());
+                if ( !have_first )
+                {
+                    first = v;
+                    have_first = true;
+                }
+                if ( have && v != prev )
+                    change = prev_pos;
+                prev = v;
+                prev_pos = p;
+                have = true;
+                return false;
+            };
+            cur->SetPosition(start);
+            cur->AddMemoryWatchpoint(wp);
+            cur->SetMemoryWatchpointCallback(on_exec);
+            cur->SetEventMask(EventMask::MemoryWatchpoint);
+            const bool complete = msttd_sweep(cur.get(), start, end, progress);
+            cur->SetMemoryWatchpointCallback(nullptr, 0);
+            cur->RemoveMemoryWatchpoint(wp);
+            if ( !complete )
+                return true;
+            // The last instruction before 'end' changes it to what 'end' has.
+            if ( have && prev_pos < end && prev != after )
+                change = prev_pos;
+            if ( change.IsValid() )
+            {
+                *where = to_core(change);
+                *found = true;
+                return true;
+            }
+            if ( !have_first )
+                return true;
+            searched += window;
+            window   *= 4;
+            end   = start;
+            after = first;
+        }
+        return true;
     }
 
     // Replay forward from a little before 'at' up to it with the call/return

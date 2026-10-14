@@ -65,6 +65,7 @@
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h" />
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h" />
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h" />
+    <ClInclude Include="$(SrcDir)\analysis\origin.h" />
     <ClInclude Include="$(SrcDir)\analysis\address_space.h" />
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h" />
     <ClInclude Include="$(SrcDir)\analysis\callsites.h" />
@@ -111,6 +112,7 @@
     <ClCompile Include="$(SrcDir)\core\backend_registry.cpp" />
     <ClCompile Include="$(SrcDir)\core\position.cpp" />
     <ClCompile Include="$(SrcDir)\core\diag.cpp" />
+    <ClCompile Include="$(SrcDir)\analysis\origin.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\address_space.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\bookmarks.cpp" />
     <ClCompile Include="$(SrcDir)\analysis\callsites.cpp" />
@@ -128,6 +130,7 @@
     <ClCompile Include="$(SrcDir)\ui\clipboard.cpp" />
     <ClCompile Include="$(SrcDir)\ui\decompiler.cpp" />
     <ClCompile Include="$(SrcDir)\ui\names.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp" />
     <ClCompile Include="$(SrcDir)\ui\scope.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_bookmarks.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_callsites.cpp" />

@@ -1087,6 +1087,28 @@ namespace idattd
         });
     }
 
+    static int x_query_register_change(ittd_backend *hb, ittd_position at, uint32_t tid, uint32_t reg,
+                                       uint64_t max_back, ittd_position *out_pos, int *out_found,
+                                       const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            AbiSink sink(progress);
+            Position p;
+            bool found = false;
+            if ( !h->b->query_register_change(from_abi(at), tid, reg, max_back, &p, &found, &sink) )
+                return ITTD_E_UNSUPPORTED;
+            if ( out_pos != nullptr )
+                *out_pos = to_abi(p);
+            if ( out_found != nullptr )
+                *out_found = found ? 1 : 0;
+            return ITTD_OK;
+        });
+    }
+
     static void x_set_log(void (*log)(void *ud, const char *line), void *ud)
     {
         if ( g_set_log != nullptr )
@@ -1161,6 +1183,7 @@ namespace idattd
         a.query_self_modifying  = x_query_self_modifying;
         a.query_strings         = x_query_strings;
         a.query_buffers         = x_query_buffers;
+        a.query_register_change = x_query_register_change;
         built = true;
         return &a;
     }

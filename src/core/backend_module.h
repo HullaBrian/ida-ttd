@@ -73,6 +73,8 @@ namespace idattd
                                           std::vector<qstring> *files,
                                           ProgressSink *progress) override;
         Position position_add(Position p, int64_t delta) const override;
+        bool query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
+                                   Position *where, bool *found, ProgressSink *progress) override;
         bool query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
                                Position *call_pos, ea_t *entry) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
