@@ -337,6 +337,17 @@ typedef struct ittd_syscall
     char          name[64];         /* "NtCreateFile"; empty when unknown */
 } ittd_syscall;
 
+/* One out parameter of a syscall, for query_out_values: where it points,
+ * and what it held when the call was made. */
+typedef struct ittd_out_slot
+{
+    ittd_position call;             /* the syscall instruction */
+    uint64_t      addr;             /* the out parameter's target */
+    uint64_t      before;           /* its value at the call */
+    uint32_t      tid;              /* the calling thread */
+    uint32_t      width;            /* 4 or 8 bytes */
+} ittd_out_slot;
+
 /* One cell of query_access_heat: the accesses to one page in one slice of
  * the recording's time. */
 typedef struct ittd_heat_cell
@@ -979,6 +990,16 @@ typedef struct ittd_backend_api
                              int *out_truncated, const ittd_progress *progress);
     /* Where slice 'slice' of 'slices' begins. */
     int (*heat_slice_position)(ittd_backend *b, uint32_t slices, uint32_t slice, ittd_position *out);
+
+    /* ---- syscall out parameters ---------------------------------------- */
+
+    /* What each syscall wrote through an out parameter: values[i] and
+     * known[i] (non-zero when found) for slots[i]. For a recording that holds
+     * the kernel's writes where they happen; Microsoft TTD does not, and finds
+     * the value where the program first reads it. Optional: without it the
+     * core reads each slot one position after the call. */
+    int (*query_out_values)(ittd_backend *b, const ittd_out_slot *slots, size_t count,
+                            uint64_t *values, uint8_t *known, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */

@@ -223,6 +223,94 @@ namespace idattd
         return got;
     }
 
+    // What syscalls wrote through out parameters (ReplayAPI.md, "the
+    // kernel-write gap"). The kernel's write is not in the recording where it
+    // happened: the value first appears where the engine notices it -- a
+    // DataMismatch or NewData on the slot -- or where the program reads it.
+    // So each slot is watched on its own thread from the call, a bounded
+    // number of steps, for the first of those. A write by the program first
+    // means the kernel's value never surfaced: unknown, not the stale one.
+    bool MsTtdBackend::query_out_values(const std::vector<OutSlot> &slots,
+                                        std::vector<std::optional<uint64_t>> *out, ProgressSink *progress)
+    {
+        if ( !m_engine || out == nullptr )
+            return false;
+        out->assign(slots.size(), std::nullopt);
+        std::map<uint32_t, uint32_t> utid_of;
+        {
+            size_t n = m_engine->GetThreadCount();
+            const TTD::Replay::ThreadInfo *list = m_engine->GetThreadList();
+            for ( size_t i = 0; i < n; i++ )
+                utid_of[(uint32_t)list[i].Id] = (uint32_t)list[i].UniqueId;
+        }
+        UniqueCursor cur = new_engine_cursor();
+        if ( !cur )
+            return false;
+        cur->SetReplayFlags(ReplayFlags::ReplayOnlyCurrentThread | ReplayFlags::ReplaySegmentsSequentially);
+        cur->SetEventMask(EventMask::MemoryWatchpoint);
+
+        for ( size_t i = 0; i < slots.size(); i++ )
+        {
+            if ( progress != nullptr )
+            {
+                if ( progress->cancelled() )
+                    break;
+                progress->report(uint32_t(i * 100 / std::max<size_t>(slots.size(), 1)));
+            }
+            const OutSlot &sl = slots[i];
+            auto ut = utid_of.find(sl.tid);
+            if ( ut == utid_of.end() || sl.addr == 0 || (sl.width != 4 && sl.width != 8) )
+                continue;
+            bool        got = false;
+            uint64_t    value = 0;
+            TtdPosition wrote = TtdPosition::Invalid;
+            auto on_hit = [&](ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept -> bool
+            {
+                const TtdPosition p = t->GetPosition();
+                // A write of the program's own, and nothing of the kernel's at
+                // the same position: the kernel's value is gone.
+                if ( wrote.IsValid() && !(p == wrote) )
+                    return true;
+                uint64_t v = 0;
+                const bool ok = read_ptr(t, sl.addr, sl.width, &v);
+                switch ( w.AccessType )
+                {
+                    case DataAccessType::DataMismatch:
+                    case DataAccessType::NewData:
+                    case DataAccessType::Read:
+                        if ( ok )
+                        {
+                            value = v;
+                            got = true;
+                        }
+                        return true;
+                    case DataAccessType::Write:
+                    case DataAccessType::Overwrite:
+                        wrote = p;
+                        return false;
+                    default:
+                        return false;
+                }
+            };
+            MemoryWatchpointData wp{};
+            wp.Address    = GuestAddress{ (uint64_t)sl.addr };
+            wp.Size       = sl.width;
+            wp.AccessMask = (DataAccessMask)((uint8_t)DataAccessMask::Read | (uint8_t)DataAccessMask::Write
+                                           | (uint8_t)DataAccessMask::Overwrite | (uint8_t)DataAccessMask::DataMismatch
+                                           | (uint8_t)DataAccessMask::NewData);
+            wp.ThreadId   = (UniqueThreadId)ut->second;
+            cur->AddMemoryWatchpoint(wp);
+            cur->SetMemoryWatchpointCallback(on_hit);
+            cur->SetPositionOnThread((UniqueThreadId)ut->second, from_core(sl.call));
+            cur->ReplayForward(TtdPosition::Max, (StepCount)0x4000);
+            cur->SetMemoryWatchpointCallback(nullptr, 0);
+            cur->RemoveMemoryWatchpoint(wp);
+            if ( got )
+                (*out)[i] = value;
+        }
+        return true;
+    }
+
     // Every module as [lo, hi), sorted by base, one per distinct base.
     static std::vector<std::pair<ea_t, ea_t>> module_ranges(const std::vector<ModuleInfo> &mods)
     {

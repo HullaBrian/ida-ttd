@@ -8,15 +8,31 @@ namespace idattd
     static const char *g_hd_header[] = { "Handle", "Type", "Name", "Opened", "By", "Closed", "Thread" };
 
     HandlesChooser::HandlesChooser(TraceManager *mgr, std::vector<HandleRecord> &&rows)
-        : chooser_t(CH_CAN_EDIT, qnumber(g_hd_widths), g_hd_widths, g_hd_header, nullptr),
+        : chooser_t(CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_hd_widths), g_hd_widths, g_hd_header, nullptr),
           m_mgr(mgr), m_rows(std::move(rows))
+    {
+        set_title();
+        popup_names[POPUP_EDIT]    = "Travel to where it was closed";
+        popup_names[POPUP_REFRESH] = "Rebuild from the recording";
+    }
+
+    void HandlesChooser::set_title()
     {
         size_t open = 0;
         for ( const HandleRecord &h : m_rows )
             open += h.opened.is_valid() && !h.closed.is_valid();
         m_title.sprnt("TTD handles [%d, %d open at the end]", (int)m_rows.size(), (int)open);
         title = m_title.c_str();
-        popup_names[POPUP_EDIT] = "Travel to where it was closed";
+    }
+
+    chooser_t::cbret_t idaapi HandlesChooser::refresh(ssize_t n)
+    {
+        std::vector<HandleRecord> rows;
+        bool cancelled = false;
+        if ( m_mgr != nullptr && m_mgr->is_active() && list_handles(m_mgr, &rows, &cancelled) && !cancelled )
+            m_rows = std::move(rows);
+        set_title();
+        return cbret_t(n, ALL_CHANGED);
     }
 
     size_t idaapi HandlesChooser::get_count() const
@@ -79,9 +95,12 @@ namespace idattd
             warning("The handle list needs a recording whose syscalls can be listed.");
             return 1;
         }
+        // The list saved the last time, else built now (and saved).
         std::vector<HandleRecord> rows;
         bool cancelled = false;
-        if ( !list_handles(mgr(), &rows, &cancelled) )
+        if ( load_handles(&rows) )
+            msg("[ida-ttd] handles: the list saved in the database; Refresh (Ctrl+U) in it rebuilds it.\n");
+        else if ( !list_handles(mgr(), &rows, &cancelled) )
             return 1;
         msg("[ida-ttd] %d handle(s)%s.\n", (int)rows.size(), cancelled ? " (cancelled)" : "");
         if ( rows.empty() )

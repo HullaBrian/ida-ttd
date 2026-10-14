@@ -199,6 +199,16 @@ namespace idattd
         qstring  name;              // empty when unknown
     };
 
+    // A syscall's out parameter (ittd_out_slot).
+    struct OutSlot
+    {
+        Position call;
+        ea_t     addr = 0;
+        uint64_t before = 0;
+        uint32_t tid = 0;
+        uint32_t width = 8;
+    };
+
     // The accesses to one page in one slice of time (ittd_heat_cell).
     struct HeatCell
     {
@@ -661,6 +671,16 @@ namespace idattd
             qnotused(page_shift); qnotused(slices); qnotused(out); qnotused(progress);
             return QueryResult{};
         }
+        // What each syscall wrote through an out parameter, nullopt where it
+        // could not be found. False when the backend has no way of its own:
+        // the caller reads each slot one position after the call.
+        virtual bool query_out_values(const std::vector<OutSlot> &slots,
+                                      std::vector<std::optional<uint64_t>> *out, ProgressSink *progress)
+        {
+            qnotused(slots); qnotused(out); qnotused(progress);
+            return false;
+        }
+
         // Where slice 'slice' of 'slices' begins; none() when unknown.
         virtual Position heat_slice_position(uint32_t slices, uint32_t slice)
         {

@@ -1141,6 +1141,36 @@ namespace idattd
         });
     }
 
+    static int x_query_out_values(ittd_backend *hb, const ittd_out_slot *slots, size_t count,
+                                  uint64_t *values, uint8_t *known, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr || (count != 0 && (slots == nullptr || values == nullptr || known == nullptr)) )
+            return ITTD_E_BAD_ARG;
+        return guarded(&h->error, [&]()
+        {
+            std::vector<OutSlot> in(count);
+            for ( size_t i = 0; i < count; i++ )
+            {
+                in[i].call   = from_abi(slots[i].call);
+                in[i].addr   = (ea_t)slots[i].addr;
+                in[i].before = slots[i].before;
+                in[i].tid    = slots[i].tid;
+                in[i].width  = slots[i].width;
+            }
+            std::vector<std::optional<uint64_t>> v;
+            AbiSink sink(progress);
+            if ( !h->b->query_out_values(in, &v, &sink) )
+                return ITTD_E_UNSUPPORTED;
+            for ( size_t i = 0; i < count; i++ )
+            {
+                known[i]  = i < v.size() && v[i].has_value() ? 1 : 0;
+                values[i] = known[i] ? *v[i] : 0;
+            }
+            return ITTD_OK;
+        });
+    }
+
     static int x_heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
     {
         ExportedBackend *h = B(hb);
@@ -1233,6 +1263,7 @@ namespace idattd
         a.query_register_change = x_query_register_change;
         a.query_access_heat     = x_query_access_heat;
         a.heat_slice_position   = x_heat_slice_position;
+        a.query_out_values      = x_query_out_values;
         built = true;
         return &a;
     }

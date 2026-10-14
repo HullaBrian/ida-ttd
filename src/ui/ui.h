@@ -258,8 +258,12 @@ namespace idattd
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         cbret_t idaapi enter(size_t n) override;
         cbret_t idaapi edit(size_t n) override;
+        // Refresh (Ctrl+U): rebuild the list from the recording.
+        cbret_t idaapi refresh(ssize_t n) override;
 
     private:
+        void set_title();
+
         TraceManager             *m_mgr;
         std::vector<HandleRecord> m_rows;
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer

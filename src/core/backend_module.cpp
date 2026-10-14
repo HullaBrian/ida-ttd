@@ -972,6 +972,33 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
+    bool BackendModule::query_out_values(const std::vector<OutSlot> &slots,
+                                         std::vector<std::optional<uint64_t>> *out, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.query_out_values", 0);
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_out_values) || out == nullptr )
+            return false;
+        std::vector<ittd_out_slot> in(slots.size());
+        for ( size_t i = 0; i < slots.size(); i++ )
+        {
+            in[i].call   = to_abi(slots[i].call);
+            in[i].addr   = (uint64_t)slots[i].addr;
+            in[i].before = slots[i].before;
+            in[i].tid    = slots[i].tid;
+            in[i].width  = slots[i].width;
+        }
+        std::vector<uint64_t> values(slots.size(), 0);
+        std::vector<uint8_t>  known(slots.size(), 0);
+        ProgressBridge pb(progress);
+        if ( m_api->query_out_values(m_handle, in.data(), in.size(), values.data(), known.data(), pb.get()) != ITTD_OK )
+            return false;
+        out->assign(slots.size(), std::nullopt);
+        for ( size_t i = 0; i < slots.size(); i++ )
+            if ( known[i] != 0 )
+                (*out)[i] = values[i];
+        return true;
+    }
+
     Position BackendModule::heat_slice_position(uint32_t slices, uint32_t slice)
     {
         ittd_position p{};

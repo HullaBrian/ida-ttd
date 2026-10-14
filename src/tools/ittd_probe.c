@@ -961,6 +961,44 @@ int main(int argc, char **argv)
         check((int)ordered, "  syscalls are in position order");
         check(n == 0 || named > 0, "  syscalls have names");
         check(at_syscall == sampled, "  rip at a syscall's position is a syscall instruction");
+
+        /* The handles NtOpen* / NtCreate* wrote back (their first argument,
+           r10), as query_out_values recovers them: a handle is a small
+           multiple of four. */
+        if ( info.is64 && offsetof(ittd_backend_api, query_out_values) + sizeof(api->query_out_values) <= api->size
+          && api->query_out_values != NULL )
+        {
+            ittd_out_slot slots[64];
+            uint64_t values[64];
+            uint8_t known[64];
+            size_t m = 0, found = 0, handle_like = 0;
+            for ( k = 0; k < n && m < 64; k++ )
+            {
+                ittd_regs rr;
+                if ( (strncmp(sc[k].name, "NtOpen", 6) != 0 && strncmp(sc[k].name, "NtCreate", 8) != 0)
+                  || (int32_t)(uint32_t)sc[k].result < 0
+                  || api->cursor_seek(c, sc[k].pos) != ITTD_OK || api->cursor_regs(c, &rr) != ITTD_OK )
+                    continue;
+                memset(&slots[m], 0, sizeof(slots[m]));
+                slots[m].call  = sc[k].pos;
+                slots[m].addr  = rr.gp[10];
+                slots[m].tid   = sc[k].tid;
+                slots[m].width = 8;
+                m++;
+            }
+            t0 = now_ms();
+            if ( m > 0 && api->query_out_values(B, slots, m, values, known, NULL) == ITTD_OK )
+            {
+                for ( k = 0; k < m; k++ )
+                {
+                    found += known[k] != 0;
+                    handle_like += known[k] != 0 && values[k] != 0 && values[k] < 0x100000 && (values[k] & 3) == 0;
+                }
+                printf("  out parameters of %zu NtOpen*/NtCreate* calls: %zu found, %zu handle-like, %.1f ms\n",
+                       m, found, handle_like, now_ms() - t0);
+                check(found == handle_like && found * 10 >= m * 9, "  their handles are recovered");
+            }
+        }
         free(sc);
     }
 

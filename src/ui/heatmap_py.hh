@@ -49,6 +49,7 @@ def _ida_ttd_heatmap():
             self.owner = owner
             self.mode = 0
             self.rows = PAGES
+            self.runs = []
             self.image = None
             self.setMouseTracking(True)
 
@@ -56,6 +57,14 @@ def _ida_ttd_heatmap():
             self.rows = rows
             self.mode = mode
             self.image = None
+            # Runs of neighbouring pages of one module: [first row, end row).
+            self.runs = []
+            for y, r in enumerate(rows):
+                if (y == 0 or r["page"] != rows[y - 1]["page"] + 1
+                        or r["label"] != rows[y - 1]["label"]):
+                    self.runs.append([y, y + 1])
+                else:
+                    self.runs[-1][1] = y + 1
             self.setMinimumHeight(max(len(rows) * ROW, 50))
             self.updateGeometry()
             self.update()
@@ -106,30 +115,29 @@ def _ida_ttd_heatmap():
                 src = QtCore.QRect(0, top, SLICES, bottom - top)
                 dst = QtCore.QRect(GUTTER, top * ROW, w, (bottom - top) * ROW)
                 p.drawImage(dst, self.image, src)
-            # Labels where a run of neighbouring pages begins, and a rule
-            # where the addresses jump.
+            # A rule above each run of neighbouring pages, and its label inside
+            # it when the run is tall enough to hold one: a label never runs
+            # over the next rule. Shorter runs are named by the tooltip.
             fg = self.palette().color(QtGui.QPalette.Text)
             rule = self.palette().color(QtGui.QPalette.Mid)
             font = p.font()
             font.setPointSizeF(max(font.pointSizeF() - 1.5, 6.0))
             p.setFont(font)
-            last_text_y = -100
-            for y in range(top, bottom):
-                page = self.rows[y]["page"]
-                prev = self.rows[y - 1]["page"] if y > 0 else None
-                label = self.rows[y]["label"]
-                new_run = prev is None or page != prev + 1 or label != self.rows[y - 1]["label"]
-                if not new_run:
+            text_h = QtGui.QFontMetrics(font).height()
+            for first, end in self.runs:
+                if end <= top or first >= bottom:
                     continue
-                if y > 0:
+                y0 = first * ROW
+                h = (end - first) * ROW
+                if first > 0:
                     p.setPen(rule)
-                    p.drawLine(0, y * ROW, self.width(), y * ROW)
-                if y * ROW - last_text_y >= 12:
+                    p.drawLine(0, y0, self.width(), y0)
+                if h >= text_h + 2:
+                    r = self.rows[first]
                     p.setPen(fg)
-                    text = "0x%X  %s" % (page << SHIFT, label)
-                    p.drawText(QtCore.QRect(4, y * ROW, GUTTER - 8, 12),
-                               QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop, text)
-                    last_text_y = y * ROW
+                    p.drawText(QtCore.QRect(4, y0 + 1, GUTTER - 8, h - 1),
+                               QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextSingleLine,
+                               "0x%X  %s" % (r["page"] << SHIFT, r["label"]))
             p.end()
 
         def resizeEvent(self, ev):

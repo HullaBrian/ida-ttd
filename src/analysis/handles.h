@@ -30,6 +30,11 @@ namespace idattd
 
     // Every handle, in the order they were opened (those from before the
     // recording first). Runs behind a cancellable wait box; false when the
-    // recording's backend cannot list syscalls.
+    // recording's backend cannot list syscalls. A complete answer is saved in
+    // the database for load_handles.
     bool list_handles(TraceManager *mgr, std::vector<HandleRecord> *out, bool *cancelled);
+
+    // The list as saved in the database by the last list_handles that ran to
+    // the end against this recording. False when there is none.
+    bool load_handles(std::vector<HandleRecord> *out);
 }

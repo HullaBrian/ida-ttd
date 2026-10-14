@@ -76,6 +76,8 @@ namespace idattd
         QueryResult query_access_heat(uint32_t page_shift, uint32_t slices,
                                       std::vector<HeatCell> *out, ProgressSink *progress) override;
         Position heat_slice_position(uint32_t slices, uint32_t slice) override;
+        bool query_out_values(const std::vector<OutSlot> &slots,
+                              std::vector<std::optional<uint64_t>> *out, ProgressSink *progress) override;
         bool query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
                                    Position *where, bool *found, ProgressSink *progress) override;
         bool query_frame_entry(Position at, uint32_t tid, uint64_t max_back,

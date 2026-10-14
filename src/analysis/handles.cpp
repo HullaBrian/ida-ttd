@@ -1,6 +1,7 @@
 #include "analysis/handles.h"
 #include "analysis/query_runner.h"
 #include "analysis/syscalls.h"
+#include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
 
 namespace idattd
@@ -170,6 +171,101 @@ namespace idattd
         }
     }
 
+    //=======================================================================
+    // In the database
+    //=======================================================================
+    // One blob, stamped with the recording it describes (trace_store).
+    static const char     HD_NODE[]   = "$ ida-ttd handles";
+    static const uchar    HD_TAG      = 'H';
+    static const uint32_t HD_VERSION  = 1;
+
+    static void put_str(bytevec_t *b, const qstring &s)
+    {
+        uint32_t n = (uint32_t)s.length();
+        b->append(&n, sizeof(n));
+        b->append(s.c_str(), n);
+    }
+
+    static bool get_str(const uchar **p, const uchar *end, qstring *s)
+    {
+        uint32_t n = 0;
+        if ( end - *p < (ptrdiff_t)sizeof(n) )
+            return false;
+        memcpy(&n, *p, sizeof(n));
+        *p += sizeof(n);
+        if ( end - *p < (ptrdiff_t)n )
+            return false;
+        s->qclear();
+        s->append((const char *)*p, n);
+        *p += n;
+        return true;
+    }
+
+    static void save_handles(const std::vector<HandleRecord> &v)
+    {
+        bytevec_t b;
+        uint32_t ver = HD_VERSION, n = (uint32_t)v.size();
+        b.append(&ver, sizeof(ver));
+        b.append(&n, sizeof(n));
+        for ( const HandleRecord &h : v )
+        {
+            uint64_t words[5] = { h.handle, h.opened.hi, h.opened.lo, h.closed.hi, h.closed.lo };
+            uint32_t small[2] = { h.access, h.tid };
+            b.append(words, sizeof(words));
+            b.append(small, sizeof(small));
+            put_str(&b, h.type);
+            put_str(&b, h.name);
+            put_str(&b, h.opened_by);
+        }
+        netnode nn(HD_NODE, 0, true);
+        if ( nn == BADNODE )
+            return;
+        nn.delblob(0, HD_TAG);
+        nn.setblob(b.begin(), b.size(), 0, HD_TAG);
+        trace_store_stamp(nn);
+    }
+
+    bool load_handles(std::vector<HandleRecord> *out)
+    {
+        out->clear();
+        netnode nn(HD_NODE);
+        if ( nn == BADNODE || !trace_store_matches(nn) )
+            return false;
+        bytevec_t b;
+        if ( nn.getblob(&b, 0, HD_TAG) <= 0 )
+            return false;
+        const uchar *p = b.begin(), *end = b.end();
+        uint32_t ver = 0, n = 0;
+        if ( end - p < 8 )
+            return false;
+        memcpy(&ver, p, 4);
+        memcpy(&n, p + 4, 4);
+        p += 8;
+        if ( ver != HD_VERSION )
+            return false;
+        for ( uint32_t i = 0; i < n; i++ )
+        {
+            HandleRecord h;
+            uint64_t words[5];
+            uint32_t small[2];
+            if ( end - p < (ptrdiff_t)(sizeof(words) + sizeof(small)) )
+                return false;
+            memcpy(words, p, sizeof(words));
+            p += sizeof(words);
+            memcpy(small, p, sizeof(small));
+            p += sizeof(small);
+            h.handle = words[0];
+            h.opened = Position{ words[1], words[2] };
+            h.closed = Position{ words[3], words[4] };
+            h.access = small[0];
+            h.tid    = small[1];
+            if ( !get_str(&p, end, &h.type) || !get_str(&p, end, &h.name) || !get_str(&p, end, &h.opened_by) )
+                return false;
+            out->push_back(std::move(h));
+        }
+        return true;
+    }
+
     bool list_handles(TraceManager *mgr, std::vector<HandleRecord> *out, bool *cancelled)
     {
         out->clear();
@@ -223,6 +319,162 @@ namespace idattd
                 return rd.ptr(g.gp[ITTD_REG_RSP] + 8 + 4 * (uint64_t)n);
             };
 
+            // ---- 1: what each call names, and where its handles go -----------
+            //
+            // Names and arguments are read at the call. The handles themselves
+            // are out parameters, resolved together below: on Microsoft TTD the
+            // kernel's write only surfaces where the program reads it.
+            struct Pending
+            {
+                enum Kind { Close, Open, Dup } kind = Open;
+                HandleRecord rec;               // all but the handle
+                int          slot = -1;         // index into 'slots'
+                HandleRecord rec2;              // NtCreateUserProcess: its thread
+                int          slot2 = -1;
+                uint64_t     handle = 0;        // Close: the handle
+                uint64_t     root = 0;          // the name is relative to this handle
+                uint64_t     file = 0;          // a section's file handle
+                bool         dup_from_us = false, dup_close_source = false, dup_into_us = false;
+                uint64_t     dup_src = 0;
+            };
+            std::vector<Pending> pend;
+            std::vector<OutSlot> slots;
+            auto add_slot = [&](const SyscallEvent &sc, uint64_t addr) -> int
+            {
+                if ( addr == 0 )
+                    return -1;
+                OutSlot s;
+                s.call   = sc.pos;
+                s.addr   = (ea_t)addr;
+                s.before = rd.ptr(addr);
+                s.tid    = sc.tid;
+                s.width  = (uint32_t)rd.ptr_size();
+                slots.push_back(s);
+                return (int)slots.size() - 1;
+            };
+
+            for ( size_t k = 0; k < idx.size(); k++ )
+            {
+                if ( (k & 63) == 0 && sink != nullptr )
+                {
+                    if ( sink->cancelled() )
+                    {
+                        r.cancelled = true;
+                        return r;
+                    }
+                    sink->report(uint32_t(k * 50 / std::max<size_t>(idx.size(), 1)));
+                }
+                if ( k >= regs.size() || (regs[k].have & ITTD_REGS_GP) == 0 )
+                    continue;
+                const SyscallEvent &sc = calls[idx[k]];
+                const ittd_regs &g = regs[k];
+                if ( !rd.at(sc.pos) )
+                    continue;
+
+                Pending p;
+                p.rec.opened    = sc.pos;
+                p.rec.opened_by = sc.name;
+                p.rec.tid       = sc.tid;
+                if ( sc.name == "NtClose" )
+                {
+                    p.kind   = Pending::Close;
+                    p.handle = arg(g, 0);
+                    p.rec.closed = sc.pos;
+                }
+                else if ( sc.name == "NtDuplicateObject" )
+                {
+                    const uint64_t src_proc = arg(g, 0), dst_proc = arg(g, 2);
+                    p.kind             = Pending::Dup;
+                    p.dup_src          = arg(g, 1);
+                    p.dup_from_us      = is_current_process(src_proc);
+                    p.dup_close_source = p.dup_from_us && (arg(g, 6) & 1) != 0;   // DUPLICATE_CLOSE_SOURCE
+                    p.dup_into_us      = is_current_process(dst_proc);
+                    p.rec.access       = (uint32_t)arg(g, 4);
+                    if ( !p.dup_from_us )
+                        p.rec.name.sprnt("handle 0x%llX of another process", (unsigned long long)p.dup_src);
+                    if ( p.dup_into_us )
+                        p.slot = add_slot(sc, arg(g, 3));
+                }
+                else if ( sc.name == "NtCreateUserProcess" )
+                {
+                    // Two handles: the process and its first thread, named
+                    // after the image (RTL_USER_PROCESS_PARAMETERS ImagePathName).
+                    const uint64_t params = arg(g, 8);
+                    const qstring image = rd.ustr(params != 0 ? params + (wide ? 0x60 : 0x38) : 0);
+                    p.rec.type   = "Process";
+                    p.rec.name   = image;
+                    p.rec.access = (uint32_t)arg(g, 2);
+                    p.rec2       = p.rec;
+                    p.rec2.type   = "Thread";
+                    p.rec2.access = (uint32_t)arg(g, 3);
+                    if ( !image.empty() )
+                        p.rec2.name = qstring("first thread of ") + image;
+                    p.slot  = add_slot(sc, arg(g, 0));
+                    p.slot2 = add_slot(sc, arg(g, 1));
+                }
+                else
+                {
+                    const Maker *m = maker_of(sc.name);
+                    HandleRecord &hr = p.rec;
+                    hr.type = m->type;
+                    if ( m->access >= 0 )
+                        hr.access = (uint32_t)arg(g, m->access);
+                    if ( m->attrs >= 0 )
+                        hr.name = rd.oa_name(arg(g, m->attrs), &p.root);
+                    if ( sc.name == "NtAlpcConnectPort" || sc.name == "NtConnectPort" || sc.name == "NtSecureConnectPort" )
+                        hr.name = rd.ustr(arg(g, 1));
+                    if ( sc.name == "NtOpenProcess" || sc.name == "NtOpenThread" )
+                    {
+                        const uint64_t cid = arg(g, 3);
+                        const uint64_t pid = rd.ptr(cid), tid = rd.ptr(cid + rd.ptr_size());
+                        if ( sc.name == "NtOpenProcess" && pid != 0 )
+                            hr.name.sprnt("process %llu", (unsigned long long)pid);
+                        else if ( tid != 0 )
+                            hr.name.sprnt("thread %llu", (unsigned long long)tid);
+                    }
+                    if ( sc.name == "NtCreateThreadEx" )
+                        hr.name.sprnt("starting at 0x%llX", (unsigned long long)arg(g, 4));
+                    if ( sc.name == "NtCreateSection" || sc.name == "NtCreateSectionEx" )
+                        p.file = arg(g, 6);
+                    if ( hr.type == "File" )
+                    {
+                        const qstring l = lower(hr.name);
+                        if ( l.find("\\device\\afd") == 0 )
+                            hr.type = "Socket";
+                        else if ( l.find("\\pipe\\") != qstring::npos || l.find("\\device\\namedpipe") == 0 )
+                            hr.type = "Pipe";
+                    }
+                    p.slot = add_slot(sc, arg(g, m->out));
+                }
+                pend.push_back(std::move(p));
+            }
+
+            // ---- 2: the handles the calls wrote back ---------------------------
+            std::vector<std::optional<uint64_t>> values;
+            if ( !b->query_out_values(slots, &values, sink) )
+            {
+                // A recording that holds the kernel's writes where they happen:
+                // the slot one position after the call.
+                values.assign(slots.size(), std::nullopt);
+                for ( size_t i = 0; i < slots.size(); i++ )
+                {
+                    if ( (i & 63) == 0 && sink != nullptr && sink->cancelled() )
+                        break;
+                    if ( rd.at(b->position_add(slots[i].call, 1)) )
+                        values[i] = rd.ptr(slots[i].addr);
+                }
+            }
+            if ( sink != nullptr && sink->cancelled() )
+            {
+                r.cancelled = true;
+                return r;
+            }
+            auto value_of = [&](int slot) -> uint64_t
+            {
+                return slot >= 0 && (size_t)slot < values.size() && values[slot].has_value() ? *values[slot] : 0;
+            };
+
+            // ---- 3: opened and closed, in order --------------------------------
             std::map<uint64_t, size_t> live;            // handle -> its record
             std::vector<HandleRecord> recs;
             auto name_of = [&](uint64_t h) -> const HandleRecord *
@@ -239,172 +491,75 @@ namespace idattd
                     live.erase(it);
                     return;
                 }
-                // Never seen opened: from before the recording.
+                // Never seen opened: from before the recording, or opened by
+                // a call whose handle could not be recovered.
                 HandleRecord hr;
                 hr.handle = h;
-                hr.type   = "(before the recording)";
+                hr.type   = "(opened before the recording)";
                 hr.closed = p;
                 recs.push_back(hr);
             };
             auto open = [&](HandleRecord hr)
             {
+                if ( hr.handle == 0 )
+                    return;
                 // A handle value reused without our seeing its close.
-                auto it = live.find(hr.handle);
-                if ( it != live.end() )
-                    live.erase(it);
+                live.erase(hr.handle);
                 live[hr.handle] = recs.size();
                 recs.push_back(std::move(hr));
             };
-
-            for ( size_t k = 0; k < idx.size(); k++ )
+            for ( Pending &p : pend )
             {
-                if ( (k & 63) == 0 && sink != nullptr )
+                switch ( p.kind )
                 {
-                    if ( sink->cancelled() )
-                    {
-                        r.cancelled = true;
+                    case Pending::Close:
+                        close(p.handle, p.rec.closed);
                         break;
-                    }
-                    sink->report(uint32_t(k * 100 / std::max<size_t>(idx.size(), 1)));
-                }
-                if ( k >= regs.size() || (regs[k].have & ITTD_REGS_GP) == 0 )
-                    continue;
-                const SyscallEvent &sc = calls[idx[k]];
-                const ittd_regs &g = regs[k];
-                if ( !rd.at(sc.pos) )
-                    continue;
-
-                if ( sc.name == "NtClose" )
-                {
-                    close(arg(g, 0), sc.pos);
-                    continue;
-                }
-
-                // Everything read at the call, then the handle(s) after it.
-                const Position after = b->position_add(sc.pos, 1);
-                if ( sc.name == "NtDuplicateObject" )
-                {
-                    const uint64_t src_proc = arg(g, 0), src = arg(g, 1);
-                    const uint64_t dst_proc = arg(g, 2), pdst = arg(g, 3);
-                    const uint32_t access   = (uint32_t)arg(g, 4);
-                    const uint64_t options  = arg(g, 6);
-                    HandleRecord hr;
-                    if ( is_current_process(src_proc) )
-                    {
-                        if ( const HandleRecord *s = name_of(src) )
+                    case Pending::Dup:
+                        if ( p.dup_from_us )
+                            if ( const HandleRecord *s = name_of(p.dup_src) )
+                            {
+                                p.rec.type = s->type;
+                                p.rec.name = s->name;
+                            }
+                        if ( p.dup_close_source )
+                            close(p.dup_src, p.rec.opened);
+                        if ( p.dup_into_us )
                         {
-                            hr.type = s->type;
-                            hr.name = s->name;
+                            if ( p.rec.type.empty() )
+                                p.rec.type = "(duplicated)";
+                            p.rec.handle = value_of(p.slot);
+                            open(p.rec);
                         }
-                    }
-                    else
-                    {
-                        hr.name.sprnt("handle 0x%llX of another process", (unsigned long long)src);
-                    }
-                    if ( is_current_process(src_proc) && (options & 1) != 0 )      // DUPLICATE_CLOSE_SOURCE
-                        close(src, sc.pos);
-                    if ( !is_current_process(dst_proc) || pdst == 0 || !rd.at(after) )
-                        continue;
-                    hr.handle    = rd.ptr(pdst);
-                    hr.access    = access;
-                    hr.opened    = sc.pos;
-                    hr.opened_by = sc.name;
-                    hr.tid       = sc.tid;
-                    if ( hr.type.empty() )
-                        hr.type = "(duplicated)";
-                    if ( hr.handle != 0 )
-                        open(hr);
-                    continue;
+                        break;
+                    case Pending::Open:
+                        if ( !p.rec.name.empty() && p.rec.name[0] != '\\' && p.root != 0 )
+                        {
+                            // Relative to a directory or key opened earlier.
+                            if ( const HandleRecord *base = name_of(p.root) )
+                                if ( !base->name.empty() )
+                                    p.rec.name = base->name + "\\" + p.rec.name;
+                        }
+                        if ( p.file != 0 && p.rec.name.empty() )
+                            if ( const HandleRecord *f = name_of(p.file) )
+                                p.rec.name = f->name;     // an image or file section
+                        p.rec.handle = value_of(p.slot);
+                        open(p.rec);
+                        if ( p.slot2 >= 0 )
+                        {
+                            p.rec2.handle = value_of(p.slot2);
+                            open(p.rec2);
+                        }
+                        break;
                 }
-
-                if ( sc.name == "NtCreateUserProcess" )
-                {
-                    // Two handles: the process and its first thread, named
-                    // after the image (RTL_USER_PROCESS_PARAMETERS ImagePathName).
-                    const uint64_t pproc = arg(g, 0), pthread = arg(g, 1), params = arg(g, 8);
-                    const qstring image = rd.ustr(params != 0 ? params + (wide ? 0x60 : 0x38) : 0);
-                    if ( !rd.at(after) )
-                        continue;
-                    HandleRecord hp;
-                    hp.type      = "Process";
-                    hp.name      = image;
-                    hp.access    = (uint32_t)arg(g, 2);
-                    hp.opened    = sc.pos;
-                    hp.opened_by = sc.name;
-                    hp.tid       = sc.tid;
-                    HandleRecord ht = hp;
-                    ht.type   = "Thread";
-                    ht.access = (uint32_t)arg(g, 3);
-                    if ( !image.empty() )
-                        ht.name = qstring("first thread of ") + image;
-                    hp.handle = rd.ptr(pproc);
-                    ht.handle = rd.ptr(pthread);
-                    if ( hp.handle != 0 )
-                        open(hp);
-                    if ( ht.handle != 0 )
-                        open(ht);
-                    continue;
-                }
-
-                const Maker *m = maker_of(sc.name);
-                HandleRecord hr;
-                hr.type      = m->type;
-                hr.opened    = sc.pos;
-                hr.opened_by = sc.name;
-                hr.tid       = sc.tid;
-                if ( m->access >= 0 )
-                    hr.access = (uint32_t)arg(g, m->access);
-                const uint64_t pout = arg(g, m->out);
-                uint64_t root = 0;
-                if ( m->attrs >= 0 )
-                    hr.name = rd.oa_name(arg(g, m->attrs), &root);
-                if ( sc.name == "NtAlpcConnectPort" || sc.name == "NtConnectPort" || sc.name == "NtSecureConnectPort" )
-                    hr.name = rd.ustr(arg(g, 1));
-                if ( !hr.name.empty() && hr.name[0] != '\\' && root != 0 )
-                {
-                    // Relative to a directory or key opened earlier.
-                    if ( const HandleRecord *base = name_of(root) )
-                        if ( !base->name.empty() )
-                            hr.name = base->name + "\\" + hr.name;
-                }
-                if ( sc.name == "NtOpenProcess" || sc.name == "NtOpenThread" )
-                {
-                    const uint64_t cid = arg(g, 3);
-                    const uint64_t pid = rd.ptr(cid), tid = rd.ptr(cid + rd.ptr_size());
-                    if ( sc.name == "NtOpenProcess" && pid != 0 )
-                        hr.name.sprnt("process %llu", (unsigned long long)pid);
-                    else if ( tid != 0 )
-                        hr.name.sprnt("thread %llu", (unsigned long long)tid);
-                }
-                if ( sc.name == "NtCreateThreadEx" )
-                    hr.name.sprnt("starting at 0x%llX", (unsigned long long)arg(g, 4));
-                if ( sc.name == "NtCreateSection" || sc.name == "NtCreateSectionEx" )
-                {
-                    // An image or file section: name it after the file.
-                    if ( hr.name.empty() )
-                        if ( const HandleRecord *f = name_of(arg(g, 6)) )
-                            hr.name = f->name;
-                }
-                if ( hr.type == "File" )
-                {
-                    const qstring l = lower(hr.name);
-                    if ( l.find("\\device\\afd") == 0 )
-                        hr.type = "Socket";
-                    else if ( l.find("\\pipe\\") != qstring::npos || l.find("\\device\\namedpipe") == 0 )
-                        hr.type = "Pipe";
-                }
-
-                if ( !rd.at(after) )
-                    continue;
-                hr.handle = rd.ptr(pout);
-                if ( hr.handle != 0 )
-                    open(hr);
             }
             *out = std::move(recs);
             return r;
         });
         if ( qr.cancelled )
             *cancelled = true;
+        else if ( qr.ran )
+            save_handles(*out);
         return qr.ran;
     }
 }
