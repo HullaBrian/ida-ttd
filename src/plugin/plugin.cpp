@@ -1139,6 +1139,8 @@ namespace idattd
         // The memory map follows the playhead.
         if ( m_mgr.is_active() )
             MemoryMapChooser::refresh_open();
+        // A list asked to show memory in the hex view once the travel landed.
+        show_pending_bytes();
         TWidget *from = m_stepView;
         if ( from == nullptr )
         {
@@ -1443,6 +1445,9 @@ namespace idattd
                     attach_action_to_popup(widget, popup, actions::MEM_SEARCH, "TTD/");
                     attach_action_to_popup(widget, popup, actions::REREAD, "TTD/");
                 }
+                // Highlight bytes, then find what read, wrote or ran them.
+                if ( wt == BWN_HEXVIEW )
+                    attach_action_to_popup(widget, popup, actions::MEM_SEARCH, "TTD/");
                 break;
             }
             case ui_ready_to_run:

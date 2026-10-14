@@ -5,15 +5,6 @@
 
 namespace idattd
 {
-    static void travel(TraceManager *mgr, Position p)
-    {
-        if ( mgr == nullptr || !mgr->is_active() || !p.is_valid() )
-            return;
-        mgr->set_next_position(p);
-        request_continue_process();
-        run_requests();
-    }
-
     static bool backend_scans(TraceManager *mgr)
     {
         return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr
@@ -61,10 +52,11 @@ namespace idattd
         return n < m_hits.size() ? m_hits[n].address : BADADDR;
     }
 
+    // To where it appeared, showing it in the hex view when one is open.
     chooser_t::cbret_t idaapi StringsChooser::enter(size_t n)
     {
         if ( n < m_hits.size() )
-            travel(m_mgr, m_hits[n].pos);
+            travel_and_show_bytes(m_mgr, m_hits[n].pos, m_hits[n].address);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -114,11 +106,12 @@ namespace idattd
         return n < m_hits.size() ? m_hits[n].address : BADADDR;
     }
 
-    // To the last write: the buffer is complete there.
+    // To the last write, where the buffer is complete, showing it in the hex
+    // view when one is open.
     chooser_t::cbret_t idaapi BuffersChooser::enter(size_t n)
     {
         if ( n < m_hits.size() )
-            travel(m_mgr, m_hits[n].last_pos);
+            travel_and_show_bytes(m_mgr, m_hits[n].last_pos, m_hits[n].address);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

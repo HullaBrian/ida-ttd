@@ -251,6 +251,13 @@ namespace idattd
         mutable Position                   m_at = Position::none();
     };
 
+    // Travel to 'p' and, once there, show 'ea' in the hex view if one is
+    // open (the listing rows that name memory: buffers, strings). False when
+    // no hex view is open; the travel happens either way.
+    bool travel_and_show_bytes(TraceManager *mgr, Position p, ea_t ea);
+    // After each stop: the hex view jump a travel above left for it.
+    void show_pending_bytes();
+
     // ---- TTD-specific action handlers --------------------------------------
     //
     // Most stepping is provided by IDA's native debugger actions, attached to

@@ -159,4 +159,62 @@ namespace idattd
             return AST_DISABLE;
         return AST_ENABLE_ALWAYS;
     }
+
+    //=======================================================================
+    // Travel, then show memory in the hex view
+    //=======================================================================
+    // IDA moves its views to the instruction pointer when the debugger stops,
+    // and a synchronized hex view goes with them, so the jump waits for the
+    // stop: show_pending_bytes() runs after IDA's own post-stop handling.
+    static ea_t g_pendingBytes = BADADDR;
+
+    static TWidget *open_hex_view()
+    {
+        for ( int i = 1; i <= 9; i++ )
+        {
+            qstring title;
+            title.sprnt("Hex View-%d", i);
+            TWidget *w = find_widget(title.c_str());
+            if ( w != nullptr && get_widget_type(w) == BWN_HEXVIEW )
+                return w;
+        }
+        return nullptr;
+    }
+
+    static void show_bytes(TWidget *hex, ea_t ea)
+    {
+        activate_widget(hex, true);
+        ea_viewer_history_push_and_jump(hex, ea, 0, 0, 0);
+    }
+
+    bool travel_and_show_bytes(TraceManager *mgr, Position p, ea_t ea)
+    {
+        g_pendingBytes = BADADDR;
+        if ( mgr == nullptr || !mgr->is_active() )
+            return false;
+        TWidget *hex = ea != BADADDR ? open_hex_view() : nullptr;
+        if ( !p.is_valid() || p == mgr->current_position() )
+        {
+            if ( hex != nullptr )
+                show_bytes(hex, ea);
+            return hex != nullptr;
+        }
+        if ( hex != nullptr )
+            g_pendingBytes = ea;
+        mgr->set_next_position(p);
+        request_continue_process();
+        run_requests();
+        return hex != nullptr;
+    }
+
+    void show_pending_bytes()
+    {
+        ea_t ea = g_pendingBytes;
+        g_pendingBytes = BADADDR;
+        if ( ea == BADADDR )
+            return;
+        TWidget *hex = open_hex_view();
+        if ( hex != nullptr )
+            show_bytes(hex, ea);
+    }
 }

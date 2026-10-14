@@ -113,6 +113,15 @@ namespace idattd
         static sval_t  len  = 1;
         static ushort  bits = ACC_READ | ACC_WRITE;
         ea_t addr = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
+        // A selection -- bytes highlighted in the hex view, or a range of
+        // instructions -- is the range to search.
+        ea_t sel_lo = BADADDR, sel_hi = BADADDR;
+        if ( ctx != nullptr && ctx->has_flag(ACF_HAS_SELECTION)
+          && read_range_selection(ctx->widget, &sel_lo, &sel_hi) && sel_lo < sel_hi )
+        {
+            addr = sel_lo;
+            len  = (sval_t)(sel_hi - sel_lo);
+        }
         if ( ask_form(form, &addr, &len, &bits) <= 0 )
             return 1;
         if ( len <= 0 )
