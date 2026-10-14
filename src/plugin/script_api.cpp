@@ -1372,7 +1372,7 @@ namespace idattd
         {
             t.is_reg = false;
             t.addr   = (ea_t)a.u64(1);
-            t.size   = (uint32_t)a.u64_or(2, 8);
+            t.size   = (uint32_t)std::min<uint64_t>(std::max<uint64_t>(a.u64_or(2, 8), 1), 64);
         }
         else if ( a.count() >= 1 && parse_register(a.at(0).c_str(), &reg) )
         {

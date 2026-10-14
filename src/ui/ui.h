@@ -140,9 +140,12 @@ namespace idattd
         size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         cbret_t idaapi enter(size_t n) override;
+        // Ctrl+E: decode the call from the native API metadata.
+        cbret_t idaapi edit(size_t n) override;
 
     private:
         const std::optional<SyscallArgs> &args_of(size_t n) const;
+        std::map<size_t, qstring> m_decoded;      // rows decoded on request
 
         TraceManager              *m_mgr;
         std::vector<SyscallEvent>  m_calls;

@@ -602,12 +602,13 @@ namespace idattd
                 *found = true;
                 return true;
             }
-            if ( !have_first )
-                return true;
             searched += window;
             window   *= 4;
-            end   = start;
-            after = first;
+            // A window the thread did not run in (it was waiting while
+            // others ran) leaves the value as it was: widen past it.
+            end = start;
+            if ( have_first )
+                after = first;
         }
         return true;
     }

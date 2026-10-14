@@ -14,7 +14,6 @@ namespace idattd
             "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
             "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
         };
-        const char *const GP32_NAMES[8] = { "eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi" };
 
         // How far back a register's last change is looked for: the backend's
         // own search is a forward replay of the thread, so millions of steps
@@ -93,7 +92,7 @@ namespace idattd
             if ( !s->found )
                 return;
             const ea_t hi = b->info().is64 ? (ea_t)0x800000000000ull : (ea_t)0x100000000ull;
-            PositionRange one{ s->pos, s->pos };
+            PositionRange one{ s->pos, b->position_add(s->pos, 1) };
             std::vector<Access> v;
             b->query_accesses(0, hi, ACCESS_READ, one, &v, sink);
             for ( const Access &a : v )
@@ -158,8 +157,16 @@ namespace idattd
         // So the value right after the program's write is checked against the
         // value asked about, and when they differ, or nothing of the program
         // wrote it, the syscalls since are checked latest first.
+        // The syscalls, listed once per trace_value_origin: on Microsoft TTD
+        // listing them is a replay of the whole recording.
+        struct SyscallCache
+        {
+            bool                      listed = false;
+            std::vector<SyscallEvent> calls;
+        };
+
         void search_memory(ITraceBackend *b, const OriginTarget &t, Position at, const bytevec_t &value,
-                           Search *s, ProgressSink *sink)
+                           SyscallCache *sc_cache, Search *s, ProgressSink *sink)
         {
             CursorPtr cur = b->make_cursor();
             if ( !cur || !cur->seek(at) )
@@ -199,8 +206,12 @@ namespace idattd
 
             if ( !b->capabilities().syscalls )
                 return;
-            std::vector<SyscallEvent> calls;
-            b->query_syscalls(&calls, sink);
+            if ( !sc_cache->listed )
+            {
+                b->query_syscalls(&sc_cache->calls, sink);
+                sc_cache->listed = !(sink != nullptr && sink->cancelled());
+            }
+            const std::vector<SyscallEvent> &calls = sc_cache->calls;
             size_t checked = 0;
             for ( auto it = calls.rbegin(); it != calls.rend() && checked < kSyscallsChecked; ++it )
             {
@@ -215,6 +226,7 @@ namespace idattd
                 if ( !c || !c->seek(it->pos) )
                     continue;
                 const bytevec_t before = read_value(c.get(), t, 0);
+                const ea_t      sys_pc = c->program_counter();
                 std::unique_ptr<INavigator> n = b->make_navigator(c.get());
                 if ( n->step(true) != StopReason::Stepped )
                     continue;
@@ -226,7 +238,7 @@ namespace idattd
                     s->sys_name = it->name.empty() ? qstring("a syscall") : it->name;
                     s->found    = true;
                     s->pos      = it->pos;
-                    s->pc       = c->program_counter();
+                    s->pc       = sys_pc;
                     s->tid      = it->tid;
                     return;
                 }
@@ -288,6 +300,41 @@ namespace idattd
                 out->kind = OriginKind::System;
                 out->note = hop.what.is_reg ? "the result of a syscall" : "written by the system during a syscall";
                 return false;
+            }
+
+            // A register a copy changes on the side -- rsp under push and pop,
+            // rsi/rdi/rcx under the string moves -- was not copied into: the
+            // value asked about was computed there.
+            if ( hop.what.is_reg )
+            {
+                const int want = int(hop.what.reg);
+                auto names = [&](const op_t &op) { return op.type == o_reg && ittd_reg_of(op.reg) == want; };
+                bool dest = true;
+                switch ( ins.itype )
+                {
+                    case NN_push: case NN_movs: case NN_stos:
+                        dest = false;
+                        break;
+                    case NN_lods:
+                        dest = want == ITTD_REG_RAX;
+                        break;
+                    case NN_xchg:
+                        dest = names(ins.ops[0]) || names(ins.ops[1]);
+                        break;
+                    case NN_pop:
+                        dest = names(ins.ops[0]);
+                        break;
+                    default:
+                        if ( is_copy(ins.itype) )
+                            dest = names(ins.ops[0]);
+                        break;
+                }
+                if ( !dest )
+                {
+                    out->kind = OriginKind::Computed;
+                    out->note = "changed as a side effect of this instruction";
+                    return false;
+                }
             }
 
             const op_t *src = nullptr;
@@ -416,9 +463,18 @@ namespace idattd
         for ( uint32_t i = 0; i < ITTD_REG_RIP; i++ )
             if ( n == GP_NAMES[i] )
                 return *reg = i, true;
+        // The 32-, 16- and 8-bit names of the first eight name the 64-bit one.
+        static const char *const NARROW[][4] =
+        {
+            { "eax", "ax", "al", "ah" }, { "ecx", "cx", "cl", "ch" },
+            { "edx", "dx", "dl", "dh" }, { "ebx", "bx", "bl", "bh" },
+            { "esp", "sp", "spl", "" }, { "ebp", "bp", "bpl", "" },
+            { "esi", "si", "sil", "" }, { "edi", "di", "dil", "" },
+        };
         for ( uint32_t i = 0; i < 8; i++ )
-            if ( n == GP32_NAMES[i] )
-                return *reg = i, true;
+            for ( const char *alias : NARROW[i] )
+                if ( *alias != '\0' && n == alias )
+                    return *reg = i, true;
         // r8d, r8w, r8b and friends name their 64-bit register.
         if ( n.length() >= 2 && n[0] == 'r' )
         {
@@ -459,6 +515,7 @@ namespace idattd
             return false;
         ITraceBackend *b = mgr->backend();
 
+        SyscallCache syscalls;
         OriginTarget target = what;
         Position     at     = mgr->current_position();
         uint32_t     tid    = mgr->cursor()->thread_id();
@@ -483,7 +540,7 @@ namespace idattd
                 if ( target.is_reg )
                     search_register(b, target, at, tid, &s, sink);
                 else
-                    search_memory(b, target, at, hop.value, &s, sink);
+                    search_memory(b, target, at, hop.value, &syscalls, &s, sink);
                 if ( !s.system )
                     find_reads(b, &s, sink);
                 QueryResult r;

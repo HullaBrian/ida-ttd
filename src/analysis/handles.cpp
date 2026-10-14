@@ -41,7 +41,7 @@ namespace idattd
             { "NtCreateSemaphore",          0, 2, 1, "Semaphore" },
             { "NtOpenSemaphore",            0, 2, 1, "Semaphore" },
             { "NtCreateTimer",              0, 2, 1, "Timer" },
-            { "NtCreateTimer2",             0, 2, 3, "Timer" },
+            { "NtCreateTimer2",             0, 2, 4, "Timer" },
             { "NtOpenTimer",                0, 2, 1, "Timer" },
             { "NtCreateIoCompletion",       0, 2, 1, "IoCompletion" },
             { "NtOpenIoCompletion",         0, 2, 1, "IoCompletion" },
@@ -219,7 +219,8 @@ namespace idattd
                         return g.gp[first[n]];
                     return rd.ptr(g.gp[ITTD_REG_RSP] + 0x28 + 8 * (n - 4));
                 }
-                return rd.ptr(g.gp[ITTD_REG_RSP] + 4 + 4 * (uint64_t)n);
+                // [esp] returns into the stub, [esp+4] is the stub's own return.
+                return rd.ptr(g.gp[ITTD_REG_RSP] + 8 + 4 * (uint64_t)n);
             };
 
             std::map<uint64_t, size_t> live;            // handle -> its record

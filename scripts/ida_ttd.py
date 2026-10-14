@@ -174,7 +174,8 @@ class Session(object):
         return self._move("runto", back, ea)
 
     def goto(self, position):
-        return py(call("goto", position))
+        # A position is passed as written: Sogen's are decimal step counts.
+        return py(call("goto", str(position)))
 
     # ---- what is there -----------------------------------------------------
     def regs(self):
@@ -271,7 +272,7 @@ class Recording(object):
 
     def seek(self, position):
         """A position, or "first" / "last"."""
-        return py(call("drv.seek", position))
+        return py(call("drv.seek", str(position)))
 
     def step(self, back=False):
         return py(call("drv.step", *(["back"] if back else [])))
