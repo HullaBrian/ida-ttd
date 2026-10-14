@@ -354,6 +354,9 @@ namespace idattd
     };
 
     // The call tree of the function at the cursor.
+    // The last call tree built, as JSON, for the window script (calltree_py.hh).
+    const qstring &call_tree_json();
+
     struct CallTreeHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 

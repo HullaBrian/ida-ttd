@@ -1191,6 +1191,29 @@ namespace idattd
            .boolean("cancelled", t.cancelled).num("count", (int64_t)t.rows.size()).raw("calls", arr.done());
     }
 
+    // For the call tree window (ui/calltree_py.hh): the tree the TTD menu
+    // command last built.
+    static void cmd_ui_calltree(const Args &, JObj &out)
+    {
+        const qstring &j = call_tree_json();
+        if ( j.empty() )
+            fail("no call tree has been built");
+        out.raw("tree", j);
+    }
+
+    // Travel the way a double-click in a list does: returns at once.
+    static void cmd_ui_travel(const Args &a, JObj &out)
+    {
+        need_session();
+        Position p;
+        if ( !parse_position(a.at(0).c_str(), &p) )
+            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
+        mgr().set_next_position(p);
+        request_continue_process();
+        run_requests();
+        out.str("queued", a.at(0));
+    }
+
     static void cmd_an_coverage(const Args &a, JObj &out)
     {
         need_session();
@@ -1335,6 +1358,8 @@ namespace idattd
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
+        { "ui.calltree",    cmd_ui_calltree,    "the call tree last built by the TTD menu (for its window)" },
+        { "ui.travel",      cmd_ui_travel,      "POS travel there, returning at once (as a double-click does)" },
         { "switch.ui",      cmd_switch_ui,      "PATH the same, the way the Fork manager does it (returns at once)" },
         { "an.forks",       cmd_an_forks,       "the forks recorded in this database" },
         { "an.forget",      cmd_an_forget,      "PATH take a fork out of the fork graph" },

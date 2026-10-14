@@ -3,6 +3,8 @@
 // Right), the way IDA's own trees are.
 #include "ui/ui.h"
 #include "ui/names.h"
+#include "ui/calltree_py.hh"
+#include <expr.hpp>
 
 namespace idattd
 {
@@ -256,6 +258,85 @@ namespace idattd
         }
     };
 
+    // The last call tree built, as the window script asks for it
+    // (ttd("ui.calltree")).
+    static qstring g_callTreeJson;
+
+    const qstring &call_tree_json()
+    {
+        return g_callTreeJson;
+    }
+
+    static void json_str(qstring *out, const char *s)
+    {
+        out->append('"');
+        for ( ; *s != '\0'; s++ )
+        {
+            unsigned char c = (unsigned char)*s;
+            if ( c == '"' || c == '\\' )
+            {
+                out->append('\\');
+                out->append((char)c);
+            }
+            else if ( c < 0x20 )
+            {
+                out->cat_sprnt("\\u%04x", c);
+            }
+            else
+            {
+                out->append((char)c);
+            }
+        }
+        out->append('"');
+    }
+
+    static qstring tree_json(const CallTree &t)
+    {
+        qstring j;
+        j.append("{\"name\":");
+        json_str(&j, t.root != BADADDR ? code_name(t.root).c_str() : "(this function)");
+        j.cat_sprnt(",\"root\":\"0x%llX\",\"from\":", (uint64_t)(t.root != BADADDR ? t.root : 0));
+        json_str(&j, format_position(t.from).c_str());
+        j.append(",\"to\":");
+        json_str(&j, format_position(t.to).c_str());
+        j.cat_sprnt(",\"tid\":\"0x%X\",\"from_cursor\":%s,\"truncated\":%s,\"rows\":[",
+                    t.tid, t.from_cursor ? "true" : "false", t.truncated ? "true" : "false");
+        for ( size_t i = 0; i < t.rows.size(); i++ )
+        {
+            const CallTreeRow &r = t.rows[i];
+            if ( i != 0 )
+                j.append(',');
+            j.cat_sprnt("{\"depth\":%d,\"jump\":%s,\"site\":\"0x%llX\",\"target\":\"0x%llX\",\"name\":",
+                        r.depth, r.is_call ? "false" : "true", (uint64_t)r.site, (uint64_t)r.target);
+            json_str(&j, code_name(r.target).c_str());
+            j.append(",\"from\":");
+            json_str(&j, code_name(r.site).c_str());
+            j.append(",\"pos\":");
+            json_str(&j, format_position(r.pos).c_str());
+            j.append(",\"ret\":");
+            json_str(&j, r.ret_pos.is_valid() ? format_position(r.ret_pos).c_str()
+                                              : r.is_call ? "never" : "");
+            j.append('}');
+        }
+        j.append("]}");
+        return j;
+    }
+
+    // Open the tree control (calltree_py.hh). False when IDAPython is not
+    // there or the script failed, which the output window is told.
+    static bool open_call_tree_window()
+    {
+        extlang_object_t py = find_extlang_by_name("Python");
+        if ( py == nullptr || py->eval_snippet == nullptr )
+            return false;
+        qstring err;
+        if ( py->eval_snippet(CALL_TREE_PY, &err) )
+            return true;
+        msg("[ida-ttd] the call tree window could not be opened (%s); showing it as text.\n",
+            err.c_str());
+        return false;
+    }
+
     int idaapi CallTreeHandler::activate(action_activation_ctx_t *)
     {
         if ( mgr() == nullptr || !mgr()->is_active() )
@@ -281,6 +362,10 @@ namespace idattd
             info("The function made no calls during this run.");
             return 1;
         }
+        // The tree control, through IDAPython; the text view without it.
+        g_callTreeJson = tree_json(tree);
+        if ( open_call_tree_window() )
+            return 1;
         CallTreeView *v = new CallTreeView(mgr(), std::move(tree));
         if ( !v->open() )
         {
