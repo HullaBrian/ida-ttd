@@ -209,6 +209,7 @@ namespace idattd
     // A recording opened straight through a backend, with no debugger session:
     // what the drv.* commands work on. It exercises a backend and the core's
     // adapter in-process, headless or not.
+    //
     // A backend instance of its own, never the registry's: that one is the
     // debugger session's, and opening another recording through it would close
     // the session's from under it.
@@ -1372,9 +1373,38 @@ namespace idattd
     }
 
     // Where a value came from: "an.origin rax", "an.origin mem ADDR [SIZE]".
-    static void cmd_an_origin(const Args &a, JObj &out)
+    // A trailing "from=POS", taken off the arguments: the position a command
+    // works at instead of the playhead.
+    static bool from_arg(Args *a, Position *p)
+    {
+        for ( size_t i = 1; i < a->v.size(); i++ )
+        {
+            if ( !a->v[i].starts_with("from=") )
+                continue;
+            qstring text = a->v[i].substr(5);
+            if ( !parse_position(text.c_str(), p) )
+                fail("'%s' is not a position (%s)", text.c_str(), position_syntax());
+            a->v.erase(a->v.begin() + i);
+            return true;
+        }
+        return false;
+    }
+
+    static void origin_target_json(const OriginTarget &t, JObj &o)
+    {
+        o.str("what", origin_target_text(t));
+        if ( t.is_reg )
+            o.str("reg", origin_target_text(t));
+        else
+            o.hex("addr", t.addr).num("size", t.size);
+    }
+
+    static void cmd_an_origin(const Args &args, JObj &out)
     {
         need_session();
+        Args a = args;
+        Position from;
+        const bool has_from = from_arg(&a, &from);
         OriginTarget t;
         uint32_t reg = 0;
         if ( a.count() >= 2 && a.at(0) == "mem" )
@@ -1389,10 +1419,11 @@ namespace idattd
         }
         else
         {
-            fail("usage: an.origin REG | an.origin mem ADDR [SIZE]");
+            fail("usage: an.origin REG | an.origin mem ADDR [SIZE], then from=POS to start there");
         }
         std::vector<OriginHop> hops;
-        if ( !trace_value_origin(&mgr(), t, 24, &hops) )
+        if ( !(has_from ? trace_value_origin(&mgr(), t, from, 24, &hops)
+                        : trace_value_origin(&mgr(), t, 24, &hops)) )
             fail("not traced");
         JArr arr;
         for ( const OriginHop &h : hops )
@@ -1405,6 +1436,28 @@ namespace idattd
             arr.add(o.done());
         }
         out.num("hops", (int64_t)hops.size()).raw("chain", arr.done());
+    }
+
+    // What the instruction about to run at a position read: the next links
+    // of a chain that ended at a computation.
+    static void cmd_an_inputs(const Args &a, JObj &out)
+    {
+        need_session();
+        Position at = mgr().current_position();
+        if ( a.count() >= 1 && !parse_position(a.at(0).c_str(), &at) )
+            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
+        std::vector<OriginInput> v;
+        if ( !origin_inputs(&mgr(), at, &v) )
+            fail("no replay session is running");
+        JArr arr;
+        for ( const OriginInput &in : v )
+        {
+            JObj o;
+            origin_target_json(in.what, o);
+            o.str("value", origin_value_text(in.value)).boolean("address", in.address);
+            arr.add(o.done());
+        }
+        out.str("pos", format_position(at)).raw("inputs", arr.done());
     }
 
     // The handle list.
@@ -1496,7 +1549,8 @@ namespace idattd
         { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
         { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
         { "an.handles",     cmd_an_handles,     "[MAX] the handles the program opened and closed" },
-        { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] where the value at the playhead came from" },
+        { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] [from=POS] where the value at the playhead (or POS) came from" },
+        { "an.inputs",      cmd_an_inputs,      "[POS] the values the instruction about to run there read" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },

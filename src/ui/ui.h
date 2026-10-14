@@ -246,10 +246,16 @@ namespace idattd
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
         cbret_t idaapi enter(size_t n) override;
+        // Edit (Ctrl+E): follow a value the row's instruction read, as a new
+        // chain appended to the list.
+        cbret_t idaapi edit(size_t n) override;
 
     private:
         TraceManager          *m_mgr;
         std::vector<OriginHop> m_hops;
+        // For the first row of a chain added by edit(): the row whose
+        // instruction read it. -1 for every other row.
+        std::vector<ssize_t>   m_input_of;
         qstring                m_title;  // owned: chooser_base_t keeps the pointer
     };
 

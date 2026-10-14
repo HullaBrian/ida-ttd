@@ -7,13 +7,17 @@ namespace idattd
     //=======================================================================
     // ValueOriginChooser
     //=======================================================================
-    static const int   g_vo_widths[] = { 3, 20, 22, 14, 14, 40, 44 };
-    static const char *g_vo_header[] = { "#", "Value", "In", "As of", "Set at", "By", "How" };
+    // "Seen at": where the row looks at the value (where it was asked about,
+    // or where the previous row's instruction read it). "Written at": the
+    // last instruction before that which wrote it.
+    static const int   g_vo_widths[] = { 3, 20, 26, 14, 14, 40, 44 };
+    static const char *g_vo_header[] = { "#", "Value", "In", "Seen at", "Written at", "By", "How" };
 
     ValueOriginChooser::ValueOriginChooser(TraceManager *mgr, std::vector<OriginHop> &&hops)
-        : chooser_t(0, qnumber(g_vo_widths), g_vo_widths, g_vo_header, nullptr),
-          m_mgr(mgr), m_hops(std::move(hops))
+        : chooser_t(CH_CAN_EDIT, qnumber(g_vo_widths), g_vo_widths, g_vo_header, nullptr),
+          m_mgr(mgr), m_hops(std::move(hops)), m_input_of(m_hops.size(), -1)
     {
+        popup_names[POPUP_EDIT] = "Follow an input of this instruction";
         static int seq = 0;
         m_title.sprnt("TTD value origin: %s [%d]",
                       m_hops.empty() ? "?" : origin_target_text(m_hops[0].what).c_str(), ++seq);
@@ -34,6 +38,8 @@ namespace idattd
         cols->at(0).sprnt("%d", (int)n + 1);
         cols->at(1) = origin_value_text(h.value);
         cols->at(2) = origin_target_text(h.what);
+        if ( n < m_input_of.size() && m_input_of[n] >= 0 )
+            cols->at(2).cat_sprnt(", read by #%d", (int)m_input_of[n] + 1);
         cols->at(3) = format_position(h.at);
         if ( h.by_pc != BADADDR )
         {
@@ -42,8 +48,11 @@ namespace idattd
             cols->at(5) = h.insn.empty() ? where : where + ": " + h.insn;
         }
         cols->at(6) = h.note.empty() ? qstring(origin_kind_name(h.kind)) : h.note;
-        // The row the chain ends on is the answer.
-        if ( attrs != nullptr && n + 1 == m_hops.size() && h.kind != OriginKind::Copied )
+        // The rows a chain ends on are the answers.
+        const bool chain_ends = n + 1 == m_hops.size() || (n + 1 < m_input_of.size() && m_input_of[n + 1] >= 0);
+        if ( chain_ends && h.kind == OriginKind::Computed )
+            cols->at(6).append(" (Ctrl+E follows what it read)");
+        if ( attrs != nullptr && chain_ends && h.kind != OriginKind::Copied )
             attrs->flags |= CHITEM_BOLD;
     }
 
@@ -66,6 +75,76 @@ namespace idattd
             }
         }
         return cbret_t(n, NOTHING_CHANGED);
+    }
+
+    // The inputs of one instruction, to pick from.
+    class OriginInputChooser : public chooser_t
+    {
+    public:
+        OriginInputChooser(const std::vector<OriginInput> &inputs, const qstring &title)
+            : chooser_t(CH_MODAL | CH_KEEP, qnumber(widths), widths, header, nullptr),
+              m_inputs(inputs), m_title(title)
+        {
+            this->title = m_title.c_str();
+        }
+        size_t idaapi get_count() const override { return m_inputs.size(); }
+        void idaapi get_row(qstrvec_t *cols, int *, chooser_item_attrs_t *, size_t n) const override
+        {
+            const OriginInput &in = m_inputs[n];
+            cols->at(0) = origin_target_text(in.what);
+            cols->at(1) = origin_value_text(in.value);
+            cols->at(2) = in.address ? "formed the address" : "operand";
+        }
+
+    private:
+        static constexpr int   widths[] = { 26, 20, 20 };
+        static constexpr const char *header[] = { "Input", "Value", "As" };
+        const std::vector<OriginInput> &m_inputs;
+        qstring m_title;
+    };
+
+    chooser_t::cbret_t idaapi ValueOriginChooser::edit(size_t n)
+    {
+        if ( n >= m_hops.size() || m_mgr == nullptr || !m_mgr->is_active() )
+            return cbret_t(n, NOTHING_CHANGED);
+        const OriginHop &h = m_hops[n];
+        if ( !h.by_pos.is_valid() || h.by_pc == BADADDR )
+        {
+            info("Nothing in the recording wrote %s here, so there is no instruction to follow.",
+                 origin_target_text(h.what).c_str());
+            return cbret_t(n, NOTHING_CHANGED);
+        }
+        std::vector<OriginInput> inputs;
+        origin_inputs(m_mgr, h.by_pos, &inputs);
+        if ( inputs.empty() )
+        {
+            info("%s reads nothing this can follow%s.", h.insn.empty() ? "The instruction" : h.insn.c_str(),
+                 h.kind == OriginKind::System ? ": it is a syscall" : "");
+            return cbret_t(n, NOTHING_CHANGED);
+        }
+        size_t pick = 0;
+        if ( inputs.size() > 1 )
+        {
+            qstring title;
+            title.sprnt("Follow which input of %s?", h.insn.empty() ? "the instruction" : h.insn.c_str());
+            OriginInputChooser ch(inputs, title);
+            ssize_t r = ch.choose();
+            if ( r < 0 || (size_t)r >= inputs.size() )
+                return cbret_t(n, NOTHING_CHANGED);
+            pick = (size_t)r;
+        }
+
+        // From just before the instruction ran: by_pos is where it is about
+        // to, on its thread.
+        std::vector<OriginHop> more;
+        if ( !trace_value_origin(m_mgr, inputs[pick].what, h.by_pos, 24, &more) || more.empty() )
+            return cbret_t(n, NOTHING_CHANGED);
+        const size_t first = m_hops.size();
+        m_input_of.push_back((ssize_t)n);
+        m_input_of.resize(first + more.size(), -1);
+        for ( OriginHop &x : more )
+            m_hops.push_back(std::move(x));
+        return cbret_t(first, ALL_CHANGED);
     }
 
     //=======================================================================

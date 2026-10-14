@@ -17,6 +17,10 @@ namespace idattd
     // ran. The chain ends at an instruction that computed the value, at the
     // system (a syscall's result, or memory the system wrote), at a constant
     // in the code, or where nothing in the recording changed it.
+    //
+    // Where it ends at a computation, the walk goes on by hand: the values the
+    // instruction read (origin_inputs) are each a chain of their own, from
+    // just before it ran.
 
     // A register or a range of memory, as of some position.
     struct OriginTarget
@@ -64,4 +68,22 @@ namespace idattd
     // session.
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
                             std::vector<OriginHop> *out);
+    // The same from 'at' instead of the playhead, on the thread running there.
+    bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
+                            std::vector<OriginHop> *out);
+
+    // A value an instruction read, as it stood just before the instruction ran.
+    struct OriginInput
+    {
+        OriginTarget what;
+        bytevec_t    value;
+        bool         address = false;   // a register that only formed an address
+    };
+    // What the instruction about to run at 'at' read: the registers and
+    // memory it took operands from (the implicit ones of mul, div, cdq and
+    // the like included), then the registers that formed an address it read
+    // or wrote (for lea, those are its operands). Memory is the read the
+    // recording has. Empty for a syscall, or an instruction that reads
+    // nothing, or one that cannot be decoded. False when there is no session.
+    bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out);
 }

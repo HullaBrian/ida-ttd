@@ -208,13 +208,24 @@ class Session(object):
         hi = lo + 1 if hi is None else hi
         return py(call("an.search", lo, hi, _kinds(kinds), limit)["accesses"])
 
-    def origin(self, what, size=8):
-        """Where a value at the current position came from: what is a register
-        name ("rax", "xmm0") or an address (with 'size' bytes). The chain of
-        hops back to where the value was made, the first hop first."""
+    def origin(self, what, size=8, at=None):
+        """Where a value came from: what is a register name ("rax", "xmm0") or
+        an address (with 'size' bytes), as of the current position, or of
+        'at' (a position) when given. The chain of hops back to where the
+        value was made, the first hop first."""
+        tail = ["from=" + at] if at else []
         if isinstance(what, str):
-            return py(call("an.origin", what)["chain"])
-        return py(call("an.origin", "mem", what, size)["chain"])
+            return py(call("an.origin", what, *tail)["chain"])
+        return py(call("an.origin", "mem", what, size, *tail)["chain"])
+
+    def inputs(self, at=None):
+        """The values the instruction about to run at 'at' (default: the
+        current position) read: each has 'what', 'value', 'address' (true for
+        a register that only formed an address), and 'reg', or 'addr' and
+        'size'. Pass a hop's 'by_pos' to continue a chain that ended at a
+        computation, then origin(..., at=that by_pos) on the input."""
+        r = call("an.inputs", at) if at else call("an.inputs")
+        return py(r["inputs"])
 
     def handles(self, limit=100000):
         """The handles the program opened and closed."""

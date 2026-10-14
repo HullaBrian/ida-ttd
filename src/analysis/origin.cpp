@@ -87,17 +87,22 @@ namespace idattd
             std::vector<Access> reads;      // what the setting instruction read
         };
 
-        void find_reads(ITraceBackend *b, Search *s, ProgressSink *sink)
+        // The reads the instruction at 'pc' made in the one step at 'pos'.
+        void reads_at(ITraceBackend *b, Position pos, ea_t pc, std::vector<Access> *out, ProgressSink *sink)
         {
-            if ( !s->found )
-                return;
             const ea_t hi = b->info().is64 ? (ea_t)0x800000000000ull : (ea_t)0x100000000ull;
-            PositionRange one{ s->pos, b->position_add(s->pos, 1) };
+            PositionRange one{ pos, b->position_add(pos, 1) };
             std::vector<Access> v;
             b->query_accesses(0, hi, ACCESS_READ, one, &v, sink);
             for ( const Access &a : v )
-                if ( a.pc == s->pc )
-                    s->reads.push_back(a);
+                if ( a.pc == pc )
+                    out->push_back(a);
+        }
+
+        void find_reads(ITraceBackend *b, Search *s, ProgressSink *sink)
+        {
+            if ( s->found )
+                reads_at(b, s->pos, s->pc, &s->reads, sink);
         }
 
         void search_register(ITraceBackend *b, const OriginTarget &t, Position at, uint32_t tid,
@@ -377,6 +382,20 @@ namespace idattd
                 out->note = "stored from rax";
                 return true;
             }
+            // xor or sub of a register with itself: zero, whatever it held.
+            if ( src == nullptr && !from_read
+              && ins.ops[0].type == o_reg && ins.ops[1].type == o_reg && ins.ops[0].reg == ins.ops[1].reg )
+            {
+                switch ( ins.itype )
+                {
+                    case NN_xor: case NN_sub: case NN_pxor: case NN_xorps: case NN_xorpd:
+                        out->kind = OriginKind::Constant;
+                        out->note = "zeroed: a register combined with itself";
+                        return false;
+                    default:
+                        break;
+                }
+            }
             if ( src == nullptr && !from_read )
             {
                 out->kind = OriginKind::Computed;
@@ -507,18 +526,14 @@ namespace idattd
         }
     }
 
-    bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
-                            std::vector<OriginHop> *out)
+    static bool trace_from(TraceManager *mgr, const OriginTarget &what, Position start, uint32_t start_tid,
+                           size_t max_hops, std::vector<OriginHop> *out)
     {
-        out->clear();
-        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr || mgr->cursor() == nullptr )
-            return false;
         ITraceBackend *b = mgr->backend();
-
         SyscallCache syscalls;
         OriginTarget target = what;
-        Position     at     = mgr->current_position();
-        uint32_t     tid    = mgr->cursor()->thread_id();
+        Position     at     = start;
+        uint32_t     tid    = start_tid;
         for ( size_t hop_no = 0; hop_no < max_hops; hop_no++ )
         {
             OriginHop hop;
@@ -606,6 +621,154 @@ namespace idattd
             at     = s.pos;
             tid    = s.tid;
         }
+        return true;
+    }
+
+    static bool session_ready(TraceManager *mgr)
+    {
+        return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr && mgr->cursor() != nullptr;
+    }
+
+    bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
+                            std::vector<OriginHop> *out)
+    {
+        out->clear();
+        if ( !session_ready(mgr) )
+            return false;
+        return trace_from(mgr, what, mgr->current_position(), mgr->cursor()->thread_id(), max_hops, out);
+    }
+
+    bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
+                            std::vector<OriginHop> *out)
+    {
+        out->clear();
+        if ( !session_ready(mgr) )
+            return false;
+        CursorPtr cur = mgr->backend()->make_cursor();
+        if ( !cur || !cur->seek(at) )
+            return false;
+        return trace_from(mgr, what, at, cur->thread_id(), max_hops, out);
+    }
+
+    bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out)
+    {
+        out->clear();
+        if ( !session_ready(mgr) )
+            return false;
+        ITraceBackend *b = mgr->backend();
+        CursorPtr cur = b->make_cursor();
+        if ( !cur || !cur->seek(at) )
+            return true;
+        const ea_t     pc  = cur->program_counter();
+        const uint32_t tid = cur->thread_id();
+        insn_t ins;
+        if ( decode_insn(&ins, pc) <= 0 || ins.itype == NN_syscall || ins.itype == NN_sysenter )
+            return true;
+
+        // Operands first, then the registers that only formed an address: a
+        // pointer is rarely the value being chased.
+        std::vector<OriginTarget> operands, addresses;
+        auto has = [](const std::vector<OriginTarget> &v, const OriginTarget &t)
+        {
+            for ( const OriginTarget &x : v )
+                if ( same_target(x, t) )
+                    return true;
+            return false;
+        };
+        auto add_reg = [&](int ida_reg, bool address)
+        {
+            const int r = ittd_reg_of(ida_reg);
+            if ( r < 0 )
+                return;
+            OriginTarget t;
+            t.reg = (uint32_t)r;
+            if ( has(operands, t) || has(addresses, t) )
+                return;
+            (address ? addresses : operands).push_back(t);
+        };
+
+        const uint32 feature = ins.get_canon_feature(PH);
+        const bool   lea     = ins.itype == NN_lea;
+        bool   reads_memory = false;
+        size_t memory_size  = 0;
+        for ( int n = 0; n < UA_MAXOP && ins.ops[n].type != o_void; n++ )
+        {
+            const op_t &op = ins.ops[n];
+            if ( op.type == o_reg )
+            {
+                if ( has_cf_use(feature, n) )
+                    add_reg(op.reg, false);
+                continue;
+            }
+            if ( !is_memory(op) )
+                continue;
+            if ( !lea && has_cf_use(feature, n) )
+            {
+                reads_memory = true;
+                memory_size  = get_dtype_size(op.dtype);
+            }
+            // o_mem has no base: its phrase is not a register.
+            if ( op.type != o_mem )
+            {
+                const int base = x86_base_reg(ins, op);
+                if ( base != R_none )
+                    add_reg(base, !lea);
+            }
+            const int index = x86_index_reg(ins, op);
+            if ( index != R_none )
+                add_reg(index, !lea);
+        }
+        // What the operands do not show.
+        switch ( ins.itype )
+        {
+            case NN_mul: case NN_div: case NN_idiv:
+                add_reg(R_ax, false);
+                if ( ins.itype != NN_mul )
+                    add_reg(R_dx, false);
+                break;
+            case NN_imul:
+                if ( ins.ops[1].type == o_void )
+                    add_reg(R_ax, false);
+                break;
+            case NN_cbw: case NN_cwde: case NN_cdqe: case NN_cwd: case NN_cdq: case NN_cqo:
+                add_reg(R_ax, false);
+                break;
+            default:
+                break;
+        }
+
+        // The memory, as the recording has the read: the operand's address
+        // is not worked out here.
+        if ( reads_memory )
+        {
+            Search s;
+            QueryResult qr = run_query("Finding what the instruction read", [&](ProgressSink *sink)
+            {
+                reads_at(b, at, pc, &s.reads, sink);
+                QueryResult r;
+                r.ran = true;
+                return r;
+            });
+            const Access *rd = qr.cancelled ? nullptr : pick_read(s, memory_size);
+            if ( rd != nullptr )
+            {
+                OriginTarget t;
+                t.is_reg = false;
+                t.addr   = rd->addr;
+                t.size   = rd->size != 0 ? rd->size : 8;
+                operands.insert(operands.begin(), t);
+            }
+        }
+
+        for ( int pass = 0; pass < 2; pass++ )
+            for ( const OriginTarget &t : pass == 0 ? operands : addresses )
+            {
+                OriginInput in;
+                in.what    = t;
+                in.value   = read_value(cur.get(), t, tid);
+                in.address = pass == 1;
+                out->push_back(in);
+            }
         return true;
     }
 }

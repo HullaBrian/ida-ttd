@@ -34,6 +34,8 @@ s.calls_to("kernel32!CreateFileW")   # each call, with arguments and return valu
 s.accesses(0x1234, 0x1238, "w")      # every write to those bytes
 s.origin("rax")                      # where rax's value came from, hop by hop
 s.origin(0x1234, 8)                  # ... or 8 bytes of memory
+s.inputs(hop["by_pos"])              # what the instruction that computed it read
+s.origin("r8", at=hop["by_pos"])     # ... and where one of those came from
 s.handles(); s.memory_map(); s.self_modifying()
 s.strings(8); s.buffers(); s.call_tree(); s.heat()
 
