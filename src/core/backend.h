@@ -477,6 +477,10 @@ namespace idattd
         // The File > Open filter fragment this backend contributes, e.g.
         // "Microsoft TTD trace (*.run)".
         virtual const char *file_filter() const = 0;
+        // Another instance of this backend, not open, for a second recording
+        // alongside the one this instance has open (a script's, beside the
+        // debugger session's). nullptr when the backend cannot make one.
+        virtual std::unique_ptr<ITraceBackend> new_instance() const { return nullptr; }
 
         // ---- the session ---------------------------------------------------
         virtual bool open(const char *path, qstring *errbuf) = 0;

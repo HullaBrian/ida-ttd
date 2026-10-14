@@ -28,6 +28,9 @@ namespace idattd
         const char *display_name() const override;
         bool        can_open(const char *path) const override;
         const char *file_filter() const override;
+        // The same module's table: every open() of it is a separate backend.
+        std::unique_ptr<ITraceBackend> new_instance() const override
+        { return std::make_unique<BackendModule>(m_api, m_path); }
 
         bool open(const char *path, qstring *errbuf) override;
         void close() override;
@@ -118,4 +121,7 @@ namespace idattd
     // or answers for another version, is named in the output window and
     // skipped. Safe to call more than once; later calls do nothing.
     void load_backend_modules();
+    // Print what backends logged from other threads, when called on the main
+    // thread (run_query's wait loop calls it).
+    void flush_backend_log();
 }

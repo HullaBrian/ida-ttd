@@ -93,7 +93,7 @@ session or in the database, and answer at once the next time.
 | `s.self_modifying(limit)` | `address`, `size`, `written`, `writer`, `first_run`, `runs` | code the program wrote and then ran |
 | `s.strings(min_length, limit)` | `pos`, `address`, `wide`, `text` | every string the program had in memory |
 | `s.buffers(limit)` | `address`, `size`, `kind`, `first`, `last`, `writer`, `writes`, `preview` | every buffer it filled |
-| `s.call_tree(limit)` | `pos`, `depth`, `site`, `target`, `ret` | the calls the function at the current position made in this run of it |
+| `s.call_tree(limit)` | `pos`, `depth`, `site`, `target`, `ret`, `call` | the calls the function at the current position made in this run of it; `call` is false for a function reached by a jump (a tail call) |
 | `s.heat()` | see below | the memory heatmap's counts |
 
 `limit` defaults to everything worth having; pass a number to cut a long
@@ -163,7 +163,8 @@ with ida_ttd.Recording(r"C:\traces\sample.run") as r:
     r.syscalls(); r.exceptions(); r.memory_changes()
 ```
 
-One recording at a time; `close()` it, or use `with`.
+One recording at a time; `close()` it, or use `with`. It has a backend
+instance of its own, so it can be the same recording the session is replaying.
 
 ## Examples
 
@@ -227,7 +228,8 @@ same JSON as a string.
 - `s.origin(...)` is the tool for "where did this value come from"; follow
   `by_pos` with `s.goto` to look around the instruction that set it.
 - The first call of an analysis can take minutes on a long recording, and IDA
-  does nothing else meanwhile. Pass a small `limit` while exploring, and give
+  does nothing else meanwhile (the GIL is let go while it waits, so other
+  Python threads keep running). Pass a small `limit` while exploring, and give
   the call a long timeout.
 - Positions are opaque: compare them only through the plugin (`s.goto`), never
   as numbers.

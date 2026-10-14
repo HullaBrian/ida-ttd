@@ -1132,6 +1132,67 @@ namespace idattd
         return s;
     }
 
+    // ------------------------------------------------------- backend logging
+    //
+    // A backend logs from whichever thread runs its query: a run_query worker,
+    // or the engine's own. msg() is not called from such a thread: output can
+    // end up in Python (IDAPython and other plugins watch it), and a script
+    // waiting on the query (ttd() from IDAPython) holds the GIL on the main
+    // thread, so the worker would wait until the UI happened to run Python
+    // code (run_query also lets the GIL go while it waits). Lines from other
+    // threads are queued and printed by the main thread: at the next line it
+    // logs, from run_query's wait loop, or from a UI request posted for them.
+    static DWORD                g_main_tid = 0;
+    static std::mutex           g_log_mtx;
+    static std::vector<qstring> g_log_queue;
+
+    static void print_queued_lines()
+    {
+        std::vector<qstring> lines;
+        {
+            std::lock_guard<std::mutex> lock(g_log_mtx);
+            lines.swap(g_log_queue);
+        }
+        for ( const qstring &l : lines )
+            msg("%s", l.c_str());
+    }
+
+    struct PrintQueuedLines : public ui_request_t
+    {
+        bool idaapi run() override
+        {
+            print_queued_lines();
+            return false;
+        }
+    };
+
+    static void backend_log(void *, const char *line)
+    {
+        if ( line == nullptr )
+            return;
+        if ( GetCurrentThreadId() == g_main_tid )
+        {
+            print_queued_lines();
+            msg("%s", line);
+            return;
+        }
+        bool first;
+        {
+            std::lock_guard<std::mutex> lock(g_log_mtx);
+            first = g_log_queue.empty();
+            g_log_queue.push_back(qstring(line));
+        }
+        // One request per batch; IDA owns and deletes it.
+        if ( first )
+            execute_ui_requests(new PrintQueuedLines, nullptr);
+    }
+
+    void flush_backend_log()
+    {
+        if ( GetCurrentThreadId() == g_main_tid )
+            print_queued_lines();
+    }
+
     // Load one module and register it. Each failure is named, because a
     // backend the user installed and does not see is otherwise a mystery.
     static void load_one(const qstring &path)
@@ -1173,7 +1234,7 @@ namespace idattd
 
         // Its diagnostics go to the output window.
         if ( ITTD_HAS(api, set_log) )
-            api->set_log([](void *, const char *line) { msg("%s", line); }, nullptr);
+            api->set_log(backend_log, nullptr);
 
         auto mod = std::make_unique<BackendModule>(api, path);
         if ( BackendRegistry::instance().by_id(mod->id()) != nullptr )
@@ -1213,6 +1274,8 @@ namespace idattd
         if ( done )
             return;
         done = true;
+        // Called first from the plugin's init, on the main thread.
+        g_main_tid = GetCurrentThreadId();
 
         // Not plugins\ itself: IDA loads everything there as a plugin. And
         // both places a plugin can be: plugins\ida-ttd-backends\ beside a

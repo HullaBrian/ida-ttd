@@ -209,8 +209,12 @@ namespace idattd
     // A recording opened straight through a backend, with no debugger session:
     // what the drv.* commands work on. It exercises a backend and the core's
     // adapter in-process, headless or not.
+    // A backend instance of its own, never the registry's: that one is the
+    // debugger session's, and opening another recording through it would close
+    // the session's from under it.
     struct Driver
     {
+        BackendPtr     owned;
         ITraceBackend *backend = nullptr;
         CursorPtr      cursor;
         std::unique_ptr<INavigator> nav;
@@ -223,6 +227,7 @@ namespace idattd
             if ( backend != nullptr )
                 backend->close();
             backend = nullptr;
+            owned.reset();
             path.clear();
         }
     };
@@ -287,10 +292,14 @@ namespace idattd
         const qstring &path = a.at(0);
         g_drv.close();
         load_backend_modules();
-        ITraceBackend *b = a.count() > 1 ? BackendRegistry::instance().by_id(a.at(1).c_str())
-                                         : BackendRegistry::instance().for_file(path.c_str());
-        if ( b == nullptr )
+        ITraceBackend *kind = a.count() > 1 ? BackendRegistry::instance().by_id(a.at(1).c_str())
+                                            : BackendRegistry::instance().for_file(path.c_str());
+        if ( kind == nullptr )
             fail("no loaded backend handles %s", path.c_str());
+        g_drv.owned = kind->new_instance();
+        if ( g_drv.owned == nullptr )
+            fail("the %s backend cannot open a recording beside the debugger's", kind->id());
+        ITraceBackend *b = g_drv.owned.get();
         qstring err;
         if ( !b->open(path.c_str(), &err) )
             fail("%s could not open %s: %s", b->id(), path.c_str(), err.c_str());
