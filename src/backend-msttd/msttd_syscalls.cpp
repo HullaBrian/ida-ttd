@@ -148,6 +148,7 @@ namespace idattd
     bool build_syscall_table(const MsTtdBackend *backend, SyscallTable *out)
     {
         out->names.clear();
+        out->stubs.clear();
         UniqueCursor sym = backend->new_engine_cursor();
         if ( !sym )
             return false;
@@ -190,28 +191,16 @@ namespace idattd
         return !out->names.empty();
     }
 
-    template <typename V>
-    static bool read_word(V const *v, uint64_t addr, uint32_t width, uint64_t *out) noexcept
+    // The syscall at a KernelCall gap: its number, and where it returns to.
+    // 'ctx' is the thread's context there.
+    static void read_kernel_call(IThreadView const *t, const CROSS_PLATFORM_CONTEXT &ctx, bool is64,
+                                 KernelCall *k) noexcept
     {
-        uint64_t tmp = 0;
-        MemoryBuffer mb = v->QueryMemoryBuffer(GuestAddress{ addr }, BufferView{ &tmp, width });
-        if ( mb.Memory.Size != width )
-            return false;
-        *out = tmp;
-        return true;
-    }
-
-    // The syscall at a KernelCall gap: number, arguments as the kernel takes
-    // them, and where it returns to.
-    static void read_kernel_call(IThreadView const *t, bool is64, bool want_args, KernelCall *k) noexcept
-    {
-        CROSS_PLATFORM_CONTEXT ctx = t->GetCrossPlatformContext();
         k->pc = (ea_t)(uint64_t)t->GetProgramCounter();
         k->sp = (uint64_t)t->GetStackPointer();
         if ( is64 )
         {
-            const AMD64_CONTEXT &c = ctx.Amd64Context;
-            k->number = (uint32_t)c.Rax;
+            k->number = (uint32_t)ctx.Amd64Context.Rax;
             // syscall (0F 05) and its relatives are two bytes; the kernel
             // comes back to the next instruction.
             uint8_t ins[2] = { 0, 0 };
@@ -219,12 +208,30 @@ namespace idattd
             if ( mb.Memory.Size == 2
               && ((ins[0] == 0x0F && (ins[1] == 0x05 || ins[1] == 0x34)) || (ins[0] == 0xCD && ins[1] == 0x2E)) )
                 k->ret_pc = (uint64_t)k->pc + 2;
-            if ( !want_args )
-                return;
+            return;
+        }
+        // The high word is WoW64's; the number is the low one, the same
+        // numbering as x64's.
+        k->number = (uint32_t)ctx.X86Nt5Context.Eax & 0xFFFF;
+        // The gap is at WoW64's transition, which the stub called: the word
+        // on top of the stack is the return into the stub, which is where
+        // the kernel's answer comes back.
+        uint64_t ret = 0;
+        if ( msttd_read_word(t, k->sp, 4, &ret) )
+            k->ret_pc = ret;
+    }
+
+    // Its arguments as the kernel takes them, after read_kernel_call.
+    static void read_kernel_call_args(IThreadView const *t, const CROSS_PLATFORM_CONTEXT &ctx, bool is64,
+                                      KernelCall *k) noexcept
+    {
+        if ( is64 )
+        {
             // The stub moved rcx to r10: the syscall instruction overwrites
             // rcx with the return address. The fifth argument on is where the
             // stub's caller put it, past the return address and the shadow
             // space -- the stub has not touched the stack.
+            const AMD64_CONTEXT &c = ctx.Amd64Context;
             const uint64_t regs[4] = { c.R10, c.Rdx, c.R8, c.R9 };
             for ( size_t i = 0; i < 4; i++ )
                 k->args[i] = regs[i];
@@ -234,27 +241,15 @@ namespace idattd
                 k->args[4 + i] = slots[i];
             return;
         }
-        const X86_NT5_CONTEXT &c = ctx.X86Nt5Context;
-        // The high word is WoW64's; the number is the low one, the same
-        // numbering as x64's.
-        k->number = (uint32_t)c.Eax & 0xFFFF;
-        // The gap is at WoW64's transition, which the stub called: the word
-        // on top of the stack is the return into the stub, which is where
-        // the kernel's answer comes back. Argument n is at [esp+4+4n], past
-        // that and the stub's own return address.
-        uint64_t ret = 0;
-        if ( read_word(t, k->sp, 4, &ret) )
-            k->ret_pc = ret;
-        if ( !want_args )
-            return;
+        // Argument n is at [esp+8+4n], past the return into the stub and the
+        // stub's own return address.
         uint32_t slots[kKernelCallArgs] = { 0 };
         t->QueryMemoryBuffer(GuestAddress{ k->sp + 8 }, BufferView{ slots, sizeof(slots) });
         for ( size_t i = 0; i < kKernelCallArgs; i++ )
             k->args[i] = slots[i];
     }
 
-    // Every module as [lo, hi), sorted by base, one per distinct base.
-    static std::vector<std::pair<ea_t, ea_t>> module_ranges(const std::vector<ModuleInfo> &mods)
+    std::vector<std::pair<ea_t, ea_t>> module_ranges(const std::vector<ModuleInfo> &mods)
     {
         std::map<ea_t, ea_t> m;
         for ( const ModuleInfo &mi : mods )
@@ -382,10 +377,11 @@ namespace idattd
                 k.utid = (uint32_t)t->GetThreadInfo().UniqueId;
                 k.tid  = (uint32_t)t->GetThreadInfo().Id;
                 // The number first; the arguments only for the calls the
-                // caller wants them for.
-                read_kernel_call(t, is64, false, &k);
+                // caller wants them for. One context fetch serves all three.
+                const CROSS_PLATFORM_CONTEXT ctx = t->GetCrossPlatformContext();
+                read_kernel_call(t, ctx, is64, &k);
                 ittd_regs regs;
-                regs_from_context(t->GetCrossPlatformContext(), is64, &regs);
+                regs_from_context(ctx, is64, &regs);
                 memcpy(k.gp, regs.gp, sizeof(k.gp));
                 k.rflags = regs.rflags;
                 k.name = table.name_of(k.number);
@@ -394,7 +390,7 @@ namespace idattd
                 k.stub = table.stub_of(k.number, is64 ? k.pc : (ea_t)k.ret_pc);
                 if ( !opts.args_wanted || opts.args_wanted(k.number) )
                 {
-                    read_kernel_call(t, is64, true, &k);
+                    read_kernel_call_args(t, ctx, is64, &k);
                     if ( chains )
                     {
                         // From the call into the stub -- or the syscall

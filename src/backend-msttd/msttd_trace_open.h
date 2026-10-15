@@ -6,13 +6,8 @@
 
 namespace idattd
 {
-    // Opening a TTD trace, shared by the plugin and the loader.
-    //
-    // The loader (ttd-loader.dll, in IDA's loaders/ directory) has to do the same
-    // three things the debugger backend does before it can look at a recording --
-    // create the engine, initialise it on the .run, and build the memory index if
-    // the trace has none -- but it is a separate binary and cannot reach into
-    // TraceManager. Everything both of them need lives here.
+    // What opening a TTD trace needs besides the engine itself: somewhere for
+    // its diagnostics to go, and the memory index.
 
     // Error sink so the TTD engine's diagnostics reach the host's log.
     class MsttdErrorReporting : public TTD::ErrorReporting
@@ -21,7 +16,6 @@ namespace idattd
         void __fastcall VPrintError(char const *pFmt, va_list argList) override;
     };
 
-    // Index building
     // Build the trace's memory index if it does not already have one. Without an
     // index, memory reads are severely limited.
     //

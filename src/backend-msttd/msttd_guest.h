@@ -5,18 +5,23 @@
 
 namespace idattd
 {
-    // Microsoft TTD's side of core/guest_view.h: a TTD cursor as a GuestRead
-    // or GuestView. Two read behaviours, because the callers relied on two:
-    //
-    //   plain       one QueryMemoryBuffer with the cursor's default policy --
-    //               what PE header and export parsing has always used.
-    //   aggressive  GloballyAggressive then InFragmentAggressive, stepping over
-    //               holes -- what argument and string decoding has always used,
-    //               because a call's arguments are often in memory the calling
-    //               thread did not itself touch at that position.
+    // Microsoft TTD's side of core/guest_view.h: a TTD cursor as a GuestRead,
+    // one QueryMemoryBuffer with the cursor's default policy -- what PE header
+    // and export parsing use.
     GuestRead msttd_read_plain(TTD::Replay::ICursorView *cursor);
-    GuestRead msttd_read_aggressive(TTD::Replay::ICursorView *cursor);
-    GuestView msttd_view(TTD::Replay::ICursorView *cursor, bool is64);
+
+    // One word of 'width' bytes (4 or 8) at 'addr', through a cursor or a
+    // thread view with its default policy; false unless all of it is known.
+    template <typename V>
+    inline bool msttd_read_word(V const *v, uint64_t addr, uint32_t width, uint64_t *out) noexcept
+    {
+        uint64_t tmp = 0;
+        const auto mb = v->QueryMemoryBuffer(TTD::GuestAddress{ addr }, TTD::BufferView{ &tmp, width });
+        if ( mb.Memory.Size != width )
+            return false;
+        *out = tmp;
+        return true;
+    }
 
     // The engine's register context as the ABI's canonical register set.
     void regs_from_context(const CROSS_PLATFORM_CONTEXT &ctx, bool is64, ittd_regs *out);

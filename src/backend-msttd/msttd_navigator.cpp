@@ -337,7 +337,7 @@ namespace idattd
     }
 
     // Run forward to 'addr' the same way. If the cursor is already on 'addr',
-    // step once first so we advance to the next occurrence.
+    // step once first, so the run reaches the next occurrence.
     EventType MsTtdNavigator::navigate_forward_to(ea_t addr)
     {
         if ( (ea_t)(uint64_t)cur()->GetProgramCounter() == addr )
@@ -425,7 +425,7 @@ namespace idattd
         }
 
         // The recording ran out before the frame unwound: the end of the
-        // recording is not an answer to "step out", so stay where we were.
+        // recording is not an answer to "step out", so stay where it started.
         if ( step_out && boundary && (uint64_t)cur()->GetStackPointer() <= start_sp )
         {
             cur()->SetPosition(start_pos);
@@ -454,7 +454,7 @@ namespace idattd
     // Never by single-stepping backward -- that re-seeks a keyframe per step
     // and takes minutes. Instead: seek to a position before the playhead and
     // replay forward to it, tracking a per-thread stack of open calls; the top
-    // of our thread's stack at the playhead is the call we want. The window
+    // of the playhead thread's stack is the entering call. The window
     // widens until it captures that call.
     bool MsTtdNavigator::find_frame_entry_position(TtdPosition &out, bool &cancelled)
     {
@@ -637,7 +637,7 @@ namespace idattd
     EventType MsTtdNavigator::rewind_to(const TtdPosition &p)
     {
         // One engine call rather than a step loop. User breakpoints stay
-        // armed, so anything hit between here and 'p' stops us there instead.
+        // armed, so anything hit between here and 'p' stops the run there instead.
         ICursorView::ReplayResult r = cur()->ReplayBackward(p);
         return r.StopReason == EventType::MemoryWatchpoint ? EventType::MemoryWatchpoint
                                                             : EventType::Position;
@@ -683,7 +683,7 @@ namespace idattd
 
         if ( deeper )
         {
-            // If the entering call cannot be found we stay on the RET: the step
+            // If the entering call cannot be found, stay on the RET: the step
             // already moved, and a popup would be noise for "step back one".
             TtdPosition entry;
             bool        cancelled = false;

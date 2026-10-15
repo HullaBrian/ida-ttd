@@ -212,8 +212,7 @@ namespace idattd
     {
         if ( m_scans.p != nullptr )
             return true;
-        const bool     is64  = m_info.is64;
-        const uint64_t space = is64 ? 0x800000000000ull : 0x100000000ull;
+        const uint64_t space = user_space_end();
 
         // ---- 1: where the program writes ------------------------------------
         Ranges written;
@@ -297,6 +296,9 @@ namespace idattd
         };
 
         uint64_t clock = 0;
+        // A write too long for the callback's stack buffer is read into
+        // this, which keeps its capacity from one such write to the next.
+        std::vector<uint8_t> large_write;
         UniqueCursor cur = new_engine_cursor();
         if ( !cur )
             return false;
@@ -341,12 +343,12 @@ namespace idattd
                     return false;
                 const size_t n = (size_t)std::min<uint64_t>(w.Size, 4096);
                 uint8_t stack[64];
-                std::vector<uint8_t> heap;
                 uint8_t *bytes = stack;
                 if ( n > sizeof(stack) )
                 {
-                    heap.resize(n);
-                    bytes = heap.data();
+                    if ( large_write.size() < n )
+                        large_write.resize(n);
+                    bytes = large_write.data();
                 }
                 if ( !read(t, a, n, bytes) )
                     return false;
@@ -443,6 +445,7 @@ namespace idattd
         // memory finds it: each image, where it was loaded.
         {
             Stage stage3(progress, 90, 10);
+            std::vector<uint8_t> bytes;      // one buffer for every chunk
             for ( size_t i = 0; i < mods.size(); i++ )
             {
                 if ( progress != nullptr && progress->cancelled() )
@@ -459,7 +462,7 @@ namespace idattd
                 {
                     const uint64_t b = off > kStringContext ? off - kStringContext : 0;
                     const uint64_t e = std::min<uint64_t>(m.size, off + chunk + kStringContext);
-                    std::vector<uint8_t> bytes(size_t(e - b));
+                    bytes.assign(size_t(e - b), 0);
                     MemoryBuffer mb = cur->QueryMemoryBuffer(GuestAddress{ m.base + b },
                                                              BufferView{ bytes.data(), bytes.size() },
                                                              QueryMemoryPolicy::GloballyAggressive);
@@ -572,7 +575,7 @@ namespace idattd
         const TtdPosition last  = m_engine->GetLastPosition();
         const uint64_t s0   = (uint64_t)first.Sequence;
         const uint64_t span = std::max<uint64_t>((uint64_t)last.Sequence - s0 + 1, 1);
-        const uint64_t space = m_info.is64 ? 0x800000000000ull : 0x100000000ull;
+        const uint64_t space = user_space_end();
 
         std::unordered_map<uint64_t, HeatCell> cells;
         bool capped = false;
@@ -617,10 +620,11 @@ namespace idattd
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         r.cancelled = !complete;
         r.truncated = capped;
-        out->reserve(cells.size());
+        const size_t before = out->size();
+        out->reserve(before + cells.size());
         for ( const auto &[key, c] : cells )
             out->push_back(c);
-        std::sort(out->begin(), out->end(), [](const HeatCell &a, const HeatCell &b)
+        std::sort(out->begin() + (ptrdiff_t)before, out->end(), [](const HeatCell &a, const HeatCell &b)
         {
             return a.page != b.page ? a.page < b.page : a.slice < b.slice;
         });

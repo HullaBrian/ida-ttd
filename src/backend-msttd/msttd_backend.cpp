@@ -126,17 +126,28 @@ namespace idattd
         m_info.fingerprint = v;
 
         // The program is the engine's first module; its bitness is the one the
-        // PE header states, read where the module is known to be mapped.
+        // PE header states, read where that module is known to be mapped: at
+        // its own load event, or the start when it was mapped before the
+        // recording began (as modules() has it). The first load event can be
+        // another module's.
         m_info.is64 = true;
         if ( m_engine->GetModuleCount() > 0 )
         {
             const Module &m0 = m_engine->GetModuleList()[0];
             m_info.main_module = base_name(to_utf8(m0.pName, m0.NameLength)).c_str();
-            std::vector<ModuleInfo> mods = modules();
+            TtdPosition mapped = m_engine->GetFirstPosition();
+            size_t nl = m_engine->GetModuleLoadedEventCount();
+            const ModuleLoadedEvent *ld = m_engine->GetModuleLoadedEventList();
+            for ( size_t i = 0; i < nl; i++ )
+                if ( ld[i].pModule == &m0 )
+                {
+                    mapped = ld[i].Position;
+                    break;
+                }
             UniqueCursor c = new_engine_cursor();
-            if ( c && !mods.empty() )
+            if ( c )
             {
-                c->SetPosition(from_core(mods[0].loaded));
+                c->SetPosition(mapped);
                 GuestPeInfo pe;
                 if ( read_guest_pe_info(msttd_read_plain(c.get()), (ea_t)(uint64_t)m0.Address, &pe) )
                     m_info.is64 = pe.is64;
@@ -182,6 +193,25 @@ namespace idattd
     UniqueCursor MsTtdBackend::new_engine_cursor() const
     {
         return m_engine ? UniqueCursor{ m_engine->NewCursor() } : UniqueCursor{};
+    }
+
+    uint32_t MsTtdBackend::unique_thread_id(uint32_t tid, Position at) const
+    {
+        if ( !m_engine )
+            return 0;
+        const TtdPosition p = from_core(at);
+        uint32_t last_with_id = 0;
+        size_t n = m_engine->GetThreadCount();
+        const TTD::Replay::ThreadInfo *list = m_engine->GetThreadList();
+        for ( size_t i = 0; i < n; i++ )
+        {
+            if ( (uint32_t)list[i].Id != tid )
+                continue;
+            last_with_id = (uint32_t)list[i].UniqueId;
+            if ( !(p < list[i].Lifetime.Min) && !(list[i].Lifetime.Max < p) )
+                return last_with_id;
+        }
+        return last_with_id;
     }
 
     CursorPtr MsTtdBackend::make_cursor()
@@ -471,7 +501,10 @@ namespace idattd
         TtdPosition t = from_core(p);
         uint64_t st = (uint64_t)t.Steps;
         if ( delta < 0 )
-            st = st > (uint64_t)(-delta) ? st - (uint64_t)(-delta) : 0;
+        {
+            const uint64_t back = 0 - (uint64_t)delta;   // not -delta: INT64_MIN overflows
+            st = st > back ? st - back : 0;
+        }
         else
             st += (uint64_t)delta;
         t.Steps = (StepCount)st;
@@ -501,7 +534,6 @@ namespace idattd
         if ( !cur )
             return false;
         const bool is64 = m_info.is64;
-        const uint64_t space = is64 ? 0x800000000000ull : 0x100000000ull;
 
         // The register's 16 bytes (a general-purpose one in the first 8).
         struct Value
@@ -523,14 +555,9 @@ namespace idattd
 
         // The thread, by its unique id, standing at 'at'.
         cur->SetPosition(from_core(at));
-        uint32_t utid = 0;
-        {
-            size_t n = m_engine->GetThreadCount();
-            const TTD::Replay::ThreadInfo *list = m_engine->GetThreadList();
-            for ( size_t i = 0; i < n; i++ )
-                if ( (uint32_t)list[i].Id == tid )
-                    utid = (uint32_t)list[i].UniqueId;
-        }
+        const uint32_t utid = (uint32_t)cur->GetThreadInfo().Id == tid
+                            ? (uint32_t)cur->GetThreadInfo().UniqueId
+                            : unique_thread_id(tid, at);
         if ( utid == 0 )
             return false;
         if ( (uint32_t)cur->GetThreadInfo().UniqueId != utid )
@@ -543,7 +570,7 @@ namespace idattd
 
         MemoryWatchpointData wp{};
         wp.Address    = GuestAddress{ 0 };
-        wp.Size       = space;
+        wp.Size       = user_space_end();
         wp.AccessMask = DataAccessMask::Execute;
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
 
@@ -641,17 +668,17 @@ namespace idattd
         auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
                                IThreadView const *t) noexcept
         {
-            uint32_t utid = (uint32_t)t->GetThreadInfo().Id;
+            uint32_t os_tid = (uint32_t)t->GetThreadInfo().Id;
             try
             {
                 if ( (uint64_t)fall_through != 0 )
                 {
-                    stacks[utid].push_back(Frame{ (ea_t)(uint64_t)instr, t->GetPosition(),
-                                                  (uint64_t)t->GetStackPointer() });
+                    stacks[os_tid].push_back(Frame{ (ea_t)(uint64_t)instr, t->GetPosition(),
+                                                    (uint64_t)t->GetStackPointer() });
                 }
                 else
                 {
-                    auto it = stacks.find(utid);
+                    auto it = stacks.find(os_tid);
                     if ( it != stacks.end() && !it->second.empty() )
                         it->second.pop_back();
                 }
@@ -793,7 +820,7 @@ namespace idattd
         return out;
     }
 
-    // What MemoryReader's engine half did, minus the module image: that fill is
+    // The recording's part of a memory read; filling from the module image is
     // the core's, for every backend. Each byte comes back as the recording's
     // value, a placeholder zero, or nothing.
     size_t MsTtdCursor::read_memory(ea_t ea, void *buffer, size_t size, std::vector<uint8_t> *known)
@@ -844,7 +871,9 @@ namespace idattd
                 off++;
                 continue;
             }
-            size_t run = mb.Memory.Size;
+            // Never past the buffer, whatever the engine claims: 'filled' is
+            // indexed by it below.
+            size_t run = std::min<size_t>(mb.Memory.Size, size - off);
 
             // A non-zero Size does not mean these bytes are real. For memory the
             // engine knows is mapped but has no value for at this position, the
@@ -967,7 +996,7 @@ namespace idattd
             {
                 size_t chunk = (size_t)((en - off) < sizeof(buf) ? (en - off) : sizeof(buf));
                 MemoryBuffer mb = t->QueryMemoryBuffer(GuestAddress{ off }, BufferView{ buf, chunk });
-                size_t got = mb.Memory.Size;
+                size_t got = std::min<size_t>(mb.Memory.Size, chunk);
                 if ( got == 0 )
                     break;
                 for ( size_t i = 0; i < got; i++ )

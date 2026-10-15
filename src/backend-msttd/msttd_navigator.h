@@ -5,11 +5,11 @@
 
 namespace idattd
 {
-    // Movement through a Microsoft recording: what TraceManager's navigate_*
-    // family was. Stepping is a strategy here, not a primitive -- "step over
-    // backwards" is rewind, notice we landed in a callee that had just
-    // returned, rewind out of it -- and each strategy is the engine's cheapest
-    // route: one replay with a watchpoint armed rather than a step loop.
+    // Movement through a Microsoft recording. Stepping is a strategy here, not
+    // a primitive -- "step over backwards" is rewind, notice the step landed
+    // in a callee that had just returned, rewind out of it -- and each
+    // strategy is the engine's cheapest route: one replay with a watchpoint
+    // armed rather than a step loop.
     //
     // It moves the cursor it was made over and honours the breakpoints set on
     // it, which it keeps as engine watchpoints on that cursor.

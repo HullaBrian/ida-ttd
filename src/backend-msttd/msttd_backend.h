@@ -7,18 +7,13 @@
 
 namespace idattd
 {
-    // Microsoft TTD (.run recordings) behind ITraceBackend.
-    //
-    // Compiled into the plugin for now; phase 4 of docs/modular-backends.md
-    // moves it into its own DLL behind the C ABI, which is why nothing outside
-    // src/backend-msttd/ is meant to know its types. During the move, the
-    // analyses that still drive the engine directly reach it through
-    // engine() -- each of those is converted to a query in turn.
+    // Microsoft TTD (.run recordings) behind ITraceBackend, exported as the
+    // C ABI by msttd_entry.cpp; nothing outside src/backend-msttd/ knows
+    // these types.
     //
     // The engine is a replay engine: a question about the whole trace is
     // answered by replaying with a watchpoint armed, and moving the playhead is
-    // cheap. Its cursor and navigator below are what TraceManager's navigate_*
-    // family and MemoryReader's engine half became.
+    // cheap.
     class MsTtdBackend : public ITraceBackend
     {
     public:
@@ -96,12 +91,19 @@ namespace idattd
         std::vector<Symbol> module_symbols(ea_t) override { return {}; }
         std::vector<std::pair<ea_t, ea_t>> module_functions(ea_t) override { return {}; }
 
-        // ---- Microsoft-only, for code not yet moved behind the interface ----
+        // ---- Microsoft-only, for the rest of this backend ----
         TTD::Replay::IReplayEngine *engine() const { return m_engine.get(); }
         TTD::Replay::UniqueCursor   new_engine_cursor() const;
         bool                        is64() const { return m_info.is64; }
+        // The UniqueId of the thread with OS id 'tid' alive at 'at': an OS id
+        // can be reused within a recording. Failing that, the last thread
+        // that had the id; 0 when none did.
+        uint32_t                    unique_thread_id(uint32_t tid, Position at) const;
 
     private:
+        // The end of user-mode address space, for watchpoints over all of it.
+        uint64_t user_space_end() const { return m_info.is64 ? 0x800000000000ull : 0x100000000ull; }
+
         TTD::Replay::UniqueReplayEngine m_engine;
         MsttdErrorReporting             m_err;
         // Sequential, unfiltered: query_frame_entry's call/return callback
@@ -120,6 +122,9 @@ namespace idattd
         struct ScanResultsPtr
         {
             struct MsTtdScanResults *p = nullptr;
+            ScanResultsPtr() = default;
+            ScanResultsPtr(const ScanResultsPtr &) = delete;
+            ScanResultsPtr &operator=(const ScanResultsPtr &) = delete;
             ~ScanResultsPtr();
             void reset();
         };

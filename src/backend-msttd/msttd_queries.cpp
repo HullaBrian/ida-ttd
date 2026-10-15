@@ -1,7 +1,7 @@
 // The whole-trace queries of the Microsoft backend: each one a replay with a
-// watchpoint or the call/return callback armed, moved here from the analysis
-// that used to drive it (memsearch, coverage, callsites, tracer). What is left
-// in those analyses is what they do with the answer in IDA.
+// watchpoint or the call/return callback armed. The analyses that ask them
+// (memsearch, coverage, callsites, tracer) only do what IDA needs with the
+// answer.
 //
 // Every callback below runs on the engine's replay thread and is noexcept:
 // it writes plain memory only, caps what it keeps, and guards its growth, so

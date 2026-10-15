@@ -1,5 +1,7 @@
 #include "backend-msttd/msttd_sweep.h"
 
+#include <condition_variable>
+
 using namespace TTD;
 using namespace TTD::Replay;
 
@@ -37,17 +39,28 @@ namespace idattd
         cursor->SetReplayProgressCallback(on_progress);
         cursor->SetPosition(first);
 
-        std::atomic<bool> done{ false };
-        std::thread worker([cursor, last, &done]()
+        std::mutex              mu;
+        std::condition_variable cv;
+        bool                    done = false;
+        std::thread worker([cursor, last, &mu, &cv, &done]()
         {
             try { cursor->ReplayForward(last); } catch ( ... ) {}
-            done.store(true, std::memory_order_release);
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                done = true;
+            }
+            cv.notify_one();
         });
 
+        // Woken as soon as the replay ends, not at the next poll: some callers
+        // (query_register_change's widening windows) run many short sweeps
+        // in a row, and a fixed sleep would cost each one a whole interval.
         bool stopped = false;
         uint32_t shown = 101;
-        while ( !done.load(std::memory_order_acquire) )
+        std::unique_lock<std::mutex> lock(mu);
+        while ( !done )
         {
+            lock.unlock();
             if ( !stopped && progress != nullptr && progress->cancelled() )
             {
                 stopped = true;
@@ -59,8 +72,10 @@ namespace idattd
                 progress->report(now);
                 shown = now;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(POLL_MS));
+            lock.lock();
+            cv.wait_for(lock, std::chrono::milliseconds(POLL_MS), [&done] { return done; });
         }
+        lock.unlock();
         worker.join();
         cursor->SetReplayProgressCallback(nullptr, 0);
         return !stopped;

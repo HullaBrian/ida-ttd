@@ -69,6 +69,9 @@ namespace idattd
 
     bool build_syscall_table(const MsTtdBackend *backend, SyscallTable *out);
 
+    // Every module as [lo, hi), sorted by base, one per distinct base.
+    std::vector<std::pair<ea_t, ea_t>> module_ranges(const std::vector<ModuleInfo> &mods);
+
     struct KernelCallOptions
     {
         // Which numbers get their arguments read (and, with chains, their

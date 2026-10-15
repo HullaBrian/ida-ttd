@@ -6,9 +6,7 @@
 namespace idattd
 {
     // Inside namespace idattd an unqualified Position is the core's, so
-    // engine-side code that means the Microsoft one says TtdPosition. That is
-    // not only disambiguation: it marks every line that is specific to this
-    // backend, which is what phase 3 of docs/modular-backends.md has to move.
+    // engine-side code that means the Microsoft one says TtdPosition.
     using TtdPosition = TTD::Replay::Position;
 
     // Microsoft TTD positions in and out of the core's representation.

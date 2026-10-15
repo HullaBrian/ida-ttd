@@ -2,10 +2,10 @@
 // shape a process's address space, because the Replay SDK reports no
 // protections and no region list. The syscalls come from the recording's
 // transitions into the kernel (msttd_syscalls.h), so memory a program maps
-// with syscalls of its own is in the map too. Moved here from analysis/memmap.cpp, which
-// keeps the model, the fold, the persistence and the listing -- everything
-// that is the same for every backend -- and now asks
-// ITraceBackend::query_mapping_changes for the changes.
+// with syscalls of its own is in the map too. analysis/memmap.cpp keeps the
+// model, the fold, the persistence and the listing -- everything that is the
+// same for every backend -- and asks ITraceBackend::query_mapping_changes for
+// the changes.
 //
 // The replay's callbacks write plain memory only; Cancel and progress come
 // through the ProgressSink, so nothing here touches IDA's UI.
@@ -118,9 +118,9 @@ namespace idattd
             bool     otherProcess = false;
         };
 
-        // An out-param we could not read yet, retried as the same replay rolls
+        // An out-param not readable yet, retried as the same replay rolls
         // forward. The value becomes visible the moment the guest reads it back,
-        // and our callbacks are already firing on that thread.
+        // and the replay's callbacks are already firing on that thread.
         struct Retry
         {
             uint64_t addr = 0;
@@ -147,18 +147,6 @@ namespace idattd
         // these, and the engine's callback is noexcept -- a bad_alloc in there
         // does not unwind, it terminates the process with no message.
         static const size_t kMaxRecs = 200000;     // the memory map's own storage cap
-    }
-
-    template <typename V>
-    static bool read_ptr(V const *v, uint64_t addr, uint32_t width, uint64_t *out) noexcept
-    {
-        uint64_t tmp = 0;
-        MemoryBuffer mb = v->QueryMemoryBuffer(GuestAddress{ addr },
-                                               BufferView{ &tmp, width });
-        if ( mb.Memory.Size != width )
-            return false;
-        *out = tmp;
-        return true;
     }
 
     static bool read_ptr_policy(ICursorView const *c, uint64_t addr, uint32_t width,
@@ -192,7 +180,7 @@ namespace idattd
                            IThreadView const *t) noexcept -> bool
         {
             uint64_t v = 0;
-            if ( read_ptr(t, addr, width, &v) && page_granular(v) )
+            if ( msttd_read_word(t, addr, width, &v) && page_granular(v) )
             {
                 found = v;
                 got   = true;
@@ -236,13 +224,6 @@ namespace idattd
         if ( !m_engine || out == nullptr )
             return false;
         out->assign(slots.size(), std::nullopt);
-        std::map<uint32_t, uint32_t> utid_of;
-        {
-            size_t n = m_engine->GetThreadCount();
-            const TTD::Replay::ThreadInfo *list = m_engine->GetThreadList();
-            for ( size_t i = 0; i < n; i++ )
-                utid_of[(uint32_t)list[i].Id] = (uint32_t)list[i].UniqueId;
-        }
         UniqueCursor cur = new_engine_cursor();
         if ( !cur )
             return false;
@@ -258,8 +239,11 @@ namespace idattd
                 progress->report(uint32_t(i * 100 / std::max<size_t>(slots.size(), 1)));
             }
             const OutSlot &sl = slots[i];
-            auto ut = utid_of.find(sl.tid);
-            if ( ut == utid_of.end() || sl.addr == 0 || (sl.width != 4 && sl.width != 8) )
+            if ( sl.addr == 0 || (sl.width != 4 && sl.width != 8) )
+                continue;
+            // The thread that made the call, not another that had its id.
+            const uint32_t utid = unique_thread_id(sl.tid, sl.call);
+            if ( utid == 0 )
                 continue;
             bool        got = false;
             uint64_t    value = 0;
@@ -272,7 +256,7 @@ namespace idattd
                 if ( wrote.IsValid() && !(p == wrote) )
                     return true;
                 uint64_t v = 0;
-                const bool ok = read_ptr(t, sl.addr, sl.width, &v);
+                const bool ok = msttd_read_word(t, sl.addr, sl.width, &v);
                 switch ( w.AccessType )
                 {
                     case DataAccessType::DataMismatch:
@@ -298,10 +282,10 @@ namespace idattd
             wp.AccessMask = (DataAccessMask)((uint8_t)DataAccessMask::Read | (uint8_t)DataAccessMask::Write
                                            | (uint8_t)DataAccessMask::Overwrite | (uint8_t)DataAccessMask::DataMismatch
                                            | (uint8_t)DataAccessMask::NewData);
-            wp.ThreadId   = (UniqueThreadId)ut->second;
+            wp.ThreadId   = (UniqueThreadId)utid;
             cur->AddMemoryWatchpoint(wp);
             cur->SetMemoryWatchpointCallback(on_hit);
-            cur->SetPositionOnThread((UniqueThreadId)ut->second, from_core(sl.call));
+            cur->SetPositionOnThread((UniqueThreadId)utid, from_core(sl.call));
             cur->ReplayForward(TtdPosition::Max, (StepCount)0x4000);
             cur->SetMemoryWatchpointCallback(nullptr, 0);
             cur->RemoveMemoryWatchpoint(wp);
@@ -309,15 +293,6 @@ namespace idattd
                 (*out)[i] = value;
         }
         return true;
-    }
-
-    // Every module as [lo, hi), sorted by base, one per distinct base.
-    static std::vector<std::pair<ea_t, ea_t>> module_ranges(const std::vector<ModuleInfo> &mods)
-    {
-        std::map<ea_t, ea_t> m;
-        for ( const ModuleInfo &mi : mods )
-            m.emplace(mi.base, mi.base + (ea_t)mi.size);
-        return std::vector<std::pair<ea_t, ea_t>>(m.begin(), m.end());
     }
 
     QueryResult MsTtdBackend::query_mapping_changes(std::vector<ittd_mapping_change> *out,
@@ -380,15 +355,15 @@ namespace idattd
                         if ( st.retries[i].live && st.retries[i].addr == addr )
                             retire(i);
                 }
-                Retry r;
-                r.addr     = addr;
-                r.tid      = tid;
-                r.width    = width;
-                r.rec      = rec;
-                r.isBase   = isBase;
-                r.attempts = 256;
-                r.live     = true;
-                st.retries.push_back(r);
+                Retry retry;
+                retry.addr     = addr;
+                retry.tid      = tid;
+                retry.width    = width;
+                retry.rec      = rec;
+                retry.isBase   = isBase;
+                retry.attempts = 256;
+                retry.live     = true;
+                st.retries.push_back(retry);
                 st.byThread[tid].push_back(st.retries.size() - 1);
                 st.outstanding++;
             }
@@ -410,24 +385,31 @@ namespace idattd
                 return;
             for ( size_t i : it->second )
             {
-                Retry &r = st.retries[i];
-                if ( !r.live )
+                Retry &retry = st.retries[i];
+                if ( !retry.live )
                     continue;
                 uint64_t v = 0;
-                if ( read_ptr(t, r.addr, r.width, &v) && page_granular(v) )
+                if ( msttd_read_word(t, retry.addr, retry.width, &v) && page_granular(v) )
                 {
-                    Rec &rec = st.recs[r.rec];
-                    if ( r.isBase ) { rec.base = v; rec.baseOk = true; }
-                    else            { rec.size = v; rec.sizeOk = true; }
+                    Rec &rec = st.recs[retry.rec];
+                    if ( retry.isBase ) { rec.base = v; rec.baseOk = true; }
+                    else                { rec.size = v; rec.sizeOk = true; }
                     retire(i);
                 }
-                else if ( --r.attempts <= 0 )
+                else if ( --retry.attempts <= 0 )
                 {
                     // Past a few hundred callbacks the slot may belong to
                     // something else entirely. Hand it to the slower routes.
                     retire(i);
                 }
             }
+            // Forget the settled ones: this runs on every call and return the
+            // thread makes, and a thread that made many memory syscalls would
+            // otherwise walk all of them every time.
+            std::vector<size_t> &mine = it->second;
+            mine.erase(std::remove_if(mine.begin(), mine.end(),
+                                      [&st](size_t i) { return !st.retries[i].live; }),
+                       mine.end());
         };
 
         // The memory syscalls still out, per thread, innermost last. Each
@@ -497,15 +479,15 @@ namespace idattd
                 rec.pBase = k.args[d->iBase] & mask;
                 rec.pSize = d->iSize >= 0 ? k.args[d->iSize] & mask : 0;
 
-                if ( rec.pBase != 0 && read_ptr(t, rec.pBase, width, &rec.base) )
+                if ( rec.pBase != 0 && msttd_read_word(t, rec.pBase, width, &rec.base) )
                     rec.baseOk = !d->deferred || page_granular(rec.base);
                 if ( rec.pSize == 0 )
                     rec.sizeOk = true;                 // a free may pass none
-                else if ( read_ptr(t, rec.pSize, width, &rec.size) )
+                else if ( msttd_read_word(t, rec.pSize, width, &rec.size) )
                     rec.sizeOk = !d->deferred || page_granular(rec.size);
 
                 // A free's out-params were written by the caller before the
-                // call, so what we just read is in the recording and is the
+                // call, so what was just read is in the recording and is the
                 // answer. Only the kernel-written ones need chasing.
                 st.recs.push_back(rec);
                 size_t idx = st.recs.size() - 1;
@@ -581,16 +563,16 @@ namespace idattd
                 if ( progress != nullptr && (i & 0x3F) == 0 )
                     progress->report((uint32_t)(i * 100 / n));
 
-                Rec &r = st.recs[i];
-                if ( (r.baseOk && r.sizeOk) || r.d == nullptr || !r.d->deferred )
+                Rec &rc = st.recs[i];
+                if ( (rc.baseOk && rc.sizeOk) || rc.d == nullptr || !rc.d->deferred )
                     continue;
 
-                uint32_t width = r.is64 ? 8 : 4;
+                uint32_t width = rc.is64 ? 8 : 4;
                 if ( !cur )
                     cur = new_engine_cursor();
                 if ( !cur )
                     break;
-                cur->SetPosition(r.retPos);
+                cur->SetPosition(rc.retPos);
 
                 // InFragmentAggressive searches the whole fragment INCLUDING
                 // future steps, which is where the caller's read-back usually is.
@@ -605,36 +587,36 @@ namespace idattd
                 for ( QueryMemoryPolicy pol : pols )
                 {
                     uint64_t v = 0;
-                    if ( !r.baseOk && r.pBase != 0
-                      && read_ptr_policy(cur.get(), r.pBase, width, pol, &v)
+                    if ( !rc.baseOk && rc.pBase != 0
+                      && read_ptr_policy(cur.get(), rc.pBase, width, pol, &v)
                       && page_granular(v) )
                     {
-                        r.base = v; r.baseOk = true; viaPolicy++;
+                        rc.base = v; rc.baseOk = true; viaPolicy++;
                     }
-                    if ( !r.sizeOk && r.pSize != 0
-                      && read_ptr_policy(cur.get(), r.pSize, width, pol, &v)
+                    if ( !rc.sizeOk && rc.pSize != 0
+                      && read_ptr_policy(cur.get(), rc.pSize, width, pol, &v)
                       && page_granular(v) )
                     {
-                        r.size = v; r.sizeOk = true; viaPolicy++;
+                        rc.size = v; rc.sizeOk = true; viaPolicy++;
                     }
-                    if ( r.baseOk && r.sizeOk )
+                    if ( rc.baseOk && rc.sizeOk )
                         break;
                 }
 
-                if ( !r.baseOk && r.pBase != 0
-                  && recover_by_readback(this, r.retPos, r.tid, r.pBase, width, &r.base) )
+                if ( !rc.baseOk && rc.pBase != 0
+                  && recover_by_readback(this, rc.retPos, rc.tid, rc.pBase, width, &rc.base) )
                 {
-                    r.baseOk = true; viaReplay++;
+                    rc.baseOk = true; viaReplay++;
                 }
-                if ( !r.sizeOk && r.pSize != 0
-                  && recover_by_readback(this, r.retPos, r.tid, r.pSize, width, &r.size) )
+                if ( !rc.sizeOk && rc.pSize != 0
+                  && recover_by_readback(this, rc.retPos, rc.tid, rc.pSize, width, &rc.size) )
                 {
-                    r.sizeOk = true; viaReplay++;
+                    rc.sizeOk = true; viaReplay++;
                 }
             }
         }
 
-        // ---- turn what we have into changes ---------------------------------
+        // ---- the records as changes -----------------------------------------
         auto in_module = [&mods](ea_t lo, ea_t hi)
         {
             for ( const auto &m : mods )
@@ -645,18 +627,18 @@ namespace idattd
 
         out->reserve(out->size() + st.recs.size());
         size_t before = out->size();
-        for ( Rec &r : st.recs )
+        for ( Rec &rc : st.recs )
         {
-            if ( r.d == nullptr )
+            if ( rc.d == nullptr )
                 continue;
             bool exact = true;
 
-            if ( !r.baseOk || (r.d->iSize >= 0 && r.d->deferred && !r.sizeOk) )
+            if ( !rc.baseOk || (rc.d->iSize >= 0 && rc.d->deferred && !rc.sizeOk) )
             {
                 // Nothing readable at all is the only case worth giving up on:
                 // without a base there is no region and without a size there is
                 // nothing to bound it with.
-                if ( r.base == 0 || (r.d->iSize >= 0 && r.size == 0 && r.d->deferred) )
+                if ( rc.base == 0 || (rc.d->iSize >= 0 && rc.size == 0 && rc.d->deferred) )
                 {
                     dropped++;
                     continue;
@@ -665,29 +647,29 @@ namespace idattd
                 // answer is that request snapped to pages: the base down to the
                 // page holding it, the size up to cover the last byte asked for.
                 // A floor, never an overstatement.
-                uint64_t nb = page_floor(r.base);
-                r.size = page_ceiling(r.size + (r.base - nb));
-                r.base = nb;
+                uint64_t nb = page_floor(rc.base);
+                rc.size = page_ceiling(rc.size + (rc.base - nb));
+                rc.base = nb;
                 exact = false;
                 snapped++;
             }
 
             ittd_mapping_change c{};
-            Position p  = to_core(r.retPos);
-            Position cp = to_core(r.callPos);
+            Position p  = to_core(rc.retPos);
+            Position cp = to_core(rc.callPos);
             c.pos      = ittd_position{ p.hi, p.lo };
             c.call_pos = ittd_position{ cp.hi, cp.lo };
-            c.api      = r.api == BADADDR ? ITTD_BADADDR : (uint64_t)r.api;
-            c.chain_n  = r.chain_n;
-            for ( uint8_t k = 0; k < r.chain_n; k++ )
-                c.chain[k] = (uint64_t)r.chain[k];
-            c.tid      = r.os_tid;
-            c.kind     = r.d->kind;
-            c.base     = r.base;
-            c.size     = r.size;
-            c.protect  = r.extra;
+            c.api      = rc.api == BADADDR ? ITTD_BADADDR : (uint64_t)rc.api;
+            c.chain_n  = rc.chain_n;
+            for ( uint8_t k = 0; k < rc.chain_n; k++ )
+                c.chain[k] = (uint64_t)rc.chain[k];
+            c.tid      = rc.os_tid;
+            c.kind     = rc.d->kind;
+            c.base     = rc.base;
+            c.size     = rc.size;
+            c.protect  = rc.extra;
             c.flags    = (exact ? ITTD_MAP_F_EXACT : 0)
-                       | (r.otherProcess ? ITTD_MAP_F_OTHER_PROCESS : 0);
+                       | (rc.otherProcess ? ITTD_MAP_F_OTHER_PROCESS : 0);
             bool inmod = c.size != 0 ? in_module((ea_t)c.base, (ea_t)(c.base + c.size))
                                      : in_module((ea_t)c.base, (ea_t)c.base + 1);
             if ( inmod )
