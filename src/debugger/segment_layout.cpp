@@ -20,7 +20,7 @@ namespace idattd
         m_foldConst  = false;
     }
 
-    void SegmentLayout::build(Position now, meminfo_vec_t *out) const
+    const meminfo_vec_t &SegmentLayout::build(Position now) const
     {
         // Start above the Windows null page (the low 64 KiB is always reserved /
         // unmapped). Excluding it stops IDA from treating small integers (0, 1, ...)
@@ -31,12 +31,11 @@ namespace idattd
         const uchar BITS = m_is64 ? 2 : 1;
 
         if ( m_foldValid && (m_foldConst || now == m_foldPos) )
-        {
-            *out = m_foldLayout;
-            return;
-        }
+            return m_foldLayout;
 
+        meminfo_vec_t *out = &m_foldLayout;
         out->qclear();
+        m_foldValid = false;
 
         // Named pieces of the address space, gathered before anything is
         // emitted so they can be sorted and the gaps filled in one pass.
@@ -91,7 +90,7 @@ namespace idattd
         // called "TTD", because everything unnamed falls into the filler below.
         //
         // Taken from the module registry, which lists every module across the
-        // whole recording, NOT from the playhead, which lists only those mapped
+        // whole recording, not from the playhead, which lists only those mapped
         // right now. That difference matters more than the extra entries cost:
         // IDA rebuilds its debugger segments whenever this layout changes, and
         // rebuilding one discards the code it had defined there. A per-position
@@ -120,11 +119,9 @@ namespace idattd
                 ea_t cur = mlo;
                 for ( size_t k = 0; k < nregions && cur < mhi; k++ )
                 {
-                    // Copy the bounds rather than hold a reference: the push_back
-                    // below appends to this same vector, and a reallocation there
-                    // would leave the reference pointing at freed memory. Reading
-                    // a garbage end through it left the rest of the module unnamed,
-                    // so a DLL showed up as its header followed by unnamed filler.
+                    // Copies, not a reference: the push_back below appends to
+                    // this same vector, and a reallocation would leave a
+                    // reference dangling.
                     ea_t rlo = named[k].lo;
                     ea_t rhi = named[k].hi;
                     if ( rhi <= cur )
@@ -160,11 +157,11 @@ namespace idattd
 
         // ---- emit, filling every gap --------------------------------------
         //
-        // The filler is not optional. Stacks, heaps, the PEB and the TEB are
-        // never created by a call we watch and belong to no module, so reporting
-        // only what we can name would make IDA stop reading them and break the
-        // stack and register views. What the names add is description, never
-        // less reachability than before.
+        // The filler is not optional. Stacks, heaps, the PEB and the TEB need
+        // not appear in the memory map and belong to no module, so reporting
+        // only the named pieces would make IDA stop reading them and break the
+        // stack and register views. The names add description, never less
+        // reachability.
         auto filler = [&](ea_t lo, ea_t hi)
         {
             if ( hi <= lo )
@@ -202,19 +199,18 @@ namespace idattd
         }
         filler(cur, HI);
 
-        m_foldLayout = *out;
         m_foldPos    = now;
         m_foldValid  = true;
         // Only the regions vary with the position, and with no map there are
         // none. Changing the map goes through map_for_update(), which drops the
         // fold.
         m_foldConst  = m_map.empty();
+        return m_foldLayout;
     }
 
     ssize_t SegmentLayout::on_get_memory_info(Position now, meminfo_vec_t *ranges)
     {
-        meminfo_vec_t layout;
-        build(now, &layout);
+        const meminfo_vec_t &layout = build(now);
 
         // Rebuilding IDA's debugger segments is not cheap, and stepping inside
         // one region changes nothing about the layout. Say so.
@@ -239,11 +235,7 @@ namespace idattd
         // Without a memory map the layout is the same at every position (the
         // modules come from the whole recording) and build() answers from its
         // cache. With one, time travel can cross an allocation or a free.
-        if ( !m_haveLayout )
-            return;
-        meminfo_vec_t layout;
-        build(now, &layout);
-        if ( layout == m_lastLayout )
+        if ( !m_haveLayout || build(now) == m_lastLayout )
             return;
         // Documented as slow, which is exactly why it is behind the comparison
         // rather than called on every stop.

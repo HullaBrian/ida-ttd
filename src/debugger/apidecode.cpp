@@ -157,24 +157,25 @@ namespace idattd
             return s;
         }
 
+        // "NAME|NAME" for a value of a parameter with an enum, or empty.
+        qstring enum_text(const ParamSig &p, uint64_t val)
+        {
+            qstring s;
+            if ( !p.hasEnum() )
+                return s;
+            for ( const std::string &name : win32meta::index().decodeEnum(p.enumIndex, val) )
+            {
+                if ( !s.empty() )
+                    s.append('|');
+                s.append(name.c_str());
+            }
+            return s;
+        }
+
         qstring int_text(const ParamSig &p, uint64_t val)
         {
-            if ( p.hasEnum() )
-            {
-                std::vector<std::string> names = win32meta::index().decodeEnum(p.enumIndex, val);
-                if ( !names.empty() )
-                {
-                    qstring s;
-                    for ( size_t k = 0; k < names.size(); k++ )
-                    {
-                        if ( k != 0 )
-                            s.append('|');
-                        s.append(names[k].c_str());
-                    }
-                    return s;
-                }
-            }
-            return number(val);
+            qstring s = enum_text(p, val);
+            return s.empty() ? number(val) : s;
         }
 
         uint32_t pointee_width(const ParamSig &p, bool is64)
@@ -292,41 +293,12 @@ namespace idattd
                         return "-1";
                     return hex(x);
                 case ArgKind::Enum:
-                {
-                    if ( p.hasEnum() )
-                    {
-                        std::vector<std::string> names = win32meta::index().decodeEnum(p.enumIndex, x);
-                        if ( !names.empty() )
-                        {
-                            qstring s;
-                            for ( size_t i = 0; i < names.size(); i++ )
-                            {
-                                if ( i != 0 )
-                                    s.append('|');
-                                s.append(names[i].c_str());
-                            }
-                            return s;
-                        }
-                    }
-                    return number(x);
-                }
+                    return int_text(p, x);
                 case ArgKind::Integer:
-                    if ( p.hasEnum() )
-                    {
-                        std::vector<std::string> names = win32meta::index().decodeEnum(p.enumIndex, x);
-                        if ( !names.empty() )
-                        {
-                            qstring s;
-                            for ( size_t i = 0; i < names.size(); i++ )
-                            {
-                                if ( i != 0 )
-                                    s.append('|');
-                                s.append(names[i].c_str());
-                            }
-                            return s;
-                        }
-                    }
-                    return number(p.pointeeSize == 4 ? (uint32_t)x : x);
+                {
+                    qstring s = enum_text(p, x);
+                    return !s.empty() ? s : number(p.pointeeSize == 4 ? (uint32_t)x : x);
+                }
                 case ArgKind::AnsiString:
                     return qstring("\"") + read_string_at(v, x) + "\"";
                 case ArgKind::WideString:
@@ -458,9 +430,11 @@ namespace idattd
             bool ok = true;
             if ( is64 )
             {
-                static const int GP[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, 9 };
-                if ( p.slot < 4 )
-                    a.raw = p.isFloat() ? *(uint64_t *)r.xmm[p.slot] : r.gp[GP[p.slot]];
+                static const int GP[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 /* R9 */ };
+                if ( p.slot < 4 && p.isFloat() )
+                    memcpy(&a.raw, r.xmm[p.slot], sizeof(a.raw));     // the low 64 bits of XMMn
+                else if ( p.slot < 4 )
+                    a.raw = r.gp[GP[p.slot]];
                 else
                     a.raw = read_uint(v, r.gp[ITTD_REG_RSP] + 0x20 + 8 * (uint64_t)(p.slot - 4), 8, &ok);
             }

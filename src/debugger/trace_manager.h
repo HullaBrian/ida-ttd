@@ -78,13 +78,8 @@ namespace idattd
         ssize_t on_exit_process();
 
         // What the UI has asked for, to be carried out by the next ev_resume.
-        //
-        // One request rather than a flag per kind. Eleven mutually exclusive
-        // booleans had nothing to stop two being set: two request_* calls
-        // before a resume was drained resolved by the order of an if-chain in
-        // on_resume, and the loser survived to fire on the following resume --
-        // a time jump the user never asked for. A single value cannot be in
-        // two states, and setting a request plainly replaces the previous one.
+        // One value rather than a flag per kind, so two requests made before a
+        // resume cannot both fire: the later one replaces the earlier.
         enum class Request
         {
             None,               // nothing queued: follow IDA's resume mode
@@ -102,20 +97,16 @@ namespace idattd
         void                       set_next_position(const Position &p);
         void                       end_travel_wait();
         void                       goto_position();
-        void                       request_backward_step();
         void                       request_single_step(bool forward);
         void                       request_run(bool forward);
         void                       request_step_out_backward();
-        // Run the trace backward until execution reaches 'addr' (or a user
-        // breakpoint, or the start of the trace) -- our own "run to cursor
-        // backwards". IDA greys out its native ThreadRunToCursorBackwards for this
-        // backend, so we drive it ourselves like Continue/Step-out backwards.
+        // Run backward until execution reaches 'addr', a user breakpoint or
+        // the start of the trace. IDA greys out its own
+        // ThreadRunToCursorBackwards for this debugger.
         void                       request_run_to_cursor_backward(ea_t addr);
-        // Run the trace forward until execution reaches 'addr' (or a user
-        // breakpoint, or the end of the trace) -- our own "run to cursor". IDA's
-        // native ThreadRunToCursor intermittently fails on this read-only backend
-        // (it tries to plant a real/source breakpoint), so we drive it ourselves
-        // with a temporary Execute watchpoint, like the backward variant.
+        // Run forward until execution reaches 'addr', a user breakpoint or the
+        // end of the trace. IDA's own ThreadRunToCursor plants a real
+        // breakpoint, which intermittently fails on a read-only recording.
         void                       request_run_to_cursor_forward(ea_t addr);
         Position                   current_position() const;
         // The instruction the cursor is standing on. Bookmarks record this so the
@@ -194,14 +185,14 @@ namespace idattd
         // any newly-seen module and disassemble a run of code around RIP.
         void                       on_suspended();
 
-        // Explicit, user-triggered deep analysis: walk the trace backward from the
-        // current position to find the enclosing function's entry and define the
-        // whole function. Expensive (per-step backward replay), so it runs behind
-        // a cancellable wait box -- never automatically.
+        // Explicit, user-triggered deep analysis (CodeAnalyzer::analyze_whole_function).
         void                       analyze_whole_function();
 
     private:
         void   reset_session_state();
+        // Replace the pending request with 'kind' and have IDA resume to carry
+        // it out. Warns and does nothing without a session.
+        void   queue_request(Request kind, bool forward, ea_t address = BADADDR);
 
         thid_t current_tid() const;
         ea_t   program_counter() const;
@@ -261,6 +252,7 @@ namespace idattd
         bool          m_travelWait = false;   // set_next_position's wait box is up
         // The last few events handed to IDA, resumes received and breakpoint
         // updates, oldest first, for the same reason.
+        static constexpr size_t EVENT_LOG_LINES = 48;
         std::deque<qstring> m_eventLog;
         void log_event(const qstring &line);
 

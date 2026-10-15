@@ -118,10 +118,9 @@ namespace idattd
     size_t ModuleRegistry::index_at(ea_t ea) const
     {
         const std::vector<Span> &v = m_spans;
-        Span probe;
-        probe.base = ea;
         // Last module whose base <= ea, then check ea falls inside it.
-        auto it = std::upper_bound(v.begin(), v.end(), probe);
+        auto it = std::upper_bound(v.begin(), v.end(), ea,
+                                   [](ea_t a, const Span &s) { return a < s.base; });
         if ( it == v.begin() )
             return (size_t)-1;
         --it;
@@ -306,16 +305,13 @@ namespace idattd
         // has no names yet. Its exports are known all the same: the
         // recording's own list, or the export directory read where it loaded.
         ModuleRegistry *self = const_cast<ModuleRegistry *>(this);
-        for ( const ModuleInfo &m : m_modules )
+        for ( const Span &s : m_spans )
         {
-            if ( !modpat.empty() )
-            {
-                std::string file = base_name(m.path.empty() ? m.name.c_str() : m.path.c_str());
-                std::string stem = file.substr(0, file.find_last_of('.'));
-                if ( !wildcard_match(modpat.c_str(), file.c_str()) && !wildcard_match(modpat.c_str(), stem.c_str()) )
-                    continue;
-            }
-            for ( const auto &e : self->exports_of(m.base) )
+            if ( !modpat.empty()
+              && !wildcard_match(modpat.c_str(), s.file.c_str())
+              && !wildcard_match(modpat.c_str(), s.name.c_str()) )
+                continue;
+            for ( const auto &e : self->exports_of(s.base) )
                 if ( wildcard_match(namepat.c_str(), e.second.c_str()) && seen.insert(e.first).second )
                     out.push_back(e.first);
         }
@@ -327,14 +323,16 @@ namespace idattd
         size_t idx = index_at(ea);
         if ( idx == (size_t)-1 )
             return qstring();
-        for ( const auto &e : exports_of(m_spans[idx].base) )
-            if ( e.first == ea )
-            {
-                qstring out;
-                out.sprnt("%s!%s", m_spans[idx].name.c_str(), e.second.c_str());
-                return out;
-            }
-        return qstring();
+        // Sorted by address, so the first of several names at 'ea' is the
+        // first the module lists.
+        const std::vector<std::pair<ea_t, std::string>> &v = exports_of(m_spans[idx].base);
+        auto it = std::lower_bound(v.begin(), v.end(), ea,
+                                   [](const std::pair<ea_t, std::string> &e, ea_t a) { return e.first < a; });
+        if ( it == v.end() || it->first != ea )
+            return qstring();
+        qstring out;
+        out.sprnt("%s!%s", m_spans[idx].name.c_str(), it->second.c_str());
+        return out;
     }
 
     const std::vector<std::pair<ea_t, std::string>> &ModuleRegistry::exports_of(ea_t base)
@@ -352,11 +350,16 @@ namespace idattd
         else
         {
             const ModuleInfo *m = record_at(base);
-            bool is64 = m != nullptr && m->machine != 0 ? m->machine == 0x8664 : m_is64;
+            const uint32_t MACHINE_AMD64 = 0x8664;    // IMAGE_FILE_MACHINE_AMD64
+            bool is64 = m != nullptr && m->machine != 0 ? m->machine == MACHINE_AMD64 : m_is64;
             GuestRead rd = read_at_load(base);
             if ( rd )
                 read_guest_exports(rd, base, is64, &v);
         }
+        // export_name_at looks names up by address once per decoded call.
+        std::stable_sort(v.begin(), v.end(),
+                         [](const std::pair<ea_t, std::string> &a, const std::pair<ea_t, std::string> &b)
+                         { return a.first < b.first; });
         return v;
     }
 
@@ -378,11 +381,9 @@ namespace idattd
 
     void ModuleRegistry::resolve_symbols(ea_t base)
     {
-        qstring what;
-        what.sprnt("%a", base);
-        diag("module symbols begin %s", what.c_str());
-        DiagTimer diag_timer("module symbols", what);
-        if ( m_backend == nullptr || base == BADADDR )
+        // Every stop calls this for every mapped module, so the common case,
+        // a module already done, returns before any logging.
+        if ( m_backend == nullptr || base == BADADDR || m_resolvedBases.count(base) != 0 )
             return;
         // Not before the module has a segment: names set on memory IDA does
         // not have are dropped, and remembering the module as done would
@@ -390,8 +391,12 @@ namespace idattd
         // again (resolve_loaded).
         if ( get_segment_ea(base) == BADADDR )
             return;
-        if ( !m_resolvedBases.insert(base).second )
-            return;     // already attempted for this module
+        m_resolvedBases.insert(base);
+
+        qstring what;
+        what.sprnt("%a", base);
+        diag("module symbols begin %s", what.c_str());
+        DiagTimer diag_timer("module symbols", what);
 
         const ModuleInfo *rec = record_at(base);
         std::string modpath = rec != nullptr ? rec->path.c_str() : "";
@@ -542,7 +547,7 @@ namespace idattd
         // shows.
         //
         // It resolves the PDB through _NT_SYMBOL_PATH, which symsrv_install_path()
-        // put our store at the front of, so this finds a local file rather than
+        // put the plugin's store at the front of, so this finds a local file rather than
         // going to the network from the main thread.
         static const char *PDB_NODE_NAME = "$ pdb";
         const int PDB_DLLBASE_NODE_IDX  = 0;
@@ -622,6 +627,7 @@ namespace idattd
         if ( symsrv_take_completed(&done) == 0 )
             return 0;
 
+        size_t applied = 0;
         for ( const FetchResult &r : done )
         {
             const ModuleInfo *m = record_at(r.base);
@@ -646,11 +652,12 @@ namespace idattd
                     show_wait_box_now(text.c_str());
                 }
                 apply_pdb(r.base, path, pdb);
+                applied++;
                 if ( wait_box )
                     hide_wait_box();
             }
         }
-        return done.size();
+        return applied;
     }
 
     bool ModuleRegistry::pdb_identity(ea_t base, GuestPdbInfo *out)

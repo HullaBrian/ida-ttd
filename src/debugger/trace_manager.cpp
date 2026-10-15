@@ -94,13 +94,13 @@ namespace idattd
         if ( m_hooks.on_end )
             m_hooks.on_end();
         set_current_trace(0);
-        // Anything still queued describes the OLD trace's modules and threads.
-        m_events.clear();
         if ( m_afSaved )
         {
-            inf_set_af(m_savedAf);   // restore the analysis flags we changed
+            inf_set_af(m_savedAf);   // the analysis flags on_start_process changed
             m_afSaved = false;
         }
+        // Also drops queued events: they describe this trace's modules and
+        // threads.
         reset_session_state();
         return DRC_OK;
     }
@@ -162,10 +162,10 @@ namespace idattd
 
         // Stop the analysis cascade: each on-stop add_func() traces the current
         // function, and AF_PROC ("create functions if call is present") would make
-        // IDA recursively create+analyze every callee, fanning out across whole
-        // modules and making navigation crawl. We define the function the user is
-        // actually looking at explicitly, so disable the auto-create-from-calls
-        // features for the session (restored in on_term).
+        // IDA recursively create and analyze every callee, fanning out across
+        // whole modules. CodeAnalyzer defines the function the user is looking
+        // at, and its direct callees, explicitly; the auto-create-from-calls
+        // features stay off for the session (restored in on_term).
         if ( !m_afSaved )
         {
             m_savedAf = inf_get_af();
@@ -183,11 +183,11 @@ namespace idattd
                 m_targetName = base_name(input_path != nullptr ? input_path : "");
         }
 
-        // We load module PDBs ourselves, silently (see ModuleRegistry::load_pdb),
-        // so turn OFF IDA's automatic debug-file loading -- otherwise it pops a
-        // "load symbols?" confirmation for every module. (set_debugger_options
-        // REPLACES the option set and returns the old one, so clear just this
-        // bit.)
+        // Module PDBs are loaded silently by ModuleRegistry::load_pdb, so IDA's
+        // automatic debug-file loading is turned off: it would ask "load
+        // symbols?" for every module. set_debugger_options replaces the option
+        // set and returns the old one, and there is no getter, so the old set
+        // is put straight back with just this bit cleared.
         uint dopts = set_debugger_options(0);
         set_debugger_options(dopts & ~(uint)DOPT_LOAD_DINFO);
 
@@ -240,7 +240,7 @@ namespace idattd
         // so results saved for a different one are not shown against this one.
         set_current_trace(trace_fingerprint());
 
-        // Put our own symbol store ahead of whatever IDA would reach for, so
+        // Put the plugin's symbol store ahead of whatever IDA would reach for, so
         // the PDB plugin only ever resolves files that are already local.
         symsrv_install_path();
 
@@ -270,19 +270,18 @@ namespace idattd
             m_events.add_process_start(m_pid, current_tid(), "trace", BADADDR, BADADDR, 0);
         }
 
-        // Threads currently alive (other than the current one).
-        thid_t cur_tid = current_tid();
-        for ( uint32_t t : snapshot_threads() )
-            if ( (thid_t)t != cur_tid )
-                m_events.add_thread_start(m_pid, (thid_t)t);
-
-        // Modules currently loaded (other than the main one already reported).
-        for ( const auto &kv : snapshot_modules() )
-            if ( kv.second->base != mainBase )
-                emit_module_load(*kv.second);
-
+        // Threads currently alive (other than the current one), and modules
+        // currently loaded (other than the main one already reported), which
+        // is then what IDA has been told.
         m_toldThreads = snapshot_threads();
         m_toldMods    = snapshot_modules();
+        thid_t cur_tid = current_tid();
+        for ( uint32_t t : m_toldThreads )
+            if ( (thid_t)t != cur_tid )
+                m_events.add_thread_start(m_pid, (thid_t)t);
+        for ( const auto &kv : m_toldMods )
+            if ( kv.second->base != mainBase )
+                emit_module_load(*kv.second);
 
         // Finally, suspend at the entry position.
         emit_stop(false);
@@ -305,7 +304,7 @@ namespace idattd
 
     void TraceManager::log_event(const qstring &line)
     {
-        if ( m_eventLog.size() >= 48 )
+        if ( m_eventLog.size() >= EVENT_LOG_LINES )
             m_eventLog.pop_front();
         m_eventLog.push_back(line);
         diag("event log: %s", line.c_str());
@@ -397,24 +396,30 @@ namespace idattd
     static const char NOT_FORKING[] =
         "a recording cannot be changed. TTD > Fork here makes the current position a fork, "
         "whose registers and memory can be changed before it is recorded";
+    static const char FORK_ELSEWHERE[] =
+        "the fork is at another position; go back to it to change it";
+
+    // Refuse a write through IDA: say why in the output window and to IDA.
+    static ssize_t refuse_write(const qstring &err, qstring *errbuf)
+    {
+        msg("[ida-ttd] %s.\n", err.c_str());
+        if ( errbuf != nullptr )
+            *errbuf = err;
+        return DRC_FAILED;
+    }
 
     ssize_t TraceManager::on_write_register(thid_t tid, int regidx, const regval_t *value, qstring *errbuf)
     {
         qstring err;
         int fidx = fork_register_index(regidx, m_is64);
         if ( !at_fork_draft() )
-            err = m_draft.active ? "the fork is at another position; go back to it to change it" : NOT_FORKING;
+            err = m_draft.active ? FORK_ELSEWHERE : NOT_FORKING;
         else if ( (tid == NO_THREAD ? current_tid() : tid) != m_draft.tid )
             err.sprnt("only the registers of the thread that runs next (%X) can be changed", (uint)m_draft.tid);
         else if ( fidx < 0 || value == nullptr || value->rvtype != RVT_INT )
             err = "a fork can change the general registers, the instruction pointer and the flags";
         if ( !err.empty() )
-        {
-            msg("[ida-ttd] %s.\n", err.c_str());
-            if ( errbuf != nullptr )
-                *errbuf = err;
-            return DRC_FAILED;
-        }
+            return refuse_write(err, errbuf);
         m_draft.regs[regidx] = value->ival;
         return DRC_OK;
     }
@@ -423,14 +428,7 @@ namespace idattd
     {
         *nbytes = 0;
         if ( !at_fork_draft() )
-        {
-            qstring err = m_draft.active ? "the fork is at another position; go back to it to change it"
-                                         : NOT_FORKING;
-            msg("[ida-ttd] %s.\n", err.c_str());
-            if ( errbuf != nullptr )
-                *errbuf = err;
-            return DRC_FAILED;
-        }
+            return refuse_write(m_draft.active ? FORK_ELSEWHERE : NOT_FORKING, errbuf);
         const uchar *in = (const uchar *)buffer;
         for ( size_t i = 0; i < size; i++ )
             m_draft.bytes[ea + i] = in[i];
@@ -594,8 +592,8 @@ namespace idattd
 
         // Time travel breaks IDA's "process memory only changes going forward"
         // assumption: the same address can hold different bytes at different
-        // positions. After a jump IDA keeps the previous position's cached bytes
-        // for everything it doesn't re-read.
+        // positions. After a travel IDA keeps the previous position's cached
+        // bytes for everything it does not re-read.
         //
         // invalidate_dbgmem_contents() flushes and refreshes, so the listing
         // re-reads through on_read_memory. invalidate_dbg_state(DBGINV_MEMORY)
@@ -607,9 +605,9 @@ namespace idattd
         // decompiler afterwards.
         invalidate_dbgmem_contents(BADADDR, 0);
 
-        // Time travel can move us across an allocation, a protection change or a
-        // free, so the regions in force here may not be the ones IDA was last
-        // given. This is a no-op unless a memory map has been built.
+        // A travel can cross an allocation, a protection change or a free, so
+        // the regions in force here may not be the ones IDA was last given.
+        // Without a memory map nothing changes.
         {
             DiagTimer t("stop: memory layout");
             m_layout.refresh(m_cursor->position());
@@ -729,18 +727,17 @@ namespace idattd
         if ( !m_nav )
             return DRC_OK;
 
-        // A queued request wins over IDA's resume mode: it is the user asking
-        // for a movement IDA has no action of its own for.
-        //
-        // The request is taken and cleared before it is carried out, not after.
-        // These navigations show wait boxes, which pump the message loop, so a
-        // second ev_resume can arrive in the middle of one -- and a request
-        // still set would be performed twice.
-        // IDA's own step modes, as opposed to a run or one of our requests.
+        // IDA's own step modes, as opposed to a run or a queued request.
         m_stepMode = m_pending.kind == Request::None && m_resumeMode != RESMOD_NONE;
 
+        // A queued request wins over IDA's resume mode: it is the user asking
+        // for a movement IDA has no action of its own for.
         if ( m_pending.kind != Request::None )
         {
+            // Taken and cleared before it is carried out, not after: the
+            // navigation shows a wait box, which pumps the message loop, so a
+            // second ev_resume can arrive in the middle of it, and a request
+            // still set would be performed twice.
             const PendingRequest req = m_pending;
             m_pending    = PendingRequest{};
             m_resumeMode = RESMOD_NONE;
@@ -894,66 +891,43 @@ namespace idattd
         return false;
     }
 
-    void TraceManager::request_backward_step()
+    void TraceManager::queue_request(Request kind, bool forward, ea_t address)
     {
-        request_single_step(false);
+        if ( !need_session(m_cursor) )
+            return;
+        m_pending         = PendingRequest{};
+        m_pending.kind    = kind;
+        m_pending.forward = forward;
+        m_pending.address = address;
+        request_continue_process();
+        run_requests();
     }
 
     void TraceManager::request_single_step(bool forward)
     {
-        if ( !need_session(m_cursor) )
-            return;
-        m_pending         = PendingRequest{};
-        m_pending.kind    = Request::Step;
-        m_pending.forward = forward;
-        request_continue_process();
-        run_requests();
+        queue_request(Request::Step, forward);
     }
 
     void TraceManager::request_run(bool forward)
     {
-        if ( !need_session(m_cursor) )
-            return;
-        m_pending         = PendingRequest{};
-        m_pending.kind    = Request::Run;
-        m_pending.forward = forward;
-        request_continue_process();
-        run_requests();
+        queue_request(Request::Run, forward);
     }
 
     void TraceManager::request_step_out_backward()
     {
-        if ( !need_session(m_cursor) )
-            return;
-        m_pending         = PendingRequest{};
-        m_pending.kind    = Request::StepOutBackward;
-        m_pending.forward = false;
-        request_continue_process();
-        run_requests();
+        queue_request(Request::StepOutBackward, false);
     }
 
     void TraceManager::request_run_to_cursor_backward(ea_t addr)
     {
-        if ( !need_session(m_cursor) || addr == BADADDR )
-            return;
-        m_pending         = PendingRequest{};
-        m_pending.kind    = Request::RunToCursor;
-        m_pending.forward = false;
-        m_pending.address = addr;
-        request_continue_process();
-        run_requests();
+        if ( addr != BADADDR )
+            queue_request(Request::RunToCursor, false, addr);
     }
 
     void TraceManager::request_run_to_cursor_forward(ea_t addr)
     {
-        if ( !need_session(m_cursor) || addr == BADADDR )
-            return;
-        m_pending         = PendingRequest{};
-        m_pending.kind    = Request::RunToCursor;
-        m_pending.forward = true;
-        m_pending.address = addr;
-        request_continue_process();
-        run_requests();
+        if ( addr != BADADDR )
+            queue_request(Request::RunToCursor, true, addr);
     }
 
     ea_t TraceManager::current_pc_ea() const

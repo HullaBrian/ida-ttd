@@ -51,8 +51,9 @@ namespace idattd
         void refresh(Position now);
 
     private:
-        // Compose the layout IDA should see at 'now'.
-        void build(Position now, meminfo_vec_t *out) const;
+        // The layout IDA should see at 'now'. The reference is to the fold
+        // cache, valid until the next build() or map_for_update().
+        const meminfo_vec_t &build(Position now) const;
 
         ModuleRegistry *m_modules = nullptr;
         bool            m_is64    = false;

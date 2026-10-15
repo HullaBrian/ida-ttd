@@ -19,9 +19,7 @@ namespace idattd
 
     ssize_t MemoryReader::read(ITraceCursor *playhead, size_t *nbytes, ea_t ea, void *buffer, size_t size)
     {
-        qstring what;
-        what.sprnt("%a+%llX", ea, (uint64_t)size);
-        DiagTimer diag_timer("IDA read", what);
+        DiagTimer diag_timer("IDA read", (uint64_t)ea, (uint64_t)size);
         *nbytes = 0;
         if ( playhead == nullptr || buffer == nullptr || size == 0 )
             return DRC_OK;
@@ -30,7 +28,13 @@ namespace idattd
         memset(out, 0, size);
 
         // ---- 1: the recording, as the backend has it ----
+        // Cleared first (capacity kept): a backend that bails out early may
+        // leave 'known' untouched, and the previous read's marks, or too few
+        // of them, must not be taken for this one's.
+        m_known.clear();
         playhead->read_memory(ea, out, size, &m_known);
+        if ( m_known.size() < size )
+            m_known.resize(size, ITTD_KNOWN_NO);
         uint8_t *known = m_known.data();
         size_t resolved_end = 0;     // one past the last byte resolved
         for ( size_t i = 0; i < size; i++ )

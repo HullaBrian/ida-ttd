@@ -20,9 +20,9 @@ namespace idattd
         return off;
     }
 
-    // We sample at the call instruction *before* it executes, so the return
-    // address has not been pushed yet: register args live in their registers and
-    // stack args sit at SP + shadow space (+ preceding stack args).
+    // Sampled at the call instruction before it executes, so the return address
+    // has not been pushed yet: register args live in their registers and stack
+    // args sit at SP + shadow space (+ preceding stack args).
     uint64_t get_int_arg(const GuestView &view, const tinfo_t &tinfo, size_t n, bool is64)
     {
         ittd_regs r{};
@@ -46,10 +46,14 @@ namespace idattd
                     memcpy(&lo, r.xmm[n], sizeof(lo));
                     return lo;
                 }
-                const int regs[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 };
+                const int regs[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 /* R9 */ };
                 return r.gp[regs[n]];
             }
-            size_t off = 0x20 + stack_arg_offset(tinfo, n, 4, 8);
+            // Every x64 argument takes exactly one 8-byte slot: anything that
+            // is not 1, 2, 4 or 8 bytes is passed by reference. Summing the
+            // types' sizes would misplace every argument after a by-value
+            // structure. 0x20 is the callee's shadow space.
+            size_t off = 0x20 + 8 * (n - 4);
             uint64_t v = 0;
             view.read(r.gp[ITTD_REG_RSP] + off, &v, sizeof(v));
             return v;
@@ -93,7 +97,10 @@ namespace idattd
             case L'\r': out->append("\\r"); break;
             case L'\t': out->append("\\t"); break;
             default:
-                if ( (c >> 8) == 0 )
+                // Other control characters would land raw in a one-line listing.
+                if ( c < 0x20 || c == 0x7F )
+                    out->cat_sprnt("\\x%02X", (unsigned)c);
+                else if ( (c >> 8) == 0 )
                     out->cat_sprnt("%c", (char)(c & 0xFF));
                 else
                     out->cat_sprnt("%lc", c);

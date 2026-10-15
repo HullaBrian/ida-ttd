@@ -115,10 +115,10 @@ namespace idattd
         // 'stopped_here': the user is stopped in this module, so it gets its
         // PDB even when the backend's reads are not cheap.
         void load_pdb(ea_t base, bool stopped_here = false);
-        // Hand every PDB that finished downloading since the last call to IDA.
-        // Main thread only; called once per stop.
-        // How many were handed to IDA. With 'wait_box', each behind one: a
-        // big PDB takes seconds (only from a timer, not a debugger event).
+        // Hand every PDB that finished downloading since the last call to IDA,
+        // and return how many were. Main thread only; called once per stop.
+        // With 'wait_box', each behind one: a big PDB takes seconds (only from
+        // a timer, not a debugger event).
         size_t apply_finished_pdbs(bool wait_box = false);
 
         // ---- on-disk images ------------------------------------------------
@@ -150,13 +150,15 @@ namespace idattd
         std::vector<Span>       m_spans;     // unique by base, sorted
         ea_t                    m_mainBase = BADADDR;
 
-        std::set<ea_t> m_resolvedBases;   // modules whose exports we have named
-        std::set<ea_t> m_pdbBases;        // modules whose PDB we have requested
+        std::set<ea_t> m_resolvedBases;   // modules whose exports have been named
+        std::set<ea_t> m_pdbBases;        // modules whose PDB has been requested
 
         // Per-module function bounds, keyed by module base; each vector is
         // sorted by start address.
         std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
         std::set<ea_t> m_funcTried;     // function_ranges() ran for these
+        // Per-module named exports, keyed by module base; each vector is
+        // sorted by address (stable, so aliases keep their recorded order).
         std::map<ea_t, std::vector<std::pair<ea_t, std::string>>> m_exports;
 
         // Per-module on-disk image cache, keyed by module base. An entry with

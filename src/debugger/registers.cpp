@@ -79,11 +79,10 @@ namespace idattd
         dbg.id        = 0x100;
         dbg.processor = "metapc";
 
-        // FAKE_MEMORY would make IDA read from the idb only; we provide real
-        // (recorded) memory, so we do not set it. SAFE: we only replay, never
-        // run code. TTD: enables backwards execution. We deliberately do not
-        // set DEBTHREAD so that all callbacks run on the main thread, keeping
-        // UI/chooser calls safe.
+        // No FAKE_MEMORY: that would make IDA read from the database only,
+        // and the recording's memory is served instead. SAFE: a replay never
+        // runs code. TTD: enables backwards execution. No DEBTHREAD, so every
+        // callback runs on the main thread and UI and chooser calls are safe.
         dbg.flags = DBG_FLAG_CAN_CONT_BPT
                   | DBG_FLAG_SAFE
                   | DBG_FLAG_DEBUG_DLL
@@ -123,14 +122,17 @@ namespace idattd
                          | DBG_RESMOD_STEP_BACKINTO;
     }
 
+    // The x86 table's general registers (EAX..EIP) as ITTD_REG_* indices. For
+    // x64 the table is ittd_regs' own order up to RIP.
+    static const int g_x86_gp[] = {
+        ITTD_REG_RAX, ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_RBX,
+        ITTD_REG_RSP, ITTD_REG_RBP, ITTD_REG_RSI, ITTD_REG_RDI, ITTD_REG_RIP,
+    };
+
     void fill_regvals(const ittd_regs &r, bool is64, regval_t *values)
     {
-        // The table order above, which for x64 is ittd_regs' own order up to
-        // RIP. A 32-bit target has its registers in the low halves.
-        static const int x86_gp[] = {
-            ITTD_REG_RAX, ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_RBX,
-            ITTD_REG_RSP, ITTD_REG_RBP, ITTD_REG_RSI, ITTD_REG_RDI, ITTD_REG_RIP,
-        };
+        // The table order above. A 32-bit target has its registers in the low
+        // halves.
         static const int seg_order[] = {
             ITTD_SEG_CS, ITTD_SEG_DS, ITTD_SEG_SS, ITTD_SEG_ES, ITTD_SEG_FS, ITTD_SEG_GS,
         };
@@ -142,7 +144,7 @@ namespace idattd
         }
         else
         {
-            for ( int k : x86_gp )
+            for ( int k : g_x86_gp )
                 values[i++].set_int((uint32_t)r.gp[k]);
         }
         values[i++].set_int((uint32_t)r.rflags);
@@ -152,15 +154,11 @@ namespace idattd
 
     int fork_register_index(int regidx, bool is64)
     {
-        static const int x86_gp[] = {
-            ITTD_REG_RAX, ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_RBX,
-            ITTD_REG_RSP, ITTD_REG_RBP, ITTD_REG_RSI, ITTD_REG_RDI, ITTD_REG_RIP,
-        };
-        const int ngp = is64 ? ITTD_REG_GP_COUNT : (int)qnumber(x86_gp);
+        const int ngp = is64 ? ITTD_REG_GP_COUNT : (int)qnumber(g_x86_gp);
         if ( regidx < 0 )
             return -1;
         if ( regidx < ngp )
-            return is64 ? regidx : x86_gp[regidx];
+            return is64 ? regidx : g_x86_gp[regidx];
         if ( regidx == ngp )
             return FORK_REG_RFLAGS;
         return -1;
