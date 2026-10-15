@@ -97,26 +97,33 @@ namespace idattd::scans
         // A string that grew in place replaces what it grew from.
         void add(uint64_t address, const Pos &pos, bool wide, std::string value)
         {
-            std::vector<Entry> &entries = m_strings[address];
-            for ( Entry &e : entries )
+            auto found = m_strings.find(address);
+            if ( found != m_strings.end() )
             {
-                if ( e.wide != wide )
-                    continue;
-                if ( e.value == value )
-                    return;
-                if ( value.size() > e.value.size() && value.compare(0, e.value.size(), e.value) == 0 )
+                for ( Entry &e : found->second )
                 {
-                    e.value = std::move(value);
-                    e.pos   = pos;
-                    return;
+                    if ( e.wide != wide )
+                        continue;
+                    if ( e.value == value )
+                        return;
+                    if ( value.size() > e.value.size() && value.compare(0, e.value.size(), e.value) == 0 )
+                    {
+                        e.value = std::move(value);
+                        e.pos   = pos;
+                        return;
+                    }
                 }
             }
+            // Checked before an address gets its entry, so a full scan does
+            // not go on growing the map with empty ones.
             if ( m_count >= m_cap )
             {
                 truncated = true;
                 return;
             }
-            entries.push_back(Entry{ pos, wide, std::move(value) });
+            if ( found == m_strings.end() )
+                found = m_strings.emplace(address, std::vector<Entry>()).first;
+            found->second.push_back(Entry{ pos, wide, std::move(value) });
             m_count++;
         }
     };
@@ -412,12 +419,15 @@ namespace idattd::scans
                 truncated = true;
                 return;
             }
-            std::string display = preview(b, n, text);
+            std::string display;
             if ( utf16 )
             {
-                display.clear();
                 for ( size_t i = 0; i + 1 < std::min<size_t>(n, 96); i += 2 )
                     display.push_back((char)b[i]);
+            }
+            else
+            {
+                display = preview(b, n, text);
             }
             FoundBuffer<Pos> h;
             h.address   = base + begin;

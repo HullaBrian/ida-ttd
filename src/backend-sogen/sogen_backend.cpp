@@ -43,13 +43,17 @@
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <set>
 #include <span>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -84,6 +88,15 @@ namespace
         uint64_t clock = 0;
     };
 
+    // A thread and the span it ran over, from the switch table.
+    struct thread_span
+    {
+        uint32_t tid = 0;
+        uint64_t first_step = UINT64_MAX;
+        uint64_t end_step = 0;          // one past the last step it ran
+        bool     running_at_end = false;
+    };
+
     struct backend_t
     {
         std::filesystem::path path;
@@ -91,6 +104,9 @@ namespace
         std::mutex mtx;                      // guards 'trace'
         std::string error;
         page_cache pages;                    // shared by this backend's cursors
+        // Every thread's span, worked out once at open: the switch table does
+        // not change, and the thread list is asked for at every stop.
+        std::vector<thread_span> spans;
         // Replay scan results: each is a full replay, and count-then-fill
         // asks twice. Guarded by their own mutex, not 'mtx', so a scan does
         // not hold up the other queries.
@@ -353,6 +369,45 @@ namespace
         return mods.empty() ? nullptr : &mods.front();
     }
 
+    // Whether the program is 64-bit: anything but an i386 main module.
+    bool is64(const ttd::trace &t)
+    {
+        const ttd::module_entry *m = main_module(t);
+        return m == nullptr || m->machine != 0x14c;
+    }
+
+    // Every thread with the span it ran over, in the order they first ran.
+    std::vector<thread_span> thread_spans(const ttd::trace &t)
+    {
+        std::map<uint32_t, thread_span> by_tid;
+        const auto &sw = t.threads().switches;
+        for ( size_t i = 0; i < sw.size(); i++ )
+        {
+            thread_span &s = by_tid[sw[i].thread_id];
+            s.tid = sw[i].thread_id;
+            s.first_step = std::min(s.first_step, sw[i].step);
+            uint64_t end = i + 1 < sw.size() ? sw[i + 1].step : last_position(t) + 1;
+            s.end_step = std::max(s.end_step, end);
+            s.running_at_end = i + 1 == sw.size();
+        }
+        std::vector<thread_span> v;
+        v.reserve(by_tid.size());
+        for ( auto &[tid, s] : by_tid )
+            v.push_back(s);
+        std::sort(v.begin(), v.end(), [](const thread_span &a, const thread_span &b)
+                  { return a.first_step < b.first_step; });
+        return v;
+    }
+
+    // The general-purpose registers in ittd_regs.gp order.
+    const x86_register kGp[ITTD_REG_GP_COUNT] = {
+        x86_register::rax, x86_register::rcx, x86_register::rdx, x86_register::rbx,
+        x86_register::rsp, x86_register::rbp, x86_register::rsi, x86_register::rdi,
+        x86_register::r8,  x86_register::r9,  x86_register::r10, x86_register::r11,
+        x86_register::r12, x86_register::r13, x86_register::r14, x86_register::r15,
+        x86_register::rip,
+    };
+
     // ------------------------------------------------------------ identity
 
     const char *id() { return "sogen"; }
@@ -388,6 +443,7 @@ namespace
             b->path  = utf8_path(path);
             b->trace = open_trace(b->path);
             b->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
+            b->spans = thread_spans(*b->trace);
             return ITTD_OK;
         });
         if ( rc != ITTD_OK )
@@ -425,7 +481,7 @@ namespace
             const ttd::trace &t = *b->trace;
             *out = ittd_trace_info{};
             const ttd::module_entry *m = main_module(t);
-            out->is64 = m == nullptr || m->machine != 0x14c ? 1 : 0;
+            out->is64 = is64(t) ? 1 : 0;
             out->capabilities = ITTD_CAP_ACCESS_QUERIES | ITTD_CAP_CALL_QUERIES
                               | ITTD_CAP_RECORDED_EXPORTS | ITTD_CAP_CHEAP_SEEK
                               | ITTD_CAP_REVERSE_STEP | ITTD_CAP_EXCEPTIONS;
@@ -558,20 +614,13 @@ namespace
     void read_regs(ttd::cpu_view &view, ittd_regs *out)
     {
         auto &cpu = view.cpu();
-        static const x86_register gp[ITTD_REG_GP_COUNT] = {
-            x86_register::rax, x86_register::rcx, x86_register::rdx, x86_register::rbx,
-            x86_register::rsp, x86_register::rbp, x86_register::rsi, x86_register::rdi,
-            x86_register::r8,  x86_register::r9,  x86_register::r10, x86_register::r11,
-            x86_register::r12, x86_register::r13, x86_register::r14, x86_register::r15,
-            x86_register::rip,
-        };
         static const x86_register seg[ITTD_SEG_COUNT] = {
             x86_register::cs, x86_register::ss, x86_register::ds,
             x86_register::es, x86_register::fs, x86_register::gs,
         };
         *out = ittd_regs{};
         for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
-            out->gp[i] = cpu.reg<uint64_t>(gp[i]);
+            out->gp[i] = cpu.reg<uint64_t>(kGp[i]);
         out->rflags  = cpu.reg<uint64_t>(x86_register::rflags);
         out->fs_base = cpu.reg<uint64_t>(x86_register::fs_base);
         out->gs_base = cpu.reg<uint64_t>(x86_register::gs_base);
@@ -695,26 +744,33 @@ namespace
         {
             uint8_t page[kPage], kn[kPage];
             uint8_t *dst = static_cast<uint8_t *>(buf);
+            // A request that runs past the top of the address space reads up
+            // to it; the rest is unknown. Comparing against ea + size instead
+            // wrapped, read nothing and left 'known' unwritten.
+            const uint64_t room = ea == 0 ? UINT64_MAX : 0ull - ea;
+            const size_t   span = (size_t)std::min<uint64_t>(size, room);
             size_t n = 0;
-            for ( uint64_t a = ea; a < ea + size; )
+            for ( size_t done = 0; done < span; )
             {
-                uint64_t base = a & ~(kPage - 1);
-                uint64_t off  = a - base;
-                uint64_t take = std::min<uint64_t>(kPage - off, ea + size - a);
+                const uint64_t a    = ea + done;
+                const uint64_t base = a & ~(kPage - 1);
+                const size_t   off  = (size_t)(a - base);
+                const size_t   take = std::min<size_t>(kPage - off, span - done);
                 read_page(c, base, page, kn);
-                for ( uint64_t i = 0; i < take; i++ )
+                for ( size_t i = 0; i < take; i++ )
                 {
-                    size_t k = (size_t)(a - ea + i);
                     if ( kn[off + i] )
                     {
-                        dst[k] = page[off + i];
+                        dst[done + i] = page[off + i];
                         n++;
                     }
                     if ( known != nullptr )
-                        known[k] = kn[off + i] ? 1 : 0;
+                        known[done + i] = kn[off + i] ? 1 : 0;
                 }
-                a += take;
+                done += take;
             }
+            if ( known != nullptr && span < size )
+                std::memset(known + span, 0, size - span);
             if ( out_known != nullptr )
                 *out_known = n;
             return ITTD_OK;
@@ -722,36 +778,6 @@ namespace
     }
 
     // ------------------------------------------------------------ threads
-
-    // Every thread with the span it ran over, from the switch table.
-    struct thread_span
-    {
-        uint32_t tid = 0;
-        uint64_t first_step = UINT64_MAX;
-        uint64_t end_step = 0;          // one past the last step it ran
-        bool     running_at_end = false;
-    };
-
-    std::vector<thread_span> thread_spans(const ttd::trace &t)
-    {
-        std::map<uint32_t, thread_span> by_tid;
-        const auto &sw = t.threads().switches;
-        for ( size_t i = 0; i < sw.size(); i++ )
-        {
-            thread_span &s = by_tid[sw[i].thread_id];
-            s.tid = sw[i].thread_id;
-            s.first_step = std::min(s.first_step, sw[i].step);
-            uint64_t end = i + 1 < sw.size() ? sw[i + 1].step : last_position(t) + 1;
-            s.end_step = std::max(s.end_step, end);
-            s.running_at_end = i + 1 == sw.size();
-        }
-        std::vector<thread_span> v;
-        for ( auto &[tid, s] : by_tid )
-            v.push_back(s);
-        std::sort(v.begin(), v.end(), [](const thread_span &a, const thread_span &b)
-                  { return a.first_step < b.first_step; });
-        return v;
-    }
 
     ittd_thread to_thread(const ttd::trace &t, const thread_span &s)
     {
@@ -782,7 +808,7 @@ namespace
         {
             std::lock_guard<std::mutex> lock(b->mtx);
             const ttd::trace &t = *b->trace;
-            return fill(thread_spans(t), buf, cap, out_count,
+            return fill(b->spans, buf, cap, out_count,
                         [&](const thread_span &s) { return to_thread(t, s); });
         });
     }
@@ -796,7 +822,7 @@ namespace
         {
             const ttd::trace &t = *c->trace;
             std::vector<thread_span> live;
-            for ( const thread_span &s : thread_spans(t) )
+            for ( const thread_span &s : c->owner->spans )
                 if ( s.first_step <= c->position + 1 && (s.running_at_end || c->position < s.end_step) )
                     live.push_back(s);
             return fill(live, buf, cap, out_count,
@@ -862,11 +888,7 @@ namespace
     std::optional<uint64_t> access_of(ttd::trace &t, const ittd_breakpoint &b, uint64_t position,
                                       bool forward)
     {
-        uint64_t mask = 0;
-        if ( b.kinds & ITTD_ACCESS_READ )
-            mask |= (uint64_t)ttd::access_kind::read;
-        if ( b.kinds & ITTD_ACCESS_WRITE )
-            mask |= (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+        const uint64_t mask = sogen_mask(b.kinds & (ITTD_ACCESS_READ | ITTD_ACCESS_WRITE));
         if ( mask == 0 )
             return std::nullopt;
         uint64_t size = b.size == 0 ? 1 : b.size;
@@ -919,50 +941,55 @@ namespace
         return b;
     }
 
-    // Whether the instruction bytes of an execute event are a call: E8 rel32,
-    // or FF /2 and FF /3 (near and far indirect), after any legacy or REX
-    // prefixes.
-    bool is_call_insn(const ttd::access_event &e)
+    // The opcode of an executed instruction, past its prefixes, and the byte
+    // after it; false when the bytes are not there.
+    bool opcode_of(const ttd::access_event &ev, bool is64, uint8_t *op, uint8_t *modrm)
     {
-        size_t n = (size_t)std::min<uint64_t>(e.size, e.payload.size());
+        size_t n = std::min<size_t>(ev.size == 0 ? ev.payload.size() : (size_t)ev.size, ev.payload.size());
         size_t i = 0;
         for ( ; i < n; i++ )
         {
-            uint8_t b = e.payload[i];
-            bool prefix = b == 0x66 || b == 0x67 || b == 0xF2 || b == 0xF3 || b == 0x2E || b == 0x3E
-                       || b == 0x26 || b == 0x36 || b == 0x64 || b == 0x65 || (b & 0xF0) == 0x40;
+            uint8_t c = ev.payload[i];
+            bool prefix = c == 0x66 || c == 0x67 || c == 0xF2 || c == 0xF3 || c == 0x2E || c == 0x3E
+                       || c == 0x26 || c == 0x36 || c == 0x64 || c == 0x65 || c == 0xF0
+                       || (is64 && c >= 0x40 && c <= 0x4F);
             if ( !prefix )
                 break;
         }
         if ( i >= n )
             return false;
-        if ( e.payload[i] == 0xE8 )
-            return true;
-        if ( e.payload[i] == 0xFF && i + 1 < n )
-        {
-            uint8_t reg = (e.payload[i + 1] >> 3) & 7;
-            return reg == 2 || reg == 3;
-        }
-        return false;
+        *op    = ev.payload[i];
+        *modrm = i + 1 < n ? ev.payload[i + 1] : 0;
+        return true;
     }
 
-    // Whether the instruction bytes of an execute event are a return: C3, C2
-    // imm16, or the far forms, after any prefixes ("rep ret" included).
+    // E8, FF /2 and FF /3, and 9A on 32-bit.
+    bool is_call_op(uint8_t op, uint8_t modrm, bool is64)
+    {
+        uint8_t reg = (modrm >> 3) & 7;
+        return op == 0xE8 || (op == 0x9A && !is64) || (op == 0xFF && (reg == 2 || reg == 3));
+    }
+
+    // C3, C2 imm16, and the far forms ("rep ret" included, by the prefixes).
+    bool is_ret_op(uint8_t op)
+    {
+        return op == 0xC3 || op == 0xC2 || op == 0xCB || op == 0xCA;
+    }
+
+    // The navigator's tests, which do not know the program's bitness: decoded
+    // as 64-bit, where 32-bit code differs only in far calls (9A) and in
+    // 40-4F, which there are whole one-byte instructions and so never precede
+    // an opcode within one instruction's bytes anyway.
+    bool is_call_insn(const ttd::access_event &e)
+    {
+        uint8_t op = 0, modrm = 0;
+        return opcode_of(e, true, &op, &modrm) && is_call_op(op, modrm, true);
+    }
+
     bool is_ret_insn(const ttd::access_event &e)
     {
-        size_t n = (size_t)std::min<uint64_t>(e.size, e.payload.size());
-        size_t i = 0;
-        for ( ; i < n; i++ )
-        {
-            uint8_t b = e.payload[i];
-            bool prefix = b == 0x66 || b == 0x67 || b == 0xF2 || b == 0xF3 || (b & 0xF0) == 0x40;
-            if ( !prefix )
-                break;
-        }
-        if ( i >= n )
-            return false;
-        uint8_t op = e.payload[i];
-        return op == 0xC3 || op == 0xC2 || op == 0xCB || op == 0xCA;
+        uint8_t op = 0, modrm = 0;
+        return opcode_of(e, true, &op, &modrm) && is_ret_op(op);
     }
 
     int position_add(ittd_backend *hb, ittd_position p, int64_t delta, ittd_position *out)
@@ -1121,72 +1148,49 @@ namespace
         cursor_t *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
-        if ( !forward )
-        {
-            return guarded(c->owner->error, [&]()
-            {
-                ttd::trace &t = *c->trace;
-                uint32_t tid = thread_after(t, c->position);
-                int stop = ITTD_STOP_BOUNDARY;
-                uint64_t dest = first_position(t);
-                // The last instruction this thread ran.
-                std::optional<ttd::access_event> prev = t.previous_instruction(c->position + 1, tid);
-                if ( prev )
-                {
-                    dest = prev->step - 1;
-                    stop = ITTD_STOP_STEPPED;
-                    if ( is_ret_insn(*prev) )
-                    {
-                        // Standing just before the ret is standing in the callee.
-                        std::optional<ttd::access_event> call
-                            = entering_call(t, prev->step - 1, tid, kNavFrameWalk);
-                        if ( call )
-                            dest = call->step - 1;
-                    }
-                }
-                move_guarded(c, dest, false, &stop);
-                if ( out_stop != nullptr )
-                    *out_stop = stop;
-                return ITTD_OK;
-            });
-        }
         return guarded(c->owner->error, [&]()
         {
             ttd::trace &t = *c->trace;
             uint32_t tid = thread_after(t, c->position);
             int stop = ITTD_STOP_BOUNDARY;
-            uint64_t dest = last_position(t);
-
-            std::optional<ttd::access_event> cur = t.next_instruction(c->position, tid);
-            std::optional<ttd::access_event> after = cur ? t.next_instruction(cur->step, tid) : std::nullopt;
-            if ( cur && after )
+            uint64_t dest = forward ? last_position(t) : first_position(t);
+            if ( forward )
             {
-                if ( is_call_insn(*cur) )
+                std::optional<ttd::access_event> cur = t.next_instruction(c->position, tid);
+                std::optional<ttd::access_event> after = cur ? t.next_instruction(cur->step, tid) : std::nullopt;
+                if ( cur && after )
                 {
-                    if ( std::optional<uint64_t> ret = return_of(t, cur->step, tid) )
+                    if ( is_call_insn(*cur) )
                     {
-                        dest = *ret;                // just after the ret
+                        if ( std::optional<uint64_t> ret = return_of(t, cur->step, tid) )
+                        {
+                            dest = *ret;            // just after the ret
+                            stop = ITTD_STOP_STEPPED;
+                        }
+                    }
+                    else
+                    {
+                        dest = after->step - 1;
                         stop = ITTD_STOP_STEPPED;
                     }
                 }
-                else
+            }
+            else if ( std::optional<ttd::access_event> prev = t.previous_instruction(c->position + 1, tid) )
+            {
+                // 'prev' is the last instruction this thread ran.
+                dest = prev->step - 1;
+                stop = ITTD_STOP_STEPPED;
+                if ( is_ret_insn(*prev) )
                 {
-                    dest = after->step - 1;
-                    stop = ITTD_STOP_STEPPED;
+                    // Standing just before the ret is standing in the callee.
+                    std::optional<ttd::access_event> call = entering_call(t, prev->step - 1, tid, kNavFrameWalk);
+                    if ( call )
+                        dest = call->step - 1;
                 }
             }
-
             // A breakpoint inside the call stops the step there, as it would
             // on a live process.
-            uint64_t bp = 0;
-            size_t hit = 0;
-            if ( !c->breakpoints.empty() && nearest_hit(c, c->breakpoints, true, &bp, &hit)
-              && bp > c->position && bp < dest )
-            {
-                dest = bp;
-                stop = ITTD_STOP_BREAKPOINT;
-            }
-            move(c, dest);
+            move_guarded(c, dest, forward != 0, &stop);
             if ( out_stop != nullptr )
                 *out_stop = stop;
             return ITTD_OK;
@@ -1306,9 +1310,7 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->mtx);
-            auto mods = b->trace->modules();
-            std::vector<ttd::module_entry> v(mods.begin(), mods.end());
-            return fill(v, buf, cap, out_count, [](const ttd::module_entry &m)
+            return fill(b->trace->modules(), buf, cap, out_count, [](const ttd::module_entry &m)
             {
                 ittd_module out{};
                 out.base     = m.base;
@@ -1349,7 +1351,7 @@ namespace
                 if ( m.unload_step )
                     add(at(*m.unload_step), ITTD_EV_MODULE_UNLOAD, 0, "Unloaded " + name);
             }
-            for ( const thread_span &s : thread_spans(t) )
+            for ( const thread_span &s : b->spans )
             {
                 char text[64];
                 std::snprintf(text, sizeof(text), "Thread %u first runs", s.tid);
@@ -1474,40 +1476,6 @@ namespace
         return UINT64_MAX;
     }
 
-    // The opcode of an executed instruction, past its prefixes, and the byte
-    // after it; false when the bytes are not there.
-    bool opcode_of(const ttd::access_event &ev, bool is64, uint8_t *op, uint8_t *modrm)
-    {
-        size_t n = std::min<size_t>(ev.size == 0 ? ev.payload.size() : (size_t)ev.size, ev.payload.size());
-        size_t i = 0;
-        for ( ; i < n; i++ )
-        {
-            uint8_t c = ev.payload[i];
-            bool prefix = c == 0x66 || c == 0x67 || c == 0xF2 || c == 0xF3 || c == 0x2E || c == 0x3E
-                       || c == 0x26 || c == 0x36 || c == 0x64 || c == 0x65 || c == 0xF0
-                       || (is64 && c >= 0x40 && c <= 0x4F);
-            if ( !prefix )
-                break;
-        }
-        if ( i >= n )
-            return false;
-        *op    = ev.payload[i];
-        *modrm = i + 1 < n ? ev.payload[i + 1] : 0;
-        return true;
-    }
-
-    // E8, FF /2 and FF /3, and 9A on 32-bit.
-    bool is_call_op(uint8_t op, uint8_t modrm, bool is64)
-    {
-        uint8_t reg = (modrm >> 3) & 7;
-        return op == 0xE8 || (op == 0x9A && !is64) || (op == 0xFF && (reg == 2 || reg == 3));
-    }
-
-    bool is_ret_op(uint8_t op)
-    {
-        return op == 0xC3 || op == 0xC2 || op == 0xCB || op == 0xCA;
-    }
-
     // Every call made in steps [s0, s1]. The reader lists calls by target, so
     // this walks the execute events: a call is recognised by its bytes, its
     // callee is the thread's next instruction, and its return is the first
@@ -1618,10 +1586,7 @@ namespace
             // No targets: every call in the range -- for a short one, such as
             // the run of one function a call tree shows.
             if ( ntargets == 0 )
-            {
-                const ttd::module_entry *m = main_module(t);
-                all = every_call(t, s0, s1, m == nullptr || m->machine != 0x14c, control(progress));
-            }
+                all = every_call(t, s0, s1, is64(t), control(progress));
             for ( size_t i = 0; i < ntargets; i++ )
             {
                 // Each target's share of the whole: a pattern can name
@@ -1642,10 +1607,9 @@ namespace
             }
             std::sort(all.begin(), all.end(), [](const ttd::call_event &a, const ttd::call_event &b)
                       { return a.entry_step < b.entry_step; });
-            // In entry order, after the sort: each needs the CPU at its entry,
-            // and the reader rebuilds that from the nearest checkpoint, which
-            // it keeps only one of -- out of order, nearly every entry would
-            // pay for its checkpoint again.
+            // In entry order, after the sort: neighbouring entries walk the
+            // same stretch of the event stream, whose decoded chunks the
+            // reader keeps.
             for ( ttd::call_event &e : all )
                 if ( !e.is_call && e.return_step == UINT64_MAX )
                     e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
@@ -1899,14 +1863,6 @@ namespace
         });
     }
 
-    const x86_register kGp[ITTD_REG_GP_COUNT] = {
-        x86_register::rax, x86_register::rcx, x86_register::rdx, x86_register::rbx,
-        x86_register::rsp, x86_register::rbp, x86_register::rsi, x86_register::rdi,
-        x86_register::r8,  x86_register::r9,  x86_register::r10, x86_register::r11,
-        x86_register::r12, x86_register::r13, x86_register::r14, x86_register::r15,
-        x86_register::rip,
-    };
-
     int fork_regs(ittd_fork *hf, ittd_regs *out)
     {
         fork_t *f = F(hf);
@@ -1980,10 +1936,10 @@ namespace
             ttd::record_settings rs{};
             rs.path             = utf8_path(path);
             rs.max_instructions = max_instructions;
+            const std::u8string parent = f->owner->path.u8string();
             rs.manifest = {
                 { "tool", "ida-ttd" },
-                { "parent", f->owner->path.u8string().empty() ? std::string()
-                            : std::string(reinterpret_cast<const char *>(f->owner->path.u8string().c_str())) },
+                { "parent", std::string(parent.begin(), parent.end()) },
                 { "parent_id", f->trace->id() },
                 { "fork_position", std::to_string(f->position) },
             };
@@ -2014,13 +1970,15 @@ namespace
 
     // ------------------------------------------------------------ replay scans
 
-    // The position of text that appeared at 'step' (0: there from the start).
+    // The position of text that appeared at 'step'. A step at or before the
+    // recording's start means there from the start: for a fork's recording,
+    // which starts at the fork position, before_step would name a position
+    // before its first.
     ittd_position appeared_at(const ttd::trace &t, uint64_t step)
     {
-        return step == 0 ? at(first_position(t)) : before_step(step);
+        return step <= first_position(t) ? at(first_position(t)) : before_step(step);
     }
 
-    // What a replay scan's answer depends on besides the recording.
     // Replay the whole recording with a scanner attached. Where the replay
     // diverges from the recording -- typically because this machine's files
     // are not the ones a host recording ran against -- it is not the end: the
@@ -2171,7 +2129,6 @@ namespace
         }
 
     private:
-        static constexpr uint64_t kPage = 4096;
         struct Page
         {
             std::vector<uint8_t> bytes, mapped;
@@ -2221,23 +2178,26 @@ namespace
         const uint64_t start = t.start_position();
         const uint64_t last  = last_position(t);
 
+        // One buffer for every read: this runs after each instruction that
+        // wrote, and shadow.read fills all of what it is given.
+        std::vector<uint8_t> window;
         auto scan_range = [&](uint64_t address, uint64_t size, uint64_t read_at, uint64_t step)
         {
             for ( uint64_t off = 0; off < size; off += kScanChunk )
             {
                 const uint64_t b = off > kStringContext ? off - kStringContext : 0;
                 const uint64_t e = std::min<uint64_t>(size, off + kScanChunk + kStringContext);
-                std::vector<uint8_t> bytes(size_t(e - b));
-                if ( shadow.read(address + b, bytes.size(), bytes.data(), read_at) )
+                window.resize(size_t(e - b));
+                if ( shadow.read(address + b, window.size(), window.data(), read_at) )
                 {
-                    strings.inspect(address + b, bytes, step);
+                    strings.inspect(address + b, window, step);
                     continue;
                 }
-                for ( uint64_t page = b; page < e; page += 4096 )
+                for ( uint64_t page = b; page < e; page += kPage )
                 {
-                    bytes.resize(size_t(std::min<uint64_t>(4096, e - page)));
-                    if ( shadow.read(address + page, bytes.size(), bytes.data(), read_at) )
-                        strings.inspect(address + page, bytes, step);
+                    window.resize(size_t(std::min<uint64_t>(kPage, e - page)));
+                    if ( shadow.read(address + page, window.size(), window.data(), read_at) )
+                        strings.inspect(address + page, window, step);
                 }
             }
         };
@@ -2283,18 +2243,14 @@ namespace
         const uint64_t kinds = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write
                              | (uint64_t)ttd::access_kind::execute;
         const uint64_t total_events = std::max<uint64_t>(t.metadata().event_count, 1);
+        const ttd::operation_control ctl = control(progress);
         ttd::event_reader reader(t, 0);
         uint64_t seen = 0;
         while ( std::optional<ttd::access_event> ev = reader.next(kinds) )
         {
             const uint64_t number = reader.last_number();
-            if ( (++seen & 0xFFFF) == 0 && progress != nullptr )
-            {
-                if ( progress->cancelled != nullptr && progress->cancelled(progress->ud) != 0 )
-                    throw ttd::operation_cancelled();
-                if ( progress->report != nullptr )
-                    progress->report(progress->ud, (uint32_t)std::min<uint64_t>(1000, number * 1000 / total_events));
-            }
+            if ( (++seen & 0xFFFF) == 0 )
+                ctl.report(number, total_events);
             if ( ev->step != pending_step )
                 flush();
             while ( next_map < maps.size() && maps[next_map].event_number <= number )
@@ -2362,6 +2318,7 @@ namespace
         }
     }
 
+    // What a replay scan's answer depends on besides the recording.
     std::string scan_key(const ittd_fork_settings *settings)
     {
         std::string key;
@@ -2548,9 +2505,6 @@ namespace
         });
     }
 
-    // The instruction stream of one thread (or all) over a range of positions,
-    // straight from the execute events: no replay, so a long window costs only
-    // the events it reads. Stops after 'cap'.
     // ------------------------------------------------------------ the memory heatmap
     //
     // Every recorded access, counted by page and by slice of the recording's
@@ -2574,24 +2528,34 @@ namespace
                 const uint64_t start = t.start_position();
                 const uint64_t span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), start), 1);
                 const uint64_t total = std::max<uint64_t>(t.metadata().event_count, 1);
-                std::unordered_map<uint64_t, ittd_heat_cell> cells;
+                // Keyed by page and slice. Not packed into one integer: a page
+                // number at the smallest shift takes 56 bits, the slice 12.
+                struct cell_key
+                {
+                    uint64_t page;
+                    uint64_t slice;
+                    bool operator==(const cell_key &o) const { return page == o.page && slice == o.slice; }
+                };
+                struct cell_hash
+                {
+                    size_t operator()(const cell_key &k) const
+                    {
+                        return std::hash<uint64_t>()(k.page * 0x9E3779B97F4A7C15ull ^ k.slice);
+                    }
+                };
+                std::unordered_map<cell_key, ittd_heat_cell, cell_hash> cells;
+                const ttd::operation_control ctl = control(progress);
                 ttd::event_reader reader(t, 0);
                 uint64_t seen = 0;
                 while ( std::optional<ttd::access_event> ev = reader.next() )
                 {
-                    if ( (++seen & 0xFFFF) == 0 && progress != nullptr )
-                    {
-                        if ( progress->cancelled != nullptr && progress->cancelled(progress->ud) != 0 )
-                            throw ttd::operation_cancelled();
-                        if ( progress->report != nullptr )
-                            progress->report(progress->ud,
-                                             (uint32_t)std::min<uint64_t>(1000, reader.last_number() * 1000 / total));
-                    }
+                    if ( (++seen & 0xFFFF) == 0 )
+                        ctl.report(reader.last_number(), total);
                     uint64_t slice = (ev->step - std::min(ev->step, start)) * slices / span;
                     if ( slice >= slices )
                         slice = slices - 1;
                     const uint64_t page = ev->address >> page_shift;
-                    ittd_heat_cell &c = cells[(page << 12) | slice];
+                    ittd_heat_cell &c = cells[cell_key{ page, slice }];
                     c.page  = page;
                     c.slice = (uint32_t)slice;
                     switch ( ev->kind )
@@ -2632,6 +2596,9 @@ namespace
         });
     }
 
+    // The instruction stream of one thread (or all) over a range of positions,
+    // straight from the execute events: no replay, so a long window costs only
+    // the events it reads. Stops after 'cap'.
     int query_instructions(ittd_backend *hb, ittd_position_range when, uint32_t tid,
                            ittd_access *buf, size_t cap, size_t *out_count,
                            int *out_truncated, const ittd_progress *progress)
@@ -2700,11 +2667,6 @@ namespace
         }
     }
 
-    // The memory map at the start and every change to it, from the trace's
-    // memory regions section (format section 17). Each entry is what
-    // NtQueryVirtualMemory showed for its range from its position on, which is
-    // ITTD_MAP_STATE: the core folds it by overwriting the range. The values
-    // are already Windows' own.
     // Who asked for a change the map records: the routine whose system call
     // made it (the call that entered the syscall's stub, so ntdll's
     // NtAllocateVirtualMemory) and the call sites that led there, innermost
@@ -2741,6 +2703,11 @@ namespace
         }
     }
 
+    // The memory map at the start and every change to it, from the trace's
+    // memory regions section (format section 17). Each entry is what
+    // NtQueryVirtualMemory showed for its range from its position on, which is
+    // ITTD_MAP_STATE: the core folds it by overwriting the range. The values
+    // are already Windows' own.
     int query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
                               size_t *out_count, int *out_truncated, const ittd_progress *)
     {
