@@ -2,14 +2,19 @@
 
 Drives a real debugger session over the reference sample -- the program in
 the ttd-traces folder that stores 0x2222222222222222 over 0x1111111111111111
-at image base + 0x70A8 -- and checks every movement and analysis against
-what that program is known to do. The same checks hold for a Microsoft
-recording and a Sogen one of it.
+in a global -- and checks every movement and analysis against what that
+program is known to do. The same checks hold for a Microsoft recording and a
+Sogen one of it.
+
+The addresses are found in the database rather than written in, because the
+sample has been rebuilt and recordings of more than one build are about: the
+store is the instruction that writes the register loaded with the constant,
+main is the function holding it, and so on (sample_addresses).
 
 Open the trace (File > Open, or the MCP's open_database), then:
 
     exec(open(r"...\\scripts\\selftest.py").read())
-    run()                    # base of the recorded image, from the database
+    run()
 
 Each line of the result is "ok" or "FAIL" with the check's name.
 
@@ -18,9 +23,14 @@ On a Sogen recording, run_sogen() also checks the Sogen-only commands
 and a fork); see its docstring.
 """
 import json
+import os
 import time
 
+import ida_bytes
+import ida_funcs
 import ida_nalt
+import ida_segment
+import idautils
 import idc
 
 
@@ -28,9 +38,58 @@ def T(cmd):
     return json.loads(idc.eval_idc('ttd(%s)' % json.dumps(cmd)))
 
 
-def run(base=None):
-    B = base if base is not None else ida_nalt.get_imagebase()
-    G = B + 0x70A8                       # the global the sample overwrites
+def sample_addresses():
+    """The sample's landmarks in this database, as a dict:
+
+    store      the instruction that writes 0x2222222222222222 over the global
+    next       the instruction after it
+    glob       the global
+    main       the function holding the store
+    call       the last call in main before the store; after_call follows it
+    crt_call   the CRT's call of main; crt_next and crt_next2 follow it
+    text       (start, end) of .text
+    """
+    text = ida_segment.get_segm_by_name(".text")
+    data = ida_bytes.get_bytes(text.start_ea, text.end_ea - text.start_ea) or b""
+    # mov reg, 2222222222222222h: REX.W (48, or 49 for r8-r15), B8+r, imm64.
+    i = data.find(bytes.fromhex("22" * 8))
+    if i < 2:
+        raise RuntimeError("the constant 0x2222222222222222 is not in .text: not the reference sample")
+    load = text.start_ea + i - 2
+    reg = idc.print_operand(load, 0)
+    store = load
+    while True:
+        store = idc.next_head(store, text.end_ea)
+        if store == idc.BADADDR:
+            raise RuntimeError("no store of %s after %X" % (reg, load))
+        if idc.print_insn_mnem(store) == "mov" and idc.print_operand(store, 1) == reg \
+                and idc.get_operand_type(store, 0) == idc.o_mem:
+            break
+    glob = idc.get_operand_value(store, 0)
+    main = ida_funcs.get_func(store).start_ea
+    call = store
+    while True:
+        call = idc.prev_head(call, main)
+        if call == idc.BADADDR:
+            raise RuntimeError("no call in main before the store")
+        if idc.print_insn_mnem(call) == "call":
+            break
+    crt = [x for x in idautils.CodeRefsTo(main, 0) if idc.print_insn_mnem(x) == "call"]
+    if len(crt) != 1:
+        raise RuntimeError("main is called from %d places, not one" % len(crt))
+    crt_next = idc.next_head(crt[0], text.end_ea)
+    return {
+        "store": store, "next": idc.next_head(store, text.end_ea), "glob": glob, "main": main,
+        "call": call, "after_call": idc.next_head(call, text.end_ea),
+        "crt_call": crt[0], "crt_next": crt_next, "crt_next2": idc.next_head(crt_next, text.end_ea),
+        "text": (text.start_ea, text.end_ea),
+    }
+
+
+def run():
+    A = sample_addresses()
+    B = ida_nalt.get_imagebase()
+    G = A["glob"]
     res, fails = [], []
 
     def chk(name, cond, detail=""):
@@ -44,60 +103,63 @@ def run(base=None):
     t0 = time.time()
     r = T("start B4")
     chk("start", r.get("ok") and r.get("process_state") == -1, r.get("pos"))
-    r = T("runto %X" % (B + 0x14E7))
-    chk("runto the store", pc(r) == B + 0x14E7, r.get("pos"))
+    r = T("runto %X" % A["store"])
+    chk("runto the store", pc(r) == A["store"], r.get("pos"))
     chk("old value before it", T("read %X 8" % G).get("bytes") == "1111111111111111")
     r = T("step")
-    chk("step", pc(r) == B + 0x14EE)
+    chk("step", pc(r) == A["next"])
     chk("new value after it", T("read %X 8" % G).get("bytes") == "2222222222222222")
     r = T("step back")
-    chk("step back", pc(r) == B + 0x14E7)
+    chk("step back", pc(r) == A["store"])
 
-    r = T("runto %X back" % (B + 0x14D0))
-    chk("runto backwards", pc(r) == B + 0x14D0)
+    r = T("runto %X back" % A["call"])
+    chk("runto backwards", pc(r) == A["call"])
     call_pos = r.get("pos")
     r = T("over")
-    chk("step over a call", pc(r) == B + 0x14D6)
+    chk("step over a call", pc(r) == A["after_call"])
     r = T("over back")
-    chk("step back over the call", pc(r) == B + 0x14D0 and r.get("pos") == call_pos, (r.get("pos"), r.get("pc")))
+    chk("step back over the call", pc(r) == A["call"] and r.get("pos") == call_pos, (r.get("pos"), r.get("pc")))
 
-    T("runto %X" % (B + 0x14E7))
+    T("runto %X" % A["store"])
     r = T("out")
-    chk("step out of main", pc(r) == B + 0x196F, r.get("pc"))
+    chk("step out of main", pc(r) == A["crt_next"], r.get("pc"))
     r = T("step")
-    chk("step after it", pc(r) == B + 0x1971, r.get("pc"))
+    chk("step after it", pc(r) == A["crt_next2"], r.get("pc"))
     # The CRT's entry tail-jumps to the function that called main, so the call
     # that entered its frame is the system's call of the entry point.
     r = T("out back")
     lp = pc(r) or 0
+    image_end = max(idc.get_segm_end(s) for s in idautils.Segments() if B <= s < B + 0x100000)
     chk("step out backwards lands on a call outside the image",
-        not (B <= lp < B + 0xB000) and idc.print_insn_mnem(lp) == "call", r.get("pc"))
-    r = T("runto %X" % (B + 0x13F0))
-    chk("runto main", pc(r) == B + 0x13F0)
+        not (B <= lp < image_end) and idc.print_insn_mnem(lp) == "call", r.get("pc"))
+    r = T("runto %X" % A["main"])
+    chk("runto main", pc(r) == A["main"])
     r = T("out back")
-    chk("step out backwards from main's entry lands on the call", pc(r) == B + 0x196A, r.get("pc"))
+    chk("step out backwards from main's entry lands on the call", pc(r) == A["crt_call"], r.get("pc"))
 
     # A write breakpoint on the global, as a user sets one: it stops on the
     # store itself, running forward from main and backward from past it.
     import ida_dbg
     import ida_idd
-    T("runto %X" % (B + 0x13F0))
+    T("runto %X" % A["main"])
     chk("write breakpoint accepted", ida_dbg.add_bpt(G, 8, ida_idd.BPT_WRITE))
     r = T("run")
-    chk("write breakpoint stops on the store", pc(r) == B + 0x14E7, r.get("pc"))
+    chk("write breakpoint stops on the store", pc(r) == A["store"], r.get("pc"))
     T("step")
     T("step")
     r = T("run back")
-    chk("... and running back into it too", pc(r) == B + 0x14E7, r.get("pc"))
+    chk("... and running back into it too", pc(r) == A["store"], r.get("pc"))
     ida_dbg.del_bpt(G)
 
+    lo, hi = A["text"]
     a = T("an.search %X %X rw" % (G, G + 8))
     chk("memory search: one write, one read", a.get("count") == 2 and a["accesses"][0]["kind"] == "Write")
-    a = T("an.coverage %X %X" % (B + 0x1000, B + 0x2578))
+    a = T("an.coverage %X %X" % (lo, hi))
     chk("coverage", a.get("executed", 0) > 600, a.get("executed"))
-    a = T("an.callsites %X %X" % (B + 0x1000, B + 0x2578))
-    chk("indirect call sites", a.get("sites") == 24, a.get("sites"))
-    a = T("an.trace %X 5" % (B + 0x13F0))
+    # 24 in the first build of the sample, 25 in the second.
+    a = T("an.callsites %X %X" % (lo, hi))
+    chk("indirect call sites", a.get("sites", 0) >= 24, a.get("sites"))
+    a = T("an.trace %X 5" % A["main"])
     # The return value reads "(int)0x0" when main has no type in the database
     # and "(__int64)0" once IDA has guessed one (decompiling it does): compare
     # the number, not the text.
@@ -125,7 +187,7 @@ def run_sogen(registry=None, host=False, fork_path=None):
     again (the reference recordings were made that way). fork_path: where the
     fork goes (default: next to the database).
     """
-    import os
+    A = sample_addresses()
     res, fails = [], []
 
     def chk(name, cond, detail=""):
@@ -150,7 +212,7 @@ def run_sogen(registry=None, host=False, fork_path=None):
         st = T("an.strings 8 5" + extra)
         chk("strings recovered by a replay", st.get("ok") and st.get("count", 0) > 0,
             (st.get("count"), st.get("error")))
-        T("runto %X" % (ida_nalt.get_imagebase() + 0x13F0))
+        T("runto %X" % A["main"])
         path = fork_path or os.path.join(os.path.dirname(idc.get_idb_path()), "selftest-fork.sogttd")
         f = T('an.fork "%s" 4E20 rax=1%s' % (path, extra))
         chk("a fork records", f.get("ok") and f.get("instructions") == 0x4E20 and os.path.exists(path),
@@ -158,9 +220,8 @@ def run_sogen(registry=None, host=False, fork_path=None):
         # The fork as the GUI makes it: fork here, change a register and the
         # global through IDA's own debugger calls, record.
         import ida_dbg
-        B = ida_nalt.get_imagebase()
-        G = B + 0x70A8
-        T("runto %X" % (B + 0x14E7))
+        G = A["glob"]
+        T("runto %X" % A["store"])
         T("an.forkhere")
         ok_reg = ida_dbg.set_reg_val("RAX", 0x1234)
         ok_mem = ida_dbg.write_dbg_memory(G, bytes.fromhex("33" * 8)) == 8
@@ -193,7 +254,7 @@ def run_sogen(registry=None, host=False, fork_path=None):
         sw = T('switch "%s"' % path2)
         chk("switching replays the fork in this database",
             sw.get("ok") and os.path.normcase(sw.get("trace", "")) == os.path.normcase(path2)
-            and sw.get("pc") and int(sw["pc"], 16) == B + 0x14E7
+            and sw.get("pc") and int(sw["pc"], 16) == A["store"]
             and ida_dbg.get_reg_val("RAX") == 0x1234 and idc.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8),
             (sw.get("trace"), sw.get("pc"), sw.get("error")))
         sw = T('switch "%s"' % parent)
