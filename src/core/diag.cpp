@@ -56,10 +56,20 @@ namespace idattd
     {
     }
 
+    DiagTimer::DiagTimer(const char *what, uint64_t ea, uint64_t size, uint32_t threshold_ms)
+        : m_what(what), m_threshold(threshold_ms), m_t0(GetTickCount64()),
+          m_range(true), m_ea(ea), m_size(size)
+    {
+    }
+
     DiagTimer::~DiagTimer()
     {
         uint64_t ms = GetTickCount64() - m_t0;
-        if ( ms >= m_threshold )
+        if ( ms < m_threshold )
+            return;
+        if ( m_range )
+            diag("%s %llX+%llX: %llu ms", m_what, m_ea, m_size, ms);
+        else
             diag("%s%s%s: %llu ms", m_what, m_detail.empty() ? "" : " ", m_detail.c_str(), ms);
     }
 }

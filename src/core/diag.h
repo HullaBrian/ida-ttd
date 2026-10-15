@@ -22,6 +22,10 @@ namespace idattd
     public:
         DiagTimer(const char *what, uint32_t threshold_ms = 200);
         DiagTimer(const char *what, const qstring &detail, uint32_t threshold_ms = 200);
+        // '<what> <ea>+<size>', the detail formatted only if the line is
+        // written: for timers on every memory read, where building a string
+        // each time would cost more than most reads.
+        DiagTimer(const char *what, uint64_t ea, uint64_t size, uint32_t threshold_ms = 200);
         ~DiagTimer();
 
     private:
@@ -29,5 +33,8 @@ namespace idattd
         qstring     m_detail;
         uint32_t    m_threshold;
         uint64_t    m_t0;
+        bool        m_range = false;   // log m_ea+m_size rather than m_detail
+        uint64_t    m_ea = 0;
+        uint64_t    m_size = 0;
     };
 }

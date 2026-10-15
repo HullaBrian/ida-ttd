@@ -18,6 +18,31 @@ namespace idattd
         return ittd_position_range{ to_abi(r.first), to_abi(r.last) };
     }
 
+    static uint32_t to_abi_kinds(uint8_t kinds)
+    {
+        return ((kinds & ACCESS_READ)  ? ITTD_ACCESS_READ  : 0)
+             | ((kinds & ACCESS_WRITE) ? ITTD_ACCESS_WRITE : 0)
+             | ((kinds & ACCESS_EXEC)  ? ITTD_ACCESS_EXEC  : 0);
+    }
+
+    static std::vector<ittd_range> to_abi(const std::vector<std::pair<ea_t, ea_t>> &ranges)
+    {
+        std::vector<ittd_range> r;
+        r.reserve(ranges.size());
+        for ( const auto &p : ranges )
+            r.push_back(ittd_range{ (uint64_t)p.first, (uint64_t)p.second });
+        return r;
+    }
+
+    // A fixed-size string field of an ABI struct. The ABI says it is
+    // NUL-terminated, but a backend that filled it to the brim must not make
+    // the core read past the struct.
+    template <size_t N>
+    static qstring fixed_str(const char (&s)[N])
+    {
+        return qstring(s, strnlen(s, N));
+    }
+
     // A ProgressSink as the ABI's ittd_progress. The sink's percent is
     // coarser than the ABI's permille; the sink is told only when it changes.
     struct ProgressBridge
@@ -32,6 +57,9 @@ namespace idattd
             abi.report    = &report;
             abi.cancelled = &cancelled;
         }
+        // abi.ud points at this object, so a copy would hand out a dangling one.
+        ProgressBridge(const ProgressBridge &) = delete;
+        ProgressBridge &operator=(const ProgressBridge &) = delete;
         const ittd_progress *get() const { return sink != nullptr ? &abi : nullptr; }
 
         static void report(void *ud, uint32_t permille)
@@ -67,7 +95,8 @@ namespace idattd
     // The count-then-fill convention: ask for the count, then fill an array
     // that large. A backend answers the same count twice for an unchanged
     // recording, but if it ever grew between the calls the array is grown and
-    // the fill repeated rather than the tail silently lost.
+    // the fill repeated rather than the tail silently lost. A count too large
+    // to allocate fails the query instead of throwing into IDA.
     template <typename T, typename Call>
     static int count_fill(std::vector<T> *out, Call call)
     {
@@ -75,7 +104,15 @@ namespace idattd
         int rc = call((T *)nullptr, (size_t)0, &n);
         for ( int attempt = 0; rc == ITTD_OK && attempt < 3; attempt++ )
         {
-            out->assign(n, T{});
+            try
+            {
+                out->assign(n, T{});
+            }
+            catch ( const std::exception & )
+            {
+                out->clear();
+                return ITTD_E_FAILED;
+            }
             size_t got = n;
             rc = call(out->data(), out->size(), &got);
             if ( rc != ITTD_OK || got <= out->size() )
@@ -147,9 +184,7 @@ namespace idattd
 
         size_t read_memory(ea_t ea, void *buf, size_t size, std::vector<uint8_t> *known) override
         {
-            qstring what;
-            what.sprnt("%llX+%llX", (uint64_t)ea, (uint64_t)size);
-            DiagTimer diag_timer("cursor.read_memory", what);
+            DiagTimer diag_timer("cursor.read_memory", (uint64_t)ea, (uint64_t)size);
             if ( m_api->cursor_read_memory == nullptr || buf == nullptr || size == 0 )
                 return 0;
             std::vector<uint8_t> local;
@@ -194,7 +229,7 @@ namespace idattd
         ti.tid         = t.tid;
         ti.created     = from_abi(t.created);
         ti.exited      = from_abi(t.exited);
-        ti.name        = t.name;
+        ti.name        = fixed_str(t.name);
         ti.teb         = (ea_t)t.teb;
         ti.teb32       = (ea_t)t.teb32;
         ti.stack_base  = (ea_t)t.stack_base;
@@ -257,9 +292,7 @@ namespace idattd
                 ittd_breakpoint x{};
                 x.addr  = (uint64_t)b.addr;
                 x.size  = b.size == 0 ? 1 : b.size;
-                x.kinds = ((b.kinds & ACCESS_READ)  ? ITTD_ACCESS_READ  : 0)
-                        | ((b.kinds & ACCESS_WRITE) ? ITTD_ACCESS_WRITE : 0)
-                        | ((b.kinds & ACCESS_EXEC)  ? ITTD_ACCESS_EXEC  : 0);
+                x.kinds = to_abi_kinds(b.kinds);
                 v.push_back(x);
             }
             // The ABI answers for the whole set.
@@ -378,8 +411,8 @@ namespace idattd
         m_info.fingerprint  = ti.fingerprint;
         m_info.first        = from_abi(ti.first);
         m_info.last         = from_abi(ti.last);
-        m_info.main_module  = ti.main_module;
-        m_info.backend_name = ti.backend_name;
+        m_info.main_module  = fixed_str(ti.main_module);
+        m_info.backend_name = fixed_str(ti.backend_name);
 
         uint32_t c = ti.capabilities;
         m_caps.access_queries   = (c & ITTD_CAP_ACCESS_QUERIES) != 0;
@@ -497,8 +530,8 @@ namespace idattd
             ModuleInfo mi;
             mi.base     = (ea_t)m.base;
             mi.size     = m.size;
-            mi.name     = m.name;
-            mi.path     = m.path;
+            mi.name     = fixed_str(m.name);
+            mi.path     = fixed_str(m.path);
             mi.loaded   = from_abi(m.loaded);
             mi.unloaded = from_abi(m.unloaded);
             mi.machine   = (uint16_t)m.machine;
@@ -536,7 +569,7 @@ namespace idattd
         {
             TraceEvent te;
             te.pos  = from_abi(e.pos);
-            te.what = e.text;
+            te.what = fixed_str(e.text);
             out.push_back(te);
         }
         return out;
@@ -553,9 +586,7 @@ namespace idattd
             return QueryResult{};
         ProgressBridge pb(progress);
         int trunc = 0;
-        uint32_t k = ((kinds & ACCESS_READ)  ? ITTD_ACCESS_READ  : 0)
-                   | ((kinds & ACCESS_WRITE) ? ITTD_ACCESS_WRITE : 0)
-                   | ((kinds & ACCESS_EXEC)  ? ITTD_ACCESS_EXEC  : 0);
+        uint32_t k = to_abi_kinds(kinds);
         std::vector<ittd_access> v;
         int rc = count_fill(&v, [&](ittd_access *b, size_t cap, size_t *n)
         {
@@ -585,17 +616,15 @@ namespace idattd
             return QueryResult{};
         ProgressBridge pb(progress);
         int trunc = 0;
-        std::vector<ittd_range> r;
-        for ( const auto &p : ranges )
-            r.push_back(ittd_range{ (uint64_t)p.first, (uint64_t)p.second });
+        std::vector<ittd_range> r = to_abi(ranges);
         std::vector<uint64_t> v;
         int rc = count_fill(&v, [&](uint64_t *b, size_t cap, size_t *n)
         {
             return m_api->query_executed(m_handle, r.data(), r.size(), b, cap, n, &trunc, pb.get());
         });
-        // The ABI's answer is already sorted and distinct.
-        for ( uint64_t a : v )
-            out->push_back((ea_t)a);
+        // The ABI's answer is already sorted and distinct. A module's worth is
+        // millions of addresses: one append, not a push_back each.
+        out->insert(out->end(), v.begin(), v.end());
         return result_of(rc, trunc);
     }
 
@@ -639,9 +668,7 @@ namespace idattd
             return QueryResult{};
         ProgressBridge pb(progress);
         int trunc = 0;
-        std::vector<ittd_range> r;
-        for ( const auto &p : ranges )
-            r.push_back(ittd_range{ (uint64_t)p.first, (uint64_t)p.second });
+        std::vector<ittd_range> r = to_abi(ranges);
         std::vector<ittd_call_target> v;
         int rc = count_fill(&v, [&](ittd_call_target *b, size_t cap, size_t *n)
         {
@@ -708,7 +735,7 @@ namespace idattd
             e.result = x.result;
             e.number = x.number;
             e.tid    = x.tid;
-            e.name   = qstring(x.name, strnlen(x.name, sizeof(x.name)));
+            e.name   = fixed_str(x.name);
             out->push_back(std::move(e));
         }
         return result_of(rc, trunc);
@@ -741,14 +768,20 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
-    static ittd_fork_settings replay_settings(const ReplaySettings &s)
+    // The settings point into 'registry_dir', which must outlive them.
+    static ittd_fork_settings replay_settings(const qstring &registry_dir, bool strict, bool allow_host)
     {
         ittd_fork_settings fs{};
         fs.size  = sizeof(fs);
-        fs.flags = (s.strict ? ITTD_FORK_STRICT : 0) | (s.allow_host ? ITTD_FORK_ALLOW_HOST : 0);
-        fs.registry_dir   = s.registry_dir.empty() ? nullptr : s.registry_dir.c_str();
+        fs.flags = (strict ? ITTD_FORK_STRICT : 0) | (allow_host ? ITTD_FORK_ALLOW_HOST : 0);
+        fs.registry_dir   = registry_dir.empty() ? nullptr : registry_dir.c_str();
         fs.emulation_root = nullptr;
         return fs;
+    }
+
+    static ittd_fork_settings replay_settings(const ReplaySettings &s)
+    {
+        return replay_settings(s.registry_dir, s.strict, s.allow_host);
     }
 
     qstring BackendModule::scan_notice() const
@@ -790,7 +823,7 @@ namespace idattd
             h.pos     = from_abi(x.pos);
             h.wide    = x.wide != 0;
             h.length  = x.length;
-            h.text    = qstring(x.text, strnlen(x.text, sizeof(x.text)));
+            h.text    = fixed_str(x.text);
             out->push_back(std::move(h));
         }
         return result_of(rc, trunc);
@@ -822,8 +855,8 @@ namespace idattd
             h.last_pos  = from_abi(x.last_pos);
             h.writer_ip = (ea_t)x.writer_ip;
             h.writes    = x.writes;
-            h.kind      = qstring(x.kind, strnlen(x.kind, sizeof(x.kind)));
-            h.preview   = qstring(x.preview, strnlen(x.preview, sizeof(x.preview)));
+            h.kind      = fixed_str(x.kind);
+            h.preview   = fixed_str(x.preview);
             out->push_back(std::move(h));
         }
         return result_of(rc, trunc);
@@ -834,7 +867,8 @@ namespace idattd
         DiagTimer diag_timer("backend.record_fork", 0);
         m_replayBlock = ReplayBlock::None;
         ForkResult r;
-        if ( m_handle == nullptr || !ITTD_HAS(m_api, fork_close) )
+        // m_caps.fork holds only when the table fills every fork_* entry.
+        if ( m_handle == nullptr || !m_caps.fork )
         {
             r.error = "this recording's backend cannot fork it";
             return r;
@@ -842,17 +876,14 @@ namespace idattd
         auto failed = [&](int rc)
         {
             r.cancelled = rc == ITTD_E_CANCELLED;
-            const char *e = m_api->last_error(m_handle);
-            r.error = r.cancelled ? qstring("cancelled") : qstring(e != nullptr ? e : "failed");
+            r.error = r.cancelled ? qstring("cancelled") : last_error();
+            if ( r.error.empty() )
+                r.error = "failed";
             return r;
         };
 
         ProgressBridge pb(progress);
-        ittd_fork_settings fs{};
-        fs.size  = sizeof(fs);
-        fs.flags = (req.strict ? ITTD_FORK_STRICT : 0) | (req.allow_host ? ITTD_FORK_ALLOW_HOST : 0);
-        fs.registry_dir   = req.registry_dir.empty() ? nullptr : req.registry_dir.c_str();
-        fs.emulation_root = nullptr;
+        ittd_fork_settings fs = replay_settings(req.registry_dir, req.strict, req.allow_host);
         ittd_fork *f = nullptr;
         int rc = note_replay(m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f));
         if ( rc != ITTD_OK || f == nullptr )
@@ -914,7 +945,7 @@ namespace idattd
             if ( count_fill(&names, [&](ittd_name *b, size_t cap, size_t *n)
                             { return m_api->query_mapping_files(m_handle, b, cap, n); }) == ITTD_OK )
                 for ( const ittd_name &n : names )
-                    files->push_back(qstring(n.name));
+                    files->push_back(fixed_str(n.name));
         }
         return result_of(rc, trunc);
     }
@@ -1087,7 +1118,7 @@ namespace idattd
         {
             Symbol sym;
             sym.ea        = (ea_t)s.ea;
-            sym.name      = s.name;
+            sym.name      = fixed_str(s.name);
             sym.is_export = s.is_export != 0;
             out.push_back(sym);
         }

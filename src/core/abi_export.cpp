@@ -35,6 +35,10 @@ namespace idattd
         CursorPtr                   c;
         std::unique_ptr<INavigator> nav;      // made on the first movement
         std::unique_ptr<ProgressSink> nav_sink;
+        // read_memory's 'known', kept between reads: every memory read the
+        // host makes comes through, and a cursor is used by one thread at a
+        // time, so one buffer serves them all without an allocation each.
+        std::vector<uint8_t>        known;
     };
 
     static ExportedBackend *B(ittd_backend *h) { return reinterpret_cast<ExportedBackend *>(h); }
@@ -46,6 +50,18 @@ namespace idattd
     static Position from_abi(ittd_position p) { return Position{ p.hi, p.lo }; }
     static PositionRange from_abi(ittd_position_range r) { return PositionRange{ from_abi(r.first), from_abi(r.last) }; }
 
+    static std::vector<std::pair<ea_t, ea_t>> from_abi(const ittd_range *ranges, size_t n)
+    {
+        std::vector<std::pair<ea_t, ea_t>> r;
+        r.reserve(n);
+        for ( size_t i = 0; i < n; i++ )
+            r.push_back({ (ea_t)ranges[i].start, (ea_t)ranges[i].end });
+        return r;
+    }
+
+    // Into a fixed-size ABI field, cut to fit and always terminated. Not
+    // qstrncpy: this file is also built into a backend that does not link
+    // ida.dll.
     static void copy_str(char *dst, size_t cap, const char *src)
     {
         if ( cap == 0 )
@@ -139,8 +155,11 @@ namespace idattd
             for ( size_t i = 0; i < v.size() && i < cap; i++ )
                 buf[i] = v[i];
         // A count call and its fill, or a fill alone: either way the question
-        // has been answered.
-        if ( ++c.served >= 2 || buf != nullptr )
+        // has been answered. A failed count gets no fill, so its answer is not
+        // kept either: asking again must run the query again, not repeat the
+        // failure from the cache.
+        bool failed = rc != ITTD_OK && rc != ITTD_E_CANCELLED;
+        if ( ++c.served >= 2 || buf != nullptr || failed )
         {
             c.data.reset();
             c.key.clear();
@@ -160,9 +179,18 @@ namespace idattd
         Key &add_bytes(const void *p, size_t n) { s.append((const char *)p, n); return *this; }
     };
 
+    // One access's kind: a single ITTD_ACCESS_* value.
     static uint32_t to_abi_kind(uint8_t k)
     {
         return (k & ACCESS_READ) ? ITTD_ACCESS_READ : (k & ACCESS_WRITE) ? ITTD_ACCESS_WRITE : ITTD_ACCESS_EXEC;
+    }
+
+    // A set of ITTD_ACCESS_* bits as AccessKind bits.
+    static uint8_t from_abi_kinds(uint32_t k)
+    {
+        return (uint8_t)(((k & ITTD_ACCESS_READ)  ? ACCESS_READ  : 0)
+                       | ((k & ITTD_ACCESS_WRITE) ? ACCESS_WRITE : 0)
+                       | ((k & ITTD_ACCESS_EXEC)  ? ACCESS_EXEC  : 0));
     }
 
     static ittd_access to_abi(const Access &a)
@@ -453,11 +481,17 @@ namespace idattd
             return ITTD_E_BAD_ARG;
         return guarded(&c->owner->error, [&]()
         {
-            std::vector<uint8_t> k;
+            std::vector<uint8_t> &k = c->known;
+            k.clear();
             size_t n = c->c->read_memory((ea_t)ea, buf, size, &k);
-            if ( known != nullptr )
-                for ( size_t i = 0; i < size; i++ )
-                    known[i] = i < k.size() ? k[i] : (uint8_t)ITTD_KNOWN_NO;
+            if ( known != nullptr && size != 0 )
+            {
+                size_t have = std::min(k.size(), size);
+                if ( have != 0 )
+                    memcpy(known, k.data(), have);
+                if ( have < size )
+                    memset(known + have, ITTD_KNOWN_NO, size - have);
+            }
             if ( out_known != nullptr )
                 *out_known = n;
             return ITTD_OK;
@@ -545,9 +579,7 @@ namespace idattd
                 Breakpoint b;
                 b.addr  = (ea_t)bpts[i].addr;
                 b.size  = bpts[i].size == 0 ? 1 : bpts[i].size;
-                b.kinds = (uint8_t)(((bpts[i].kinds & ITTD_ACCESS_READ)  ? ACCESS_READ  : 0)
-                                  | ((bpts[i].kinds & ITTD_ACCESS_WRITE) ? ACCESS_WRITE : 0)
-                                  | ((bpts[i].kinds & ITTD_ACCESS_EXEC)  ? ACCESS_EXEC  : 0));
+                b.kinds = from_abi_kinds(bpts[i].kinds);
                 v.push_back(b);
             }
             return n->set_breakpoints(v, nullptr) ? ITTD_OK : ITTD_E_FAILED;
@@ -655,19 +687,18 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        Key k("accesses");
-        k.add(lo).add(hi).add(kinds).add(when);
         return guarded(&h->error, [&]()
         {
+            Key k("accesses");
+            k.add(lo).add(hi).add(kinds).add(when);
             return answer<ittd_access>(h, k.s, buf, cap, out_count, out_truncated,
                                        [&](std::vector<ittd_access> *out)
             {
-                uint8_t ck = (uint8_t)(((kinds & ITTD_ACCESS_READ)  ? ACCESS_READ  : 0)
-                                     | ((kinds & ITTD_ACCESS_WRITE) ? ACCESS_WRITE : 0)
-                                     | ((kinds & ITTD_ACCESS_EXEC)  ? ACCESS_EXEC  : 0));
                 std::vector<Access> v;
                 AbiSink sink(progress);
-                QueryResult r = h->b->query_accesses((ea_t)lo, (ea_t)hi, ck, from_abi(when), &v, &sink);
+                QueryResult r = h->b->query_accesses((ea_t)lo, (ea_t)hi, from_abi_kinds(kinds),
+                                                     from_abi(when), &v, &sink);
+                out->reserve(v.size());
                 for ( const Access &a : v )
                     out->push_back(to_abi(a));
                 return r;
@@ -682,19 +713,16 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (ranges == nullptr && nranges != 0) )
             return ITTD_E_BAD_ARG;
-        Key k("executed");
-        k.add_bytes(ranges, nranges * sizeof(ittd_range));
         return guarded(&h->error, [&]()
         {
+            Key k("executed");
+            k.add_bytes(ranges, nranges * sizeof(ittd_range));
             return answer<uint64_t>(h, k.s, buf, cap, out_count, out_truncated,
                                     [&](std::vector<uint64_t> *out)
             {
-                std::vector<std::pair<ea_t, ea_t>> r;
-                for ( size_t i = 0; i < nranges; i++ )
-                    r.push_back({ (ea_t)ranges[i].start, (ea_t)ranges[i].end });
                 std::vector<ea_t> v;
                 AbiSink sink(progress);
-                QueryResult res = h->b->query_executed(r, &v, &sink);
+                QueryResult res = h->b->query_executed(from_abi(ranges, nranges), &v, &sink);
                 out->assign(v.begin(), v.end());
                 return res;
             });
@@ -708,19 +736,18 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (targets == nullptr && ntargets != 0) )
             return ITTD_E_BAD_ARG;
-        Key k("calls");
-        k.add(when).add_bytes(targets, ntargets * sizeof(uint64_t));
         return guarded(&h->error, [&]()
         {
+            Key k("calls");
+            k.add(when).add_bytes(targets, ntargets * sizeof(uint64_t));
             return answer<ittd_call>(h, k.s, buf, cap, out_count, out_truncated,
                                      [&](std::vector<ittd_call> *out)
             {
-                std::vector<ea_t> t;
-                for ( size_t i = 0; i < ntargets; i++ )
-                    t.push_back((ea_t)targets[i]);
+                std::vector<ea_t> t(targets, targets + ntargets);
                 std::vector<CallEvent> v;
                 AbiSink sink(progress);
                 QueryResult r = h->b->query_calls(t, from_abi(when), &v, &sink);
+                out->reserve(v.size());
                 for ( const CallEvent &e : v )
                 {
                     ittd_call x{};
@@ -745,19 +772,17 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (ranges == nullptr && nranges != 0) )
             return ITTD_E_BAD_ARG;
-        Key k("indirect");
-        k.add(flags).add_bytes(ranges, nranges * sizeof(ittd_range));
         return guarded(&h->error, [&]()
         {
+            Key k("indirect");
+            k.add(flags).add_bytes(ranges, nranges * sizeof(ittd_range));
             return answer<ittd_call_target>(h, k.s, buf, cap, out_count, out_truncated,
                                             [&](std::vector<ittd_call_target> *out)
             {
-                std::vector<std::pair<ea_t, ea_t>> r;
-                for ( size_t i = 0; i < nranges; i++ )
-                    r.push_back({ (ea_t)ranges[i].start, (ea_t)ranges[i].end });
                 std::map<ea_t, std::vector<IndirectTarget>> m;
                 AbiSink sink(progress);
-                QueryResult res = h->b->query_indirect_targets(r, (flags & ITTD_INDIRECT_JUMPS) != 0, &m, &sink);
+                QueryResult res = h->b->query_indirect_targets(from_abi(ranges, nranges),
+                                                               (flags & ITTD_INDIRECT_JUMPS) != 0, &m, &sink);
                 for ( const auto &kv : m )
                     for ( const IndirectTarget &t : kv.second )
                     {
@@ -788,6 +813,7 @@ namespace idattd
                 std::vector<ExceptionEvent> v;
                 AbiSink sink(progress);
                 QueryResult r = h->b->query_exceptions(&v, &sink);
+                out->reserve(v.size());
                 for ( const ExceptionEvent &e : v )
                 {
                     ittd_exception x{};
@@ -820,6 +846,7 @@ namespace idattd
                 std::vector<SyscallEvent> v;
                 AbiSink sink(progress);
                 QueryResult r = h->b->query_syscalls(&v, &sink);
+                out->reserve(v.size());
                 for ( const SyscallEvent &e : v )
                 {
                     ittd_syscall x{};
@@ -827,10 +854,7 @@ namespace idattd
                     x.result = e.result;
                     x.number = e.number;
                     x.tid    = e.tid;
-                    // Not qstrncpy: this file is also built into a backend
-                    // that does not link ida.dll.
-                    size_t len = std::min(e.name.length(), sizeof(x.name) - 1);
-                    memcpy(x.name, e.name.c_str(), len);
+                    copy_str(x.name, sizeof(x.name), e.name.c_str());
                     out->push_back(x);
                 }
                 return r;
@@ -850,6 +874,16 @@ namespace idattd
         return rs;
     }
 
+    // A replay scan's settings, for its cache key: the same scan against other
+    // hives or another root is another question.
+    static void add_settings(Key *k, const ittd_fork_settings *s)
+    {
+        uint32_t flags = s != nullptr ? s->flags : 0;
+        const char *reg  = s != nullptr && s->registry_dir != nullptr ? s->registry_dir : "";
+        const char *root = s != nullptr && s->emulation_root != nullptr ? s->emulation_root : "";
+        k->add(flags).add_bytes(reg, strlen(reg) + 1).add_bytes(root, strlen(root) + 1);
+    }
+
     static int x_query_strings(ittd_backend *hb, const ittd_fork_settings *settings, uint32_t min_length,
                                ittd_string_hit *buf, size_t cap, size_t *out_count,
                                int *out_truncated, const ittd_progress *progress)
@@ -859,9 +893,10 @@ namespace idattd
             return ITTD_E_BAD_ARG;
         return guarded(&h->error, [&]()
         {
-            qstring key;
-            key.sprnt("strings:%u", min_length);
-            return answer<ittd_string_hit>(h, key.c_str(), buf, cap, out_count, out_truncated,
+            Key k("strings");
+            k.add(min_length);
+            add_settings(&k, settings);
+            return answer<ittd_string_hit>(h, k.s, buf, cap, out_count, out_truncated,
                                            [&](std::vector<ittd_string_hit> *out)
             {
                 std::vector<StringHit> v;
@@ -892,7 +927,9 @@ namespace idattd
             return ITTD_E_BAD_ARG;
         return guarded(&h->error, [&]()
         {
-            return answer<ittd_buffer_hit>(h, "buffers", buf, cap, out_count, out_truncated,
+            Key k("buffers");
+            add_settings(&k, settings);
+            return answer<ittd_buffer_hit>(h, k.s, buf, cap, out_count, out_truncated,
                                            [&](std::vector<ittd_buffer_hit> *out)
             {
                 std::vector<BufferHit> v;
@@ -932,6 +969,7 @@ namespace idattd
                 std::vector<SelfModHit> v;
                 AbiSink sink(progress);
                 QueryResult r = h->b->query_self_modifying(&v, &sink);
+                out->reserve(v.size());
                 for ( const SelfModHit &e : v )
                 {
                     ittd_selfmod x{};
@@ -1022,6 +1060,7 @@ namespace idattd
         return guarded(&h->error, [&]()
         {
             std::vector<Position> p;
+            p.reserve(count);
             for ( size_t i = 0; i < count; i++ )
                 p.push_back(from_abi(positions[i]));
             std::vector<ittd_regs> v;

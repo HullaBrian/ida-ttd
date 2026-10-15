@@ -78,7 +78,7 @@ extern "C" {
 #define ITTD_E_UNSUPPORTED    -1   /* the backend does not implement this */
 #define ITTD_E_NOT_OPEN       -2   /* no recording is open on this handle */
 #define ITTD_E_BAD_ARG        -3
-#define ITTD_E_OPEN_FAILED    -4   /* the file is not a recording we can read */
+#define ITTD_E_OPEN_FAILED    -4   /* the file is not a recording this backend reads */
 #define ITTD_E_NO_POSITION    -5   /* the position is not in this recording */
 #define ITTD_E_CANCELLED      -6   /* the caller's progress sink said to stop */
 /* A replay (fork_open, query_strings, query_buffers) was refused because the
@@ -726,7 +726,7 @@ typedef struct ittd_backend_api
 
     /*
      * Stepping is a strategy, not a primitive. "Step over backwards" to a
-     * replay engine is rewind, notice we landed in a callee that had just
+     * replay engine is rewind, notice the cursor landed in a callee that had just
      * returned, rewind out of it; to an indexed trace it is a read of the
      * previous execute event at this frame's depth. So the whole family is the
      * backend's, because each has a cheap route the other does not.

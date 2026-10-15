@@ -48,7 +48,8 @@ namespace idattd
         // The recording says where memory was mapped, unmapped and
         // reprotected, with the protection, so the memory map does not have to
         // be reconstructed from syscalls. Knowing only *that* a range changed
-        // (which is what Sogen records today) does not qualify.
+        // (all a Sogen recording older than its memory-region section says)
+        // does not qualify.
         bool mapping_changes  = false;
         // Dispatched syscalls are recorded: which, where, and what they
         // returned. (Not necessarily their arguments -- Sogen records the
@@ -405,8 +406,8 @@ namespace idattd
     // ---------------------------------------------------------- the navigator
     //
     // Stepping is a strategy, not a primitive. "Step over backwards" means
-    // something quite different to a replay engine (rewind, then detect that we
-    // landed in a callee that had just returned, then rewind out) than to an
+    // something quite different to a replay engine (rewind, then detect that the
+    // cursor landed in a callee that had just returned, then rewind out) than to an
     // indexed trace (read the previous execute event at this frame's depth).
     // Each backend implements the whole family, because each has a cheap route
     // the other does not.

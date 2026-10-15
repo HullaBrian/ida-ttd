@@ -87,7 +87,7 @@ namespace idattd
     bool        parse_hex_position(const char *text, Position *out);
     const char *hex_position_syntax();
 
-    // A half-open [first, last] span of a recording. 'first' as begin() and
+    // A span of a recording, from 'first' to 'last'. 'first' as begin() and
     // 'last' as end() is "the whole thing", which is what a query with no range
     // given means.
     struct PositionRange
