@@ -43,6 +43,12 @@ namespace idattd
             g_origin_roots[m_title] = OriginRoot{ m_hops[0].what, m_hops[0].at };
     }
 
+    // The listing's window closed: nothing can ask for its root any more.
+    ValueOriginChooser::~ValueOriginChooser()
+    {
+        g_origin_roots.erase(m_title);
+    }
+
     size_t idaapi ValueOriginChooser::get_count() const
     {
         return m_hops.size();
@@ -82,17 +88,8 @@ namespace idattd
 
     chooser_t::cbret_t idaapi ValueOriginChooser::enter(size_t n)
     {
-        if ( n < m_hops.size() && m_mgr != nullptr && m_mgr->is_active() )
-        {
-            const OriginHop &h = m_hops[n];
-            Position p = h.by_pos.is_valid() ? h.by_pos : h.at;
-            if ( p.is_valid() )
-            {
-                m_mgr->set_next_position(p);
-                request_continue_process();
-                run_requests();
-            }
-        }
+        if ( n < m_hops.size() )
+            travel_to(m_mgr, m_hops[n].by_pos.is_valid() ? m_hops[n].by_pos : m_hops[n].at);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -311,15 +308,6 @@ namespace idattd
         OriginGraph   g_og;
     }
 
-    static void travel_to(Position p)
-    {
-        if ( g_og_mgr == nullptr || !g_og_mgr->is_active() || !p.is_valid() )
-            return;
-        g_og_mgr->set_next_position(p);
-        request_continue_process();
-        run_requests();
-    }
-
     static void og_action(int node, const qstring &action)
     {
         if ( node < 0 || node >= (int)g_og.nodes.size() )
@@ -327,11 +315,11 @@ namespace idattd
         const OriginHop &h = g_og.nodes[node];
         if ( action == "written" )
         {
-            travel_to(h.by_pos);
+            travel_to(g_og_mgr, h.by_pos);
         }
         else if ( action == "seen" )
         {
-            travel_to(h.at);
+            travel_to(g_og_mgr, h.at);
         }
         else if ( action == "show" )
         {

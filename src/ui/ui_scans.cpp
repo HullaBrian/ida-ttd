@@ -90,13 +90,7 @@ namespace idattd
         cols->at(2) = h.kind;
         cols->at(3) = format_position(h.first_pos);
         cols->at(4) = format_position(h.last_pos);
-        ea_t fs = get_func_start(h.writer_ip);
-        if ( fs != BADADDR && fs != h.writer_ip )
-            cols->at(5).sprnt("%s+0x%llX", func_display_name(fs).c_str(), (uint64_t)(h.writer_ip - fs));
-        else if ( fs != BADADDR )
-            cols->at(5) = func_display_name(fs);
-        else
-            cols->at(5).sprnt("0x%llX", (uint64_t)h.writer_ip);
+        cols->at(5) = func_offset_name(h.writer_ip);
         cols->at(6).sprnt("%llu", (unsigned long long)h.writes);
         cols->at(7) = h.preview;
     }

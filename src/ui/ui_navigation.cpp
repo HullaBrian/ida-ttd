@@ -37,13 +37,18 @@ namespace idattd
 
     chooser_t::cbret_t idaapi PositionChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_positions.size() )
-        {
-            m_mgr->set_next_position(m_positions[n].pos);
-            request_continue_process();
-            run_requests();
-        }
+        if ( n < m_positions.size() )
+            travel_to(m_mgr, m_positions[n].pos);
         return cbret_t(n, NOTHING_CHANGED);
+    }
+
+    void travel_to(TraceManager *mgr, Position p)
+    {
+        if ( mgr == nullptr || !mgr->is_active() || !p.is_valid() )
+            return;
+        mgr->set_next_position(p);
+        request_continue_process();
+        run_requests();
     }
 
     //=======================================================================
@@ -201,9 +206,7 @@ namespace idattd
         }
         if ( hex != nullptr )
             g_pendingBytes = ea;
-        mgr->set_next_position(p);
-        request_continue_process();
-        run_requests();
+        travel_to(mgr, p);
         return hex != nullptr;
     }
 

@@ -487,8 +487,10 @@ namespace idattd
     {
         if ( !fork_manager_widget(ctx->widget) )
             return AST_DISABLE_FOR_WIDGET;
+        // The selection is the graph's, which can lag a rebuild of the nodes.
         int node = selected_node(ctx);
-        return node >= 0 && g_fm.nodes[node].record >= 0 ? AST_ENABLE : AST_DISABLE;
+        return node >= 0 && node < (int)g_fm.nodes.size() && g_fm.nodes[node].record >= 0
+             ? AST_ENABLE : AST_DISABLE;
     }
 
     // Redrawn from a timer, never on the spot: the callers include IDA's
@@ -540,14 +542,7 @@ namespace idattd
 
     void close_fork_manager()
     {
-        if ( g_refreshTimer != nullptr )
-        {
-            unregister_timer(g_refreshTimer);
-            g_refreshTimer = nullptr;
-        }
-        if ( fm_open() )
-            close_widget(g_fm.gv, 0);
-        close_graph(FM_KIND);
+        close_fork_manager_window();
         g_fm = ForkGraph();
     }
 

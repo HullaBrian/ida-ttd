@@ -23,16 +23,14 @@ namespace idattd
     // anchors: an index into cfunc_t::treeitems, each of which knows its own
     // address. That is the mechanism hxe_func_printed documents, and it is what
     // this reads. The obvious alternative, get_line_item(), answers about one
-    // column of the line -- and column zero, where the first attempt at this
-    // asked, is indentation, which belongs to no item. Every line came back with
-    // nothing and not a single one was ever painted.
+    // column of the line, and column zero is indentation, which belongs to no
+    // item: asked there, every line answers nothing.
     //
-    // all of them, not just the first. One line is many ctree items: the
+    // All of them, not just the first. One line is many ctree items: the
     // statement, the variable assigned, the call, each argument -- and they come
-    // from different instructions. Taking the first one to have an address is why
-    // "v11 = v7(...)" showed no note for its call: the first anchor on that line
-    // is the assignment, and the annotation lives on the call instruction a few
-    // bytes earlier.
+    // from different instructions. In "v11 = v7(...)" the first anchor is the
+    // assignment, while the call's annotation lives on the call instruction a
+    // few bytes earlier.
     static void line_addresses(const cfunc_t *cf, const char *line,
                                std::vector<ea_t> &out)
     {
@@ -280,14 +278,11 @@ namespace idattd
         // Find the open views by asking IDA for them rather than by remembering
         // the ones we saw opened. A view that already existed before the hook was
         // installed was never seen, and that is precisely the view most in need of
-        // a repaint. Pseudocode windows are titled Pseudocode-A onwards.
-        for ( char c = 'A'; c <= 'Z'; c++ )
+        // a repaint.
+        std::vector<TWidget *> views;
+        list_pseudocode_views(views);
+        for ( TWidget *w : views )
         {
-            char title[16];
-            qsnprintf(title, sizeof(title), "Pseudocode-%c", c);
-            TWidget *w = find_widget(title);
-            if ( w == nullptr )
-                continue;
             vdui_t *vu = get_widget_vdui(w);
             if ( vu == nullptr || vu->cfunc == nullptr )
                 continue;
@@ -303,6 +298,7 @@ namespace idattd
         }
     }
 
+    // Pseudocode windows are titled Pseudocode-A onwards.
     void list_pseudocode_views(std::vector<TWidget *> &out)
     {
         out.clear();
@@ -398,13 +394,10 @@ namespace idattd
         if ( !g_hooked )
             return;
         int closed = 0;
-        for ( char c = 'A'; c <= 'Z'; c++ )
+        std::vector<TWidget *> views;
+        list_pseudocode_views(views);
+        for ( TWidget *w : views )
         {
-            char title[16];
-            qsnprintf(title, sizeof(title), "Pseudocode-%c", c);
-            TWidget *w = find_widget(title);
-            if ( w == nullptr )
-                continue;
             vdui_t *vu = get_widget_vdui(w);
             if ( vu == nullptr || vu->cfunc == nullptr )
                 continue;

@@ -17,6 +17,19 @@ namespace idattd
         return name;
     }
 
+    qstring func_offset_name(ea_t ea)
+    {
+        qstring s;
+        ea_t fs = get_func_start(ea);
+        if ( fs == BADADDR )
+            s.sprnt("0x%llX", (uint64_t)ea);
+        else if ( fs == ea )
+            s = func_display_name(fs);
+        else
+            s.sprnt("%s+0x%llX", func_display_name(fs).c_str(), (uint64_t)(ea - fs));
+        return s;
+    }
+
     // How far below an address a name may sit and still be taken to belong to
     // it, when there is no exception table to settle the question.
     static const ea_t MAX_NAME_OFFSET = 0x1000;

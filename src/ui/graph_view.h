@@ -69,4 +69,8 @@ namespace idattd
     // For the script commands the window uses.
     bool graph_json(const char *kind, qstring *out);
     bool graph_act(const char *kind, int node, const qstring &action);
+
+    // Append 's' as a quoted JSON string: the models every IDAPython window
+    // asks for (this one, the call tree, the heatmap) are written with it.
+    void json_str(qstring *out, const char *s);
 }

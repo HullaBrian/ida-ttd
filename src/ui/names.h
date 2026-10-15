@@ -11,6 +11,10 @@ namespace idattd
     // has not defined), then to the bare address, so a column is never blank.
     qstring func_display_name(ea_t ea);
 
+    // "name+0x12" from the function IDA has defined around an address, the
+    // name alone at its entry, else the address in hex.
+    qstring func_offset_name(ea_t ea);
+
     // "module!symbol+offset" for an address, as honestly as the database allows.
     //
     // The naive answer -- ask IDA for the nearest name -- is actively misleading

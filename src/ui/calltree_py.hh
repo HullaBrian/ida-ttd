@@ -81,6 +81,8 @@ def _ida_ttd_call_tree():
             # the call it was made in, so the parent of a row is the nearest
             # row above it that is one level up.
             stack = [root]
+            items = [root]
+            depths = [0]
             for r in rows:
                 depth = r["depth"] + 1
                 del stack[depth:]
@@ -95,7 +97,9 @@ def _ida_ttd_call_tree():
                     f.setItalic(True)
                     item.setFont(0, f)
                 stack.append(item)
-            self.count_below(root)
+                items.append(item)
+                depths.append(len(stack) - 1)
+            self.count_below(items, depths)
             if len(rows) <= 300:
                 self.view.expandAll()
             else:
@@ -112,13 +116,19 @@ def _ida_ttd_call_tree():
                 note += "; cut short"
             self.status.setText(note + ".  Double-click or Enter to go there.")
 
-        def count_below(self, item):
-            n = 0
-            for i in range(item.childCount()):
-                n += 1 + self.count_below(item.child(i))
-            if item.parent() is not None and n:
-                item.setText(4, str(n))
-            return n
+        def count_below(self, items, depths):
+            # The calls below each one, from the items in tree order: what
+            # follows an item deeper than it is below it. From the end, so
+            # each subtree's size is known when its parent skips over it; no
+            # recursion, which a deep tree would take past Python's limit.
+            below = [0] * len(items)
+            for i in range(len(items) - 1, -1, -1):
+                end = i + 1
+                while end < len(items) and depths[end] > depths[i]:
+                    end += 1 + below[end]
+                below[i] = end - i - 1
+                if i != 0 and below[i]:
+                    items[i].setText(4, str(below[i]))
 
         def travel(self, item):
             pos = item.data(0, POS_ROLE)
@@ -143,28 +153,37 @@ def _ida_ttd_call_tree():
             m.exec(self.view.viewport().mapToGlobal(point))
 
         def expand_below(self, item):
+            # Iterative: a deep tree would pass Python's recursion limit, and
+            # updates stay off until the whole subtree is open.
             self.view.setUpdatesEnabled(False)
-            item.setExpanded(True)
-            for i in range(item.childCount()):
-                self.expand_below(item.child(i))
+            todo = [item]
+            while todo:
+                it = todo.pop()
+                it.setExpanded(True)
+                todo.extend(it.child(i) for i in range(it.childCount()))
             self.view.setUpdatesEnabled(True)
 
         def apply_filter(self, text):
             text = text.strip().lower()
-
-            def walk(item):
-                hit = not text or text in item.text(0).lower()
-                below = False
-                for i in range(item.childCount()):
-                    below = walk(item.child(i)) or below
-                item.setHidden(not (hit or below))
-                if text and below:
-                    item.setExpanded(True)
-                return hit or below
-
+            # Every item with its parent's index, parents first; then from the
+            # end, so an item's children are settled before it. A row stays
+            # when it matches or something below it does.
+            order = []
+            todo = [(self.view.topLevelItem(i), -1) for i in range(self.view.topLevelItemCount())]
+            while todo:
+                item, parent = todo.pop()
+                order.append((item, parent))
+                todo.extend((item.child(i), len(order) - 1) for i in range(item.childCount()))
+            below = [False] * len(order)
             self.view.setUpdatesEnabled(False)
-            for i in range(self.view.topLevelItemCount()):
-                walk(self.view.topLevelItem(i))
+            for i in range(len(order) - 1, -1, -1):
+                item, parent = order[i]
+                keep = below[i] or not text or text in item.text(0).lower()
+                item.setHidden(not keep)
+                if text and below[i]:
+                    item.setExpanded(True)
+                if keep and parent >= 0:
+                    below[parent] = True
             self.view.setUpdatesEnabled(True)
 
         def OnClose(self, form):

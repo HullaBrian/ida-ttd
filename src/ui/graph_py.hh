@@ -263,12 +263,10 @@ def _ida_ttd_graph_show(kind, first):
             painter.setPen(pen)
             painter.setBrush(QtCore.Qt.NoBrush)
             painter.drawPath(self.path)
-            # The arrowhead, at the end the flow arrives at.
+            # The arrowhead, at the end the flow arrives at, pointing along it.
             d = self.tip_dir
             tip = self.tip
             head = QtGui.QPolygonF([tip, tip + QtCore.QPointF(-5, -9 * d), tip + QtCore.QPointF(5, -9 * d)])
-            if self.up:
-                head = QtGui.QPolygonF([tip, tip + QtCore.QPointF(-5, 9), tip + QtCore.QPointF(5, 9)])
             painter.setPen(QtCore.Qt.NoPen)
             painter.setBrush(t.edge)
             painter.drawPolygon(head)
@@ -503,7 +501,8 @@ def _ida_ttd_graph_show(kind, first):
     graph = fetch()
     form = forms.get(kind)
     if form is not None and ida_kernwin.find_widget(graph["title"]) is not None:
-        QtCore.QTimer.singleShot(0, lambda: form.load(graph))
+        # Unless the window closed in between, deleting what load() draws on.
+        QtCore.QTimer.singleShot(0, lambda: form.load(graph) if forms.get(kind) is form else None)
         if first:
             ida_kernwin.activate_widget(ida_kernwin.find_widget(graph["title"]), True)
         return

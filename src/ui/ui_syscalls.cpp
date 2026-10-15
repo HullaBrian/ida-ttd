@@ -91,12 +91,8 @@ namespace idattd
 
     chooser_t::cbret_t idaapi SyscallChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_calls.size() )
-        {
-            m_mgr->set_next_position(m_calls[n].pos);
-            request_continue_process();
-            run_requests();
-        }
+        if ( n < m_calls.size() )
+            travel_to(m_mgr, m_calls[n].pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

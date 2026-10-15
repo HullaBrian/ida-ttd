@@ -3,6 +3,7 @@
 // window draws it (heatmap_py.hh), asking for the counts with
 // ttd("ui.heat") and travelling with ttd("ui.showbytes POS EA").
 #include "ui/ui.h"
+#include "ui/graph_view.h"
 #include "ui/heatmap_py.hh"
 #include "analysis/query_runner.h"
 #include <expr.hpp>
@@ -17,29 +18,6 @@ namespace idattd
     const qstring &heatmap_json()
     {
         return g_heatJson;
-    }
-
-    static void json_str(qstring *out, const char *s)
-    {
-        out->append('"');
-        for ( ; *s != '\0'; s++ )
-        {
-            unsigned char c = (unsigned char)*s;
-            if ( c == '"' || c == '\\' )
-            {
-                out->append('\\');
-                out->append((char)c);
-            }
-            else if ( c < 0x20 )
-            {
-                out->cat_sprnt("\\u%04x", c);
-            }
-            else
-            {
-                out->append((char)c);
-            }
-        }
-        out->append('"');
     }
 
     // {"page_shift":12,"slices":256,"starts":["HI:LO",...],

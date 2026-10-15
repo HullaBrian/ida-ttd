@@ -6,6 +6,7 @@ namespace idattd
 {
     static const int   g_bm_widths[] = { 16, 18, 8, 28, 40 };
     static const char *g_bm_header[] = { "Position", "Address", "Thread", "Name", "Comment" };
+    static const char  g_bm_title[]  = "TTD Bookmarks";
 
     // Prompt for a bookmark's name and note. 'b' carries the defaults in and the
     // answers out; false means the user cancelled.
@@ -57,7 +58,7 @@ namespace idattd
 
     BookmarkChooser::BookmarkChooser(TraceManager *mgr, BookmarkStore *store)
         : chooser_t(CH_CAN_INS | CH_CAN_DEL | CH_CAN_EDIT,
-                    qnumber(g_bm_widths), g_bm_widths, g_bm_header, "TTD Bookmarks"),
+                    qnumber(g_bm_widths), g_bm_widths, g_bm_header, g_bm_title),
           m_mgr(mgr), m_store(store)
     {
     }
@@ -97,12 +98,8 @@ namespace idattd
     chooser_t::cbret_t idaapi BookmarkChooser::enter(size_t n)
     {
         const Bookmark *b = m_store != nullptr ? m_store->at(n) : nullptr;
-        if ( b != nullptr && m_mgr != nullptr && m_mgr->is_active() )
-        {
-            m_mgr->set_next_position(b->pos);
-            request_continue_process();
-            run_requests();
-        }
+        if ( b != nullptr )
+            travel_to(m_mgr, b->pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -118,7 +115,8 @@ namespace idattd
     {
         if ( m_store != nullptr )
             m_store->remove(n);
-        return ALL_CHANGED;
+        // A bare ALL_CHANGED would convert to cbret_t(1, ...) and select row 1.
+        return cbret_t(adjust_last_item(n), ALL_CHANGED);
     }
 
     chooser_t::cbret_t idaapi BookmarkChooser::edit(size_t n)
@@ -146,7 +144,7 @@ namespace idattd
             format_position(b.pos).c_str(), b.name.c_str());
         // Any open bookmark window reads the same store, so tell it to re-read
         // rather than leaving the new entry invisible until it is reopened.
-        refresh_chooser("TTD Bookmarks");
+        refresh_chooser(g_bm_title);
         return 1;
     }
 

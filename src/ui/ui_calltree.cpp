@@ -3,6 +3,7 @@
 // Right), the way IDA's own trees are.
 #include "ui/ui.h"
 #include "ui/names.h"
+#include "ui/graph_view.h"
 #include "ui/calltree_py.hh"
 #include <expr.hpp>
 
@@ -12,25 +13,15 @@ namespace idattd
     // deep, so the first thing shown is what the function itself called.
     static const size_t kOpenAllRows = 300;
 
-    // "name+0x12" when IDA knows a function there, else the address.
+    // "name+0x12" when IDA knows a function there; outside one, the name IDA
+    // has for the address (an export it has not made a function of), else
+    // the address.
     static qstring code_name(ea_t ea)
     {
         qstring s;
-        ea_t fs = get_func_start(ea);
-        if ( fs == BADADDR )
-        {
-            if ( get_name(&s, ea) <= 0 || s.empty() )
-                s.sprnt("0x%llX", (uint64_t)ea);
-        }
-        else if ( fs == ea )
-        {
-            s = func_display_name(fs);
-        }
-        else
-        {
-            s.sprnt("%s+0x%llX", func_display_name(fs).c_str(), (uint64_t)(ea - fs));
-        }
-        return s;
+        if ( get_func_start(ea) == BADADDR && get_name(&s, ea) > 0 && !s.empty() )
+            return s;
+        return func_offset_name(ea);
     }
 
     static void colored(qstring *out, const qstring &text, color_t tag)
@@ -191,12 +182,8 @@ namespace idattd
 
         void travel(size_t node)
         {
-            if ( node == size_t(-1) || m_mgr == nullptr || !m_mgr->is_active() )
-                return;
-            const Position &pos = node == 0 ? m_tree.from : m_tree.rows[node - 1].pos;
-            m_mgr->set_next_position(pos);
-            request_continue_process();
-            run_requests();
+            if ( node != size_t(-1) )
+                travel_to(m_mgr, node == 0 ? m_tree.from : m_tree.rows[node - 1].pos);
         }
 
         static CallTreeView *self(void *ud) { return static_cast<CallTreeView *>(ud); }
@@ -267,35 +254,16 @@ namespace idattd
         return g_callTreeJson;
     }
 
-    static void json_str(qstring *out, const char *s)
-    {
-        out->append('"');
-        for ( ; *s != '\0'; s++ )
-        {
-            unsigned char c = (unsigned char)*s;
-            if ( c == '"' || c == '\\' )
-            {
-                out->append('\\');
-                out->append((char)c);
-            }
-            else if ( c < 0x20 )
-            {
-                out->cat_sprnt("\\u%04x", c);
-            }
-            else
-            {
-                out->append((char)c);
-            }
-        }
-        out->append('"');
-    }
-
     static qstring tree_json(const CallTree &t)
     {
         qstring j;
         j.append("{\"name\":");
         json_str(&j, t.root != BADADDR ? code_name(t.root).c_str() : "(this function)");
-        j.cat_sprnt(",\"root\":\"0x%llX\",\"from\":", (uint64_t)(t.root != BADADDR ? t.root : 0));
+        // "" for no root, which the window takes as nothing to show.
+        if ( t.root != BADADDR )
+            j.cat_sprnt(",\"root\":\"0x%llX\",\"from\":", (uint64_t)t.root);
+        else
+            j.append(",\"root\":\"\",\"from\":");
         json_str(&j, format_position(t.from).c_str());
         j.append(",\"to\":");
         json_str(&j, format_position(t.to).c_str());

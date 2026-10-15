@@ -11,29 +11,6 @@ namespace idattd
     {
         std::map<qstring, GraphModel> g_models;
 
-        void json_str(qstring *out, const char *s)
-        {
-            out->append('"');
-            for ( ; *s != '\0'; s++ )
-            {
-                unsigned char c = (unsigned char)*s;
-                if ( c == '"' || c == '\\' )
-                {
-                    out->append('\\');
-                    out->append((char)c);
-                }
-                else if ( c < 0x20 )
-                {
-                    out->cat_sprnt("\\u%04x", c);
-                }
-                else
-                {
-                    out->append((char)c);
-                }
-            }
-            out->append('"');
-        }
-
         void json_field(qstring *out, const char *name, const qstring &value)
         {
             out->cat_sprnt("\"%s\":", name);
@@ -67,6 +44,29 @@ namespace idattd
             msg("[ida-ttd] the graph window failed: %s\n", err.c_str());
             return false;
         }
+    }
+
+    void json_str(qstring *out, const char *s)
+    {
+        out->append('"');
+        for ( ; *s != '\0'; s++ )
+        {
+            unsigned char c = (unsigned char)*s;
+            if ( c == '"' || c == '\\' )
+            {
+                out->append('\\');
+                out->append((char)c);
+            }
+            else if ( c < 0x20 )
+            {
+                out->cat_sprnt("\\u%04x", c);
+            }
+            else
+            {
+                out->append((char)c);
+            }
+        }
+        out->append('"');
     }
 
     bool graph_window_available()

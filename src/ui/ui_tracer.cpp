@@ -111,6 +111,33 @@ namespace idattd
           m_mgr(mgr),
           m_events(tracer != nullptr ? tracer->snapshot_events() : std::vector<FunctionInvocation>())
     {
+        for ( const FunctionInvocation &ev : m_events )
+        {
+            auto [it, added] = m_labels.try_emplace(ev.func_ea);
+            if ( !added )
+                continue;
+            FuncLabel &l = it->second;
+            l.name = traced_name(m_mgr, ev.func_ea);
+            if ( per_arg )
+                continue;
+            // Several functions share the Arguments column, so each value is
+            // labelled with its parameter's name: from the API metadata, else
+            // from the type IDA has for the function.
+            const win32meta::FuncSig *sig =
+                api_signature(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
+            tinfo_t          t;
+            func_type_data_t fd;
+            if ( sig != nullptr )
+            {
+                for ( uint8_t i = 0; i < sig->paramCount; i++ )
+                    l.params.push_back(qstring(sig->params[i].name));
+            }
+            else if ( get_tinfo(&t, ev.func_ea) && t.is_func() && t.get_func_details(&fd) )
+            {
+                for ( size_t i = 0; i < fd.size(); i++ )
+                    l.params.push_back(fd[i].name);
+            }
+        }
     }
 
     size_t idaapi TraceEventsChooser::get_count() const
@@ -130,7 +157,10 @@ namespace idattd
         // ExitProcess, an unwind) says so rather than leaving a gap.
         cols->at(1) = ev.has_ret ? format_position(ev.end_pos) : qstring("no return");
         cols->at(2).sprnt("%X", ev.tid);
-        cols->at(3) = traced_name(m_mgr, ev.func_ea);
+        auto label = m_labels.find(ev.func_ea);
+        if ( label == m_labels.end() )
+            return;                     // the constructor labelled every row's function
+        cols->at(3) = label->second.name;
 
         if ( per_arg )
         {
@@ -141,26 +171,15 @@ namespace idattd
         }
         else
         {
-            // Multiple functions share this column, so label each value with its
-            // parameter name (from the row's own signature) when available.
-            tinfo_t          t;
-            func_type_data_t fd;
-            const win32meta::FuncSig *sig = api_signature(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
-            bool named = sig == nullptr && get_tinfo(&t, ev.func_ea) && t.is_func() && t.get_func_details(&fd);
-
+            const std::vector<qstring> &params = label->second.params;
             qstring joined;
             for ( size_t i = 0; i < ev.args.size(); i++ )
             {
                 if ( i != 0 )
                     joined.append(", ");
-                if ( sig != nullptr && i < sig->paramCount )
+                if ( i < params.size() && !params[i].empty() )
                 {
-                    joined.append(sig->params[i].name);
-                    joined.append("=");
-                }
-                else if ( named && i < fd.size() && !fd[i].name.empty() )
-                {
-                    joined.append(fd[i].name);
+                    joined.append(params[i]);
                     joined.append("=");
                 }
                 joined.append(ev.args[i]);
@@ -173,12 +192,8 @@ namespace idattd
 
     chooser_t::cbret_t idaapi TraceEventsChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_events.size() )
-        {
-            m_mgr->set_next_position(m_events[n].pos);
-            request_continue_process();
-            run_requests();
-        }
+        if ( n < m_events.size() )
+            travel_to(m_mgr, m_events[n].pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -186,7 +201,8 @@ namespace idattd
     {
         if ( n < m_events.size() )
             m_events.erase(m_events.begin() + n);
-        return ALL_CHANGED;
+        // A bare ALL_CHANGED would convert to cbret_t(1, ...) and select row 1.
+        return cbret_t(adjust_last_item(n), ALL_CHANGED);
     }
 
     //=======================================================================

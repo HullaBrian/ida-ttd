@@ -89,16 +89,11 @@ namespace idattd
 
     chooser_t::cbret_t idaapi MemoryTimelineChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_rows.size() )
-        {
-            // The call, not the return. Travelling to the return leaves you
-            // inside the syscall stub, which is never what the row is about and
-            // does not match the function the row names.
-            const RegionChange &c = m_rows[n];
-            m_mgr->set_next_position(c.call_pos.is_valid() ? c.call_pos : c.pos);
-            request_continue_process();
-            run_requests();
-        }
+        // The call, not the return. Travelling to the return leaves you inside
+        // the syscall stub, which is never what the row is about and does not
+        // match the function the row names.
+        if ( n < m_rows.size() )
+            travel_to(m_mgr, m_rows[n].call_pos.is_valid() ? m_rows[n].call_pos : m_rows[n].pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -283,10 +278,12 @@ namespace idattd
             return;
         }
         Position now = m_mgr->current_position();
-        if ( now.is_valid() && now == m_at )
+        size_t map_size = m_mgr->memmap().size();
+        if ( now.is_valid() && now == m_at && map_size == m_mapSize )
             return;
         address_space_at(m_mgr, &m_rows);
-        m_at = now;
+        m_at      = now;
+        m_mapSize = map_size;
     }
 
     void MemoryMapChooser::refresh_open()
@@ -351,17 +348,14 @@ namespace idattd
                  "kernel made it, or it existed before the recording started.");
             return cbret_t(n, NOTHING_CHANGED);
         }
-        if ( m_mgr != nullptr && m_mgr->is_active() )
-        {
-            m_mgr->set_next_position(m_rows[n].since);
-            request_continue_process();
-            run_requests();
-        }
+        travel_to(m_mgr, m_rows[n].since);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
+    // Asked for, so rebuilt even at the same position.
     chooser_t::cbret_t idaapi MemoryMapChooser::refresh(ssize_t n)
     {
+        m_at = Position::none();
         rebuild();
         return cbret_t(n, ALL_CHANGED);
     }

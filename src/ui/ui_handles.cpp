@@ -59,15 +59,6 @@ namespace idattd
             attrs->flags |= CHITEM_BOLD;
     }
 
-    static void travel_to(TraceManager *mgr, Position p)
-    {
-        if ( mgr == nullptr || !mgr->is_active() || !p.is_valid() )
-            return;
-        mgr->set_next_position(p);
-        request_continue_process();
-        run_requests();
-    }
-
     chooser_t::cbret_t idaapi HandlesChooser::enter(size_t n)
     {
         if ( n < m_rows.size() )

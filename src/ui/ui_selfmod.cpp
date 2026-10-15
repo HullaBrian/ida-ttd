@@ -11,20 +11,6 @@ namespace idattd
     static const char *g_sm_header[] = { "Address", "Size", "Written at", "Written by",
                                          "First run at", "Runs" };
 
-    // "name+0x12" when IDA knows a function there, else the address.
-    static qstring where(ea_t ea)
-    {
-        qstring s;
-        ea_t fs = get_func_start(ea);
-        if ( fs == BADADDR )
-            s.sprnt("0x%llX", (uint64_t)ea);
-        else if ( fs == ea )
-            s = func_display_name(fs);
-        else
-            s.sprnt("%s+0x%llX", func_display_name(fs).c_str(), (uint64_t)(ea - fs));
-        return s;
-    }
-
     SelfModChooser::SelfModChooser(TraceManager *mgr, std::vector<SelfModHit> &&hits)
         : chooser_t(0, qnumber(g_sm_widths), g_sm_widths, g_sm_header, nullptr),
           m_mgr(mgr), m_hits(std::move(hits))
@@ -47,7 +33,7 @@ namespace idattd
         cols->at(0).sprnt("0x%llX", (uint64_t)h.address);
         cols->at(1).sprnt("%llu", (unsigned long long)h.size);
         cols->at(2) = format_position(h.write_pos);
-        cols->at(3) = where(h.write_ip);
+        cols->at(3) = func_offset_name(h.write_ip);
         cols->at(4) = format_position(h.execute_pos);
         cols->at(5).sprnt("%llu", (unsigned long long)h.executions);
     }
@@ -61,12 +47,8 @@ namespace idattd
 
     chooser_t::cbret_t idaapi SelfModChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_hits.size() )
-        {
-            m_mgr->set_next_position(m_hits[n].write_pos);
-            request_continue_process();
-            run_requests();
-        }
+        if ( n < m_hits.size() )
+            travel_to(m_mgr, m_hits[n].write_pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

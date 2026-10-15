@@ -13,6 +13,8 @@
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
 
+#include <map>
+
 namespace idattd
 {
     // Two rules hold for every chooser below.
@@ -24,6 +26,11 @@ namespace idattd
     // enter() queues navigation with request_continue_process() rather than
     // resuming the debugger directly, and get_ea() never navigates at all: IDA
     // calls get_ea while rendering rows, which would resume once per visible row.
+
+    // Queue a travel to 'p' and return at once, as a double-click in a listing
+    // does. Nothing happens when no trace is being replayed or 'p' is not a
+    // position.
+    void travel_to(TraceManager *mgr, Position p);
 
     // A non-modal "Timeline" chooser listing notable trace positions
     // (thread create/exit, module load/unload, exceptions). Double-clicking a
@@ -82,8 +89,20 @@ namespace idattd
         cbret_t idaapi del(size_t n) override;
 
     private:
+        // What a row says about its function, worked out once per function
+        // rather than on every repaint: the signature lookups behind it read
+        // type information.
+        struct FuncLabel
+        {
+            qstring              name;
+            // For the combined Arguments column: each argument's name, or
+            // empty to show the value alone.
+            std::vector<qstring> params;
+        };
+
         TraceManager                    *m_mgr;
         std::vector<FunctionInvocation>  m_events;  // frozen snapshot
+        std::map<ea_t, FuncLabel>        m_labels;  // by FunctionInvocation::func_ea
     };
 
     // Saved trace positions, kept in the IDB. Enter time-travels to the row,
@@ -130,8 +149,8 @@ namespace idattd
         qstring                 m_title;  // owned: chooser_base_t keeps the pointer
     };
 
-    // The syscalls the recording made, with their
-    // result and first four arguments. Enter time-travels to the call.
+    // The syscalls the recording made, with their result and arguments.
+    // Enter time-travels to the call.
     class SyscallChooser : public chooser_t
     {
     public:
@@ -241,6 +260,7 @@ namespace idattd
     {
     public:
         ValueOriginChooser(TraceManager *mgr, std::vector<OriginHop> &&hops);
+        ~ValueOriginChooser() override;
 
         size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
@@ -306,7 +326,10 @@ namespace idattd
 
         TraceManager *m_mgr;
         mutable std::vector<AddressRegion> m_rows;
+        // What m_rows was built from: the playhead and the size of the change
+        // timeline, which grows when the map is built with the listing open.
         mutable Position                   m_at = Position::none();
+        mutable size_t                     m_mapSize = 0;
     };
 
     // Travel to 'p' and, once there, show 'ea' in the hex view if one is
@@ -345,7 +368,8 @@ namespace idattd
 
     // Base for the TTD handlers: the shared context, and the enabled-always
     // update() explained above. A handler that genuinely has something to say
-    // about its own state overrides update(), which makes those three visible.
+    // about its own state (a checkbox, a backend capability, a selection)
+    // declares its own update(), so those stand out below.
     struct TtdAction : public action_handler_t
     {
         const ActionContext *ctx = nullptr;
@@ -480,11 +504,10 @@ namespace idattd
     };
 
     // The call tree of the function at the cursor.
-    // The last call tree built, as JSON, for the window script (calltree_py.hh).
-    const qstring &call_tree_json();
-
     struct CallTreeHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
+    // The last call tree built, as JSON, for the window script (calltree_py.hh).
+    const qstring &call_tree_json();
 
     // The replay scans. Enabled only for a backend that can replay.
     struct RecoverStringsHandler : public TtdAction

@@ -45,21 +45,7 @@ namespace idattd
         cols->at(4).sprnt("%u", a.size);
         // Where the access came from, as a name plus offset when there is one --
         // the raw address alone rarely says anything.
-        qstring where;
-        ea_t fs = get_func_start(a.pc);
-        if ( fs != BADADDR )
-        {
-            qstring fn = func_display_name(fs);
-            if ( a.pc == fs )
-                where = fn;
-            else
-                where.sprnt("%s+0x%llX", fn.c_str(), (uint64_t)(a.pc - fs));
-        }
-        else
-        {
-            where.sprnt("0x%llX", (uint64_t)a.pc);
-        }
-        cols->at(5) = where;
+        cols->at(5) = func_offset_name(a.pc);
     }
 
     ea_t idaapi MemAccessChooser::get_ea(size_t n) const
@@ -69,12 +55,8 @@ namespace idattd
 
     chooser_t::cbret_t idaapi MemAccessChooser::enter(size_t n)
     {
-        if ( m_mgr != nullptr && m_mgr->is_active() && n < m_hits.size() )
-        {
-            m_mgr->set_next_position(m_hits[n].pos);
-            request_continue_process();
-            run_requests();
-        }
+        if ( n < m_hits.size() )
+            travel_to(m_mgr, m_hits[n].pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -82,7 +64,8 @@ namespace idattd
     {
         if ( n < m_hits.size() )
             m_hits.erase(m_hits.begin() + n);
-        return ALL_CHANGED;
+        // A bare ALL_CHANGED would convert to cbret_t(1, ...) and select row 1.
+        return cbret_t(adjust_last_item(n), ALL_CHANGED);
     }
 
     //=======================================================================
