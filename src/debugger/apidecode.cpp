@@ -544,7 +544,15 @@ namespace idattd
     qstring decode_api_return(const DecodedCall &call, uint64_t rv)
     {
         qstring s;
-        if ( call.sig != nullptr && is_native(call.sig->name) )
+        // Nt and Zw calls return an NTSTATUS. Rtl and Ldr ones mostly do too,
+        // but some return a pointer (RtlAllocateHeap) or a count, and the
+        // metadata does not say which. A status is written to eax, which
+        // clears the upper half of rax, so a value with any of those bits set
+        // is not one, and cutting it to 32 bits would show a wrong pointer.
+        const bool status = call.sig != nullptr && is_native(call.sig->name)
+                         && (call.sig->name[0] == 'N' || call.sig->name[0] == 'Z'
+                          || !call.is64 || (rv >> 32) == 0);
+        if ( status )
         {
             const char *st = ntstatus_name((uint32_t)rv);
             if ( st != nullptr )
