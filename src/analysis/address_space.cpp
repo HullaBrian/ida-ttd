@@ -39,9 +39,12 @@ namespace idattd
         // copy-on-write, which is what the loader maps them as.
         uint32_t section_protect(uint32_t ch)
         {
-            bool x = (ch & 0x20000000) != 0;
-            bool r = (ch & 0x40000000) != 0;
-            bool w = (ch & 0x80000000) != 0;
+            const uint32_t SCN_MEM_EXECUTE = 0x20000000;    // IMAGE_SCN_MEM_*
+            const uint32_t SCN_MEM_READ    = 0x40000000;
+            const uint32_t SCN_MEM_WRITE   = 0x80000000;
+            bool x = (ch & SCN_MEM_EXECUTE) != 0;
+            bool r = (ch & SCN_MEM_READ) != 0;
+            bool w = (ch & SCN_MEM_WRITE) != 0;
             if ( x )
                 return w ? PAGE_EXECUTE_WRITECOPY_ : r ? PAGE_EXECUTE_READ_ : PAGE_EXECUTE_;
             if ( w )
@@ -151,6 +154,8 @@ namespace idattd
 
         Tib read_tib(const GuestRead &rd, uint64_t teb, bool p64)
         {
+            // NT_TIB.StackBase and StackLimit, TEB.DeallocationStack and
+            // TEB.ProcessEnvironmentBlock.
             Tib t;
             t.stack_base  = read_ptr(rd, teb + (p64 ? 0x08 : 0x04), p64);
             t.stack_limit = read_ptr(rd, teb + (p64 ? 0x10 : 0x08), p64);
@@ -268,6 +273,7 @@ namespace idattd
                     if ( sane(a) )
                         label((ea_t)a, (ea_t)a + 1, f.what);
                 }
+                // PEB.NumberOfHeaps and PEB.ProcessHeaps.
                 uint32_t nheaps = 0;
                 rd(t.peb + (p64 ? 0xE8 : 0x88), &nheaps, 4);
                 uint64_t heaps = read_ptr(rd, t.peb + (p64 ? 0xF0 : 0x90), p64);
@@ -311,8 +317,17 @@ namespace idattd
         // ---- what the recording allocated and mapped ---------------------------
         const MemoryMap &map = mgr->memmap();
         bool reports_state = false;     // the backend reports regions as they are
-        for ( size_t i = 0; i < map.size() && !reports_state; i++ )
-            reports_state = map.at(i).kind == RC_STATE;
+        // The protection changes up to here, gathered once for every module
+        // below rather than found in the whole timeline per module.
+        std::vector<const RegionChange *> protects;
+        for ( size_t i = 0; i < map.size(); i++ )
+        {
+            const RegionChange &c = map.at(i);
+            if ( c.kind == RC_STATE )
+                reports_state = true;
+            if ( !(c.pos > now) && c.kind == RC_PROTECT && !c.other_process && c.size != 0 && c.base != BADADDR )
+                protects.push_back(&c);
+        }
         if ( !map.empty() )
         {
             std::vector<Region> regs;
@@ -395,19 +410,14 @@ namespace idattd
             // Then every protection change the recording made inside it since
             // it loaded, in order: a loader patching its imports, or an
             // unpacker making its own code writable.
-            for ( size_t i = 0; i < map.size(); i++ )
+            for ( const RegionChange *c : protects )
             {
-                const RegionChange &c = map.at(i);
-                if ( c.pos > now )
-                    break;
-                if ( c.kind != RC_PROTECT || c.other_process || c.size == 0 || c.base == BADADDR )
+                if ( m->loaded.is_valid() && c->pos < m->loaded )
                     continue;
-                if ( m->loaded.is_valid() && c.pos < m->loaded )
-                    continue;
-                ea_t lo = std::max(c.base, mlo);
-                ea_t hi = std::min((ea_t)(c.base + c.size), mhi);
+                ea_t lo = std::max(c->base, mlo);
+                ea_t hi = std::min((ea_t)(c->base + c->size), mhi);
                 if ( lo < hi )
-                    lay.protect(lo, hi, c.protect);
+                    lay.protect(lo, hi, c->protect);
             }
         }
 

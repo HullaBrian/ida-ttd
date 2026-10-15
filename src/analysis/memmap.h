@@ -8,8 +8,9 @@ namespace idattd
     class TraceManager;
 
     // The recording's memory map, reconstructed from the syscalls that built it.
-    // The TTD Replay SDK reports no page protections and no region list, so the
-    // only source is the calls themselves.
+    // The TTD Replay SDK reports no page protections and no region list, so for
+    // a Microsoft recording the only source is the calls themselves; Sogen
+    // also records the regions' state (RC_STATE).
     //
     // Held as a timeline rather than a snapshot: every allocation, protection
     // change and free in the order they happened. Folding it up to a position
@@ -47,7 +48,7 @@ namespace idattd
     struct RegionChange
     {
         Position pos;                            // where the syscall returned
-        // Where it was CALLED. This is what the listing travels to: landing on
+        // Where it was called. This is what the listing travels to: landing on
         // the return puts you inside the syscall stub, which is never the place
         // you wanted -- you wanted the code that asked for the memory.
         Position call_pos;
@@ -71,7 +72,7 @@ namespace idattd
         uint32_t protect = 0;                    // PAGE_* (or the free type)
         // False when the exact value the kernel wrote could not be recovered and
         // the caller's own request was snapped to page boundaries instead. That
-        // is a floor, never an overstatement -- see build_memory_map.
+        // is a floor, never an overstatement.
         bool     exact = true;
         // The call targeted another process. Recorded so injection is visible in
         // the listing, but never folded into this process's map.

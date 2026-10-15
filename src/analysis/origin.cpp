@@ -53,6 +53,11 @@ namespace idattd
             bytevec_t v;
             if ( t.is_reg )
             {
+                // Between the general registers and xmm0, and past xmm15,
+                // there is nothing to read.
+                const uint32_t nxmm = (uint32_t)std::extent_v<decltype(ittd_regs::xmm)>;
+                if ( t.reg >= ITTD_ORIGIN_XMM0 + nxmm || (t.reg >= ITTD_REG_GP_COUNT && t.reg < ITTD_ORIGIN_XMM0) )
+                    return v;
                 ittd_regs r{};
                 bool ok = cur->thread_id() == tid ? cur->read_registers(&r) : cur->read_thread_registers(tid, &r);
                 if ( !ok )
@@ -90,6 +95,7 @@ namespace idattd
         // The reads the instruction at 'pc' made in the one step at 'pos'.
         void reads_at(ITraceBackend *b, Position pos, ea_t pc, std::vector<Access> *out, ProgressSink *sink)
         {
+            // All of user space: the step is the narrow part of the question.
             const ea_t hi = b->info().is64 ? (ea_t)0x800000000000ull : (ea_t)0x100000000ull;
             PositionRange one{ pos, b->position_add(pos, 1) };
             std::vector<Access> v;
@@ -133,6 +139,8 @@ namespace idattd
             if ( !cur || !cur->seek(at) )
                 return;
             std::unique_ptr<INavigator> nav = b->make_navigator(cur.get());
+            if ( !nav )
+                return;
             const bytevec_t v0 = read_value(cur.get(), t, tid);
             for ( uint64_t i = 0; i < kStepLookBack; i++ )
             {
@@ -156,12 +164,6 @@ namespace idattd
             }
         }
 
-        // Memory is set by the program's last write to it -- or by the system
-        // after that, which a recording may not report as a write (Microsoft
-        // TTD reports a syscall filling a buffer as other kinds of access).
-        // So the value right after the program's write is checked against the
-        // value asked about, and when they differ, or nothing of the program
-        // wrote it, the syscalls since are checked latest first.
         // The syscalls, listed once per trace_value_origin: on Microsoft TTD
         // listing them is a replay of the whole recording.
         struct SyscallCache
@@ -170,6 +172,12 @@ namespace idattd
             std::vector<SyscallEvent> calls;
         };
 
+        // Memory is set by the program's last write to it -- or by the system
+        // after that, which a recording may not report as a write (Microsoft
+        // TTD reports a syscall filling a buffer as other kinds of access).
+        // So the value right after the program's write is checked against the
+        // value asked about, and when they differ, or nothing of the program
+        // wrote it, the syscalls since are checked latest first.
         void search_memory(ITraceBackend *b, const OriginTarget &t, Position at, const bytevec_t &value,
                            SyscallCache *sc_cache, Search *s, ProgressSink *sink)
         {
@@ -178,6 +186,8 @@ namespace idattd
                 return;
             {
                 std::unique_ptr<INavigator> nav = b->make_navigator(cur.get());
+                if ( !nav )
+                    return;
                 Breakpoint bp;
                 bp.addr  = t.addr;
                 bp.size  = t.size;
@@ -204,7 +214,7 @@ namespace idattd
                 if ( c2 && c2->seek(s->pos) )
                 {
                     std::unique_ptr<INavigator> n2 = b->make_navigator(c2.get());
-                    if ( n2->step(true) == StopReason::Stepped && read_value(c2.get(), t, 0) == value )
+                    if ( n2 && n2->step(true) == StopReason::Stepped && read_value(c2.get(), t, 0) == value )
                         return;
                 }
             }
@@ -213,6 +223,8 @@ namespace idattd
                 return;
             if ( !sc_cache->listed )
             {
+                // Never appended to a listing left part-done.
+                sc_cache->calls.clear();
                 b->query_syscalls(&sc_cache->calls, sink);
                 sc_cache->listed = !(sink != nullptr && sink->cancelled());
             }
@@ -233,7 +245,7 @@ namespace idattd
                 const bytevec_t before = read_value(c.get(), t, 0);
                 const ea_t      sys_pc = c->program_counter();
                 std::unique_ptr<INavigator> n = b->make_navigator(c.get());
-                if ( n->step(true) != StopReason::Stepped )
+                if ( !n || n->step(true) != StopReason::Stepped )
                     continue;
                 const bytevec_t after = read_value(c.get(), t, 0);
                 if ( after == value && before != after )
@@ -500,7 +512,7 @@ namespace idattd
                 if ( *alias != '\0' && n == alias )
                     return *reg = i, true;
         // r8d, r8w, r8b and friends name their 64-bit register.
-        if ( n.length() >= 2 && n[0] == 'r' )
+        if ( n.length() >= 2 && n[0] == 'r' && qisdigit(n[1]) )
         {
             char *end = nullptr;
             unsigned long k = strtoul(n.c_str() + 1, &end, 10);
@@ -508,10 +520,12 @@ namespace idattd
               && (*end == '\0' || ((*end == 'd' || *end == 'w' || *end == 'b') && end[1] == '\0')) )
                 return *reg = (uint32_t)k, true;
         }
-        if ( (n.length() == 4 || n.length() == 5) && (n.substr(0, 3) == "xmm" || n.substr(0, 3) == "ymm") )
+        if ( (n.length() == 4 || n.length() == 5) && (n.substr(0, 3) == "xmm" || n.substr(0, 3) == "ymm")
+          && qisdigit(n[3]) )
         {
-            unsigned long k = strtoul(n.c_str() + 3, nullptr, 10);
-            if ( k < 16 )
+            char *end = nullptr;
+            unsigned long k = strtoul(n.c_str() + 3, &end, 10);
+            if ( *end == '\0' && k < 16 )
                 return *reg = ITTD_ORIGIN_XMM0 + (uint32_t)k, true;
         }
         return false;
@@ -531,12 +545,17 @@ namespace idattd
         }
     }
 
+    // origin_inputs, saying whether the user cancelled the search for the
+    // memory read -- which leaves 'out' without it, and so short of an input.
+    static bool collect_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out,
+                               bool *cancelled);
+
     // How many values (not address registers) the instruction about to run
     // at 'at' read, and the one when it is one.
-    static int value_inputs(TraceManager *mgr, Position at, OriginTarget *only)
+    static int value_inputs(TraceManager *mgr, Position at, OriginTarget *only, bool *cancelled)
     {
         std::vector<OriginInput> inputs;
-        if ( !origin_inputs(mgr, at, &inputs) )
+        if ( !collect_inputs(mgr, at, &inputs, cancelled) || *cancelled )
             return 0;
         int n = 0;
         for ( const OriginInput &in : inputs )
@@ -637,7 +656,14 @@ namespace idattd
             if ( !more && made_here )
             {
                 OriginTarget only;
-                const int n = through_computations ? value_inputs(mgr, s.pos, &only) : -1;
+                bool cancelled = false;
+                const int n = through_computations ? value_inputs(mgr, s.pos, &only, &cancelled) : -1;
+                if ( cancelled )
+                {
+                    hop.kind = OriginKind::Cancelled;
+                    out->push_back(hop);
+                    return true;
+                }
                 if ( n == 1 && only.is_reg && only.reg == ITTD_REG_RSP )
                 {
                     hop.note = "computed from rsp: a stack address";
@@ -733,19 +759,18 @@ namespace idattd
                     out->cancelled = true;
                     return true;
                 }
-                auto it = seen.find(key(h));
-                if ( it != seen.end() )
+                const int idx = (int)out->nodes.size();
+                auto [it, fresh] = seen.emplace(key(h), idx);
+                if ( !fresh )
                 {
                     if ( prev >= 0 )
                         out->edges.push_back(OriginGraph::Edge{ prev, it->second, input });
                     prev = -1;
                     break;
                 }
-                const int idx = (int)out->nodes.size();
-                seen[key(h)] = idx;
                 if ( prev >= 0 )
                     out->edges.push_back(OriginGraph::Edge{ prev, idx, input });
-                out->nodes.push_back(h);
+                out->nodes.push_back(std::move(h));
                 prev  = idx;
                 input = false;
             }
@@ -755,7 +780,13 @@ namespace idattd
             if ( !end.combined || !end.by_pos.is_valid() )
                 continue;
             std::vector<OriginInput> inputs;
-            origin_inputs(mgr, end.by_pos, &inputs);
+            bool cancelled = false;
+            collect_inputs(mgr, end.by_pos, &inputs, &cancelled);
+            if ( cancelled )
+            {
+                out->cancelled = true;
+                return true;
+            }
             for ( const OriginInput &in : inputs )
             {
                 if ( in.address || (in.what.is_reg && in.what.reg == ITTD_REG_RSP) )
@@ -770,7 +801,15 @@ namespace idattd
 
     bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out)
     {
+        bool cancelled = false;
+        return collect_inputs(mgr, at, out, &cancelled);
+    }
+
+    static bool collect_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out,
+                               bool *cancelled)
+    {
         out->clear();
+        *cancelled = false;
         if ( !session_ready(mgr) )
             return false;
         ITraceBackend *b = mgr->backend();
@@ -867,6 +906,7 @@ namespace idattd
                 r.ran = true;
                 return r;
             });
+            *cancelled = qr.cancelled;
             const Access *rd = qr.cancelled ? nullptr : pick_read(s, memory_size);
             if ( rd != nullptr )
             {

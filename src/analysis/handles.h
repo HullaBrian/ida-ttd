@@ -28,10 +28,10 @@ namespace idattd
         Position closed;                // NtClose (or a duplicate that closed it); none while open
     };
 
-    // Every handle, in the order they were opened (those from before the
-    // recording first). Runs behind a cancellable wait box; false when the
-    // recording's backend cannot list syscalls. A complete answer is saved in
-    // the database for load_handles.
+    // Every handle, in the order they were opened; one from before the
+    // recording comes where it was closed. Runs behind a cancellable wait
+    // box; false when the recording's backend cannot list syscalls. A
+    // complete answer is saved in the database for load_handles.
     bool list_handles(TraceManager *mgr, std::vector<HandleRecord> *out, bool *cancelled);
 
     // The list as saved in the database by the last list_handles that ran to

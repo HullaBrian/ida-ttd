@@ -19,14 +19,15 @@ namespace idattd
     static const uint32_t BM_VERSION = 1;
 
     // A bookmark list is small, but the blob is IDB data and IDB data can be
-    // stale, truncated or written by something else entirely. Cap what we are
-    // willing to believe before allocating from it.
+    // stale, truncated or written by something else entirely, so the count is
+    // capped before anything is allocated from it.
     // Strings are capped at DB_MAX_STR (common/dbstore.h) on both sides.
     static const uint32_t BM_MAX_ITEMS = 100000;
 
     void BookmarkStore::load()
     {
-        m_loaded = true;
+        m_loaded  = true;
+        m_foreign = false;
         m_items.clear();
 
         netnode nn(BM_NODE);
@@ -45,8 +46,9 @@ namespace idattd
         uint32_t count   = r.u32();
         if ( !r.ok() || magic != BM_MAGIC || version != BM_VERSION || count > BM_MAX_ITEMS )
         {
-            msg("[ida-ttd] the bookmark record in this database is not one we "
-                "understand; leaving it untouched.\n");
+            msg("[ida-ttd] the bookmark record in this database is not one this "
+                "build understands; leaving it untouched.\n");
+            m_foreign = true;
             return;
         }
 
@@ -74,6 +76,12 @@ namespace idattd
 
     void BookmarkStore::save() const
     {
+        if ( m_foreign )
+        {
+            msg("[ida-ttd] bookmarks: not saved, so as not to overwrite the record "
+                "this build could not read; the change lasts only for this session.\n");
+            return;
+        }
         netnode nn(BM_NODE, 0, true);   // create on first save
         if ( nn == BADNODE )
         {

@@ -22,11 +22,20 @@ namespace idattd
         public:
             PythonGil()
             {
-                HMODULE mods[512];
+                // Grown until every module fits: IDA with its plugins and Qt
+                // can load hundreds, and Python may be among the last.
+                std::vector<HMODULE> mods(512);
                 DWORD need = 0;
-                if ( !K32EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &need) )
-                    return;
-                size_t n = std::min<size_t>(need / sizeof(HMODULE), qnumber(mods));
+                for ( ;; )
+                {
+                    const DWORD have = DWORD(mods.size() * sizeof(HMODULE));
+                    if ( !K32EnumProcessModules(GetCurrentProcess(), mods.data(), have, &need) )
+                        return;
+                    if ( need <= have )
+                        break;
+                    mods.resize(need / sizeof(HMODULE) + 32);
+                }
+                size_t n = need / sizeof(HMODULE);
                 for ( size_t i = 0; i < n && m_save == nullptr; i++ )
                 {
                     char name[MAX_PATH];

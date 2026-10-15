@@ -67,7 +67,13 @@ namespace idattd
                     which.push_back(i);
                 }
             std::vector<ittd_regs> regs;
-            b->registers_at(where, &regs, nullptr);
+            StageSink regs_stage(sink, 0, 20);
+            b->registers_at(where, &regs, &regs_stage);
+            if ( regs_stage.cancelled() )
+            {
+                r.cancelled = true;
+                return r;
+            }
             CursorPtr cur = b->make_cursor();
             if ( !cur )
                 return r;
@@ -86,7 +92,7 @@ namespace idattd
                         r.cancelled = true;
                         return r;
                     }
-                    sink->report(uint32_t(k * 50 / std::max<size_t>(which.size(), 1)));
+                    sink->report(uint32_t(20 + k * 30 / std::max<size_t>(which.size(), 1)));
                 }
                 if ( k >= regs.size() || (regs[k].have & ITTD_REGS_GP) == 0 )
                     continue;
@@ -99,7 +105,7 @@ namespace idattd
                 // own). Seen from the call site, which is what the decoder reads.
                 ittd_regs g = regs[k];
                 if ( wide )
-                    g.gp[ITTD_REG_RCX] = g.gp[10];
+                    g.gp[ITTD_REG_RCX] = g.gp[SYSCALL_ARG_REGS[0]];
                 g.gp[ITTD_REG_RSP] += 8;
                 GuestView v;
                 v.read = read;
@@ -125,7 +131,8 @@ namespace idattd
             // one (Microsoft TTD); everything else from memory just after the
             // call.
             std::vector<std::optional<uint64_t>> values;
-            const bool searched = !slots.empty() && b->query_out_values(slots, &values, sink);
+            StageSink outs_stage(sink, 50, 75);
+            const bool searched = !slots.empty() && b->query_out_values(slots, &values, &outs_stage);
             if ( sink != nullptr && sink->cancelled() )
             {
                 r.cancelled = true;
@@ -148,7 +155,7 @@ namespace idattd
                         r.cancelled = true;
                         return r;
                     }
-                    sink->report(uint32_t(50 + k * 50 / std::max<size_t>(which.size(), 1)));
+                    sink->report(uint32_t(75 + k * 25 / std::max<size_t>(which.size(), 1)));
                 }
                 DecodedCall &d = dc[k];
                 if ( d.sig == nullptr )
@@ -250,8 +257,14 @@ namespace idattd
             uint64_t words[3];
             uint32_t small[2];
             qstring  text;
+            // A truncated blob yields nothing rather than the part before
+            // the damage, which would read as the whole list.
             if ( end - p < (ptrdiff_t)(sizeof(words) + sizeof(small)) )
+            {
+                calls->clear();
+                decoded->clear();
                 return false;
+            }
             memcpy(words, p, sizeof(words));
             p += sizeof(words);
             memcpy(small, p, sizeof(small));
@@ -261,7 +274,11 @@ namespace idattd
             c.number = small[0];
             c.tid    = small[1];
             if ( !get_str(&p, end, &c.name) || !get_str(&p, end, &text) )
+            {
+                calls->clear();
+                decoded->clear();
                 return false;
+            }
             calls->push_back(std::move(c));
             decoded->push_back(std::move(text));
         }
@@ -308,10 +325,8 @@ namespace idattd
             const ittd_regs &r = regs[i];
             if ( (r.have & ITTD_REGS_GP) == 0 )
                 continue;
-            // The syscall stub moves rcx to r10 before the syscall instruction,
-            // because the instruction itself overwrites rcx with the return
-            // address.
-            (*out)[i] = SyscallArgs{ r.gp[10], r.gp[ITTD_REG_RDX], r.gp[ITTD_REG_R8], r.gp[9] };
+            (*out)[i] = SyscallArgs{ r.gp[SYSCALL_ARG_REGS[0]], r.gp[SYSCALL_ARG_REGS[1]],
+                                     r.gp[SYSCALL_ARG_REGS[2]], r.gp[SYSCALL_ARG_REGS[3]] };
         }
     }
 

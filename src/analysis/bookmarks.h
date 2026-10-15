@@ -35,7 +35,7 @@ namespace idattd
 
         // Drop the in-memory copy so the next access re-reads the IDB. Called
         // when a trace session ends: the next one may be a different database.
-        void            invalidate() { m_loaded = false; m_items.clear(); }
+        void            invalidate() { m_loaded = false; m_foreign = false; m_items.clear(); }
 
     private:
         void            load();
@@ -43,5 +43,8 @@ namespace idattd
 
         std::vector<Bookmark> m_items;
         bool                  m_loaded = false;
+        // The database holds a record this build cannot read (a newer
+        // plugin's, say). It is never written over: that would lose it.
+        bool                  m_foreign = false;
     };
 }

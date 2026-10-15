@@ -10,9 +10,10 @@ namespace idattd
     static const struct { const char *name; int index; } g_fork_regs[] = {
         { "rax", ITTD_REG_RAX }, { "rcx", ITTD_REG_RCX }, { "rdx", ITTD_REG_RDX },
         { "rbx", ITTD_REG_RBX }, { "rsp", ITTD_REG_RSP }, { "rbp", ITTD_REG_RBP },
-        { "rsi", ITTD_REG_RSI }, { "rdi", ITTD_REG_RDI }, { "r8", 8 },  { "r9", 9 },
-        { "r10", 10 }, { "r11", 11 }, { "r12", 12 }, { "r13", 13 }, { "r14", 14 },
-        { "r15", ITTD_REG_R15 }, { "rip", ITTD_REG_RIP },
+        { "rsi", ITTD_REG_RSI }, { "rdi", ITTD_REG_RDI },
+        { "r8", ITTD_REG_R8 }, { "r9", ITTD_REG_R8 + 1 }, { "r10", ITTD_REG_R8 + 2 },
+        { "r11", ITTD_REG_R8 + 3 }, { "r12", ITTD_REG_R8 + 4 }, { "r13", ITTD_REG_R8 + 5 },
+        { "r14", ITTD_REG_R8 + 6 }, { "r15", ITTD_REG_R15 }, { "rip", ITTD_REG_RIP },
         { "rflags", FORK_REG_RFLAGS }, { "eflags", FORK_REG_RFLAGS },
     };
 
@@ -36,11 +37,16 @@ namespace idattd
             p += 2, base = 10;
         else if ( p[0] == '#' )
             p += 1, base = 10;
-        if ( *p == '\0' )
+        // A minus sign is two's complement ("-1" is all ones). strtoull would
+        // also take leading blanks and a plus sign, and saturate on overflow:
+        // none of those is a value anyone meant to write.
+        const char d = *p == '-' ? p[1] : *p;
+        if ( base == 16 ? !qisxdigit(d) : !qisdigit(d) )
             return false;
         char *end = nullptr;
+        errno = 0;
         unsigned long long v = strtoull(p, &end, base);
-        if ( end == nullptr || *end != '\0' )
+        if ( end == nullptr || *end != '\0' || errno == ERANGE )
             return false;
         *out = v;
         return true;
@@ -135,6 +141,13 @@ namespace idattd
                     return false;
                 }
                 size_t n = value[0] == 'q' ? 8 : 4;
+                // Unsigned, or negative as a 32-bit two's complement ("d:-1").
+                const int64_t sv = (int64_t)v;
+                if ( n == 4 && v > 0xFFFFFFFFull && !(sv < 0 && sv >= INT32_MIN) )
+                {
+                    err->sprnt("\"%s\" does not fit in 32 bits", value.c_str() + 2);
+                    return false;
+                }
                 for ( size_t k = 0; k < n; k++ )
                     bytes.push_back((uchar)(v >> (8 * k)));
             }
@@ -151,15 +164,14 @@ namespace idattd
                 }
                 for ( size_t k = 0; k < hex.length(); k += 2 )
                 {
-                    char pair[3] = { hex[k], hex[k + 1], '\0' };
-                    char *end = nullptr;
-                    unsigned long b = strtoul(pair, &end, 16);
-                    if ( end == nullptr || *end != '\0' )
+                    // Both digits checked: strtoul would take "-1" or "+1".
+                    if ( !qisxdigit(hex[k]) || !qisxdigit(hex[k + 1]) )
                     {
                         err->sprnt("\"%s\" is not hex bytes", value.c_str());
                         return false;
                     }
-                    bytes.push_back((uchar)b);
+                    char pair[3] = { hex[k], hex[k + 1], '\0' };
+                    bytes.push_back((uchar)strtoul(pair, nullptr, 16));
                 }
             }
             out->emplace_back((ea_t)ea, std::move(bytes));
@@ -236,6 +248,14 @@ namespace idattd
             q.cancelled = result.cancelled;
             return q;
         });
+        // A failure that left no words of its own (the backend threw, say)
+        // still has to say something.
+        if ( !result.ok && !result.cancelled && result.error.empty() )
+        {
+            result.error = backend->last_error();
+            if ( result.error.empty() )
+                result.error = "the fork did not complete";
+        }
         // Remembered for the Fork manager, whoever asked for it.
         if ( result.ok )
         {

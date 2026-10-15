@@ -24,6 +24,27 @@ namespace idattd
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
                           bool cancellable = true);
 
+    // One stage of a query that makes several backend calls in turn: the
+    // stage's own 0..100 is reported as [lo, hi] of the whole, so the bar
+    // does not start over at each call, and Cancel passes straight through.
+    class StageSink : public ProgressSink
+    {
+    public:
+        StageSink(ProgressSink *outer, uint32_t lo, uint32_t hi)
+            : m_outer(outer), m_lo(lo), m_hi(hi) {}
+        void report(uint32_t percent) override
+        {
+            if ( m_outer != nullptr )
+                m_outer->report(m_lo + (m_hi - m_lo) * std::min<uint32_t>(percent, 100) / 100);
+        }
+        bool cancelled() override { return m_outer != nullptr && m_outer->cancelled(); }
+
+    private:
+        ProgressSink *m_outer;
+        uint32_t      m_lo;
+        uint32_t      m_hi;
+    };
+
     // show_wait_box() for work that then blocks the UI thread without
     // pumping it (applying a PDB): IDA shows a wait box only after a grace
     // delay and only while its message loop runs, so a box shown just before

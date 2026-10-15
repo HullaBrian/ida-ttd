@@ -241,11 +241,6 @@ namespace idattd
         return m_events;
     }
 
-    // Resolve a picked function address to the real runtime callee address(es).
-    // Calls reach an imported function either directly (target == real VA) or
-    // through a thunk (target == thunk addr, which jmps via the IAT). We collect
-    // all of: the function start, the thunk's resolved target, and the live IAT
-    // pointer value, so the call/return sweep matches regardless of the path.
     // Read the live pointer stored at 'slot' (an IAT/import slot) and add it.
     static void add_live_ptr(ea_t slot, bool is64, std::set<ea_t> &out)
     {
@@ -256,6 +251,10 @@ namespace idattd
             out.insert(v);
     }
 
+    // Calls reach an imported function either directly (target == real VA) or
+    // through a thunk (target == thunk addr, which jumps via the IAT). The
+    // function start, the thunk's resolved target and the live IAT pointer are
+    // all collected, so the call sweep matches whichever path a call took.
     std::vector<ea_t> FunctionTracer::resolve_targets(ea_t func_ea) const
     {
         std::set<ea_t> out;
@@ -276,8 +275,8 @@ namespace idattd
         }
 
         // Case 2: the user clicked the import data slot itself (no function, or a
-        // data item). Read the live pointer there = runtime callee VA. Only do
-        // this for data so we don't misread real code bytes as a pointer.
+        // data item). Read the live pointer there = runtime callee VA. Only
+        // for data, so real code bytes are never misread as a pointer.
         if ( !is_code(get_flags(start)) )
             add_live_ptr(start, m_is64, out);
 
@@ -481,13 +480,15 @@ namespace idattd
             {
                 std::vector<std::optional<uint64_t>> values;
                 bool searched = false;
-                run_query("Finding what the calls wrote back", [&](ProgressSink *p)
+                const QueryResult oq = run_query("Finding what the calls wrote back", [&](ProgressSink *p)
                 {
                     searched = backend->query_out_values(oslots, &values, p);
                     QueryResult r;
                     r.ran = true;
                     return r;
                 });
+                if ( oq.cancelled )
+                    cancelled = true;
                 std::set<size_t> touched;
                 for ( size_t k = 0; searched && k < oslots.size() && k < values.size(); k++ )
                 {
@@ -528,6 +529,6 @@ namespace idattd
             msg("[ida-ttd] tracer: cancelled - showing %d of %d recorded call(s).\n",
                 (int)nbuilt, (int)calls.size());
         else
-            msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)built.size());
+            msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)nbuilt);
     }
 }

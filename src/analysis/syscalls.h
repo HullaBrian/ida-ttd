@@ -15,10 +15,16 @@ namespace idattd
     // holding what was gathered so far.
     bool list_syscalls(TraceManager *mgr, std::vector<SyscallEvent> *out, bool *cancelled);
 
+    // ITTD_REG_* of the registers holding an x64 syscall's first four
+    // arguments at the syscall instruction: r10, rdx, r8, r9. The stub copies
+    // rcx to r10 because the instruction overwrites rcx with the return
+    // address; the fifth argument on is at [rsp+0x28], past that return
+    // address and the 32-byte home area.
+    constexpr int SYSCALL_ARG_REGS[4] = { ITTD_REG_R8 + 2, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 };
+
     // The first four arguments of each syscall in [first, first + count): the
-    // registers at its position (r10, rdx, r8, r9 -- the kernel's convention,
-    // not the user-mode one with rcx). An entry is empty when the registers
-    // could not be reconstructed.
+    // registers at its position (SYSCALL_ARG_REGS). An entry is empty when the
+    // registers could not be reconstructed.
     using SyscallArgs = std::array<uint64_t, 4>;
     void syscall_arguments(ITraceBackend *backend, const std::vector<SyscallEvent> &calls,
                            size_t first, size_t count,

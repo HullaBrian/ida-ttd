@@ -27,6 +27,13 @@ namespace idattd
         P_ACCESS_MASK        = 0x0FF,
     };
 
+    // MEM_* states of an RC_STATE entry, likewise spelled out.
+    enum : uint32_t
+    {
+        M_COMMIT             = 0x01000,
+        M_FREE               = 0x10000,
+    };
+
     uchar protection_perm(uint32_t protect)
     {
         uint32_t a = protect & P_ACCESS_MASK;
@@ -157,8 +164,8 @@ namespace idattd
                     // allocated. Inside a module that is ordinary (a loader
                     // fixing up its own sections) and the module already has
                     // segments of its own. Outside one it is the interesting
-                    // case -- a payload whose allocation we could not recover --
-                    // so let it stand up a region rather than be lost.
+                    // case -- a payload whose allocation was not recovered --
+                    // so it stands up a region rather than being lost.
                     if ( c.in_module )
                         return;
                     Region r;
@@ -208,18 +215,17 @@ namespace idattd
                     return;
                 std::vector<Region> was;
                 carve(live, c.base, (ea_t)(c.base + c.size), &was);
-                static const uint32_t MEM_FREE_ = 0x10000, MEM_COMMIT_ = 0x1000;
-                if ( c.state == MEM_FREE_ )
+                if ( c.state == M_FREE )
                     return;
                 Region r;
                 r.base    = c.base;
                 r.size    = c.size;
                 // Reserved memory has no access at all until committed.
-                r.protect = c.state == MEM_COMMIT_ ? c.protect : 0x01 /* PAGE_NOACCESS */;
+                r.protect = c.state == M_COMMIT ? c.protect : (uint32_t)P_NOACCESS;
                 r.origin  = c.region_type == ITTD_REGION_MAPPED || c.region_type == ITTD_REGION_SECTION
                           ? RC_MAPVIEW : RC_ALLOC;
                 r.type     = c.region_type;
-                r.reserved = c.state != MEM_COMMIT_;
+                r.reserved = c.state != M_COMMIT;
                 // A commit or protection change inside a region keeps the
                 // position the region first appeared at.
                 r.since    = c.pos;
@@ -314,15 +320,16 @@ namespace idattd
     static const char  MM_NODE[]  = "$ ida-ttd memmap";
     static const uchar MM_TAG     = 'M';
     static const uint32_t MM_MAGIC   = 0x50414D54;   // 'TMAP'
-    // 7: positions are stored as the core's two words, whose "no position"
-    // marker differs from the one Microsoft TTD used, so a v6 map would read an
-    // absent call position back as a real one.
-    // 6: the chain keeps module boundaries rather than the innermost frames.
-    // 5 added the called export. 4 added the call chain, 3 the call position. 2 made RegionChange::pc the caller and
-    // established the stack-argument offset from the stack rather than assuming
-    // it, so a map written by an older build can hold a wrong Protect value.
-    // Rebuild rather than show it.
+    // A map of any other version is rebuilt rather than shown:
     // 8: RC_STATE entries, with their state, region type and allocation base.
+    // 7: positions are stored as the core's two words, whose "no position"
+    //    marker differs from the one Microsoft TTD used, so a v6 map would
+    //    read an absent call position back as a real one.
+    // 6: the chain keeps module boundaries rather than the innermost frames.
+    // 5: the called export. 4: the call chain. 3: the call position.
+    // 2: RegionChange::pc is the caller, and the stack-argument offset comes
+    //    from the stack rather than being assumed, so an older map can hold a
+    //    wrong Protect value.
     static const uint32_t MM_VERSION = 8;
     // A recording that allocates in a loop can produce a great many changes.
     // Past this there is nothing left to learn from another row, and the blob
@@ -330,8 +337,7 @@ namespace idattd
     static const size_t MM_MAX_ITEMS = 200000;
 
     // The blob is the header PluginNode writes (u32 magic, u32 version, u64
-    // trace fingerprint) followed by the changes -- the same bytes as before
-    // the codec moved to common/dbstore, so saved maps still load.
+    // trace fingerprint) followed by the changes.
     void MemoryMap::save(uint64_t fingerprint) const
     {
         PluginNode node(MM_NODE);
@@ -492,6 +498,10 @@ namespace idattd
         changes.reserve(found.size());
         for ( const ittd_mapping_change &m : found )
         {
+            // A kind this build does not know, checked before the narrowing
+            // below could fold it onto one it does.
+            if ( m.kind > ITTD_MAP_STATE )
+                continue;
             RegionChange c;
             c.pos      = Position{ m.pos.hi, m.pos.lo };
             c.call_pos = Position{ m.call_pos.hi, m.call_pos.lo };
@@ -503,9 +513,7 @@ namespace idattd
             // The caller, for the listing: the innermost frame of the chain.
             c.pc       = c.chain_n > 0 ? c.chain[0] : BADADDR;
             c.kind     = m.kind == ITTD_MAP_STATE ? (uint8_t)RC_STATE : (uint8_t)m.kind;
-            if ( c.kind >= RC_COUNT )
-                continue;
-            c.base          = (ea_t)m.base;
+            c.base         = (ea_t)m.base;
             c.size          = m.size;
             c.protect       = m.protect;
             c.exact         = (m.flags & ITTD_MAP_F_EXACT) != 0;
@@ -600,8 +608,8 @@ namespace idattd
             }
         }
         // The whole chain lived in one module -- an allocation a DLL made
-        // entirely for itself. The outermost frame we saw is the most that can
-        // be said, and saying it beats leaving the column empty.
+        // entirely for itself. The outermost frame recorded is the most that
+        // can be said, and saying it beats leaving the column empty.
         return c.chain[c.chain_n - 1];
     }
 

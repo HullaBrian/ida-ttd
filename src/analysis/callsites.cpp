@@ -14,7 +14,7 @@ namespace idattd
     static const char  CS_NODE[]  = "$ ida-ttd callsites";
     static const uchar CS_SITE_TAG = 'S';   // alt <site> -> 1
     static const uchar CS_TGTS_TAG = 'T';   // blob at <site> -> u64 targets
-    static const uchar CS_TYPE_TAG = 'Y';   // alt <site> -> 1: we set its call type
+    static const uchar CS_TYPE_TAG = 'Y';   // alt <site> -> 1: its call type was set here
 
     static const size_t kMaxTargetsPerSite = 16;
     static const size_t kMaxSites          = 20000;
@@ -146,7 +146,7 @@ namespace idattd
 
         // A backend may report direct calls too (the decode below drops them),
         // so the caps apply to what survives that.
-        for ( const auto &kv : found )
+        for ( auto &kv : found )
         {
             if ( seen->size() >= kMaxSites )
             {
@@ -158,7 +158,7 @@ namespace idattd
                 continue;
             // A site that reaches a great many targets is a dispatcher, and
             // listing hundreds of them helps nobody. Keep the most frequent few.
-            std::vector<IndirectTarget> v = kv.second;
+            std::vector<IndirectTarget> &v = kv.second;
             std::stable_sort(v.begin(), v.end(), [](const IndirectTarget &x, const IndirectTarget &y)
                              { return x.hits > y.hits; });
             std::set<ea_t> &dst = (*seen)[kv.first];
@@ -349,6 +349,8 @@ namespace idattd
         }
         else
         {
+            // User space between the modules: from the lowest address
+            // Windows maps (64 KiB) to the top of user space.
             const ea_t HI = mgr->is64() ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
             ea_t cur = 0x10000;
             for ( const ModuleRegistry::Span &sp : mods.spans() )
@@ -398,8 +400,8 @@ namespace idattd
             nodeidx_t next = nn.altnext(i, CS_SITE_TAG);
             ea_t site = (ea_t)i;
 
-            // Only the cross-references we added come off; anything else at this
-            // site was not ours to remove.
+            // Only the cross-references the annotation added come off; anything
+            // else at this site belongs to the user or to IDA.
             bytevec_t blob;
             if ( nn.getblob(&blob, i, CS_TGTS_TAG) > 0 )
             {

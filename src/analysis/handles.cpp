@@ -109,8 +109,7 @@ namespace idattd
             {
                 if ( addr == 0 || !m_have )
                     return false;
-                std::vector<uint8_t> known;
-                return m_cur->read_memory((ea_t)addr, buf, n, &known) == n;
+                return m_cur->read_memory((ea_t)addr, buf, n, &m_known) == n;
             }
 
             uint64_t ptr(uint64_t addr)
@@ -152,6 +151,7 @@ namespace idattd
             CursorPtr      m_cur;
             Position       m_pos;
             bool           m_have = false;
+            std::vector<uint8_t> m_known;   // read_memory's mask, kept to reuse its buffer
         };
 
         bool success(uint64_t status) { return (int32_t)(uint32_t)status >= 0; }
@@ -243,6 +243,9 @@ namespace idattd
         p += 8;
         if ( ver != HD_VERSION )
             return false;
+        // Built aside, so a truncated blob yields nothing rather than the
+        // part before the damage, which would read as the whole list.
+        std::vector<HandleRecord> v;
         for ( uint32_t i = 0; i < n; i++ )
         {
             HandleRecord h;
@@ -261,8 +264,9 @@ namespace idattd
             h.tid    = small[1];
             if ( !get_str(&p, end, &h.type) || !get_str(&p, end, &h.name) || !get_str(&p, end, &h.opened_by) )
                 return false;
-            out->push_back(std::move(h));
+            v.push_back(std::move(h));
         }
+        *out = std::move(v);
         return true;
     }
 
@@ -301,7 +305,13 @@ namespace idattd
             for ( size_t i : idx )
                 where.push_back(calls[i].pos);
             std::vector<ittd_regs> regs;
-            b->registers_at(where, &regs, nullptr);
+            StageSink regs_stage(sink, 0, 30);
+            b->registers_at(where, &regs, &regs_stage);
+            if ( regs_stage.cancelled() )
+            {
+                r.cancelled = true;
+                return r;
+            }
 
             Reader rd(b, wide);
             if ( !rd.ok() )
@@ -310,9 +320,8 @@ namespace idattd
             {
                 if ( wide )
                 {
-                    static const int first[4] = { 10, ITTD_REG_RDX, ITTD_REG_R8, 9 };
                     if ( n < 4 )
-                        return g.gp[first[n]];
+                        return g.gp[SYSCALL_ARG_REGS[n]];
                     return rd.ptr(g.gp[ITTD_REG_RSP] + 0x28 + 8 * (n - 4));
                 }
                 // [esp] returns into the stub, [esp+4] is the stub's own return.
@@ -362,7 +371,7 @@ namespace idattd
                         r.cancelled = true;
                         return r;
                     }
-                    sink->report(uint32_t(k * 50 / std::max<size_t>(idx.size(), 1)));
+                    sink->report(uint32_t(30 + k * 30 / std::max<size_t>(idx.size(), 1)));
                 }
                 if ( k >= regs.size() || (regs[k].have & ITTD_REGS_GP) == 0 )
                     continue;
@@ -451,15 +460,20 @@ namespace idattd
 
             // ---- 2: the handles the calls wrote back ---------------------------
             std::vector<std::optional<uint64_t>> values;
-            if ( !b->query_out_values(slots, &values, sink) )
+            StageSink outs_stage(sink, 60, 100);
+            if ( !b->query_out_values(slots, &values, &outs_stage) )
             {
                 // A recording that holds the kernel's writes where they happen:
                 // the slot one position after the call.
                 values.assign(slots.size(), std::nullopt);
                 for ( size_t i = 0; i < slots.size(); i++ )
                 {
-                    if ( (i & 63) == 0 && sink != nullptr && sink->cancelled() )
-                        break;
+                    if ( (i & 63) == 0 )
+                    {
+                        if ( outs_stage.cancelled() )
+                            break;
+                        outs_stage.report(uint32_t(i * 100 / slots.size()));
+                    }
                     if ( rd.at(b->position_add(slots[i].call, 1)) )
                         values[i] = rd.ptr(slots[i].addr);
                 }
@@ -503,8 +517,8 @@ namespace idattd
             {
                 if ( hr.handle == 0 )
                     return;
-                // A handle value reused without our seeing its close.
-                live.erase(hr.handle);
+                // A value already live was reused without its close being
+                // seen: the newer handle replaces it.
                 live[hr.handle] = recs.size();
                 recs.push_back(std::move(hr));
             };
