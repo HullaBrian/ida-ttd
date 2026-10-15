@@ -47,7 +47,14 @@ nothing beyond the CRT, Winsock, crypt32 and bcrypt -- in particular not the
 Windows Hypervisor Platform -- and is about 15 MB.
 
 Until 2026-10-13 the backend needed only `windows-ttd-view`; a build of just
-that target no longer links.
+that target no longer links. After updating Sogen, rebuilding only
+`windows-ttd-view` does link, against the old `windows-ttd.lib` and
+`windows-emulator.lib`, and the result reads every register as zero: always
+build `windows-ttd`.
+
+Since 2026-10-14 the backend needs `ttd/next` at `9fa4e1a3` or later, for
+`cpu_views_at` (registers at many positions, each register snapshot interval
+replayed once for all of them) and `cpu_view::read_register`.
 
 - **The cache values matter.** `backend-sogen.vcxproj` compiles Sogen's headers
   with the defines this configuration produces (`SOGEN_BUILD_STATIC=1`,
