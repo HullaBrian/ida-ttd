@@ -56,8 +56,15 @@ namespace idattd
         if ( !pe_read_val(cursor, b, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
             return 0;
 
+        // The same e_lfanew bound as guest_pe's header walk. The magic check
+        // matters too: a PE32 image read through the PE32+ layout puts the
+        // data directories eight bytes off.
+        if ( dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
+            return 0;
         IMAGE_NT_HEADERS64 nt{};
-        if ( !pe_read_val(cursor, b + (uint32_t)dos.e_lfanew, &nt) || nt.Signature != IMAGE_NT_SIGNATURE )
+        if ( !pe_read_val(cursor, b + (uint32_t)dos.e_lfanew, &nt) || nt.Signature != IMAGE_NT_SIGNATURE
+          || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC
+          || nt.OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION )
             return 0;
 
         const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
@@ -68,8 +75,8 @@ namespace idattd
 
         // RUNTIME_FUNCTION = { uint32 BeginRva; uint32 EndRva; uint32 UnwindRva; }.
         struct RtFunc { uint32_t Begin, End, Unwind; };
-        // 'size' is an attacker-controllable header field (we analyse malware);
-        // cap it so a corrupt directory can't ask for a multi-gigabyte buffer.
+        // 'size' is an attacker-controllable header field (the image may be
+        // malware); cap it so a corrupt directory can't ask for a multi-gigabyte buffer.
         static const size_t kMaxFuncs = 1u << 22;   // 4M functions ~ 48 MB
         size_t maxEntries = size / sizeof(RtFunc);
         if ( maxEntries == 0 )
@@ -136,7 +143,7 @@ namespace idattd
                         + sizeof(IMAGE_FILE_HEADER) + nt.FileHeader.SizeOfOptionalHeader;
         f.seekg((std::streamoff)secOff, std::ios::beg);
 
-        uint32_t fileOff = 0;
+        uint64_t fileOff = 0;
         bool     found   = false;
         for ( uint16_t i = 0; i < nt.FileHeader.NumberOfSections; i++ )
         {
@@ -145,9 +152,10 @@ namespace idattd
             if ( !f )
                 break;
             uint32_t vsize = sec.Misc.VirtualSize != 0 ? sec.Misc.VirtualSize : sec.SizeOfRawData;
-            if ( rva >= sec.VirtualAddress && rva < sec.VirtualAddress + vsize )
+            // Differences, not sums: header fields near 4 GB must not wrap.
+            if ( rva >= sec.VirtualAddress && rva - sec.VirtualAddress < vsize )
             {
-                fileOff = sec.PointerToRawData + (rva - sec.VirtualAddress);
+                fileOff = sec.PointerToRawData + (uint64_t)(rva - sec.VirtualAddress);
                 found   = true;
                 break;
             }
@@ -289,12 +297,12 @@ namespace idattd
         // Otherwise locate the section whose virtual range contains rva.
         for ( const ModuleImage::Section &s : img.sections )
         {
-            if ( rva < s.va || rva >= s.va + s.vsize )
+            if ( rva < s.va || rva - s.va >= s.vsize )
                 continue;
             uint32_t inSec = rva - s.va;
             if ( inSec >= s.rawsize )
                 return 0;                       // zero-fill tail (.bss): leave it 0
-            uint32_t fileOff = s.raw + inSec;
+            uint64_t fileOff = (uint64_t)s.raw + inSec;
             if ( (size_t)fileOff >= img.file.size() )
                 return 0;
             size_t avail     = s.rawsize - inSec;            // contiguous raw bytes

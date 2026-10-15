@@ -1,4 +1,5 @@
 #include "common/symsrv.h"
+#include "common/strings.h"
 
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
@@ -40,18 +41,6 @@ namespace idattd
         {
             static State s;
             return s;
-        }
-
-        std::wstring widen(const char *s)
-        {
-            if ( s == nullptr || *s == '\0' )
-                return std::wstring();
-            int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
-            if ( n <= 0 )
-                return std::wstring();
-            std::wstring w((size_t)n - 1, L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, s, -1, &w[0], n);
-            return w;
         }
 
         // Create every level of 'dir'. qmkdir makes one at a time, and a failure
@@ -157,7 +146,8 @@ namespace idattd
 
             qstring tmp = dest;
             tmp.append(".part");
-            FILE *f = fopen(tmp.c_str(), "wb");
+            // qfopen, like the qrename/qunlink below, takes IDA's UTF-8 paths.
+            FILE *f = qfopen(tmp.c_str(), "wb");
             if ( f == nullptr )
             {
                 err->sprnt("could not write %s", tmp.c_str());
@@ -190,7 +180,7 @@ namespace idattd
                     break;
                 }
             }
-            fclose(f);
+            qfclose(f);
 
             if ( !ok || qrename(tmp.c_str(), dest.c_str()) != 0 )
             {
@@ -207,10 +197,12 @@ namespace idattd
     {
         // Beside IDA's own user files rather than in the system temp directory:
         // a PDB is expensive to fetch and worth keeping across reboots.
+        // qgetenv, not getenv: the path goes to IDA's UTF-8 file functions,
+        // and getenv's ANSI text mangles a profile path outside the code page.
         qstring dir;
-        const char *local = getenv("LOCALAPPDATA");
-        if ( local != nullptr && local[0] != '\0' )
-            dir.sprnt("%s/ida-ttd/symbols", local);
+        qstring local;
+        if ( qgetenv("LOCALAPPDATA", &local) && !local.empty() )
+            dir.sprnt("%s/ida-ttd/symbols", local.c_str());
         else
             dir = "ida-ttd-symbols";
         return dir;
@@ -257,16 +249,14 @@ namespace idattd
 
         // Keep whatever the user had, after ours: their own store may hold PDBs
         // for modules the public server has never heard of.
-        const char *existing = getenv("_NT_SYMBOL_PATH");
-        if ( existing != nullptr && existing[0] != '\0' )
+        qstring existing;
+        if ( qgetenv("_NT_SYMBOL_PATH", &existing) && !existing.empty() )
         {
-            if ( strstr(existing, store.c_str()) != nullptr )
+            if ( existing.find(store) != qstring::npos )
                 return;                     // already installed this session
-            want.cat_sprnt(";%s", existing);
+            want.cat_sprnt(";%s", existing.c_str());
         }
-        qstring assign;
-        assign.sprnt("_NT_SYMBOL_PATH=%s", want.c_str());
-        _putenv(assign.c_str());
+        qsetenv("_NT_SYMBOL_PATH", want.c_str());
     }
 
     FetchState fetch_pdb(const char *name, const char *signature, ea_t base)
@@ -297,11 +287,11 @@ namespace idattd
         std::wstring url;
         url.append(SYM_ROOT);
         url.append(L"/");
-        url.append(widen(name));
+        url.append(to_wstring(name));
         url.append(L"/");
-        url.append(widen(signature));
+        url.append(to_wstring(signature));
         url.append(L"/");
-        url.append(widen(name));
+        url.append(to_wstring(name));
 
         qstring qname = name;
         s.pending++;

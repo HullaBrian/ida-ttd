@@ -15,7 +15,7 @@ namespace idattd
         char chunk[64];
         while ( s.size() < maxlen )
         {
-            size_t got = c(addr + s.size(), chunk, sizeof(chunk));
+            size_t got = c(addr + s.size(), chunk, qmin(sizeof(chunk), maxlen - s.size()));
             if ( got == 0 )
                 break;
             for ( size_t i = 0; i < got; i++ )
@@ -28,15 +28,15 @@ namespace idattd
         return s;
     }
 
-    // Locate a module's NT headers and say which flavour they are. Shared by
-    // read_guest_pe_info and resolve_export_va so the DOS/NT walk is written once.
+    // Locate a module's NT headers and say which flavour they are. Shared by every
+    // reader here so the DOS/NT walk, and its e_lfanew guard, is written once.
     static bool locate_nt_headers(const GuestRead &c, uint64_t base, uint64_t *nt_addr_out,
                                   bool *is64_out)
     {
         IMAGE_DOS_HEADER dos{};
         if ( !pe_read_val(c, base, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
             return false;
-        // e_lfanew is attacker-controlled (we analyse malware): a wild value would
+        // e_lfanew is attacker-controlled (the image may be malware): a wild value would
         // send every read that follows somewhere unrelated.
         if ( dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
             return false;
@@ -60,26 +60,27 @@ namespace idattd
         return true;
     }
 
-    // The export data directory of a module whose NT header is at 'ntAddr', or
-    // false when it has none.
-    static bool read_export_dir(const GuestRead &c, uint64_t ntAddr, bool is64,
-                                uint32_t *rva_out, uint32_t *size_out)
+    // Data directory 'index' (IMAGE_DIRECTORY_ENTRY_*) of a module whose NT
+    // header is at 'ntAddr', or false when it is absent. Entries past
+    // NumberOfRvaAndSizes are not directories, whatever bytes sit there.
+    static bool read_data_dir(const GuestRead &c, uint64_t ntAddr, bool is64, int index,
+                              uint32_t *rva_out, uint32_t *size_out)
     {
         if ( is64 )
         {
             IMAGE_NT_HEADERS64 nt{};
-            if ( !pe_read_val(c, ntAddr, &nt) )
+            if ( !pe_read_val(c, ntAddr, &nt) || nt.OptionalHeader.NumberOfRvaAndSizes <= (DWORD)index )
                 return false;
-            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[index];
             *rva_out  = dd.VirtualAddress;
             *size_out = dd.Size;
         }
         else
         {
             IMAGE_NT_HEADERS32 nt{};
-            if ( !pe_read_val(c, ntAddr, &nt) )
+            if ( !pe_read_val(c, ntAddr, &nt) || nt.OptionalHeader.NumberOfRvaAndSizes <= (DWORD)index )
                 return false;
-            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[index];
             *rva_out  = dd.VirtualAddress;
             *size_out = dd.Size;
         }
@@ -162,31 +163,6 @@ namespace idattd
         return true;
     }
 
-    // The debug data directory of a module whose NT header is at 'ntAddr'.
-    static bool read_debug_dir(const GuestRead &c, uint64_t ntAddr, bool is64,
-                               uint32_t *rva_out, uint32_t *size_out)
-    {
-        if ( is64 )
-        {
-            IMAGE_NT_HEADERS64 nt{};
-            if ( !pe_read_val(c, ntAddr, &nt) )
-                return false;
-            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-            *rva_out  = dd.VirtualAddress;
-            *size_out = dd.Size;
-        }
-        else
-        {
-            IMAGE_NT_HEADERS32 nt{};
-            if ( !pe_read_val(c, ntAddr, &nt) )
-                return false;
-            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
-            *rva_out  = dd.VirtualAddress;
-            *size_out = dd.Size;
-        }
-        return *rva_out != 0 && *size_out != 0;
-    }
-
     bool read_guest_pdb_info(const GuestRead &cursor, ea_t base, GuestPdbInfo *out)
     {
         if ( cursor == nullptr || out == nullptr || base == BADADDR )
@@ -200,12 +176,12 @@ namespace idattd
             return false;
 
         uint32_t dbgRva = 0, dbgSize = 0;
-        if ( !read_debug_dir(cursor, ntAddr, is64, &dbgRva, &dbgSize) )
+        if ( !read_data_dir(cursor, ntAddr, is64, IMAGE_DIRECTORY_ENTRY_DEBUG, &dbgRva, &dbgSize) )
             return false;
 
         // The directory is an array of fixed-size entries. Cap the count the same
-        // way the section table is capped: the size field comes out of an image we
-        // do not control, and a wild value would ask for an enormous read.
+        // way the section table is capped: the size field comes out of an untrusted
+        // image, and a wild value would ask for an enormous read.
         static const uint32_t kMaxEntries = 64;
         uint32_t nentries = dbgSize / (uint32_t)sizeof(IMAGE_DEBUG_DIRECTORY);
         if ( nentries > kMaxEntries )
@@ -255,125 +231,39 @@ namespace idattd
         return false;
     }
 
-    ea_t resolve_export_va(const GuestRead &cursor, ea_t base, bool is64, const char *name)
-    {
-        qnotused(is64);   // the image's own header is the authority; see below
-        if ( cursor == nullptr || base == BADADDR || name == nullptr || *name == '\0' )
-            return BADADDR;
-
-        uint64_t b = (uint64_t)base;
-        uint64_t ntAddr = 0;
-        // Trust the image over the caller: a WoW64 recording has a 32-bit and a
-        // 64-bit ntdll, and the caller cannot know which one this base is.
-        bool     hdr64  = false;
-        if ( !locate_nt_headers(cursor, b, &ntAddr, &hdr64) )
-            return BADADDR;
-
-        uint32_t exportRva = 0, exportSize = 0;
-        if ( !read_export_dir(cursor, ntAddr, hdr64, &exportRva, &exportSize) )
-            return BADADDR;
-
-        IMAGE_EXPORT_DIRECTORY exp{};
-        if ( !pe_read_val(cursor, b + exportRva, &exp) )
-            return BADADDR;
-        if ( exp.NumberOfNames == 0 || exp.AddressOfNames == 0
-          || exp.AddressOfNameOrdinals == 0 || exp.AddressOfFunctions == 0 )
-            return BADADDR;
-
-        static const uint32_t kMaxExports = 1u << 20;
-        uint32_t nNames = exp.NumberOfNames < kMaxExports ? exp.NumberOfNames : kMaxExports;
-        uint32_t nFuncs = exp.NumberOfFunctions < kMaxExports ? exp.NumberOfFunctions : kMaxExports;
-        if ( nNames == 0 || nFuncs == 0 )
-            return BADADDR;
-
-        std::vector<uint32_t> nameRvas(nNames);
-        std::vector<uint16_t> ordinals(nNames);
-        std::vector<uint32_t> funcRvas(nFuncs);
-
-        size_t mbN = cursor(b + exp.AddressOfNames, nameRvas.data(), (size_t)nNames * sizeof(uint32_t));
-        size_t mbO = cursor(b + exp.AddressOfNameOrdinals, ordinals.data(), (size_t)nNames * sizeof(uint16_t));
-        size_t mbF = cursor(b + exp.AddressOfFunctions, funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t));
-
-        size_t gotNames = mbN / sizeof(uint32_t);
-        size_t gotOrds  = mbO / sizeof(uint16_t);
-        size_t gotFuncs = mbF / sizeof(uint32_t);
-        size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
-
-        for ( size_t i = 0; i < usable; i++ )
-        {
-            uint16_t ordinal = ordinals[i];
-            if ( (size_t)ordinal >= gotFuncs )
-                continue;
-            uint32_t funcRva = funcRvas[ordinal];
-            if ( funcRva == 0 )
-                continue;
-            // A forwarder's "address" points back inside the export directory.
-            // Returning it would leave the caller watching a string.
-            if ( funcRva >= exportRva && funcRva < exportRva + exportSize )
-                continue;
-            if ( pe_read_cstr(cursor, b + nameRvas[i]) != name )
-                continue;
-            return (ea_t)(b + funcRva);
-        }
-        return BADADDR;
-    }
-
-    size_t read_guest_exports(const GuestRead &cursor, ea_t base, bool is64,
-                              std::vector<std::pair<ea_t, std::string>> *out)
+    // Walk the named, non-forwarded exports of the module mapped at 'base',
+    // calling 'visit(address, name)' for each until it returns false. Returns
+    // how many were visited.
+    //
+    // The image's own optional header decides PE32 versus PE32+, not the
+    // caller: a WoW64 recording has a 32-bit and a 64-bit ntdll, and a caller
+    // working from the process's bitness cannot know which one 'base' is.
+    template <typename Visit>
+    static size_t walk_exports(const GuestRead &cursor, ea_t base, Visit visit)
     {
         if ( cursor == nullptr || base == BADADDR )
             return 0;
 
         uint64_t b = (uint64_t)base;
-
-        // DOS header -> NT headers offset.
-        IMAGE_DOS_HEADER dos{};
-        if ( !pe_read_val(cursor, b, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
+        uint64_t ntAddr = 0;
+        bool     is64   = false;
+        if ( !locate_nt_headers(cursor, b, &ntAddr, &is64) )
             return 0;
 
-        uint64_t ntAddr = b + (uint32_t)dos.e_lfanew;
-
-        // The export data directory location differs between PE32 and PE32+.
-        uint32_t exportRva = 0;
-        uint32_t exportSize = 0;
-        if ( is64 )
-        {
-            IMAGE_NT_HEADERS64 nt{};
-            if ( !pe_read_val(cursor, ntAddr, &nt) || nt.Signature != IMAGE_NT_SIGNATURE )
-                return 0;
-            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-            exportRva  = dd.VirtualAddress;
-            exportSize = dd.Size;
-        }
-        else
-        {
-            IMAGE_NT_HEADERS32 nt{};
-            if ( !pe_read_val(cursor, ntAddr, &nt) || nt.Signature != IMAGE_NT_SIGNATURE )
-                return 0;
-            const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-            exportRva  = dd.VirtualAddress;
-            exportSize = dd.Size;
-        }
-
-        if ( exportRva == 0 || exportSize == 0 )
+        uint32_t exportRva = 0, exportSize = 0;
+        if ( !read_data_dir(cursor, ntAddr, is64, IMAGE_DIRECTORY_ENTRY_EXPORT, &exportRva, &exportSize) )
             return 0;
 
         IMAGE_EXPORT_DIRECTORY exp{};
         if ( !pe_read_val(cursor, b + exportRva, &exp) )
             return 0;
-
-        if ( exp.NumberOfNames == 0
-          || exp.AddressOfNames == 0
-          || exp.AddressOfNameOrdinals == 0
-          || exp.AddressOfFunctions == 0 )
+        if ( exp.AddressOfNames == 0 || exp.AddressOfNameOrdinals == 0 || exp.AddressOfFunctions == 0 )
             return 0;
 
-        // Pull the three parallel arrays in one query each instead of three
-        // queries per export. ntdll alone exports ~2400 names, and this runs for
-        // every module in the trace, so the per-entry form cost tens of thousands
-        // of engine round-trips at trace-load time.
-        // The counts come from the PE header, i.e. untrusted input: clamp them
-        // before sizing any buffer.
+        // Pull the three parallel arrays in one read each instead of three per
+        // export: ntdll alone exports ~2400 names, and this runs for every
+        // module in the trace. The counts are untrusted input, so they are
+        // clamped before sizing any buffer.
         static const uint32_t kMaxExports = 1u << 20;
         uint32_t nNames = exp.NumberOfNames < kMaxExports ? exp.NumberOfNames : kMaxExports;
         uint32_t nFuncs = exp.NumberOfFunctions < kMaxExports ? exp.NumberOfFunctions : kMaxExports;
@@ -388,39 +278,63 @@ namespace idattd
         size_t mbO = cursor(b + exp.AddressOfNameOrdinals, ordinals.data(), (size_t)nNames * sizeof(uint16_t));
         size_t mbF = cursor(b + exp.AddressOfFunctions, funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t));
 
-        // Each array may come back short (TTD only records accessed memory); use
-        // whatever prefix actually resolved.
+        // Each array may come back short (a recording holds only memory that
+        // was accessed); use whatever prefix actually resolved.
         size_t gotNames = mbN / sizeof(uint32_t);
         size_t gotOrds  = mbO / sizeof(uint16_t);
         size_t gotFuncs = mbF / sizeof(uint32_t);
         size_t usable   = gotNames < gotOrds ? gotNames : gotOrds;
 
-        size_t found = 0;
+        size_t visited = 0;
         for ( size_t i = 0; i < usable; i++ )
         {
-            uint32_t nameRva = nameRvas[i];
             uint16_t ordinal = ordinals[i];
             if ( (size_t)ordinal >= gotFuncs )
                 continue;
-
             uint32_t funcRva = funcRvas[ordinal];
             if ( funcRva == 0 )
                 continue;
-
-            // Forwarder exports point back inside the export directory; skip them
-            // (the real target lives in another module).
-            if ( funcRva >= exportRva && funcRva < exportRva + exportSize )
+            // A forwarder's "address" points back inside the export directory
+            // at a string; its real target lives in another module. Written as
+            // a difference so a directory at the top of the address space
+            // cannot wrap the bound.
+            if ( funcRva >= exportRva && funcRva - exportRva < exportSize )
                 continue;
-
-            std::string name = pe_read_cstr(cursor, b + nameRva);
+            std::string name = pe_read_cstr(cursor, b + nameRvas[i]);
             if ( name.empty() )
                 continue;
-
-            if ( out != nullptr )
-                out->emplace_back((ea_t)(b + funcRva), std::move(name));
-            found++;
+            visited++;
+            if ( !visit((ea_t)(b + funcRva), std::move(name)) )
+                break;
         }
+        return visited;
+    }
 
+    ea_t resolve_export_va(const GuestRead &cursor, ea_t base, bool is64, const char *name)
+    {
+        qnotused(is64);   // the image's own header is the authority (walk_exports)
+        if ( name == nullptr || *name == '\0' )
+            return BADADDR;
+        ea_t found = BADADDR;
+        walk_exports(cursor, base, [&](ea_t ea, std::string &&n)
+        {
+            if ( n != name )
+                return true;
+            found = ea;
+            return false;
+        });
         return found;
+    }
+
+    size_t read_guest_exports(const GuestRead &cursor, ea_t base, bool is64,
+                              std::vector<std::pair<ea_t, std::string>> *out)
+    {
+        qnotused(is64);   // the image's own header is the authority (walk_exports)
+        return walk_exports(cursor, base, [&](ea_t ea, std::string &&n)
+        {
+            if ( out != nullptr )
+                out->emplace_back(ea, std::move(n));
+            return true;
+        });
     }
 }
