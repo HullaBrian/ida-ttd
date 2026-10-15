@@ -98,8 +98,12 @@ def run(base=None):
     a = T("an.callsites %X %X" % (B + 0x1000, B + 0x2578))
     chk("indirect call sites", a.get("sites") == 24, a.get("sites"))
     a = T("an.trace %X 5" % (B + 0x13F0))
+    # The return value reads "(int)0x0" when main has no type in the database
+    # and "(__int64)0" once IDA has guessed one (decompiling it does): compare
+    # the number, not the text.
+    ret = a["calls"][0]["ret"] if a.get("count") == 1 else ""
     chk("trace main: argc 1, returns 0",
-        a.get("count") == 1 and a["calls"][0]["args"][0] == "0x1" and a["calls"][0]["ret"] == "(int)0x0")
+        a.get("count") == 1 and a["calls"][0]["args"][0] == "0x1" and int(ret.rpartition(")")[2], 0) == 0, ret)
     a = T("an.memmap 4")
     chk("memory map", a.get("changes", 0) > 50, a.get("changes"))
 

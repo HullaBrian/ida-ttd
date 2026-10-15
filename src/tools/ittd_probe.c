@@ -229,6 +229,7 @@ int main(int argc, char **argv)
 
         t0 = now_ms();
         memset(bytes, 0, sizeof(bytes));
+        memset(known, 0, sizeof(known));    /* printed below even if the read fails */
         api->cursor_read_memory(c, r.gp[ITTD_REG_RIP], bytes, known, sizeof(bytes), &nk);
         printf("  16 bytes at rip, %zu known, %.1f ms:", nk, now_ms() - t0);
         for ( i = 0; i < 16; i++ )
@@ -785,7 +786,7 @@ int main(int argc, char **argv)
             for ( j = 0; j < 10; j++ )
             {
                 extra[j] = api->cursor_open(B);
-                if ( extra[j] != NULL )
+                if ( extra[j] != NULL && nmods > 0 )   /* mods is NULL when the list failed */
                 {
                     api->cursor_seek(extra[j], info.last);
                     api->cursor_read_memory(extra[j], mods[0].base, page, known, sizeof(page), &nk);

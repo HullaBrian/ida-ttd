@@ -24,7 +24,7 @@ namespace idattd
     // How often to re-check whether the initial auto-analysis has drained.
     static const int ATTACH_POLL_MS = 250;
 
-    // IDA's native debug-movement actions that we re-skin with codicon glyphs
+    // IDA's native debug-movement actions re-skinned with codicon glyphs
     // while a trace is loaded. Order must match Plugin::m_nativeSaved and the
     // icon table in reskin_actions().
     static const char *const NATIVE_MOVEMENT_ACTIONS[] =
@@ -107,6 +107,8 @@ namespace idattd
         dir.replace("\\", "/");     // a Python string literal without escapes
         if ( !qisdir(dir.c_str()) )
             return;
+        // ...except a quote, which a user name can hold (C:/Users/O'Neil).
+        dir.replace("'", "\\'");
         qstring code;
         code.sprnt("import sys\n"
                    "if '%s' not in sys.path:\n"
@@ -116,9 +118,9 @@ namespace idattd
             msg("[ida-ttd] could not put %s on IDAPython's path: %s\n", dir.c_str(), err.c_str());
     }
 
-    // Flag the call stack + stack views for refresh. We build the widget mask by
-    // hand instead of via IWID_*/builtin_widget_mask_from_id, whose uint128 <<
-    // is defined out-of-line and not present in ida.lib (link error on MSVC).
+    // Flag the call stack + stack views for refresh. The widget mask is built
+    // by hand instead of via IWID_*/builtin_widget_mask_from_id, whose uint128
+    // << is defined out-of-line and not present in ida.lib (link error on MSVC).
     static void refresh_call_stack()
     {
         const uint64 m = (uint64(1) << BWN_CALL_STACK) | (uint64(1) << BWN_STKVIEW);
@@ -126,8 +128,14 @@ namespace idattd
     }
     static int idaapi pdb_poll_cb(void *ud);     // below
 
+    // The plugin while it exists. A request queued with execute_ui_requests
+    // can still be waiting when IDA unloads the plugin (the database closes),
+    // so each one checks its Plugin pointer against this before using it.
+    static Plugin *g_live_plugin = nullptr;
+
     Plugin::Plugin()
     {
+        g_live_plugin = this;
         // Backends for kinds of recording other than Microsoft's, installed as
         // DLLs under plugins/ida-ttd-backends. Nothing is there unless the user
         // put it there, in which case each one is named in the output window.
@@ -205,6 +213,7 @@ namespace idattd
 
     Plugin::~Plugin()
     {
+        g_live_plugin = nullptr;
         // Before anything else: a symbol download must not outlive the plugin
         // whose session asked for it, and a script must not reach a plugin
         // that is going away.
@@ -215,6 +224,7 @@ namespace idattd
         m_refocusTimer.cancel();
         m_autoCoverTimer.cancel();
         m_attachTimer.cancel();
+        m_switchTimer.cancel();
         m_pdbTimer.cancel();
         unhook_event_listener(HT_IDB, &m_idbEvents);
         unhook_event_listener(HT_UI,  &m_uiEvents);
@@ -600,6 +610,8 @@ namespace idattd
         explicit start_request_t(Plugin *plugin) : p(plugin) {}
         bool idaapi run() override
         {
+            if ( p != g_live_plugin )
+                return false;
             p->offer_trace_session();
             return false;               // one-shot; IDA deletes the request
         }
@@ -650,6 +662,8 @@ namespace idattd
         explicit switch_exit_request_t(Plugin *plugin) : p(plugin) {}
         bool idaapi run() override
         {
+            if ( p != g_live_plugin )
+                return false;
             p->switch_exit();
             return false;
         }
@@ -662,6 +676,8 @@ namespace idattd
         switch_start_request_t(Plugin *plugin, const qstring &to) : p(plugin), path(to) {}
         bool idaapi run() override
         {
+            if ( p != g_live_plugin )
+                return false;
             if ( get_process_state() != DSTATE_NOTASK )
             {
                 msg("[ida-ttd] a session is running again; not switching to %s.\n", path.c_str());
@@ -921,16 +937,14 @@ namespace idattd
         for ( size_t i = 0; i < ICO_NATIVE_COUNT; i++ )
         {
             const char *name = NATIVE_MOVEMENT_ACTIONS[i];
-            // Remember IDA's own icon the first time we actually find the action.
-            // It cannot be captured in one shot: several of these are registered
-            // lazily, and once we have overridden one, querying it again would
-            // just return our icon.
+            // Remember IDA's own icon the first time the action is found. It
+            // cannot be captured in one shot: several of these are registered
+            // lazily, and once one is overridden, querying it again would just
+            // return the codicon.
             if ( !m_nativeSavedOk[i] && get_action_icon(name, &m_nativeSaved[i]) )
                 m_nativeSavedOk[i] = true;
             update_action_icon(name, m_icons[i]);
         }
-        // (Run to cursor forward/backward are our own custom actions; their icons
-        // are set at registration, so they aren't reskinned here.)
     }
 
     // Put IDA's original icons back on the native movement actions.
@@ -1265,7 +1279,7 @@ namespace idattd
         {
             srcinfo_provider_t *sp = get_srcinfo_provider(n);
             // Only ever turn off something that is currently on, and remember
-            // exactly what we turned off: a provider the user had already
+            // exactly what was turned off: a provider the user had already
             // disabled must not come back enabled when the session ends.
             if ( sp == nullptr || !sp->is_enabled() )
                 continue;
@@ -1294,10 +1308,10 @@ namespace idattd
         return -1;  // one-shot: unregister
     }
 
-    // Decide, on a stop, whether the function we are now in should be measured.
+    // Decide, on a stop, whether the function stopped in should be measured.
     // The work itself is deferred: a sweep pumps the UI behind a wait box, and
     // starting that from inside a debugger notification risks the user driving
-    // the debugger again while we are still in it.
+    // the debugger again while the notification is still running.
     void Plugin::schedule_auto_coverage()
     {
         m_autoCoverFunc = BADADDR;
@@ -1427,7 +1441,7 @@ namespace idattd
                 // Queued before the coverage sweep so that it runs first: the
                 // sweep's wait box must not be shown in batch mode.
                 p->schedule_after_stop();
-                // Measure the function we landed in, if it has not been measured
+                // Measure the function stopped in, if it has not been measured
                 // before and the user has left that switched on. Queued, not run
                 // here -- see schedule_auto_coverage().
                 p->schedule_auto_coverage();

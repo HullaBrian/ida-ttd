@@ -19,8 +19,8 @@
 // ---------------------------------------------------------------------------
 #include "common/pch.h"
 // idaldr.h's validate_array_count template trips C4018/C4267 at this project's
-// warning level. It is SDK code we do not control, so the warnings are silenced
-// around the include only -- our own code still compiles at Level3.
+// warning level. It is SDK code, so the warnings are silenced around the
+// include only; the loader's own code still compiles at Level3.
 #pragma warning(push)
 #pragma warning(disable: 4018 4267)
 #include <idaldr.h>
@@ -214,9 +214,19 @@ static const ModuleInfo *pick_main_module(ITraceBackend *backend,
 // here and IDA's handler runs. That matters for the recording in particular:
 // leaving it open keeps the file locked for the rest of the session, so a
 // user who fixes the problem and tries again cannot even move the file. This
-// releases what we hold, then fails.
+// releases what load_file holds, then fails. Both live here rather than on
+// load_file's stack so that what is released is owned, not a pointer into a
+// frame the longjmp abandons.
 static ITraceBackend *g_backend = nullptr;
-static CursorPtr     *g_cursor  = nullptr;
+static CursorPtr      g_cursor;
+
+static void release_trace()
+{
+    g_cursor.reset();
+    if ( g_backend != nullptr )
+        g_backend->close();
+    g_backend = nullptr;
+}
 
 AS_PRINTF(1, 2) static void fail(const char *format, ...)
 {
@@ -226,11 +236,7 @@ AS_PRINTF(1, 2) static void fail(const char *format, ...)
     m.vsprnt(format, va);
     va_end(va);
 
-    if ( g_cursor != nullptr ) g_cursor->reset();
-    if ( g_backend != nullptr ) g_backend->close();
-    g_cursor  = nullptr;
-    g_backend = nullptr;
-
+    release_trace();
     loader_failure("%s", m.c_str());
 }
 
@@ -294,8 +300,8 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
         }
     }
 
-    CursorPtr cur = backend->make_cursor();
-    g_cursor = &cur;
+    g_cursor = backend->make_cursor();
+    CursorPtr &cur = g_cursor;
     if ( !cur )
         fail("Failed to create a cursor over the trace.");
     cur->seek(mainPos);
@@ -494,10 +500,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     }
 
     // The plugin opens the recording again when the replay starts.
-    cur.reset();
-    backend->close();
-    g_cursor  = nullptr;
-    g_backend = nullptr;
+    release_trace();
 }
 
 // Nothing in this database was relocated: the bytes came from recorded memory

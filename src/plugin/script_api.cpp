@@ -19,6 +19,7 @@
 #include "ui/graph_view.h"
 
 #include <expr.hpp>
+#include <errno.h>
 
 namespace idattd
 {
@@ -27,6 +28,31 @@ namespace idattd
     // Just enough to write answers: objects, arrays, strings, numbers. Numbers
     // that are addresses or positions go out as "0x..." strings, because a
     // 64-bit value does not survive a JSON reader that parses into doubles.
+
+    // Length of the well-formed UTF-8 sequence at 'p', or 0 when it is not one
+    // (a stray continuation byte, an overlong or truncated sequence).
+    static size_t utf8_sequence(const unsigned char *p)
+    {
+        size_t n;
+        if ( (p[0] & 0xE0) == 0xC0 && p[0] >= 0xC2 )
+            n = 2;
+        else if ( (p[0] & 0xF0) == 0xE0 )
+            n = 3;
+        else if ( (p[0] & 0xF8) == 0xF0 && p[0] <= 0xF4 )
+            n = 4;
+        else
+            return 0;
+        // The NUL terminator is not a continuation byte, so this never reads
+        // past the end of the string.
+        for ( size_t i = 1; i < n; i++ )
+            if ( (p[i] & 0xC0) != 0x80 )
+                return 0;
+        // Overlong forms, UTF-16 surrogates and code points past U+10FFFF.
+        if ( (p[0] == 0xE0 && p[1] < 0xA0) || (p[0] == 0xED && p[1] >= 0xA0)
+          || (p[0] == 0xF0 && p[1] < 0x90) || (p[0] == 0xF4 && p[1] >= 0x90) )
+            return 0;
+        return n;
+    }
 
     static void json_escape(qstring *out, const char *s)
     {
@@ -42,9 +68,25 @@ namespace idattd
                 case '\t': out->append("\\t");  break;
                 default:
                     if ( *p < 0x20 )
+                    {
                         out->cat_sprnt("\\u%04x", *p);
-                    else
+                    }
+                    else if ( *p < 0x80 )
+                    {
                         out->append((char)*p);
+                    }
+                    else if ( size_t n = utf8_sequence(p); n != 0 )
+                    {
+                        out->append((const char *)p, n);
+                        p += n - 1;
+                    }
+                    else
+                    {
+                        // Text out of a recording need not be UTF-8, and one
+                        // bad byte would make the whole answer unreadable to
+                        // a JSON parser: pass it on as the Latin-1 character.
+                        out->cat_sprnt("\\u%04x", *p);
+                    }
             }
         }
         out->append('"');
@@ -151,11 +193,14 @@ namespace idattd
         const char *p = s.c_str();
         if ( p[0] == '0' && (p[1] == 'x' || p[1] == 'X') )
             p += 2;
-        if ( *p == '\0' )
+        // strtoull would also take leading blanks and a sign ("-1" as
+        // 0xFFFF...), and saturate on overflow; none of those is a number here.
+        if ( !isxdigit((unsigned char)*p) )
             return false;
         char *end = nullptr;
+        errno = 0;
         *out = strtoull(p, &end, 16);
-        return end != nullptr && *end == '\0';
+        return end != nullptr && *end == '\0' && errno != ERANGE;
     }
 
     // Thrown for a bad command; turned into {"ok":false,"error":...}.
@@ -202,6 +247,42 @@ namespace idattd
             return false;
         }
     };
+
+    // An "rwx"-style word as access bits. The backend ABI and the analyses
+    // number the kinds differently, so the caller names the three bits.
+    static uint8_t rwx_mask(const qstring &k, uint8_t r, uint8_t w, uint8_t x)
+    {
+        uint8_t m = 0;
+        if ( k.find('r') != qstring::npos ) m |= r;
+        if ( k.find('w') != qstring::npos ) m |= w;
+        if ( k.find('x') != qstring::npos ) m |= x;
+        return m;
+    }
+
+    // A session position typed by the script, or a failure that says why.
+    static Position position_arg(const qstring &text)
+    {
+        Position p;
+        if ( !parse_position(text.c_str(), &p) )
+            fail("'%s' is not a position (%s)", text.c_str(), position_syntax());
+        return p;
+    }
+
+    // One of the words that set up a Sogen replay: registry=DIR, strict or
+    // host. ForkRequest and ReplaySettings name the three fields alike.
+    template <typename T>
+    static bool replay_option(const qstring &t, T *s)
+    {
+        if ( t.starts_with("registry=") )
+            s->registry_dir = t.substr(9);
+        else if ( t == "strict" )
+            s->strict = true;
+        else if ( t == "host" )
+            s->allow_host = true;
+        else
+            return false;
+        return true;
+    }
 
     // ------------------------------------------------------------------ state
 
@@ -274,7 +355,7 @@ namespace idattd
         qstring s;
         for ( size_t i = 0; i < n; i++ )
         {
-            if ( known != nullptr && known[i] == 0 )
+            if ( known != nullptr && known[i] == ITTD_KNOWN_NO )
                 s.append("??");
             else
                 s.cat_sprnt("%02x", buf[i]);
@@ -304,16 +385,27 @@ namespace idattd
         ITraceBackend *b = g_drv.owned.get();
         qstring err;
         if ( !b->open(path.c_str(), &err) )
-            fail("%s could not open %s: %s", b->id(), path.c_str(), err.c_str());
+        {
+            qstring id = b->id();
+            g_drv.close();
+            fail("%s could not open %s: %s", id.c_str(), path.c_str(), err.c_str());
+        }
         // As a debugger session would: without it a Microsoft trace has no
         // memory index, and reads come back mostly empty.
         prepare_backend(b);
         g_drv.backend = b;
         g_drv.path    = path;
         g_drv.cursor  = b->make_cursor();
-        if ( !g_drv.cursor )
-            fail("%s opened the recording but made no cursor", b->id());
-        g_drv.nav = b->make_navigator(g_drv.cursor.get());
+        if ( g_drv.cursor )
+            g_drv.nav = b->make_navigator(g_drv.cursor.get());
+        // Every drv.* command after this one relies on both, so a recording
+        // without them is not left open half-usable.
+        if ( !g_drv.cursor || !g_drv.nav )
+        {
+            qstring id = b->id();
+            g_drv.close();
+            fail("%s opened the recording but made no cursor", id.c_str());
+        }
         g_drv.cursor->seek(b->info().first);
         out.str("backend", b->id());
     }
@@ -451,11 +543,8 @@ namespace idattd
         if ( !parse_u64(sz, &v) || v == 0 )
             fail("'%s': bad size", spec.c_str());
         b.size = v;
-        b.kinds = 0;
         qstring k = c2 == qstring::npos ? qstring("w") : tail.substr(c2 + 1);
-        if ( k.find('r') != qstring::npos ) b.kinds |= ACCESS_READ;
-        if ( k.find('w') != qstring::npos ) b.kinds |= ACCESS_WRITE;
-        if ( k.find('x') != qstring::npos ) b.kinds |= ACCESS_EXEC;
+        b.kinds = rwx_mask(k, ACCESS_READ, ACCESS_WRITE, ACCESS_EXEC);
         if ( b.kinds == 0 )
             fail("'%s': kinds are r, w and x", spec.c_str());
         return b;
@@ -529,11 +618,8 @@ namespace idattd
     {
         ITraceBackend &b = drv();
         uint64_t lo = a.u64(0), hi = a.u64(1);
-        uint8_t kinds = 0;
-        qstring k = a.count() > 2 ? a.at(2) : qstring("rwx");
-        if ( k.find('r') != qstring::npos ) kinds |= ACCESS_READ;
-        if ( k.find('w') != qstring::npos ) kinds |= ACCESS_WRITE;
-        if ( k.find('x') != qstring::npos ) kinds |= ACCESS_EXEC;
+        uint8_t kinds = rwx_mask(a.count() > 2 ? a.at(2) : qstring("rwx"),
+                                 ACCESS_READ, ACCESS_WRITE, ACCESS_EXEC);
         uint64_t max = a.u64_or(3, 200);
         std::vector<Access> v;
         query_status(b.query_accesses((ea_t)lo, (ea_t)hi, kinds, PositionRange{}, &v, nullptr), out);
@@ -784,10 +870,7 @@ namespace idattd
     static void cmd_goto(const Args &a, JObj &out)
     {
         need_session();
-        Position p;
-        if ( !parse_position(a.at(0).c_str(), &p) )
-            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
-        mgr().set_next_position(p);
+        mgr().set_next_position(position_arg(a.at(0)));
         request_continue_process();
         run_requests();
         wait_stop(a, 99, out);
@@ -873,12 +956,7 @@ namespace idattd
 
     static uint8_t access_mask(const Args &a, size_t i)
     {
-        qstring k = a.count() > i ? a.at(i) : qstring("rwx");
-        uint8_t m = 0;
-        if ( k.find('r') != qstring::npos ) m |= ACC_READ;
-        if ( k.find('w') != qstring::npos ) m |= ACC_WRITE;
-        if ( k.find('x') != qstring::npos ) m |= ACC_EXEC;
-        return m;
+        return rwx_mask(a.count() > i ? a.at(i) : qstring("rwx"), ACC_READ, ACC_WRITE, ACC_EXEC);
     }
 
     static void cmd_an_search(const Args &a, JObj &out)
@@ -966,14 +1044,10 @@ namespace idattd
         qstring regs, mem;
         for ( size_t i = 2; i < a.count(); i++ )
         {
-            qstring t = a.at(i);
-            if ( t.starts_with("registry=") )
-                req.registry_dir = t.substr(9);
-            else if ( t == "strict" )
-                req.strict = true;
-            else if ( t == "host" )
-                req.allow_host = true;
-            else if ( t.starts_with("mem:") )
+            const qstring &t = a.at(i);
+            if ( replay_option(t, &req) )
+                continue;
+            if ( t.starts_with("mem:") )
                 mem.cat_sprnt("%s;", t.c_str() + 4);
             else
                 regs.cat_sprnt("%s ", t.c_str());
@@ -981,7 +1055,7 @@ namespace idattd
         qstring err;
         if ( !parse_fork_registers(regs.c_str(), &req.regs, &err)
           || !parse_fork_memory(mem.c_str(), &req.memory, &err) )
-            fail(err.c_str());
+            fail("%s", err.c_str());
         req.note = "ida-ttd script";
         ForkResult r = run_fork(&mgr(), req);
         if ( !r.ok )
@@ -1043,13 +1117,20 @@ namespace idattd
         out.num("count", (int64_t)load_fork_records(nullptr).size());
     }
 
+    // Whether the views show a fork's changes right now, which is what
+    // fork_draft_changed() needs to know to repaint them.
+    static bool draft_shown()
+    {
+        const TraceManager::ForkDraft &d = mgr().fork_draft();
+        return mgr().at_fork_draft() && (!d.regs.empty() || !d.bytes.empty());
+    }
+
     // an.forkhere: make the current position a fork (TTD > Fork here). Its
     // registers and memory are then changed through IDA's own debugger calls.
     static void cmd_an_forkhere(const Args &, JObj &out)
     {
         need_session();
-        bool shown = mgr().at_fork_draft()
-                  && (!mgr().fork_draft().regs.empty() || !mgr().fork_draft().bytes.empty());
+        bool shown = draft_shown();
         mgr().begin_fork_draft();
         fork_draft_changed(g_plugin->action_context(), shown);
         draft_json(out);
@@ -1065,8 +1146,7 @@ namespace idattd
     static void cmd_an_forkdiscard(const Args &, JObj &out)
     {
         need_session();
-        bool shown = mgr().at_fork_draft()
-                  && (!mgr().fork_draft().regs.empty() || !mgr().fork_draft().bytes.empty());
+        bool shown = draft_shown();
         mgr().discard_fork_draft();
         fork_draft_changed(g_plugin->action_context(), shown);
         draft_json(out);
@@ -1086,13 +1166,7 @@ namespace idattd
         for ( size_t i = 2; i < a.count(); i++ )
         {
             const qstring &t = a.at(i);
-            if ( t.starts_with("registry=") )
-                req.registry_dir = t.substr(9);
-            else if ( t == "strict" )
-                req.strict = true;
-            else if ( t == "host" )
-                req.allow_host = true;
-            else
+            if ( !replay_option(t, &req) )
                 fail("'%s' is not registry=DIR, strict or host", t.c_str());
         }
         req.note = "ida-ttd script";
@@ -1116,22 +1190,16 @@ namespace idattd
         ReplaySettings rs;
         rs.registry_dir = saved_registry_dir();
         for ( size_t i = from; i < a.count(); i++ )
-        {
-            const qstring &t = a.at(i);
-            if ( t.starts_with("registry=") )
-                rs.registry_dir = t.substr(9);
-            else if ( t == "strict" )
-                rs.strict = true;
-            else if ( t == "host" )
-                rs.allow_host = true;
-        }
+            replay_option(a.at(i), &rs);
         return rs;
     }
 
+    // How many arguments come before the first replay option.
     static size_t plain_args(const Args &a)
     {
+        ReplaySettings scratch;
         size_t n = 0;
-        while ( n < a.count() && !a.at(n).starts_with("registry=") && a.at(n) != "strict" && a.at(n) != "host" )
+        while ( n < a.count() && !replay_option(a.at(n), &scratch) )
             n++;
         return n;
     }
@@ -1237,10 +1305,7 @@ namespace idattd
     static void cmd_ui_showbytes(const Args &a, JObj &out)
     {
         need_session();
-        Position p;
-        if ( !parse_position(a.at(0).c_str(), &p) )
-            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
-        bool hex = travel_and_show_bytes(&mgr(), p, (ea_t)a.u64(1));
+        bool hex = travel_and_show_bytes(&mgr(), position_arg(a.at(0)), (ea_t)a.u64(1));
         out.boolean("hex_view", hex);
     }
 
@@ -1248,12 +1313,7 @@ namespace idattd
     static void cmd_ui_travel(const Args &a, JObj &out)
     {
         need_session();
-        Position p;
-        if ( !parse_position(a.at(0).c_str(), &p) )
-            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
-        mgr().set_next_position(p);
-        request_continue_process();
-        run_requests();
+        travel_to(&mgr(), position_arg(a.at(0)));
         out.str("queued", a.at(0));
     }
 
@@ -1382,9 +1442,7 @@ namespace idattd
         {
             if ( !a->v[i].starts_with("from=") )
                 continue;
-            qstring text = a->v[i].substr(5);
-            if ( !parse_position(text.c_str(), p) )
-                fail("'%s' is not a position (%s)", text.c_str(), position_syntax());
+            *p = position_arg(a->v[i].substr(5));
             a->v.erase(a->v.begin() + i);
             return true;
         }
@@ -1530,9 +1588,7 @@ namespace idattd
     static void cmd_an_inputs(const Args &a, JObj &out)
     {
         need_session();
-        Position at = mgr().current_position();
-        if ( a.count() >= 1 && !parse_position(a.at(0).c_str(), &at) )
-            fail("'%s' is not a position (%s)", a.at(0).c_str(), position_syntax());
+        Position at = a.count() >= 1 ? position_arg(a.at(0)) : mgr().current_position();
         std::vector<OriginInput> v;
         if ( !origin_inputs(&mgr(), at, &v) )
             fail("no replay session is running");
@@ -1729,8 +1785,13 @@ namespace idattd
         {
             const Command *found = nullptr;
             for ( const Command &c : g_commands )
+            {
                 if ( a.v[0] == c.name )
+                {
                     found = &c;
+                    break;
+                }
+            }
             if ( found == nullptr )
                 fail("unknown command '%s'; see 'help'", a.v[0].c_str());
             JObj body;
