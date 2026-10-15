@@ -62,6 +62,10 @@ namespace idattd
         // the core should keep offering positions rather than values, and
         // should run prepare() if the backend offers one.
         bool cheap_seek       = false;
+        // registers_at over many positions costs much less than a seek and a
+        // register read at each (ITTD_CAP_BATCH_REGS), so a listing that
+        // needs registers at thousands of positions asks for them up front.
+        bool batch_regs       = false;
         // The recording can be stepped backwards instruction by instruction.
         // (Both backends can; a future one reading an ETW-style trace could
         // not, and the backward movement actions would then not be registered.)

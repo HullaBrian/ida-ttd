@@ -312,6 +312,7 @@ namespace idattd
             if ( c.syscalls )         caps |= ITTD_CAP_SYSCALLS;
             if ( c.recorded_exports ) caps |= ITTD_CAP_RECORDED_EXPORTS;
             if ( c.cheap_seek )       caps |= ITTD_CAP_CHEAP_SEEK;
+            if ( c.batch_regs )       caps |= ITTD_CAP_BATCH_REGS;
             if ( c.reverse_step )     caps |= ITTD_CAP_REVERSE_STEP;
             if ( c.exceptions )       caps |= ITTD_CAP_EXCEPTIONS;
             if ( c.self_modifying )   caps |= ITTD_CAP_SELF_MODIFYING;

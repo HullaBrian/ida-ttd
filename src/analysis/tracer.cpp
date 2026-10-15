@@ -388,9 +388,47 @@ namespace idattd
             std::sort(visits.begin(), visits.end(),
                       [](const Visit &x, const Visit &y) { return x.where < y.where; });
 
-            size_t done = 0;
-            for ( const Visit &v : visits )
+            // A backend that rebuilds registers by replay (Sogen) rebuilds each
+            // stretch once for all the positions in it when asked for them
+            // together; through the cursor it would rebuild one per visit.
+            // Memory is still read through the cursor, which costs it little.
+            std::vector<ittd_regs> pre;
+            bool regs_cancelled = false;
+            if ( backend->capabilities().batch_regs && !visits.empty() )
             {
+                std::vector<Position> where;
+                where.reserve(visits.size());
+                for ( const Visit &v : visits )
+                    where.push_back(v.where);
+                const QueryResult rq = run_query("Reading the registers at the calls", [&](ProgressSink *p)
+                {
+                    return backend->registers_at(where, &pre, p);
+                });
+                // Cancelled here, nothing is decoded: the calls stay listed
+                // without their values.
+                if ( rq.cancelled )
+                    cancelled = regs_cancelled = true;
+                if ( !rq.ran || pre.size() != visits.size() )
+                    pre.clear();
+            }
+            // The registers at visit k: the batch's when it has every register
+            // a calling convention reads, the cursor's otherwise.
+            auto view_at = [&](size_t k)
+            {
+                GuestView gv = guest_view(cur.get());
+                const uint32_t need = ITTD_REGS_GP | ITTD_REGS_XMM;
+                if ( k < pre.size() && (pre[k].have & need) == need )
+                {
+                    const ittd_regs *r = &pre[k];
+                    gv.regs = [r](ittd_regs *out) { *out = *r; return true; };
+                }
+                return gv;
+            };
+
+            size_t done = 0;
+            for ( size_t k = 0; k < visits.size() && !regs_cancelled; k++ )
+            {
+                const Visit &v = visits[k];
                 if ( user_cancelled() )
                 {
                     cancelled = true;
@@ -410,7 +448,7 @@ namespace idattd
                     DecodedCall &dc = decoded[v.call];
                     if ( dc.sig != nullptr )
                     {
-                        GuestView rv = guest_view(cur.get());
+                        GuestView rv = view_at(k);
                         decode_api_outs(rv, &dc);
                         ev.args.clear();
                         for ( const DecodedArg &a : dc.args )
@@ -418,10 +456,10 @@ namespace idattd
                         ev.retval = decode_api_return(dc, get_return_value(rv, m_is64));
                         continue;
                     }
-                    ev.retval  = render_return(guest_view(cur.get()), ev.func_ea, m_is64);
+                    ev.retval  = render_return(view_at(k), ev.func_ea, m_is64);
                     continue;
                 }
-                GuestView view = guest_view(cur.get());
+                GuestView view = view_at(k);
                 const CallEvent &c = calls[v.call];
                 if ( !(c.is_call && c.pos.is_valid()) )
                 {

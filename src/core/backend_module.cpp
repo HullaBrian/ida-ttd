@@ -421,6 +421,7 @@ namespace idattd
         m_caps.syscalls         = (c & ITTD_CAP_SYSCALLS) != 0 && ITTD_HAS(m_api, query_syscalls);
         m_caps.recorded_exports = (c & ITTD_CAP_RECORDED_EXPORTS) != 0;
         m_caps.cheap_seek       = (c & ITTD_CAP_CHEAP_SEEK) != 0;
+        m_caps.batch_regs       = (c & ITTD_CAP_BATCH_REGS) != 0 && ITTD_HAS(m_api, regs_at);
         m_caps.reverse_step     = (c & ITTD_CAP_REVERSE_STEP) != 0;
         m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;
         m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0

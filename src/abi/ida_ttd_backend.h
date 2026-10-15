@@ -154,6 +154,13 @@ typedef struct ittd_position_range
 /* query_strings and query_buffers answer: the recording is replayed from
  * start to end with a scanner watching memory. Needs what a fork needs. */
 #define ITTD_CAP_REPLAY_SCANS     0x1000u
+/* regs_at answers many positions for much less than a seek and a register
+ * read at each: the registers are what is expensive to rebuild (Sogen replays
+ * from a snapshot), and a batch rebuilds each stretch once for all the
+ * positions in it. The core then reads registers for a whole listing up
+ * front. Without it the core reads them through the cursor it already has
+ * at each position, rather than paying for every one twice. */
+#define ITTD_CAP_BATCH_REGS       0x2000u
 
 #define ITTD_NAME_MAX  256
 #define ITTD_PATH_MAX  520

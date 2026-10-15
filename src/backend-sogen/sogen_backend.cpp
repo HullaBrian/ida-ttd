@@ -484,7 +484,8 @@ namespace
             out->is64 = is64(t) ? 1 : 0;
             out->capabilities = ITTD_CAP_ACCESS_QUERIES | ITTD_CAP_CALL_QUERIES
                               | ITTD_CAP_RECORDED_EXPORTS | ITTD_CAP_CHEAP_SEEK
-                              | ITTD_CAP_REVERSE_STEP | ITTD_CAP_EXCEPTIONS;
+                              | ITTD_CAP_REVERSE_STEP | ITTD_CAP_EXCEPTIONS
+                              | ITTD_CAP_BATCH_REGS;
             if ( t.has_syscalls() )
                 out->capabilities |= ITTD_CAP_SYSCALLS;
             // Every Sogen recording can be asked; one recorded without write
@@ -611,23 +612,24 @@ namespace
         return ITTD_OK;
     }
 
-    void read_regs(ttd::cpu_view &view, ittd_regs *out)
+    // Through cpu_view::read_register, which decodes the saved register state
+    // on one CPU per thread: view.cpu() would build an emulator per view.
+    void read_regs(const ttd::cpu_view &view, ittd_regs *out)
     {
-        auto &cpu = view.cpu();
         static const x86_register seg[ITTD_SEG_COUNT] = {
             x86_register::cs, x86_register::ss, x86_register::ds,
             x86_register::es, x86_register::fs, x86_register::gs,
         };
         *out = ittd_regs{};
         for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
-            out->gp[i] = cpu.reg<uint64_t>(kGp[i]);
-        out->rflags  = cpu.reg<uint64_t>(x86_register::rflags);
-        out->fs_base = cpu.reg<uint64_t>(x86_register::fs_base);
-        out->gs_base = cpu.reg<uint64_t>(x86_register::gs_base);
+            out->gp[i] = view.read_register(kGp[i]);
+        out->rflags  = view.read_register(x86_register::rflags);
+        out->fs_base = view.read_register(x86_register::fs_base);
+        out->gs_base = view.read_register(x86_register::gs_base);
         for ( int i = 0; i < ITTD_SEG_COUNT; i++ )
-            out->seg[i] = cpu.reg<uint16_t>(seg[i]);
+            out->seg[i] = (uint16_t)view.read_register(seg[i]);
         for ( int i = 0; i < 16; i++ )
-            cpu.read_register((x86_register)((int)x86_register::xmm0 + i), out->xmm[i], 16);
+            view.read_register((x86_register)((int)x86_register::xmm0 + i), out->xmm[i], 16);
         out->have = ITTD_REGS_GP | ITTD_REGS_SEG | ITTD_REGS_XMM;
     }
 
@@ -1016,7 +1018,7 @@ namespace
         try
         {
             ttd::cpu_view view(t, position);
-            return view.cpu().reg<uint64_t>(x86_register::rsp);
+            return view.read_register(x86_register::rsp);
         }
         catch ( const ttd::divergence_error & )
         {
@@ -2795,31 +2797,57 @@ namespace
             std::lock_guard<std::mutex> lock(b->mtx);
             ttd::trace &t = *b->trace;
             ttd::operation_control ctl = control(progress);
-            // In position order: neighbouring positions reuse decoded chunks and
-            // translated code, which Sogen measured at half the cost of the
-            // same positions shuffled (TTD-Club/sogen#33 will do better).
-            std::vector<size_t> order(count);
+            // The positions that exist, in position order, each with the slot
+            // its registers go to. Positions that do not exist keep have == 0.
+            std::vector<std::pair<uint64_t, size_t>> want;
+            want.reserve(count);
             for ( size_t i = 0; i < count; i++ )
-                order[i] = i;
-            std::sort(order.begin(), order.end(), [&](size_t a, size_t c)
-                      { return positions[a].lo < positions[c].lo; });
-            for ( size_t k = 0; k < count; k++ )
             {
-                size_t i = order[k];
                 out[i] = ittd_regs{};
                 uint64_t p = 0;
-                if ( !resolve(t, positions[i], &p) )
-                    continue;
+                if ( resolve(t, positions[i], &p) )
+                    want.emplace_back(p, i);
+            }
+            std::sort(want.begin(), want.end());
+
+            // cpu_views_at replays each register snapshot interval once for
+            // every position in it (Sogen measured 4-6x over a cpu_view each,
+            // on both ends of every call to a function). It is given the
+            // positions a chunk at a time so that progress and Cancel are
+            // heard; a chunk boundary inside an interval costs that interval
+            // one more replay. One position that diverges fails its whole
+            // chunk, which is then rebuilt a position at a time so the others
+            // are not lost with it.
+            constexpr size_t kChunk = 1024;
+            std::vector<uint64_t> steps;
+            steps.reserve(std::min(want.size(), kChunk));
+            for ( size_t first = 0; first < want.size(); first += kChunk )
+            {
+                const size_t last = std::min(want.size(), first + kChunk);
+                steps.clear();
+                for ( size_t k = first; k < last; k++ )
+                    steps.push_back(want[k].first);
                 try
                 {
-                    ttd::cpu_view view(t, p);
-                    read_regs(view, &out[i]);
+                    std::vector<ttd::cpu_view> views = ttd::cpu_views_at(t, steps);
+                    for ( size_t k = first; k < last; k++ )
+                        read_regs(views[k - first], &out[want[k].second]);
                 }
                 catch ( const ttd::divergence_error & )
                 {
-                    // Left with have == 0: this position could not be rebuilt.
+                    for ( size_t k = first; k < last; k++ )
+                    {
+                        try
+                        {
+                            read_regs(ttd::cpu_view(t, want[k].first), &out[want[k].second]);
+                        }
+                        catch ( const ttd::divergence_error & )
+                        {
+                            // Left with have == 0: this position could not be rebuilt.
+                        }
+                    }
                 }
-                ctl.report(k + 1, count);
+                ctl.report(last, want.size());
             }
             return ITTD_OK;
         });
