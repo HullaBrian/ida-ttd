@@ -1445,7 +1445,7 @@ namespace idattd
                 // before and the user has left that switched on. Queued, not run
                 // here -- see schedule_auto_coverage().
                 p->schedule_auto_coverage();
-                // IDA can rebuild the debug toolbars across a stop and reset our
+                // IDA can rebuild the debug toolbars across a stop and reset the plugin's
                 // action icons -- reapply them (cheap, belt-and-suspenders).
                 p->reskin_actions();
                 // Exports were just (re)named; refresh the call stack so frames
@@ -1480,7 +1480,7 @@ namespace idattd
         {
             case ui_finish_populating_widget_popup:
             {
-                // Only augment menus while our debugger backend is the active one
+                // Only augment menus while this debugger backend is the active one
                 // and a trace is loaded (outside a session the actions do not
                 // even exist).
                 if ( ::dbg != &p->debugger() || !p->actions_visible() )
@@ -1573,7 +1573,7 @@ namespace idattd
             ea_t        ea       = va_arg(va, ea_t);
             const char *new_name = va_arg(va, const char *);
             // Debugger views -- the call-stack window in particular -- resolve
-            // <name>+offset through the DEBUG-name list, not plain IDB names. Our
+            // <name>+offset through the DEBUG-name list, not plain IDB names. The
             // exports (set_name) and the PDB plugin's symbols only populate IDB
             // names, so the call stack showed raw addresses. Mirror every applied
             // name into the debug-name list so frames render as <name>+offset.
@@ -1595,7 +1595,7 @@ namespace idattd
     // HT_IDD dispatch: translate debugger notifications into TraceManager calls.
     ssize_t idaapi Plugin::on_event(ssize_t code, va_list va)
     {
-        // Only react when our debugger is the active one.
+        // Only react when this debugger is the active one.
         if ( ::dbg != &m_debugger )
             return 0;
 
@@ -1621,7 +1621,7 @@ namespace idattd
                 // Getting it wrong is not cosmetic: it picks the register table.
                 configure_debugger(m_debugger, inf_is_64bit());
                 m_tracer.set_64bit(inf_is_64bit());
-                // The user has just chosen us, possibly by hand because the
+                // The user has just chosen this debugger, possibly by hand because the
                 // programmatic switch above did not work. Point the Application
                 // field at the recording so they do not have to find it behind
                 // IDA's "*.exe" filter -- unless it already names a recording

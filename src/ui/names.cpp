@@ -122,7 +122,7 @@ namespace idattd
                 return qualify(name_with_offset(qstring(nm), ea, at));
         }
 
-        // 4. No name inside the function, but we do know where it starts. Name it
+        // 4. No name inside the function, but where it starts is known. Name it
         //    the way IDA names an unnamed function, so the row agrees with the
         //    disassembly the user lands in.
         if ( have_fn )

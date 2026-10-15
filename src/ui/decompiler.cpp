@@ -3,7 +3,7 @@
 
 // hexrays.hpp is the one SDK header that does not compile warning-free at this
 // project's level (narrowing conversions and a signed/unsigned compare, all in
-// inline code we do not call). Silence them around the include only, so the
+// inline code the plugin does not call). Silence them around the include only, so the
 // plugin's own code keeps being held to a clean build.
 #pragma warning(push)
 #pragma warning(disable: 4018)  // signed/unsigned mismatch
@@ -86,7 +86,7 @@ namespace idattd
         }
     }
 
-    // Marker that says a line already carries our note, so repainting the same
+    // Marker that says a line already carries the plugin's note, so repainting the same
     // text twice does not append it twice.
     static const char TTD_CMT_MARK[] = "// TTD: ";
 
@@ -160,7 +160,7 @@ namespace idattd
     // Paint one function's pseudocode from the colours already in the database.
     //
     // Each ctree item knows the address it was decompiled from, so a line is
-    // covered exactly when that address carries one of our coverage colours.
+    // covered exactly when that address carries one of the plugin's coverage colours.
     // The line keeps the colour it was painted with, so a database highlighted
     // in two shades reads the same in the decompiler as in the disassembly.
     static void paint(cfunc_t *cf)
@@ -177,7 +177,7 @@ namespace idattd
         {
             simpleline_t &sl = cf->sv[i];
 
-            // Only ever repaint our colour. Clearing it first means a line that
+            // Only ever repaint the plugin's colour. Clearing it first means a line that
             // stops being covered (the sweep was cleared, the shade changed)
             // loses the highlight instead of keeping a stale one, and a colour
             // something else set is left alone.
@@ -235,7 +235,7 @@ namespace idattd
     }
 
     // Safe and cheap to call repeatedly, and it is called repeatedly on purpose.
-    // Hex-Rays is itself a plugin: asking for it while our own plugmod is being
+    // Hex-Rays is itself a plugin: asking for it while this plugin's plugmod is being
     // constructed can be too early, init_hexrays_plugin() then says there is no
     // decompiler, and if that were the only attempt nothing would ever be hooked.
     // The SDK's own samples call it at each point of use for the same reason, so
@@ -276,7 +276,7 @@ namespace idattd
         if ( !g_hooked )
             return;
         // Find the open views by asking IDA for them rather than by remembering
-        // the ones we saw opened. A view that already existed before the hook was
+        // the ones seen opening. A view that already existed before the hook was
         // installed was never seen, and that is precisely the view most in need of
         // a repaint.
         std::vector<TWidget *> views;

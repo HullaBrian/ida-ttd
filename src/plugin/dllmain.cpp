@@ -1,7 +1,7 @@
 // dllmain.cpp : Defines the entry point for the DLL application.
 #include "common/pch.h"
 
-// Our own module handle, kept so the plugin can work out the file name IDA
+// The plugin's own module handle, kept so the plugin can work out the file name IDA
 // knows it by. That is not a cosmetic question: load_debugger() selects a
 // debugger by the file name of the plugin that provides it, not by
 // debugger_t::name, so switching to ourselves programmatically needs it. The

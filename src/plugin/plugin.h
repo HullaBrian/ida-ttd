@@ -42,7 +42,7 @@ namespace idattd
 
     // The plugin object. It is both the plugmod_t returned from init() and the
     // HT_IDD event listener that receives all debugger (ev_*) notifications for
-    // our debugger_t.
+    // the plugin's debugger_t.
     class Plugin : public plugmod_t, public event_listener_t
     {
     public:
@@ -69,7 +69,7 @@ namespace idattd
 
         // --- keep the decompiler focused across stops --------------------------
         // IDA forces the disassembly view to the front on every debugger stop. If
-        // the user stepped from the decompiler, we re-assert it after the stop.
+        // the user stepped from the decompiler, it is brought back after the stop.
         void begin_movement();                // ev_resume: note where the user stepped from
         void movement_done();                 // ev_resume carried it out; the stop is known
         void check_stop_decompiles();         // dbg_suspend_process, stepping in pseudocode
@@ -78,7 +78,7 @@ namespace idattd
         { m_stepView = nullptr; m_viewsBefore.clear(); m_renderBefore.clear(); }
         void schedule_after_stop();           // queue the re-focus and view restores
 
-        // Queue a coverage sweep of the function we just stopped in, if that is
+        // Queue a coverage sweep of the function just stopped in, if that is
         // switched on and the function has not been measured before. Deferred to
         // a timer rather than run here: a sweep pumps the UI behind a wait box,
         // and doing that from inside a debugger notification invites reentrancy.
@@ -86,7 +86,7 @@ namespace idattd
 
         // Install the decompiler hook if it is not installed yet. Cheap and
         // idempotent, and called from several points because Hex-Rays is a
-        // plugin too and may not have loaded when we first ask for it.
+        // plugin too and may not have loaded when first asked for.
         void try_hook_decompiler();
 
         // Databases created by the .run loader carry a record naming the
@@ -108,7 +108,7 @@ namespace idattd
         // recording). False when the debugger could not be selected.
         bool start_trace_at(const char *path);
         void start_trace_session();     // the action body; no prompting
-        // Make IDA's debugger machinery point at us and know where the trace is,
+        // Make IDA's debugger machinery point at this plugin and know where the trace is,
         // so Debugger > Process options and Start process are already correct
         // whether or not the replay is started right now. Returns false when the
         // backend could not be selected at all.
@@ -117,7 +117,7 @@ namespace idattd
         bool select_trace_debugger(const char *trace_path, bool quiet = false);
 
         // Source-path prompts. IDA offers to map a source file whenever it
-        // finds line information for the address we stopped at; replaying
+        // finds line information for the address stopped at; replaying
         // someone else's build, that source is not on this machine and the
         // dialog is pure noise. The provider supplying the line info is
         // switched off for the session and switched back on when it ends.
@@ -256,11 +256,11 @@ namespace idattd
         // without a second list to keep in step. -1 means "not loaded".
         std::array<int, ICO_COUNT> m_icons{};
 
-        // True while our actions are registered (i.e. a trace is loaded). Guards
+        // True while the plugin's actions are registered (i.e. a trace is loaded). Guards
         // show_actions()/hide_actions() so registration is never doubled up.
         bool m_actionsRegistered = false;
 
-        // IDA's own icons for the native movement actions we re-skin, captured
+        // IDA's own icons for the native movement actions re-skinned here, captured
         // the first time each action is seen (they register lazily) and restored
         // when the trace is unloaded -- the override is global, so leaving it in
         // place would re-skin IDA's toolbar for every other debugger too.
@@ -282,7 +282,7 @@ namespace idattd
         // stop lands inside a function, and that is put back.
         std::vector<std::pair<TWidget *, tcc_renderer_type_t>> m_renderBefore;
         void restore_renderers();
-        // IDA's 'batch' flag, set by us across a stop Hex-Rays cannot
+        // IDA's 'batch' flag, set by the plugin across a stop Hex-Rays cannot
         // decompile so that its "Decompilation failure" goes to the output
         // window instead of a dialog per step.
         bool m_quiet      = false;
@@ -309,7 +309,7 @@ namespace idattd
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;
         bool            m_haveDecompiler = false;
-        // Source-info providers we turned off, so only those are turned back
+        // Source-info providers turned off here, so only those are turned back
         // on: one the user had already disabled must stay that way. The
         // entries are string literals, so storing the pointers is safe.
         std::vector<const char *> m_srcProvidersOff;

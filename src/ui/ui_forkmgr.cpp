@@ -127,7 +127,7 @@ namespace idattd
     //-----------------------------------------------------------------------
     // The graph's extra virtual table
     //-----------------------------------------------------------------------
-    // Give our graph object a copy of its class's virtual table that goes on
+    // Give the plugin's graph object a copy of its class's virtual table that goes on
     // past the class's own functions with harmless ones: "no node" for the
     // address lookup IDA's current-instruction update makes, nothing for the
     // rest. Only code that wrongly takes the graph for a disassembly graph
@@ -146,7 +146,7 @@ namespace idattd
             void *const      *original = nullptr;
             std::vector<void *> slots;           // [0] = the type information, then the table
         };
-        std::vector<GuardedTable *> g_tables;    // never freed: IDA may keep a graph past us
+        std::vector<GuardedTable *> g_tables;    // never freed: IDA may keep a graph past the plugin
 
         bool executable(const void *p)
         {

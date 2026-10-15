@@ -455,7 +455,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
         add_entry(entry, entry, "start", true);
     }
 
-    // Names and function bounds we can have for free, since a cursor is already
+    // Names and function bounds that come for free, since a cursor is already
     // open at a position where the module is mapped. Without this the database
     // is bytes with no structure until the debugger attaches.
     if ( haveIndex && (neflags & NEF_MINI) == 0 )

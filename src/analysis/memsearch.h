@@ -7,7 +7,7 @@ namespace idattd
 {
     class TraceManager;
 
-    // What a search is looking for. These are our own bits, not the engine's:
+    // What a search is looking for. These are the plugin's own bits, not the engine's:
     // the dialog speaks in these and only the sweep translates them.
     enum : uint8_t
     {

@@ -94,7 +94,7 @@ namespace idattd
     {
         // The tick has to be re-asserted here: IDA asks for the state when it
         // draws the menu, and the answer lives in the database, not in this
-        // object, so it can change under us when a different IDB is opened.
+        // object, so it can change underneath when a different IDB is opened.
         update_action_checked(actions::COVERAGE_AUTO, coverage_auto_enabled());
         return AST_ENABLE_ALWAYS;
     }

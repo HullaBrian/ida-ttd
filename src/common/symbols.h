@@ -48,8 +48,8 @@ namespace idattd
     // A module's on-disk PE image, cached for serving never-recorded bytes. TTD
     // only records memory that was accessed at runtime; for image-backed pages the
     // never-executed code (the other side of a branch, a cold epilogue) is in the
-    // trace at no position. WinDbg fills those gaps from the module file, and so do
-    // we. Recorded memory always takes precedence (it reflects self-modification);
+    // trace at no position. WinDbg fills those gaps from the module file, and so does
+    // this. Recorded memory always takes precedence (it reflects self-modification);
     // the image only fills holes.
     struct ModuleImage
     {
@@ -57,14 +57,14 @@ namespace idattd
         std::vector<uint8_t> file;        // whole file contents
         std::vector<Section> sections;
         uint32_t             sizeOfHeaders = 0;
-        // Identity of the file we actually opened, from its NT headers. The trace
+        // Identity of the file actually opened, from its NT headers. The trace
         // records the same two values for each module, so the caller can refuse a
         // file that is a different build of the same DLL -- the path came off the
         // recording machine and may resolve to something else entirely here.
         uint32_t             timestamp = 0;   // FileHeader.TimeDateStamp
         uint32_t             checksum  = 0;   // OptionalHeader.CheckSum
         uint32_t             sizeOfImage = 0; // OptionalHeader.SizeOfImage
-        bool                 ok = false;  // false once we've tried and failed
+        bool                 ok = false;  // false once tried and failed
     };
 
     // Read the module file at 'path' into 'out' and parse its section map. Returns

@@ -1490,7 +1490,7 @@ namespace
         {
             std::vector<open_call> open;
             std::optional<size_t>   call_pending;   // its callee is the next instruction
-            std::optional<uint64_t> ret_pending;    // the step of a ret, until we see where it went
+            std::optional<uint64_t> ret_pending;    // the step of a ret, until where it went is known
         };
         std::vector<ttd::call_event> out;
         if ( s0 > s1 )

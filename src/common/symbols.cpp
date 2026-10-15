@@ -239,7 +239,7 @@ namespace idattd
         out.timestamp    = nt32->FileHeader.TimeDateStamp;
         if ( nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
         {
-            // IMAGE_NT_HEADERS64 is larger than the ...32 form we bounds-checked
+            // IMAGE_NT_HEADERS64 is larger than the ...32 form bounds-checked
             // above, so re-check before reading through the wider view. (A
             // truncated PE32+ file would otherwise be read past its end.)
             if ( (size_t)ntoff + sizeof(IMAGE_NT_HEADERS64) > fsz )

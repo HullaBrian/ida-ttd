@@ -196,7 +196,7 @@ namespace idattd
                 continue;
 
             // The CodeView record: "RSDS", a GUID, an age, then the PDB path as
-            // the linker wrote it. Anything else is a format we cannot name a
+            // the linker wrote it. Anything else is a format with no name for a
             // symbol-server directory for.
             struct RsdsHeader
             {
