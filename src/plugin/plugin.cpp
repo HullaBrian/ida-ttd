@@ -118,6 +118,20 @@ namespace idattd
             msg("[ida-ttd] could not put %s on IDAPython's path: %s\n", dir.c_str(), err.c_str());
     }
 
+    // A Microsoft TTD recording starts with "TTDLog", as the MS backend's
+    // can_open checks; the plugin only needs to know which menu to offer.
+    static bool is_ms_recording(const char *path)
+    {
+        FILE *f = qfopen(path, "rb");
+        if ( f == nullptr )
+            return false;
+        char magic[6] = { 0 };
+        bool ms = qfread(f, magic, sizeof(magic)) == sizeof(magic)
+               && memcmp(magic, "TTDLog", sizeof(magic)) == 0;
+        qfclose(f);
+        return ms;
+    }
+
     // Flag the call stack + stack views for refresh. The widget mask is built
     // by hand instead of via IWID_*/builtin_widget_mask_from_id, whose uint128
     // << is defined out-of-line and not present in ida.lib (link error on MSVC).
@@ -246,6 +260,8 @@ namespace idattd
             unregister_action(actions::ATTACH_TRACE);
             detach_action_from_menu("Debugger/", actions::AUTO_START);
             unregister_action(actions::AUTO_START);
+            detach_action_from_menu("Debugger/", actions::INSTALL_RUNTIME);
+            unregister_action(actions::INSTALL_RUNTIME);    // a no-op if never registered
             m_attachRegistered = false;
         }
         for ( int ic : m_icons )
@@ -785,6 +801,17 @@ namespace idattd
                 update_action_checkable(actions::AUTO_START, true);
                 update_action_checked(actions::AUTO_START,
                                       trace_link_autostart() != TL_NO);
+            }
+            // Only Microsoft recordings need Microsoft's runtime.
+            if ( is_ms_recording(link.trace_path.c_str())
+              && register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                     actions::INSTALL_RUNTIME, "Install the TTD runtime (WinDbg)...",
+                     &m_installRuntime, this, nullptr,
+                     "Get Microsoft's TTD replay runtime, which Microsoft TTD recordings "
+                     "need: copied from an installed WinDbg, or WinDbg downloaded from "
+                     "Microsoft once you accept its license", -1)) )
+            {
+                attach_action_to_menu("Debugger/", actions::INSTALL_RUNTIME, SETMENU_APP);
             }
         }
 

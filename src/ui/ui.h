@@ -626,6 +626,17 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
+    // Get Microsoft's TTD replay runtime, which ida-ttd may not ship: copy it
+    // from an installed WinDbg, or download WinDbg after the user accepts its
+    // license (scripts/ida_ttd_runtime.py, through IDAPython). On the
+    // Debugger menu, since it is needed exactly when no session can start.
+    struct InstallRuntimeHandler : public action_handler_t
+    {
+        int  idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
     // Action identifiers, used for registration and for menu and popup attach.
     namespace actions
     {
@@ -668,5 +679,6 @@ namespace idattd
         constexpr const char *ANALYZE_FUNC = "idattd:analyze_func";
         constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
         constexpr const char *AUTO_START   = "idattd:auto_start";
+        constexpr const char *INSTALL_RUNTIME = "idattd:install_runtime";
     }
 }

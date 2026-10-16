@@ -3,6 +3,7 @@
 #include "ui/ui.h"
 #include "ui/clipboard.h"
 #include "common/trace_link.h"
+#include <expr.hpp>
 
 namespace idattd
 {
@@ -163,6 +164,26 @@ namespace idattd
         if ( !trace_link_present() )
             return AST_DISABLE;
         return AST_ENABLE_ALWAYS;
+    }
+
+    int idaapi InstallRuntimeHandler::activate(action_activation_ctx_t *)
+    {
+        // The work is Python's (HTTP, zip, a license dialog); the module is in
+        // ida-ttd-python\, which the plugin put on sys.path at load.
+        extlang_object_t py = find_extlang_by_name("Python");
+        if ( py == nullptr || py->eval_snippet == nullptr )
+        {
+            warning("Installing the TTD runtime needs IDAPython, which is not available.\n\n"
+                    "Install WinDbg (aka.ms/windbg/download) and copy its amd64\\ttd folder "
+                    "to plugins\\ida-ttd-backends\\windbg\\amd64\\ttd in your IDA user "
+                    "directory instead.");
+            return 1;
+        }
+        qstring err;
+        if ( !py->eval_snippet("import ida_ttd_runtime\n"
+                               "ida_ttd_runtime.install_runtime()\n", &err) )
+            warning("Installing the TTD runtime failed: %s", err.c_str());
+        return 1;
     }
 
     //=======================================================================

@@ -1,0 +1,594 @@
+"""Install the TTD replay runtime that Microsoft recordings need.
+
+The Microsoft TTD backend replays a .run through TTDReplay.dll and
+TTDReplayCPU.dll. Microsoft's terms do not allow anyone but Microsoft to
+distribute them, so ida-ttd cannot ship them. They come with WinDbg, and
+WinDbg's terms allow any use, commercial included (the standalone TTD
+package's terms do not, which is why it is not used here). So this module
+does what installing WinDbg by hand would: it downloads WinDbg from
+Microsoft, shows Microsoft's license, and only after the user accepts it
+unpacks the x64 package into
+
+    $IDAUSR/plugins/ida-ttd-backends/windbg/
+
+where the backend looks for amd64/ttd/TTDReplay.dll. That folder is outside
+the plugin's own package folder, so plugin upgrades leave it alone. With
+WinDbg already installed (Microsoft Store, winget, Microsoft's installer),
+nothing is downloaded: its amd64/ttd folder is copied there instead, since
+Windows will not load DLLs from an installed package's folder into IDA.
+
+Microsoft publishes WinDbg as one bundle (about 1.2 GB) holding a package
+per architecture, stored uncompressed. Only the x64 package (about 400 MB)
+is downloaded: a zip can be read through HTTP range requests, so the bundle's
+directory, then the license inside the x64 package, then that package
+alone are fetched.
+
+In IDA: TTD > Install TTD runtime..., or install_runtime(). The functions
+below install_runtime() use no IDA module, so the download and unpacking
+can be tried outside IDA.
+"""
+
+import ctypes
+import datetime
+import io
+import json
+import os
+import re
+import shutil
+import threading
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+import zipfile
+
+APPINSTALLER_URL = "https://aka.ms/windbg/download"
+X64_PACKAGE = "windbg_win-x64.msix"
+WINDBG_FAMILY = "Microsoft.WinDbg_8wekyb3d8bbwe"
+RUNTIME_FILES = ("TTDReplay.dll", "TTDReplayCPU.dll")
+TTD_SUBDIR = os.path.join("amd64", "ttd")
+MARKER = "ida-ttd-install.json"
+
+
+class InstallError(RuntimeError):
+    """A step of the install failed; the message says which, for the user."""
+
+
+class Cancelled(Exception):
+    pass
+
+
+# --------------------------------------------------------------------------
+# Where a runtime already is
+
+def has_runtime(root):
+    """Whether 'root' is a WinDbg folder holding the replay runtime."""
+    ttd = os.path.join(root, TTD_SUBDIR)
+    return all(os.path.isfile(os.path.join(ttd, f)) for f in RUNTIME_FILES)
+
+
+def installed_windbg():
+    """(folder, version) of WinDbg installed as a Windows package for this
+    user (Microsoft Store, winget, Microsoft's installer), if it holds the
+    runtime, else None. The backend cannot load the runtime from there:
+    Windows refuses to load a DLL from a package folder into a process
+    outside the package, though it allows reading it. So it is copied out."""
+    try:
+        k32 = ctypes.WinDLL("kernel32")
+        count = ctypes.c_uint32(0)
+        buflen = ctypes.c_uint32(0)
+        # The first call only sizes the buffers (ERROR_INSUFFICIENT_BUFFER).
+        rc = k32.GetPackagesByPackageFamily(WINDBG_FAMILY, ctypes.byref(count), None,
+                                            ctypes.byref(buflen), None)
+        if rc not in (0, 122) or count.value == 0:
+            return None
+        names = (ctypes.c_wchar_p * count.value)()
+        buf = ctypes.create_unicode_buffer(buflen.value)
+        if k32.GetPackagesByPackageFamily(WINDBG_FAMILY, ctypes.byref(count), names,
+                                          ctypes.byref(buflen), buf) != 0:
+            return None
+        for name in names[:count.value]:
+            plen = ctypes.c_uint32(0)
+            k32.GetPackagePathByFullName(name, ctypes.byref(plen), None)
+            path = ctypes.create_unicode_buffer(plen.value or 1)
+            if k32.GetPackagePathByFullName(name, ctypes.byref(plen), path) == 0 \
+               and has_runtime(path.value):
+                # A full name is Name_Version_Architecture_ResourceId_PublisherId.
+                parts = name.split("_")
+                return path.value, parts[1] if len(parts) > 1 else "?"
+    except (OSError, AttributeError):
+        pass
+    return None
+
+
+def read_marker(target):
+    try:
+        with open(os.path.join(target, MARKER), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+# --------------------------------------------------------------------------
+# Reading Microsoft's package over HTTP
+
+def _check_microsoft(url):
+    """Only ever fetch from Microsoft, over HTTPS, wherever a redirect leads."""
+    u = urllib.parse.urlsplit(url)
+    host = (u.hostname or "").lower()
+    if u.scheme != "https" or not (host == "microsoft.com" or host.endswith(".microsoft.com")):
+        raise InstallError("refusing to download from %s: not a Microsoft HTTPS address" % url)
+
+
+def _open(url, headers=None, timeout=60):
+    r = urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=timeout)
+    _check_microsoft(r.geturl())
+    return r
+
+
+def resolve_latest():
+    """(version, bundle URL) of the current WinDbg, from the App Installer
+    file Microsoft's download link points to."""
+    with _open(APPINSTALLER_URL) as r:
+        root = ET.fromstring(r.read(1 << 20))
+    for el in root.iter():
+        if el.tag.rsplit("}", 1)[-1] == "MainBundle":
+            url, version = el.get("Uri"), el.get("Version")
+            if url and version:
+                _check_microsoft(url)
+                return version, url
+    raise InstallError("Microsoft's WinDbg download page did not name a package")
+
+
+class _HttpFile(io.RawIOBase):
+    """A remote file read through range requests, enough for zipfile."""
+
+    def __init__(self, url, base=0, size=None):
+        self.url, self.base, self.pos = url, base, 0
+        if size is None:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                _check_microsoft(r.geturl())
+                self.url = r.geturl()
+                size = int(r.headers["Content-Length"])
+        self.size = size
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self.pos
+
+    def seek(self, off, whence=0):
+        self.pos = {0: off, 1: self.pos + off, 2: self.size + off}[whence]
+        return self.pos
+
+    def readinto(self, b):
+        n = min(len(b), self.size - self.pos)
+        if n <= 0:
+            return 0
+        start = self.base + self.pos
+        with _open(self.url, {"Range": "bytes=%d-%d" % (start, start + n - 1)}) as r:
+            if r.status != 206:
+                raise InstallError("Microsoft's server does not allow partial downloads")
+            data = r.read(n)
+        b[:len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def _member_offset(f, info):
+    """Where a zip member's data starts: after its local header."""
+    f.seek(info.header_offset)
+    h = f.read(30)
+    if h[:4] != b"PK\x03\x04":
+        raise InstallError("the WinDbg package is not laid out as expected")
+    return info.header_offset + 30 + int.from_bytes(h[26:28], "little") \
+        + int.from_bytes(h[28:30], "little")
+
+
+class Release(object):
+    """One WinDbg release: its version, its license, and where in the bundle
+    the x64 package is."""
+
+    def __init__(self, version, url):
+        self.version, self.url = version, url
+        raw = _HttpFile(url)
+        self.url = raw.url
+        f = io.BufferedReader(raw, buffer_size=1 << 16)
+        try:
+            info = zipfile.ZipFile(f).getinfo(X64_PACKAGE)
+        except (KeyError, zipfile.BadZipFile):
+            raise InstallError("the WinDbg bundle has no %s" % X64_PACKAGE)
+        if info.compress_type != zipfile.ZIP_STORED:
+            raise InstallError("the WinDbg bundle stores its x64 package compressed")
+        self.offset = _member_offset(f, info)
+        self.size = info.file_size
+        self.crc = info.CRC
+
+    def license_text(self):
+        inner = io.BufferedReader(_HttpFile(self.url, self.offset, self.size), buffer_size=1 << 16)
+        try:
+            rtf = zipfile.ZipFile(inner).read("eula.rtf")
+        except (KeyError, zipfile.BadZipFile):
+            raise InstallError("the WinDbg package has no license file (eula.rtf)")
+        return rtf_to_text(rtf)
+
+
+def latest_release():
+    return Release(*resolve_latest())
+
+
+def download(release, dest, progress=None, chunk=1 << 20):
+    """Download the x64 package to 'dest'. progress(done, total) is called
+    as it goes; Cancelled is raised once 'progress' returns False."""
+    done = 0
+    crc = 0
+    end = release.offset + release.size - 1
+    with _open(release.url, {"Range": "bytes=%d-%d" % (release.offset, end)}, timeout=120) as r, \
+         open(dest, "wb") as out:
+        if r.status != 206:
+            raise InstallError("Microsoft's server does not allow partial downloads")
+        while done < release.size:
+            data = r.read(min(chunk, release.size - done))
+            if not data:
+                raise InstallError("the download stopped after %d of %d bytes" % (done, release.size))
+            out.write(data)
+            crc = zipfile.crc32(data, crc)
+            done += len(data)
+            if progress is not None and progress(done, release.size) is False:
+                raise Cancelled()
+    # The bundle's directory has the package's checksum; a mismatch is a
+    # broken download, not something to unpack.
+    if crc != release.crc:
+        raise InstallError("the download is damaged (checksum mismatch); try again")
+
+
+# Package metadata, not WinDbg's files.
+_PACKAGE_META = ("[Content_Types].xml",)
+
+
+def unpack(package, target, version, progress=None):
+    """Unpack a downloaded package into 'target', replacing what is there.
+    Unpacked beside it first and renamed into place, so a failure halfway
+    leaves the old install (or none), never half of one."""
+    staging = target + ".new"
+    shutil.rmtree(staging, ignore_errors=True)
+    os.makedirs(staging)
+    root = os.path.realpath(staging)
+    with zipfile.ZipFile(package) as z:
+        members = [m for m in z.infolist() if not m.is_dir() and m.filename not in _PACKAGE_META]
+        for i, m in enumerate(members):
+            # Package part names are percent-encoded ("Third%20Party...").
+            name = urllib.parse.unquote(m.filename).replace("/", os.sep)
+            path = os.path.realpath(os.path.join(staging, name))
+            if os.path.commonpath([root, path]) != root:
+                raise InstallError("the package holds a file outside its folder: %s" % m.filename)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with z.open(m) as src, open(path, "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+            if progress is not None and progress(i + 1, len(members)) is False:
+                raise Cancelled()
+    _finish(staging, target, version, APPINSTALLER_URL,
+            "Microsoft Software License Terms - WinDbg, accepted in IDA before download")
+
+
+def copy_installed(source, target, version):
+    """Copy the TTD runtime (amd64/ttd) and the license out of an installed
+    WinDbg into 'target', replacing what is there."""
+    staging = target + ".new"
+    shutil.rmtree(staging, ignore_errors=True)
+    shutil.copytree(os.path.join(source, TTD_SUBDIR), os.path.join(staging, TTD_SUBDIR))
+    if os.path.isfile(os.path.join(source, "eula.rtf")):
+        shutil.copy2(os.path.join(source, "eula.rtf"), staging)
+    _finish(staging, target, version, source,
+            "Microsoft Software License Terms - WinDbg, as installed with WinDbg")
+
+
+def _finish(staging, target, version, source, license_note):
+    """Stamp a complete 'staging' folder and rename it to 'target'."""
+    if not has_runtime(staging):
+        shutil.rmtree(staging, ignore_errors=True)
+        raise InstallError("WinDbg %s does not contain %s" % (version, " or ".join(RUNTIME_FILES)))
+    with open(os.path.join(staging, MARKER), "w", encoding="utf-8") as f:
+        json.dump({
+            "version": version,
+            "source": source,
+            "installed": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "license": license_note,
+        }, f, indent=2)
+
+    old = target + ".old"
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(target):
+        try:
+            os.rename(target, old)
+        except OSError:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise InstallError("%s is in use. Close every IDA that has a Microsoft recording "
+                               "open, then try again." % target)
+    os.rename(staging, target)
+    shutil.rmtree(old, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# RTF to text, enough for a license file
+
+_RTF_TOKEN = re.compile(r"\\([a-z]{1,32})(-?\d{1,10})? ?|\\'([0-9a-f]{2})|\\([^a-z])|([{}])|[\r\n]+|(.)",
+                        re.I | re.S)
+
+# Groups that hold formatting tables or metadata, never text.
+_RTF_SKIP = {
+    "fonttbl", "colortbl", "stylesheet", "info", "pict", "header", "footer",
+    "headerl", "headerr", "headerf", "footerl", "footerr", "footerf",
+    "listtable", "listoverridetable", "rsidtbl", "generator", "xmlnstbl",
+    "themedata", "colorschememapping", "latentstyles", "datastore",
+    "pgdsctbl", "filetbl", "revtbl", "object", "fldinst", "mmathPr",
+}
+_RTF_CHARS = {
+    "par": "\n", "line": "\n", "sect": "\n\n", "page": "\n\n", "tab": "\t",
+    "cell": "\t", "row": "\n", "emdash": "\u2014", "endash": "\u2013",
+    "lquote": "\u2018", "rquote": "\u2019", "ldblquote": "\u201c",
+    "rdblquote": "\u201d", "bullet": "\u2022", "emspace": " ", "enspace": " ",
+}
+
+
+def rtf_to_text(rtf):
+    if isinstance(rtf, bytes):
+        rtf = rtf.decode("latin-1")
+    stack = []
+    skip = False         # inside a group that holds no text
+    ucskip = 1           # characters after \uN that stand in for it
+    pending = 0          # of those, still to drop
+    out = []
+    for word, arg, hexc, sym, brace, char in (m.groups() for m in _RTF_TOKEN.finditer(rtf)):
+        if brace:
+            pending = 0
+            if brace == "{":
+                stack.append((skip, ucskip))
+            elif stack:
+                skip, ucskip = stack.pop()
+        elif sym:
+            pending = 0
+            if sym == "*":
+                skip = True
+            elif sym in "\\{}":
+                if not skip:
+                    out.append(sym)
+            elif sym == "~":
+                if not skip:
+                    out.append("\u00a0")
+            elif sym in "\r\n":
+                if not skip:
+                    out.append("\n")
+        elif word:
+            pending = 0
+            w = word.lower()
+            if w in _RTF_SKIP:
+                skip = True
+            elif skip:
+                pass
+            elif w == "uc":
+                ucskip = int(arg or 1)
+            elif w == "u":
+                c = int(arg)
+                out.append(chr(c + 0x10000 if c < 0 else c))
+                pending = ucskip
+            elif w in _RTF_CHARS:
+                out.append(_RTF_CHARS[w])
+        elif hexc:
+            if pending:
+                pending -= 1
+            elif not skip:
+                out.append(bytes([int(hexc, 16)]).decode("cp1252", "replace"))
+        elif char:
+            if pending:
+                pending -= 1
+            elif not skip:
+                out.append(char)
+    text = "".join(out)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip() + "\n"
+
+
+# --------------------------------------------------------------------------
+# In IDA
+
+def default_target():
+    import ida_diskio
+    return os.path.join(ida_diskio.get_user_idadir(), "plugins", "ida-ttd-backends", "windbg")
+
+
+def _in_background(title, work, status):
+    """Run work() on a worker thread behind a cancellable wait box. The
+    thread does only network and file work; every IDA call stays here, on
+    the main thread. status() is the wait box's current text."""
+    import ida_kernwin
+    result = {}
+    cancel = threading.Event()
+
+    def run():
+        try:
+            result["value"] = work(cancel)
+        except BaseException as e:      # handed to the main thread below
+            result["error"] = e
+
+    t = threading.Thread(target=run, name="ida-ttd runtime install", daemon=True)
+    ida_kernwin.show_wait_box(title)
+    try:
+        t.start()
+        shown = None
+        while t.is_alive():
+            t.join(0.15)
+            if ida_kernwin.user_cancelled():
+                cancel.set()
+            text = status()
+            if text and text != shown:
+                ida_kernwin.replace_wait_box(text)
+                shown = text
+    finally:
+        ida_kernwin.hide_wait_box()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def _ask_license(release, target, text):
+    """Show WinDbg's license; True only if the user accepts it."""
+    intro = ("ida-ttd needs Microsoft's TTD replay runtime (TTDReplay.dll) to open "
+             "Microsoft TTD recordings. It comes with WinDbg, and Microsoft does not allow "
+             "anyone else to distribute it, so ida-ttd cannot include it.\n\n"
+             "This will download WinDbg %s (%d MB) from Microsoft and unpack it into\n%s\n\n"
+             "WinDbg is Microsoft's software, licensed to you by Microsoft under the terms "
+             "below. Accept installs it; Decline installs nothing."
+             % (release.version, (release.size + (1 << 19)) >> 20, target))
+    try:
+        from PySide6 import QtWidgets
+    except ImportError:
+        QtWidgets = None
+    if QtWidgets is None:
+        import ida_kernwin
+        path = os.path.join(os.path.dirname(target), "WinDbg-license.txt")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.startfile(path)
+        return ida_kernwin.ask_buttons("Accept", "Decline", "", 0,
+                                       "%s\n\nThe license is open in a text editor (%s)."
+                                       % (intro, path)) == 1
+
+    return _license_dialog(QtWidgets, intro, text).exec() == QtWidgets.QDialog.Accepted
+
+
+def _license_dialog(QtWidgets, intro, text):
+    dlg = QtWidgets.QDialog(QtWidgets.QApplication.activeWindow())
+    dlg.setWindowTitle("Install the TTD runtime: WinDbg license")
+    lay = QtWidgets.QVBoxLayout(dlg)
+    head = QtWidgets.QLabel(intro)
+    head.setWordWrap(True)
+    lay.addWidget(head)
+    body = QtWidgets.QPlainTextEdit()
+    body.setReadOnly(True)
+    # The license puts a tab after each clause number ("1.\tINSTALLATION");
+    # Qt's default tab stop is eight characters wide.
+    body.setTabStopDistance(3 * body.fontMetrics().horizontalAdvance("0"))
+    body.setPlainText(text)
+    lay.addWidget(body, 1)
+    buttons = QtWidgets.QDialogButtonBox()
+    accept = buttons.addButton("Accept", QtWidgets.QDialogButtonBox.AcceptRole)
+    decline = buttons.addButton("Decline", QtWidgets.QDialogButtonBox.RejectRole)
+    decline.setDefault(True)
+    accept.setAutoDefault(False)
+    buttons.accepted.connect(dlg.accept)
+    buttons.rejected.connect(dlg.reject)
+    lay.addWidget(buttons)
+    dlg.resize(760, 640)
+    return dlg
+
+
+def install_runtime(target=None):
+    """TTD > Install TTD runtime...: find, or else install, WinDbg's TTD
+    runtime. Returns the folder that holds it, or None."""
+    import ida_kernwin
+    target = target or default_target()
+
+    mine = read_marker(target) if has_runtime(target) else None
+    found = installed_windbg()
+    if found:
+        source, version = found
+        if mine is not None and mine.get("version") == version:
+            ida_kernwin.info("ida-ttd already has the TTD runtime of WinDbg %s, the version "
+                             "installed on this computer:\n%s" % (version, target))
+            return target
+        if ida_kernwin.ask_yn(ida_kernwin.ASKBTN_YES,
+                              "WinDbg %s is installed on this computer.\n\n"
+                              "Copy its TTD runtime for ida-ttd? Windows does not let other "
+                              "programs load it from where WinDbg is installed, so ida-ttd keeps "
+                              "a copy in\n%s\n\nRun this again after WinDbg updates to copy the "
+                              "new version." % (version, target)) != ida_kernwin.ASKBTN_YES:
+            return None
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            copy_installed(source, target, version)
+        except Exception as e:
+            shutil.rmtree(target + ".new", ignore_errors=True)
+            ida_kernwin.warning("Copying the TTD runtime from WinDbg failed: %s" % e)
+            return None
+        return _installed(version, target)
+
+    state = {"text": "Asking Microsoft for the current WinDbg..."}
+    try:
+        release = _in_background("HIDECANCEL\n" + state["text"],
+                                 lambda cancel: latest_release(), lambda: state["text"])
+    except Exception as e:
+        ida_kernwin.warning("Could not reach Microsoft's WinDbg download: %s" % e)
+        return None
+
+    if mine is not None:
+        if mine.get("version") == release.version:
+            ida_kernwin.info("WinDbg %s, the current version, is already installed for ida-ttd:\n%s"
+                             % (release.version, target))
+            return target
+        if ida_kernwin.ask_yn(ida_kernwin.ASKBTN_YES,
+                              "WinDbg %s is installed for ida-ttd; %s is available.\n\nUpdate it?"
+                              % (mine.get("version", "?"), release.version)) != ida_kernwin.ASKBTN_YES:
+            return target
+
+    try:
+        text = _in_background("HIDECANCEL\nReading the WinDbg license...",
+                              lambda cancel: release.license_text(), lambda: None)
+    except Exception as e:
+        ida_kernwin.warning("Could not read the WinDbg license: %s" % e)
+        return None
+    if not _ask_license(release, target, text):
+        ida_kernwin.msg("[ida-ttd] The WinDbg license was declined; nothing was installed.\n")
+        return None
+
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    package = target + ".msix.part"
+    total_mb = release.size >> 20
+
+    def work(cancel):
+        def dl(done, total):
+            state["text"] = "Downloading WinDbg %s from Microsoft: %d of %d MB" % (
+                release.version, done >> 20, total_mb)
+            return not cancel.is_set()
+
+        def up(done, total):
+            state["text"] = "Unpacking WinDbg: %d of %d files" % (done, total)
+            return not cancel.is_set()
+        try:
+            download(release, package, dl)
+            state["text"] = "Unpacking WinDbg..."
+            unpack(package, target, release.version, up)
+        finally:
+            try:
+                os.remove(package)
+            except OSError:
+                pass
+
+    state["text"] = "Downloading WinDbg %s from Microsoft..." % release.version
+    try:
+        _in_background(state["text"], work, lambda: state["text"])
+    except Cancelled:
+        shutil.rmtree(target + ".new", ignore_errors=True)
+        ida_kernwin.msg("[ida-ttd] The WinDbg install was cancelled; nothing was installed.\n")
+        return None
+    except Exception as e:
+        shutil.rmtree(target + ".new", ignore_errors=True)
+        ida_kernwin.warning("Installing WinDbg failed: %s" % e)
+        return None
+
+    return _installed(release.version, target)
+
+
+def _installed(version, target):
+    import ida_kernwin
+    ida_kernwin.msg("[ida-ttd] Installed the TTD runtime of WinDbg %s in %s; Microsoft TTD "
+                    "recordings can be replayed now.\n" % (version, target))
+    ida_kernwin.info("The TTD runtime of WinDbg %s is installed in\n%s\n\nMicrosoft TTD recordings "
+                     "can be replayed now: start the debugger (Debugger > Start process) to begin."
+                     % (version, target))
+    return target

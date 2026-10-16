@@ -74,6 +74,12 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 - **`scripts/ida_ttd.py`**: the Python API (`Session`, `Recording`, `call`).
   The build copies it to `ida-ttd-python/` beside the plugin, and the plugin
   puts that folder on IDAPython's `sys.path` when it loads.
+- **`scripts/ida_ttd_runtime.py`**: Debugger > Install the TTD runtime
+  (WinDbg). Copies `amd64\ttd` out of an installed WinDbg, or shows WinDbg's
+  license and downloads its x64 package from Microsoft (HTTP range reads of
+  the bundle), into `$IDAUSR\plugins\ida-ttd-backends\windbg\`, where the MS
+  backend looks. Copied beside `ida_ttd.py`. Everything below
+  `install_runtime()` runs without IDA, for testing.
 - **`src/loader/`**: `ttd-loader.dll`, so File > Open accepts a recording.
 - **`src/setup/`**: `ida-ttd-loader-setup.dll`, a `PLUGIN_FIX` component of the
   HCLI package that copies the bundled `ttd-loader.dll` into
@@ -142,6 +148,12 @@ by comparing MS and Sogen recordings of the same program.
   (the TTD runtime DLLs, a Sogen backend, its `registry\` folder) may be
   expected to live there: point them at `plugins\ida-ttd-backends\`.
   `hcli plugin lint` exits 0 even on errors; read its output.
+- **Never ship or fetch Microsoft's TTD runtime any other way.** Its terms
+  forbid redistribution, and the standalone TTD package's terms forbid
+  commercial use; WinDbg's do not. So it comes from WinDbg only, on the
+  user's machine, after they accept WinDbg's license. A DLL in an installed
+  package's folder (`WindowsApps`) cannot be loaded from IDA (access denied),
+  only read, so it is copied out.
 - **Never poll IDA's windows from a thread inside the IDA process** (e.g. an
   `EnumWindows` loop on a Python thread): it deadlocked the user's IDA.
 - **Never call `ida_dbg.set_debugger_options(0)`** to read the options: it

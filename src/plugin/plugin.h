@@ -187,6 +187,7 @@ namespace idattd
         TracePatternHandler m_tracePat;
         AttachTraceHandler  m_attachTrace;
         AutoStartHandler    m_autoStart;
+        InstallRuntimeHandler m_installRuntime;
         // Bookmarks + execution coverage
         AddBookmarkHandler   m_addBookmark;
         OpenBookmarksHandler m_bookmarksView;

@@ -114,9 +114,10 @@ replay features ask before doing it.
 ## Requirements
 
 - IDA Pro 9.4, Windows x64. The plugin is built against the 9.4 SDK.
-- `TTDReplay.dll` and `TTDReplayCPU.dll`. These are not redistributed here.
-  Take them from a WinDbg installation (under `...\amd64\ttd\`) or from the
-  Microsoft `Get-Ttd.ps1` download script.
+- For Microsoft TTD recordings, Microsoft's replay runtime (`TTDReplay.dll`,
+  `TTDReplayCPU.dll`), which comes with WinDbg. Microsoft does not allow anyone
+  else to distribute it, so it is not included; the plugin gets it for you
+  (Installation, step 2).
 
 ## Installation
 
@@ -144,10 +145,22 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    Without HCLI, download `ida-ttd.zip` from the
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
    it into `plugins\`: it holds one `ida-ttd` folder.
-2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` next to `ida.exe`, or into
-   `plugins\ida-ttd-backends\` (a folder of its own beside `plugins\ida-ttd\`,
-   not inside it). HCLI replaces `plugins\ida-ttd\` on every upgrade, so
-   anything you add to that folder is lost.
+2. Get the TTD replay runtime: open a `.run`, then choose **Debugger > Install
+   the TTD runtime (WinDbg)...** (or run `import ida_ttd_runtime;
+   ida_ttd_runtime.install_runtime()` in IDAPython). If WinDbg is installed,
+   its `amd64\ttd` folder is copied; run it again after WinDbg updates. If not,
+   it shows WinDbg's license and, once you accept it, downloads WinDbg's x64
+   package (about 390 MB) from Microsoft. Either way the result goes in
+   `plugins\ida-ttd-backends\windbg\`. Then start the debugger.
+
+   WinDbg's license allows commercial use. The standalone TTD package's license
+   does not, which is why the plugin never uses it.
+
+   To do it by hand instead, copy `TTDReplay.dll` and `TTDReplayCPU.dll` from
+   WinDbg's `amd64\ttd` folder next to `ida.exe`, or into
+   `plugins\ida-ttd-backends\`. Either way, keep them out of
+   `plugins\ida-ttd\`: HCLI replaces that folder on every upgrade, so anything
+   you add to it is lost.
 3. Optional, for Sogen recordings: build `ida-ttd-sogen.dll`
    ([docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
    and put it in `plugins\ida-ttd-backends\`, again outside the package folder.

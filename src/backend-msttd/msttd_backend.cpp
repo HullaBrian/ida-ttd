@@ -47,32 +47,77 @@ namespace idattd
                          || m_engine->GetIndexStatus() == TTD::Replay::IndexStatus::IndexFileLoaded);
     }
 
-    // The replay runtime: wherever the process finds DLLs (next to ida.exe),
-    // or else next to this backend, or else in plugins\ida-ttd-backends\.
-    // The last is for a package install (plugins\ida-ttd\ida-ttd-backends\
-    // holds this backend): hcli replaces the package folder on every upgrade,
-    // so DLLs the user copied into it would vanish, while the shared folder
-    // two levels up is theirs and survives. Loaded by full path, with its own
-    // folder searched, so TTDReplayCPU.dll beside it is found too.
+    // The user's IDA directories: each entry of %IDAUSR%, or else the
+    // default one, as IDA itself picks them.
+    static std::vector<std::filesystem::path> user_ida_dirs()
+    {
+        std::vector<std::filesystem::path> dirs;
+        wchar_t buf[4096];
+        DWORD n = GetEnvironmentVariableW(L"IDAUSR", buf, (DWORD)std::size(buf));
+        if ( n > 0 && n < std::size(buf) )
+        {
+            std::wstring all(buf, n);
+            for ( size_t start = 0; start <= all.size(); )
+            {
+                size_t end = all.find(L';', start);
+                if ( end == std::wstring::npos )
+                    end = all.size();
+                if ( end > start )
+                    dirs.emplace_back(all.substr(start, end - start));
+                start = end + 1;
+            }
+            return dirs;
+        }
+        n = GetEnvironmentVariableW(L"APPDATA", buf, (DWORD)std::size(buf));
+        if ( n > 0 && n < std::size(buf) )
+            dirs.push_back(std::filesystem::path(std::wstring(buf, n)) / L"Hex-Rays" / L"IDA Pro");
+        return dirs;
+    }
+
+    // The replay runtime, tried in this order:
+    //  - wherever the process finds DLLs (next to ida.exe);
+    //  - copied by the user next to this backend, or into
+    //    plugins\ida-ttd-backends\ two levels up. That one is for a package
+    //    install (plugins\ida-ttd\ida-ttd-backends\ holds this backend):
+    //    hcli replaces the package folder on every upgrade, so DLLs copied
+    //    into it would vanish, while the shared folder is the user's;
+    //  - the WinDbg that TTD > Install TTD runtime put in
+    //    $IDAUSR\plugins\ida-ttd-backends\windbg\ (scripts/ida_ttd_runtime.py).
+    // An installed WinDbg is not used where it is: Windows refuses to load a
+    // DLL from a package folder (WindowsApps) into a process outside the
+    // package (ERROR_ACCESS_DENIED), though it lets one read it, so the
+    // installer copies the runtime out of it instead.
+    // Never shipped with the plugin: Microsoft's terms forbid that. Loaded by
+    // full path with its own folder searched, so TTDReplayCPU.dll beside it
+    // is found too.
     static bool load_ttd_runtime()
     {
         if ( GetModuleHandleW(L"TTDReplay.dll") != nullptr || LoadLibraryW(L"TTDReplay.dll") != nullptr )
             return true;
+        namespace fs = std::filesystem;
+        std::vector<fs::path> candidates;
         HMODULE self = nullptr;
-        if ( !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                 (LPCWSTR)(void *)&load_ttd_runtime, &self) )
-            return false;
         wchar_t buf[MAX_PATH] = { 0 };
-        DWORD n = GetModuleFileNameW(self, buf, MAX_PATH);
-        if ( n == 0 || n >= MAX_PATH )
-            return false;
-        std::filesystem::path dir = std::filesystem::path(std::wstring(buf, n)).parent_path();
-        for ( const std::filesystem::path &p : { dir / L"TTDReplay.dll",
-                                                 dir.parent_path().parent_path() / L"ida-ttd-backends" / L"TTDReplay.dll" } )
+        if ( GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                              | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                (LPCWSTR)(void *)&load_ttd_runtime, &self) )
+        {
+            DWORD n = GetModuleFileNameW(self, buf, MAX_PATH);
+            if ( n > 0 && n < MAX_PATH )
+            {
+                fs::path dir = fs::path(std::wstring(buf, n)).parent_path();
+                candidates.push_back(dir / L"TTDReplay.dll");
+                candidates.push_back(dir.parent_path().parent_path() / L"ida-ttd-backends" / L"TTDReplay.dll");
+            }
+        }
+        const fs::path ttd = fs::path(L"amd64") / L"ttd" / L"TTDReplay.dll";
+        for ( const fs::path &u : user_ida_dirs() )
+            candidates.push_back(u / L"plugins" / L"ida-ttd-backends" / L"windbg" / ttd);
+
+        for ( const fs::path &p : candidates )
         {
             std::error_code ec;
-            if ( std::filesystem::is_regular_file(p, ec)
+            if ( fs::is_regular_file(p, ec)
               && LoadLibraryExW(p.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr )
                 return true;
         }
@@ -96,11 +141,12 @@ namespace idattd
         // fault in the first engine call. Load it here, where it can be
         // explained.
         if ( !load_ttd_runtime() )
-            return fail("TTDReplay.dll could not be loaded.\n\n"
-                        "Copy TTDReplay.dll and TTDReplayCPU.dll from a WinDbg installation "
-                        "(its amd64\\ttd folder) next to ida.exe, or into the "
-                        "plugins\\ida-ttd-backends folder of your IDA user directory "
-                        "(%%APPDATA%%\\Hex-Rays\\IDA Pro), which plugin upgrades leave alone.");
+            return fail("Microsoft's TTD replay runtime (TTDReplay.dll) was not found.\n\n"
+                        "It comes with WinDbg, which ida-ttd may not include. "
+                        "Debugger > Install the TTD runtime (WinDbg)... copies it from an "
+                        "installed WinDbg, or downloads WinDbg from Microsoft (in IDAPython: "
+                        "import ida_ttd_runtime; ida_ttd_runtime.install_runtime()). "
+                        "Then start the debugger again.");
 
         auto made = MakeReplayEngine();
         m_engine = std::move(made.first);
