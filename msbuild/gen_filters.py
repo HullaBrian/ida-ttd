@@ -67,3 +67,4 @@ def gen(proj_path):
 gen("msbuild/ida-ttd.vcxproj")
 gen("msbuild/ttd-loader.vcxproj")
 gen("msbuild/backend-msttd.vcxproj")
+gen("msbuild/ida-ttd-loader-setup.vcxproj")

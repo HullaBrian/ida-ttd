@@ -75,6 +75,13 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   The build copies it to `ida-ttd-python/` beside the plugin, and the plugin
   puts that folder on IDAPython's `sys.path` when it loads.
 - **`src/loader/`**: `ttd-loader.dll`, so File > Open accepts a recording.
+- **`src/setup/`**: `ida-ttd-loader-setup.dll`, a `PLUGIN_FIX` component of the
+  HCLI package that copies the bundled `ttd-loader.dll` into
+  `$IDAUSR\loaders\` as IDA starts (HCLI installs only into
+  `plugins\ida-ttd\`, and IDA finds loaders only in `loaders\`).
+- **`scripts/package.py`**: builds `dist\ida-ttd.zip`, the HCLI package (an
+  `ida-ttd/` suite folder, with the setup component and its generated
+  `ida-plugin.json`). The release workflow runs it, then `hcli plugin lint`.
 - **`src/tools/ittd_probe.c`**: drives any backend DLL through the ABI outside
   IDA and checks its promises.
 
@@ -91,6 +98,8 @@ msbuild msbuild\ida-ttd.vcxproj      -p:Configuration=Release -p:Platform=x64
 msbuild msbuild\backend-msttd.vcxproj -p:Configuration=Release -p:Platform=x64
 msbuild msbuild\ittd-probe.vcxproj   -p:Configuration=Release -p:Platform=x64
 msbuild msbuild\ttd-loader.vcxproj   -p:Configuration=Release -p:Platform=x64
+msbuild msbuild\ida-ttd-loader-setup.vcxproj -p:Configuration=Release -p:Platform=x64
+python scripts\package.py
 ```
 
 Output goes to `build\Release\` (backends in `build\Release\backends\`). New
@@ -129,6 +138,10 @@ by comparing MS and Sogen recordings of the same program.
 
 ## Pitfalls
 
+- **HCLI replaces `plugins\ida-ttd\` on every upgrade.** Nothing the user adds
+  (the TTD runtime DLLs, a Sogen backend, its `registry\` folder) may be
+  expected to live there: point them at `plugins\ida-ttd-backends\`.
+  `hcli plugin lint` exits 0 even on errors; read its output.
 - **Never poll IDA's windows from a thread inside the IDA process** (e.g. an
   `EnumWindows` loop on a Python thread): it deadlocked the user's IDA.
 - **Never call `ida_dbg.set_debugger_options(0)`** to read the options: it

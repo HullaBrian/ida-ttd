@@ -48,8 +48,12 @@ namespace idattd
     }
 
     // The replay runtime: wherever the process finds DLLs (next to ida.exe),
-    // or else next to this backend. Loaded by full path in the second case,
-    // with its own folder searched, so TTDReplayCPU.dll beside it is found too.
+    // or else next to this backend, or else in plugins\ida-ttd-backends\.
+    // The last is for a package install (plugins\ida-ttd\ida-ttd-backends\
+    // holds this backend): hcli replaces the package folder on every upgrade,
+    // so DLLs the user copied into it would vanish, while the shared folder
+    // two levels up is theirs and survives. Loaded by full path, with its own
+    // folder searched, so TTDReplayCPU.dll beside it is found too.
     static bool load_ttd_runtime()
     {
         if ( GetModuleHandleW(L"TTDReplay.dll") != nullptr || LoadLibraryW(L"TTDReplay.dll") != nullptr )
@@ -59,13 +63,20 @@ namespace idattd
                                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                  (LPCWSTR)(void *)&load_ttd_runtime, &self) )
             return false;
-        wchar_t dir[MAX_PATH] = { 0 };
-        DWORD n = GetModuleFileNameW(self, dir, MAX_PATH);
+        wchar_t buf[MAX_PATH] = { 0 };
+        DWORD n = GetModuleFileNameW(self, buf, MAX_PATH);
         if ( n == 0 || n >= MAX_PATH )
             return false;
-        std::wstring p(dir, n);
-        p = p.substr(0, p.find_last_of(L"\\/") + 1) + L"TTDReplay.dll";
-        return LoadLibraryExW(p.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
+        std::filesystem::path dir = std::filesystem::path(std::wstring(buf, n)).parent_path();
+        for ( const std::filesystem::path &p : { dir / L"TTDReplay.dll",
+                                                 dir.parent_path().parent_path() / L"ida-ttd-backends" / L"TTDReplay.dll" } )
+        {
+            std::error_code ec;
+            if ( std::filesystem::is_regular_file(p, ec)
+              && LoadLibraryExW(p.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr )
+                return true;
+        }
+        return false;
     }
 
     bool MsTtdBackend::open(const char *path, qstring *errbuf)
@@ -87,8 +98,9 @@ namespace idattd
         if ( !load_ttd_runtime() )
             return fail("TTDReplay.dll could not be loaded.\n\n"
                         "Copy TTDReplay.dll and TTDReplayCPU.dll from a WinDbg installation "
-                        "(its amd64\\ttd folder) next to ida.exe, or next to this backend in "
-                        "plugins\\ida-ttd-backends.");
+                        "(its amd64\\ttd folder) next to ida.exe, or into the "
+                        "plugins\\ida-ttd-backends folder of your IDA user directory "
+                        "(%%APPDATA%%\\Hex-Rays\\IDA Pro), which plugin upgrades leave alone.");
 
         auto made = MakeReplayEngine();
         m_engine = std::move(made.first);

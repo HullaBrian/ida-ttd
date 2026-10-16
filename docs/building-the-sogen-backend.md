@@ -81,8 +81,9 @@ msbuild msbuild\backend-sogen.vcxproj -t:Rebuild -p:Configuration=Release -p:Pla
 msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
 ```
 
-The backend lands in `build\Release\backends\ida-ttd-sogen.dll`. Once the core
-loads backends, it goes in IDA's `plugins\ida-ttd-backends\`.
+The backend lands in `build\Release\backends\ida-ttd-sogen.dll`. It goes in
+`plugins\ida-ttd-backends\` under the IDA user directory: a folder of its own,
+not the plugin's `plugins\ida-ttd\`, which HCLI replaces on upgrade.
 
 ## 3. Probe a trace
 

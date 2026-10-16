@@ -1,16 +1,20 @@
 {
+  "$schema": "https://hcli.docs.hex-rays.com/schemas/ida-plugin.json",
   "IDAMetadataDescriptorVersion": 1,
   "plugin": {
     "name": "ida-ttd",
-    "entryPoint": "ida-ttd.dll",
+    "entryPoint": "ida-ttd",
+    "components": [
+      "ida-ttd-loader-setup"
+    ],
     "version": "1.0.0",
-    "description": "Load Microsoft Time Travel Debugging traces in IDA and step forwards and backwards through them, with trace-wide call, coverage and memory-region analysis.",
+    "description": "Replay Microsoft Time Travel Debugging (.run) and Sogen (.sogttd) recordings as an IDA debugger session: step forwards and backwards, and query the whole recording for calls, coverage, memory accesses, syscalls and strings.",
     "license": "Apache-2.0",
     "platforms": [
       "windows-x86_64"
     ],
     "idaVersions": [
-      ">=9.4"
+      "9.4"
     ],
     "categories": [
       "debugging-and-tracing",

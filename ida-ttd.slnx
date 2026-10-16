@@ -4,6 +4,7 @@
   </Configurations>
   <Project Path="msbuild/ida-ttd.vcxproj" Id="55864e0c-4c71-4cec-83f0-448f5260a487" />
   <Project Path="msbuild/ttd-loader.vcxproj" Id="7f2c1a64-9d3e-4b18-8a55-1c0f2e6b47d1" />
+  <Project Path="msbuild/ida-ttd-loader-setup.vcxproj" Id="962f43eb-e779-454f-ac9d-a24e0f185d2a" />
   <Project Path="msbuild/backend-msttd.vcxproj" Id="6d1e8b47-3c2a-4f95-b8e1-0a7c5d9f2e63" />
   <Project Path="msbuild/ittd-probe.vcxproj" Id="3b8d1f52-6a0e-4c7b-9e2d-5f4a8c1b7e30" />
 </Solution>

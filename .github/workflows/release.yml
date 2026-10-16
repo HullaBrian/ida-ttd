@@ -46,27 +46,28 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $stage = "dist\ida-ttd"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item ida-plugin.json $stage
-          Copy-Item build\Release\ida-ttd.dll $stage
-          # The Microsoft TTD backend: a DLL of its own since phase 4, found
-          # in ida-ttd-backends\ next to the plugin. (The Sogen backend needs
-          # a Sogen build and ships separately.)
-          New-Item -ItemType Directory -Force -Path "$stage\ida-ttd-backends" | Out-Null
-          Copy-Item build\Release\backends\ida-ttd-msttd.dll "$stage\ida-ttd-backends"
-          Compress-Archive -Path "$stage\*" -DestinationPath dist\ida-ttd.zip -Force
+          # The plugin package; scripts/package.py says what goes in it and
+          # why. (The Sogen backend needs a Sogen build and ships separately.)
+          python scripts\package.py --build build\Release --out dist
+          if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
 
-          # The trace loader is not part of the plugin package: IDA looks for
-          # loaders in a different directory and the packaging format has no way
-          # to install one. It ships as a separate asset.
+          # The trace loader on its own as well, for installs without HCLI:
+          # the package carries a copy that its setup component puts in
+          # place, but a hand install copies this into loaders\ itself.
           Copy-Item build\Release\ttd-loader.dll dist\
 
-          # Symbols, so a crash report from a release build can be read. Kept
-          # out of the plugin zip (IDA would install them next to the DLL) and
-          # published as one archive of their own.
-          Compress-Archive -Path build\Release\ida-ttd.pdb, build\Release\ttd-loader.pdb, build\Release\backends\ida-ttd-msttd.pdb `
-                           -DestinationPath dist\ida-ttd-pdb.zip -Force
+      # The checks the plugin repository's indexer applies (schema, entry
+      # point present in the archive), run on the zip that will be published.
+      - name: Lint the plugin package
+        shell: pwsh
+        run: |
+          python -m pip install --quiet ida-hcli
+          # Its exit status is 0 even when validation fails (hcli 0.26), so
+          # the verdict comes from the output: "Error:" lines are failures,
+          # "Recommendation" lines are advice.
+          $out = hcli plugin lint dist\ida-ttd.zip 2>&1 | Out-String
+          Write-Output $out
+          if ($LASTEXITCODE -ne 0 -or $out -match '(?m)^\s*Error') { throw "hcli plugin lint found errors" }
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -75,7 +76,6 @@ jobs:
           path: |
             dist/ida-ttd.zip
             dist/ttd-loader.dll
-            dist/ida-ttd-pdb.zip
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
@@ -87,4 +87,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:GITHUB_REF_NAME --generate-notes --title $env:GITHUB_REF_NAME
           }
-          gh release upload $env:GITHUB_REF_NAME dist\ida-ttd.zip dist\ttd-loader.dll dist\ida-ttd-pdb.zip --clobber
+          gh release upload $env:GITHUB_REF_NAME dist\ida-ttd.zip dist\ttd-loader.dll --clobber

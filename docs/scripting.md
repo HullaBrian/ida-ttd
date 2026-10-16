@@ -142,8 +142,8 @@ call("state")
 ```
 
 `ensure_loaded()` loads `ida-ttd` from IDA's plugins directory when the worker
-has not. The plugin must be installed there, along with any backends in
-`plugins\ida-ttd-backends`.
+has not. The plugin must be installed there (`plugins\ida-ttd\`, where HCLI puts
+it), and any extra backends in `plugins\ida-ttd-backends\`.
 
 The MCP server can run on another machine than the one with the source: paths
 are the IDA machine's. A plain `idc.eval_idc('ttd("...")')` works without the

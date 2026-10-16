@@ -209,7 +209,8 @@ namespace idattd
             return start_failed(errbuf, DRC_NOFILE,
                        "No installed backend reads %s.\n\n"
                        "A Microsoft TTD trace (.run) is read by the plugin itself; "
-                       "other kinds need their backend in plugins\\ida-ttd-backends.",
+                       "other kinds need their backend DLL in the plugins\\ida-ttd-backends "
+                       "folder of your IDA user directory (%%APPDATA%%\\Hex-Rays\\IDA Pro).",
                        path);
         }
         qstring err;

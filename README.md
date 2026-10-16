@@ -120,28 +120,46 @@ replay features ask before doing it.
 
 ## Installation
 
-1. Download `ida-ttd.zip` from the
+Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro`
+(or the first folder in `%IDAUSR%` if you set it).
+
+1. Install the plugin with HCLI:
+
+   ```
+   hcli plugin install ida-ttd
+   ```
+
+   This puts it in `plugins\ida-ttd\`: `ida-ttd.dll`, the `ida-ttd-backends`
+   folder with `ida-ttd-msttd.dll` (the Microsoft TTD backend), the
+   `ida-ttd-data` folder with the API metadata (`win32-index.bin`,
+   `phnt-index.bin`) that decodes API calls' arguments, and the
+   `ida-ttd-python` folder with the `ida_ttd` Python module, and
+   `ida-ttd-loader-setup`, which copies the trace loader (`ttd-loader.dll`,
+   what makes `File > Open` recognize a recording) into `loaders\` the next
+   time IDA starts. HCLI can only install into the plugin's own folder, so that
+   copy is the plugin's doing; the output window says when it happens.
+   Uninstalling the plugin leaves `loaders\ttd-loader.dll` behind; delete it by
+   hand.
+
+   Without HCLI, download `ida-ttd.zip` from the
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
-   it into your IDA `plugins` directory: `ida-ttd.dll`, the
-   `ida-ttd-backends` folder with `ida-ttd-msttd.dll`, the Microsoft TTD
-   backend, the `ida-ttd-data` folder with the API metadata
-   (`win32-index.bin`, `phnt-index.bin`) that decodes API calls' arguments,
-   and the `ida-ttd-python` folder with the `ida_ttd` Python module.
-   (IDA's plugin manager puts them all in `plugins\ida-ttd\`; that works too.)
+   it into `plugins\`: it holds one `ida-ttd` folder.
 2. Copy `TTDReplay.dll` and `TTDReplayCPU.dll` next to `ida.exe`, or into
-   `plugins\ida-ttd-backends\` beside the backend.
-3. Optional: copy `ttd-loader.dll` into your IDA `loaders` directory. This is
-   what makes `File > Open` recognize a trace file. Everything else works
-   without it.
-4. Optional, for Sogen recordings: build `ida-ttd-sogen.dll`
+   `plugins\ida-ttd-backends\` (a folder of its own beside `plugins\ida-ttd\`,
+   not inside it). HCLI replaces `plugins\ida-ttd\` on every upgrade, so
+   anything you add to that folder is lost.
+3. Optional, for Sogen recordings: build `ida-ttd-sogen.dll`
    ([docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
-   and put it in `plugins\ida-ttd-backends\`. The replay features (forks,
-   recovered strings and buffers) also need the registry hives the recording
-   ran against: a `registry` folder next to the backend. Without one, the first
-   replay asks for the folder and remembers it.
+   and put it in `plugins\ida-ttd-backends\`, again outside the package folder.
+   The replay features (forks, recovered strings and buffers) also need the
+   registry hives the recording ran against: a `registry` folder next to the
+   backend. Without one, the first replay asks for the folder and remembers it.
 
 The output window names each backend as it loads, and says why when one does
 not.
+
+If you installed the trace loader by hand into IDA's own `loaders` folder (beside
+`ida.exe`), the setup component leaves it alone and installs no second copy.
 
 ## Usage
 
@@ -238,9 +256,11 @@ msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
 
 Build serially (`-m:1`): parallel compiler instances racing on the shared PDB
 can produce a `C1041` error. Output is `build\Release\ida-ttd.dll`,
-`build\Release\ttd-loader.dll` and `build\Release\backends\ida-ttd-msttd.dll`.
-Only the Microsoft backend needs the TTD Replay SDK restored by `nuget`; the
-plugin and the loader need the IDA SDK alone.
+`build\Release\ttd-loader.dll`, `build\Release\ida-ttd-loader-setup.dll` and
+`build\Release\backends\ida-ttd-msttd.dll`. Only the Microsoft backend needs the
+TTD Replay SDK restored by `nuget`; the plugin and the loader need the IDA SDK
+alone. `python scripts\package.py` then builds `dist\ida-ttd.zip`, the package
+HCLI installs (`hcli plugin install dist\ida-ttd.zip`).
 
 The Sogen backend is not in the solution, since it needs a Sogen build:
 [docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md).
@@ -267,6 +287,8 @@ src/ui/            choosers, action handlers, pseudocode highlighting
 src/plugin/        the plugmod_t, the event listeners, the actions, the toolbar
                    and the ttd("...") script API (docs/scripting.md)
 src/loader/        ttd-loader.dll, which makes File > Open recognise a trace
+src/setup/         ida-ttd-loader-setup.dll, which copies the loader into
+                   loaders\ for an HCLI install
 src/tools/         ittd-probe, a backend checker that runs outside IDA
 msbuild/           the project files and the settings they share
 ```
@@ -277,4 +299,7 @@ it is used.
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE). The API metadata in `data/` is derived
+from win32metadata and phnt, both MIT; their notices are in
+[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which the package
+carries too.

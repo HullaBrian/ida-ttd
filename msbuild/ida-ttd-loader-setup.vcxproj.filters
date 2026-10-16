@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- Generated to mirror the src/ tree; see msbuild/gen_filters.py. -->
+  <ItemGroup>
+    <Filter Include="common">
+      <UniqueIdentifier>{8907B557-FDFB-F740-0902-BFB1DA8E5DE5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="setup">
+      <UniqueIdentifier>{2D82D295-E3A2-8F80-AF4D-3272597B04C1}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\pch.h">
+      <Filter>common</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="$(SrcDir)\setup\setup_main.cpp">
+      <Filter>setup</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="packages.config" />
+  </ItemGroup>
+</Project>
