@@ -473,7 +473,9 @@ namespace idattd
     // The counts the window draws, as ttd("ui.heat") hands them over; empty
     // until build_heatmap() ran.
     const qstring &heatmap_json();
-    bool build_heatmap(TraceManager *mgr, qstring *err);
+    // Count over 'when' (the whole recording by default; part of it when the
+    // window zooms in, which only some backends can).
+    bool build_heatmap(TraceManager *mgr, qstring *err, PositionRange when = PositionRange{});
 
     // The handles the program opened and closed.
     struct HandlesHandler : public TtdAction

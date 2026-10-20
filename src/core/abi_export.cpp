@@ -79,6 +79,7 @@ namespace idattd
     static ittd_position to_abi(Position p) { return ittd_position{ p.hi, p.lo }; }
     static Position from_abi(ittd_position p) { return Position{ p.hi, p.lo }; }
     static PositionRange from_abi(ittd_position_range r) { return PositionRange{ from_abi(r.first), from_abi(r.last) }; }
+    static ittd_position_range to_abi(PositionRange r) { return ittd_position_range{ to_abi(r.first), to_abi(r.last) }; }
 
     static std::vector<std::pair<ea_t, ea_t>> from_abi(const ittd_range *ranges, size_t n)
     {
@@ -1186,22 +1187,28 @@ namespace idattd
         });
     }
 
-    static int x_query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
-                                   ittd_heat_cell *buf, size_t cap, size_t *out_count,
-                                   int *out_truncated, const ittd_progress *progress)
+    static int x_query_access_heat_window(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
+                                          ittd_position_range when,
+                                          ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                                          int *out_truncated, const ittd_progress *progress)
     {
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
         return guarded(h, [&]()
         {
-            return answer<ittd_heat_cell>(h, "heat|" + std::to_string(page_shift) + "|" + std::to_string(slices),
-                                          buf, cap, out_count, out_truncated,
+            // The window is part of the key: count-then-fill asks twice, and
+            // the second call must find the first's answer, not another
+            // window's.
+            std::string key = "heat|" + std::to_string(page_shift) + "|" + std::to_string(slices)
+                            + "|" + std::to_string(when.first.hi) + ":" + std::to_string(when.first.lo)
+                            + "|" + std::to_string(when.last.hi) + ":" + std::to_string(when.last.lo);
+            return answer<ittd_heat_cell>(h, key, buf, cap, out_count, out_truncated,
                                           [&](std::vector<ittd_heat_cell> *out)
             {
                 std::vector<HeatCell> v;
                 AbiSink sink(progress);
-                QueryResult r = h->b->query_access_heat(page_shift, slices, &v, &sink);
+                QueryResult r = h->b->query_access_heat_window(page_shift, slices, from_abi(when), &v, &sink);
                 out->reserve(v.size());
                 for ( const HeatCell &c : v )
                 {
@@ -1248,19 +1255,33 @@ namespace idattd
         });
     }
 
-    static int x_heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
+    static int x_query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
+                                   ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                                   int *out_truncated, const ittd_progress *progress)
+    {
+        return x_query_access_heat_window(hb, page_shift, slices, to_abi(PositionRange{}),
+                                          buf, cap, out_count, out_truncated, progress);
+    }
+
+    static int x_heat_window_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice,
+                                            ittd_position_range when, ittd_position *out)
     {
         ExportedBackend *h = B(hb);
         if ( h == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
         return guarded(h, [&]()
         {
-            Position p = h->b->heat_slice_position(slices, slice);
+            Position p = h->b->heat_window_slice_position(slices, slice, from_abi(when));
             if ( !p.is_valid() )
                 return ITTD_E_FAILED;
             *out = to_abi(p);
             return ITTD_OK;
         });
+    }
+
+    static int x_heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
+    {
+        return x_heat_window_slice_position(hb, slices, slice, to_abi(PositionRange{}), out);
     }
 
     static void x_set_log(void (*log)(void *ud, const char *line), void *ud)
@@ -1341,6 +1362,13 @@ namespace idattd
         a.query_access_heat     = x_query_access_heat;
         a.heat_slice_position   = x_heat_slice_position;
         a.query_out_values      = x_query_out_values;
+        // Only offered when the backend can count part of the recording: the
+        // core reads a missing entry as "the heatmap cannot zoom".
+        if ( g_identity->can_window_heat() )
+        {
+            a.query_access_heat_window   = x_query_access_heat_window;
+            a.heat_window_slice_position = x_heat_window_slice_position;
+        }
         built = true;
         return &a;
     }

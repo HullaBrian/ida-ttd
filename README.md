@@ -27,7 +27,9 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   step out backwards, and run to cursor in either direction.
 - Timeline view of thread and module events, and jump to an exact
   `Sequence:Steps` position.
-- Position bookmarks with names and comments, saved in the database.
+- Position bookmarks with names and comments, saved in the database. A
+  bookmark made in a different recording (re-recorded since, or a fork) is
+  greyed out rather than taken to a position it does not name.
 
 **Code discovery**
 
@@ -35,14 +37,20 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   exception table for module code and the recorded execution for everything
   else. Self-modified regions are re-analyzed when their bytes change.
 - Symbols come from each module's export table read out of the trace, so names
-  work with no symbol server. PDB symbols load on top when available: the
-  exact PDB each recorded module was built with is downloaded in the
-  background, so a slow symbol server never freezes IDA.
+  work with no symbol server. PDB names load on top when available: the
+  exact PDB each recorded module was built with is downloaded and read in
+  the background, and its function names are filled in a few at a time while
+  you look at a stop, so neither a slow symbol server nor a big PDB holds up
+  a step. **TTD > Code > Load full symbols for this module** applies a
+  module's whole PDB (types and prototypes too) through IDA's PDB plugin.
 - Execution coverage colors the instructions that actually ran, in both the
   disassembly and the decompiler.
 - Indirect calls are resolved to the targets they really reached and written
   back as comments and cross-references -- on request, or automatically for
-  each function you stop in.
+  each function you stop in. A call that always reached one API gets its
+  prototype, and so does the global function pointer it went through (named
+  after the API, e.g. `pInternetConnectA`), so the decompiler shows the
+  arguments with their names and types.
 
 **Trace-wide queries**
 
@@ -71,6 +79,8 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   every value an instruction combined is followed, down to the constants,
   syscalls and untouched memory it was made of.
 - A memory heatmap: which pages the program read, wrote and ran from, and when.
+  Drag across it, or type a start and end position, to count a shorter span
+  at full resolution; Back and Whole recording zoom out again.
 - A Python API (`import ida_ttd`) over all of it, for scripts and AI agents;
   see [docs/python.md](docs/python.md).
 - Self-modifying code: every instruction the program wrote before running it,

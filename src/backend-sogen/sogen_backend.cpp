@@ -2587,10 +2587,38 @@ namespace
     // ------------------------------------------------------------ the memory heatmap
     //
     // Every recorded access, counted by page and by slice of the recording's
-    // steps: one pass over the event stream.
-    int query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
-                          ittd_heat_cell *buf, size_t cap, size_t *out_count,
-                          int *out_truncated, const ittd_progress *progress)
+    // steps: one pass over the event stream. A window (the heatmap zoomed in)
+    // reads only its own stretch of events.
+    bool whole_trace(ittd_position_range when)
+    {
+        return same(when.first, BEGIN) && same(when.last, END);
+    }
+
+    // Where the slices of 'when' start counting from, and how many steps
+    // they share. The whole recording keeps the original reckoning (from
+    // start_position), so its answers are what they always were.
+    void heat_span(const ttd::trace &t, ittd_position_range when, uint64_t *start, uint64_t *span)
+    {
+        if ( whole_trace(when) )
+        {
+            *start = t.start_position();
+            *span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), *start), 1);
+            return;
+        }
+        // step_range gives the steps of the events inside the window: the
+        // ones after its first position, up to and including its last. The
+        // slices count from that first position, as the whole recording's
+        // count from its start, so slice 0 begins exactly where asked.
+        uint64_t lo = 0, hi = 0;
+        step_range(t, when, &lo, &hi);
+        *start = lo - 1;
+        *span  = std::max<uint64_t>(hi >= *start ? hi - *start : 1, 1);
+    }
+
+    int query_access_heat_window(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
+                                 ittd_position_range when,
+                                 ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                                 int *out_truncated, const ittd_progress *progress)
     {
         backend_t *b = B(hb);
         if ( b == nullptr || slices == 0 || slices > 4096 || page_shift < 8 || page_shift > 30 )
@@ -2598,14 +2626,27 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->scan_mtx);
-            const std::string key = std::to_string(page_shift) + "|" + std::to_string(slices);
+            const bool whole = whole_trace(when);
+            std::string key = std::to_string(page_shift) + "|" + std::to_string(slices);
+            if ( !whole )
+                key += "|" + std::to_string(when.first.hi) + ":" + std::to_string(when.first.lo)
+                     + "|" + std::to_string(when.last.hi) + ":" + std::to_string(when.last.lo);
             auto found = b->heat.find(key);
             if ( found == b->heat.end() )
             {
+                // Zooming in and out again asks for the same few windows;
+                // anything older than the whole-recording answer and the
+                // last handful goes, so the cache cannot grow without bound.
+                if ( !whole && b->heat.size() > 16 )
+                    for ( auto it = b->heat.begin(); it != b->heat.end(); )
+                        it = std::count(it->first.begin(), it->first.end(), '|') > 1 ? b->heat.erase(it) : std::next(it);
                 std::unique_ptr<ttd::trace> own = open_trace(b->path);
                 ttd::trace &t = *own;
-                const uint64_t start = t.start_position();
-                const uint64_t span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), start), 1);
+                uint64_t start = 0, span = 1;
+                heat_span(t, when, &start, &span);
+                uint64_t lo = 0, hi = UINT64_MAX;
+                if ( !whole )
+                    step_range(t, when, &lo, &hi);
                 const uint64_t total = std::max<uint64_t>(t.metadata().event_count, 1);
                 // Keyed by page and slice. Not packed into one integer: a page
                 // number at the smallest shift takes 56 bits, the slice 12.
@@ -2624,12 +2665,16 @@ namespace
                 };
                 std::unordered_map<cell_key, ittd_heat_cell, cell_hash> cells;
                 const ttd::operation_control ctl = control(progress);
-                ttd::event_reader reader(t, 0);
+                ttd::event_reader reader(t, whole ? 0 : t.first_event_after(lo - 1));
                 uint64_t seen = 0;
                 while ( std::optional<ttd::access_event> ev = reader.next() )
                 {
                     if ( (++seen & 0xFFFF) == 0 )
                         ctl.report(reader.last_number(), total);
+                    if ( ev->step > hi )
+                        break;              // past the window: events are in step order
+                    if ( ev->step < lo )
+                        continue;
                     uint64_t slice = (ev->step - std::min(ev->step, start)) * slices / span;
                     if ( slice >= slices )
                         slice = slices - 1;
@@ -2659,7 +2704,16 @@ namespace
         });
     }
 
-    int heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
+    int query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
+                          ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                          int *out_truncated, const ittd_progress *progress)
+    {
+        return query_access_heat_window(hb, page_shift, slices, ittd_position_range{ BEGIN, END },
+                                        buf, cap, out_count, out_truncated, progress);
+    }
+
+    int heat_window_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice,
+                                   ittd_position_range when, ittd_position *out)
     {
         backend_t *b = B(hb);
         if ( b == nullptr || out == nullptr || slices == 0 )
@@ -2668,11 +2722,16 @@ namespace
         {
             std::lock_guard<std::mutex> lock(b->mtx);
             const ttd::trace &t = *b->trace;
-            const uint64_t start = t.start_position();
-            const uint64_t span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), start), 1);
+            uint64_t start = 0, span = 1;
+            heat_span(t, when, &start, &span);
             *out = at(start + std::min<uint64_t>(slice, slices) * span / slices);
             return ITTD_OK;
         });
+    }
+
+    int heat_slice_position(ittd_backend *hb, uint32_t slices, uint32_t slice, ittd_position *out)
+    {
+        return heat_window_slice_position(hb, slices, slice, ittd_position_range{ BEGIN, END }, out);
     }
 
     // The instruction stream of one thread (or all) over a range of positions,
@@ -3019,6 +3078,8 @@ namespace
         a.query_buffers      = query_buffers;
         a.query_access_heat  = query_access_heat;
         a.heat_slice_position = heat_slice_position;
+        a.query_access_heat_window   = query_access_heat_window;
+        a.heat_window_slice_position = heat_window_slice_position;
         a.scan_notice        = scan_notice;
         a.regs_at            = regs_at;
         a.query_instructions = query_instructions;

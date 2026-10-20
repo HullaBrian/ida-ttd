@@ -6,6 +6,11 @@
 // are red, reads green and executes blue, so a mix shows as its blend. The
 // plugin counts (ttd("ui.heat")); a double-click travels to the slice and
 // shows the page in the hex view (ttd("ui.showbytes POS EA")).
+//
+// The span can be narrowed: drag across the columns, or type a start and an
+// end position. Each zoom is a fresh count over that span alone
+// (ttd("ui.heatzoom FROM TO")), so it has the full number of slices however
+// short the span; Back and Whole recording go out again.
 #pragma once
 
 namespace idattd
@@ -24,11 +29,25 @@ def _ida_ttd_heatmap():
     data = ttd("ui.heat")
     if not data.get("ok"):
         raise RuntimeError(data.get("error", "no heatmap"))
-    heat = data["heat"]
-    SHIFT = heat["page_shift"]
-    SLICES = heat["slices"]
-    STARTS = heat["starts"]
-    PAGES = heat["pages"]
+
+    # The counts being shown. Replaced whole by a zoom, so everything reads
+    # it from here rather than keeping its own copy.
+    H = {}
+
+    def load(heat):
+        H["shift"] = heat["page_shift"]
+        H["slices"] = heat["slices"]
+        H["starts"] = heat["starts"]
+        H["end"] = heat.get("end", "")
+        H["whole"] = heat.get("whole", True)
+        H["can_zoom"] = heat.get("can_zoom", False)
+        H["pages"] = heat["pages"]
+
+    load(data["heat"])
+
+    def slice_end(s):
+        # Where slice s ends: the next one's start, or the span's end.
+        return H["starts"][s + 1] if s + 1 < H["slices"] else H["end"]
 
     MODES = ["All (writes red, reads green, executes blue)", "Reads", "Writes", "Executes"]
     ROW = 6
@@ -48,9 +67,11 @@ def _ida_ttd_heatmap():
             super().__init__()
             self.owner = owner
             self.mode = 0
-            self.rows = PAGES
+            self.rows = H["pages"]
             self.runs = []
             self.image = None
+            # [first slice, last slice] while a span is being dragged out.
+            self.drag = None
             self.setMouseTracking(True)
 
         def set_rows(self, rows, mode):
@@ -71,7 +92,7 @@ def _ida_ttd_heatmap():
 
         def build_image(self):
             n = max(len(self.rows), 1)
-            img = QtGui.QImage(SLICES, n, QtGui.QImage.Format_RGB32)
+            img = QtGui.QImage(H["slices"], n, QtGui.QImage.Format_RGB32)
             img.fill(self.palette().color(QtGui.QPalette.Base))
             mx = [1, 1, 1]
             for r in self.rows:
@@ -95,13 +116,16 @@ def _ida_ttd_heatmap():
                     img.setPixelColor(s, y, col)
             self.image = img
 
+        def slice_at(self, x):
+            w = max(self.width() - GUTTER, 1)
+            s = int((x - GUTTER) * H["slices"] // w)
+            return min(max(s, 0), H["slices"] - 1)
+
         def cell_at(self, pos):
             y = int(pos.y() // ROW)
             if y < 0 or y >= len(self.rows) or pos.x() < GUTTER:
                 return None, None
-            w = max(self.width() - GUTTER, 1)
-            s = int((pos.x() - GUTTER) * SLICES // w)
-            return y, min(max(s, 0), SLICES - 1)
+            return y, self.slice_at(pos.x())
 
         def paintEvent(self, ev):
             p = QtGui.QPainter(self)
@@ -112,7 +136,7 @@ def _ida_ttd_heatmap():
             top = max(int(ev.rect().top() // ROW), 0)
             bottom = min(int(ev.rect().bottom() // ROW) + 1, len(self.rows))
             if bottom > top:
-                src = QtCore.QRect(0, top, SLICES, bottom - top)
+                src = QtCore.QRect(0, top, H["slices"], bottom - top)
                 dst = QtCore.QRect(GUTTER, top * ROW, w, (bottom - top) * ROW)
                 p.drawImage(dst, self.image, src)
             # A rule above each run of neighbouring pages, and its label inside
@@ -137,13 +161,47 @@ def _ida_ttd_heatmap():
                     p.setPen(fg)
                     p.drawText(QtCore.QRect(4, y0 + 1, GUTTER - 8, h - 1),
                                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextSingleLine,
-                               "0x%X  %s" % (r["page"] << SHIFT, r["label"]))
+                               "0x%X  %s" % (r["page"] << H["shift"], r["label"]))
+            # The span being dragged out, over every row in view.
+            if self.drag is not None:
+                a, b = sorted(self.drag)
+                x0 = GUTTER + a * w // H["slices"]
+                x1 = GUTTER + (b + 1) * w // H["slices"]
+                hl = QtGui.QColor(self.palette().color(QtGui.QPalette.Highlight))
+                hl.setAlpha(70)
+                p.fillRect(QtCore.QRect(x0, ev.rect().top(), max(x1 - x0, 1), ev.rect().height()), hl)
             p.end()
 
         def resizeEvent(self, ev):
             self.update()
 
+        def mousePressEvent(self, ev):
+            if (ev.button() == QtCore.Qt.LeftButton and H["can_zoom"]
+                    and ev.position().x() >= GUTTER):
+                s = self.slice_at(ev.position().x())
+                self.drag = [s, s]
+
+        def mouseReleaseEvent(self, ev):
+            if self.drag is None:
+                return
+            a, b = sorted(self.drag)
+            self.drag = None
+            self.update()
+            # A click is not a span: a double-click travels, and the press
+            # and release of it land here first.
+            if b > a:
+                self.owner.zoom(H["starts"][a], slice_end(b))
+
         def mouseMoveEvent(self, ev):
+            if self.drag is not None:
+                s = self.slice_at(ev.position().x())
+                if s != self.drag[1]:
+                    self.drag[1] = s
+                    self.update()
+                a, b = sorted(self.drag)
+                QtWidgets.QToolTip.showText(ev.globalPosition().toPoint(),
+                                            "Zoom to %s .. %s" % (H["starts"][a], slice_end(b)), self)
+                return
             y, s = self.cell_at(ev.position())
             if y is None:
                 QtWidgets.QToolTip.hideText()
@@ -154,12 +212,14 @@ def _ida_ttd_heatmap():
                 if c[0] == s:
                     counts = c[1:]
                     break
-            tip = "0x%X%s\nslice %d of %d, from %s\n%d reads, %d writes, %d executes\nDouble-click: go there" % (
-                r["page"] << SHIFT, ("  (" + r["label"] + ")") if r["label"] else "",
-                s + 1, SLICES, STARTS[s], counts[0], counts[1], counts[2])
+            tip = "0x%X%s\nslice %d of %d, %s .. %s\n%d reads, %d writes, %d executes\nDouble-click: go there%s" % (
+                r["page"] << H["shift"], ("  (" + r["label"] + ")") if r["label"] else "",
+                s + 1, H["slices"], H["starts"][s], slice_end(s), counts[0], counts[1], counts[2],
+                "\nDrag across the columns: zoom in" if H["can_zoom"] else "")
             QtWidgets.QToolTip.showText(ev.globalPosition().toPoint(), tip, self)
 
         def mouseDoubleClickEvent(self, ev):
+            self.drag = None
             y, s = self.cell_at(ev.position())
             if y is None:
                 return
@@ -170,12 +230,14 @@ def _ida_ttd_heatmap():
                 if c[0] >= s:
                     target = c[0]
                     break
-            if STARTS[target]:
-                ttd("ui.showbytes %s %X" % (STARTS[target], r["page"] << SHIFT))
+            if H["starts"][target]:
+                ttd("ui.showbytes %s %X" % (H["starts"][target], r["page"] << H["shift"]))
 
     class HeatmapForm(ida_kernwin.PluginForm):
         def OnCreate(self, form):
             self.parent = self.FormToPyQtWidget(form)
+            # Spans zoomed out of, most recent last, for Back.
+            self.history = []
             self.mode = QtWidgets.QComboBox()
             self.mode.addItems(MODES)
             self.mode.currentIndexChanged.connect(self.refresh)
@@ -188,6 +250,28 @@ def _ida_ttd_heatmap():
             bar.addWidget(self.mode)
             bar.addWidget(self.filter, 1)
             bar.addWidget(self.status)
+
+            # The span: typed, or dragged out on the columns.
+            self.span_from = QtWidgets.QLineEdit()
+            self.span_to = QtWidgets.QLineEdit()
+            for e in (self.span_from, self.span_to):
+                e.setPlaceholderText("position")
+                e.returnPressed.connect(self.apply_span)
+            self.apply_btn = QtWidgets.QPushButton("Zoom")
+            self.apply_btn.clicked.connect(self.apply_span)
+            self.back_btn = QtWidgets.QPushButton("Back")
+            self.back_btn.clicked.connect(self.back)
+            self.whole_btn = QtWidgets.QPushButton("Whole recording")
+            self.whole_btn.clicked.connect(self.whole)
+            span = QtWidgets.QHBoxLayout()
+            span.addWidget(QtWidgets.QLabel("Span"))
+            span.addWidget(self.span_from, 1)
+            span.addWidget(QtWidgets.QLabel("to"))
+            span.addWidget(self.span_to, 1)
+            span.addWidget(self.apply_btn)
+            span.addWidget(self.back_btn)
+            span.addWidget(self.whole_btn)
+
             self.canvas = Canvas(self)
             scroll = QtWidgets.QScrollArea()
             scroll.setWidgetResizable(True)
@@ -195,20 +279,76 @@ def _ida_ttd_heatmap():
             layout = QtWidgets.QVBoxLayout()
             layout.setContentsMargins(2, 2, 2, 2)
             layout.addLayout(bar)
+            layout.addLayout(span)
             layout.addWidget(scroll, 1)
             self.parent.setLayout(layout)
+            self.show_span()
             self.refresh()
+
+        def show_span(self):
+            self.span_from.setText(H["starts"][0] if H["starts"] else "")
+            self.span_to.setText(H["end"])
+            zoomable = H["can_zoom"]
+            for w in (self.span_from, self.span_to, self.apply_btn):
+                w.setEnabled(zoomable)
+                w.setToolTip("" if zoomable else
+                             "This recording's backend can only count the whole recording.")
+            self.back_btn.setEnabled(zoomable and bool(self.history))
+            self.whole_btn.setEnabled(zoomable and not H["whole"])
+
+        def recount(self, cmd):
+            # A fresh count, behind the plugin's own wait box. On failure
+            # the counts shown stay as they were.
+            r = ttd(cmd)
+            if not r.get("ok"):
+                ida_kernwin.warning("The heatmap could not be counted over that span: %s"
+                                    % r.get("error", "unknown error"))
+                return False
+            load(r["heat"])
+            self.show_span()
+            self.refresh()
+            return True
+
+        def zoom(self, first, last):
+            if not first or not last:
+                return
+            here = (H["starts"][0], H["end"], H["whole"])
+            if self.recount("ui.heatzoom %s %s" % (first, last)):
+                self.history.append(here)
+                self.show_span()
+
+        def apply_span(self):
+            first = self.span_from.text().strip()
+            last = self.span_to.text().strip()
+            if first and last:
+                self.zoom(first, last)
+
+        def back(self):
+            if not self.history:
+                return
+            first, last, whole = self.history.pop()
+            if not self.recount("ui.heatzoom" if whole else "ui.heatzoom %s %s" % (first, last)):
+                self.history.append((first, last, whole))
+            self.show_span()
+
+        def whole(self):
+            here = (H["starts"][0], H["end"], H["whole"])
+            if self.recount("ui.heatzoom"):
+                self.history.append(here)
+                self.show_span()
 
         def refresh(self, *args):
             text = self.filter.text().strip().lower()
             mode = self.mode.currentIndex()
-            rows = PAGES
+            pages = H["pages"]
+            rows = pages
             if text:
-                rows = [r for r in PAGES if text in r["label"].lower() or text in ("%x" % (r["page"] << SHIFT))]
+                rows = [r for r in pages if text in r["label"].lower() or text in ("%x" % (r["page"] << H["shift"]))]
             if mode != 0:
                 rows = [r for r in rows if any(c[mode] for c in r["cells"])]
             self.canvas.set_rows(rows, mode)
-            self.status.setText("%d of %d pages, %d slices of time" % (len(rows), len(PAGES), SLICES))
+            self.status.setText("%d of %d pages, %d slices of %s" % (
+                len(rows), len(pages), H["slices"], "the recording" if H["whole"] else "this span"))
 
         def OnClose(self, form):
             _forms.pop(title, None)

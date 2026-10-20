@@ -1292,6 +1292,23 @@ namespace idattd
         out.raw("heat", j);
     }
 
+    // Count the heatmap again over a span (FROM TO), or over the whole
+    // recording (no arguments), and hand the window the new counts.
+    static void cmd_ui_heatzoom(const Args &a, JObj &out)
+    {
+        need_session();
+        PositionRange when;
+        if ( a.count() >= 2 )
+        {
+            when.first = position_arg(a.at(0));
+            when.last  = position_arg(a.at(1));
+        }
+        qstring err;
+        if ( !build_heatmap(&mgr(), &err, when) )
+            fail("%s", err.c_str());
+        out.raw("heat", heatmap_json());
+    }
+
     // Build the heatmap's counts, as the menu does; their size.
     static void cmd_an_heat(const Args &, JObj &out)
     {
@@ -1708,6 +1725,7 @@ namespace idattd
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
         { "ui.calltree",    cmd_ui_calltree,    "the call tree last built by the TTD menu (for its window)" },
         { "ui.heat",        cmd_ui_heat,        "the memory heatmap's counts (for its window)" },
+        { "ui.heatzoom",    cmd_ui_heatzoom,    "[FROM TO] count the heatmap over a span (none: the whole recording)" },
         { "ui.showbytes",   cmd_ui_showbytes,   "POS EA travel there and show EA in the hex view" },
         { "an.heat",        cmd_an_heat,        "count every access by page and slice of time (the heatmap)" },
         { "ui.travel",      cmd_ui_travel,      "POS travel there, returning at once (as a double-click does)" },

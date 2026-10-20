@@ -562,20 +562,47 @@ namespace idattd
     // of time. Time is sliced by sequence number: the engine's own clock,
     // which advances with every thread switch and so with the program's
     // progress.
+    //
+    // A window (the heatmap zoomed in) replays only its own stretch, so
+    // zooming in is cheaper than the first count, not dearer.
+
+    // The window's ends on the engine's clock, the open ends taken as the
+    // recording's.
+    static void heat_window(TTD::Replay::IReplayEngineView *engine, PositionRange when,
+                            TtdPosition *first, TtdPosition *last)
+    {
+        *first = when.first == Position::begin() ? engine->GetFirstPosition() : from_core(when.first);
+        *last  = when.last  == Position::end()   ? engine->GetLastPosition()  : from_core(when.last);
+        if ( *first < engine->GetFirstPosition() )
+            *first = engine->GetFirstPosition();
+        if ( engine->GetLastPosition() < *last )
+            *last = engine->GetLastPosition();
+    }
+
     QueryResult MsTtdBackend::query_access_heat(uint32_t page_shift, uint32_t slices,
                                                 std::vector<HeatCell> *out, ProgressSink *progress)
     {
+        return query_access_heat_window(page_shift, slices, PositionRange{}, out, progress);
+    }
+
+    QueryResult MsTtdBackend::query_access_heat_window(uint32_t page_shift, uint32_t slices,
+                                                       PositionRange when, std::vector<HeatCell> *out,
+                                                       ProgressSink *progress)
+    {
         QueryResult r;
         if ( !m_engine || out == nullptr || slices == 0 || slices > 4096 || page_shift < 8 || page_shift > 30 )
+            return r;
+        TtdPosition first, last;
+        heat_window(m_engine.get(), when, &first, &last);
+        if ( last < first )
             return r;
         UniqueCursor cur = new_engine_cursor();
         if ( !cur )
             return r;
         r.ran = true;
-        const TtdPosition first = m_engine->GetFirstPosition();
-        const TtdPosition last  = m_engine->GetLastPosition();
         const uint64_t s0   = (uint64_t)first.Sequence;
-        const uint64_t span = std::max<uint64_t>((uint64_t)last.Sequence - s0 + 1, 1);
+        const uint64_t s1   = (uint64_t)last.Sequence;
+        const uint64_t span = std::max<uint64_t>(s1 - s0 + 1, 1);
         const uint64_t space = user_space_end();
 
         std::unordered_map<uint64_t, HeatCell> cells;
@@ -586,6 +613,8 @@ namespace idattd
             if ( k != DataAccessType::Read && k != DataAccessType::Write && k != DataAccessType::Execute )
                 return false;
             const uint64_t seq   = (uint64_t)t->GetPosition().Sequence;
+            if ( seq < s0 || seq > s1 )
+                return false;           // the sweep's edges, outside the window
             uint64_t       slice = (seq - s0) * slices / span;
             if ( slice >= slices )
                 slice = slices - 1;
@@ -617,7 +646,9 @@ namespace idattd
         cur->SetMemoryWatchpointCallback(on_hit);
         cur->SetEventMask(EventMask::MemoryWatchpoint);
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        const bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, progress);
+        const bool whole    = when.whole_trace();
+        const bool complete = msttd_sweep(cur.get(), whole ? TtdPosition::Min : first,
+                                          whole ? TtdPosition::Max : last, progress);
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         r.cancelled = !complete;
         r.truncated = capped;
@@ -634,10 +665,15 @@ namespace idattd
 
     Position MsTtdBackend::heat_slice_position(uint32_t slices, uint32_t slice)
     {
+        return heat_window_slice_position(slices, slice, PositionRange{});
+    }
+
+    Position MsTtdBackend::heat_window_slice_position(uint32_t slices, uint32_t slice, PositionRange when)
+    {
         if ( !m_engine || slices == 0 )
             return Position::none();
-        const TtdPosition first = m_engine->GetFirstPosition();
-        const TtdPosition last  = m_engine->GetLastPosition();
+        TtdPosition first, last;
+        heat_window(m_engine.get(), when, &first, &last);
         const uint64_t s0   = (uint64_t)first.Sequence;
         const uint64_t span = std::max<uint64_t>((uint64_t)last.Sequence - s0 + 1, 1);
         TtdPosition p;

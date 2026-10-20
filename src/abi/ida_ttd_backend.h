@@ -1007,6 +1007,19 @@ typedef struct ittd_backend_api
      * core reads each slot one position after the call. */
     int (*query_out_values)(ittd_backend *b, const ittd_out_slot *slots, size_t count,
                             uint64_t *values, uint8_t *known, const ittd_progress *progress);
+
+    /* ---- the memory heatmap, over part of the recording ---------------- */
+
+    /* query_access_heat and heat_slice_position for the stretch 'when' only:
+     * 'slices' equal stretches of it, on the same clock. The heatmap window
+     * uses them to zoom in. Optional (both or neither): without them the
+     * heatmap covers the whole recording only. */
+    int (*query_access_heat_window)(ittd_backend *b, uint32_t page_shift, uint32_t slices,
+                                    ittd_position_range when,
+                                    ittd_heat_cell *buf, size_t cap, size_t *out_count,
+                                    int *out_truncated, const ittd_progress *progress);
+    int (*heat_window_slice_position)(ittd_backend *b, uint32_t slices, uint32_t slice,
+                                      ittd_position_range when, ittd_position *out);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */

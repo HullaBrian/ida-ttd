@@ -680,6 +680,20 @@ namespace idattd
             qnotused(page_shift); qnotused(slices); qnotused(out); qnotused(progress);
             return QueryResult{};
         }
+        // The same over the stretch 'when' only, its slices equal parts of
+        // it (the heatmap zoomed in). A whole-trace range is the query above;
+        // ran == false when the backend cannot count part of the recording.
+        virtual QueryResult query_access_heat_window(uint32_t page_shift, uint32_t slices,
+                                                     PositionRange when, std::vector<HeatCell> *out,
+                                                     ProgressSink *progress)
+        {
+            if ( when.whole_trace() )
+                return query_access_heat(page_shift, slices, out, progress);
+            qnotused(out); qnotused(progress);
+            return QueryResult{};
+        }
+        // Can query_access_heat_window count part of the recording?
+        virtual bool can_window_heat() const { return false; }
         // What each syscall wrote through an out parameter, nullopt where it
         // could not be found. False when the backend has no way of its own:
         // the caller reads each slot one position after the call.
@@ -694,6 +708,13 @@ namespace idattd
         virtual Position heat_slice_position(uint32_t slices, uint32_t slice)
         {
             qnotused(slices); qnotused(slice);
+            return Position::none();
+        }
+        // The same for a slice of the stretch 'when'.
+        virtual Position heat_window_slice_position(uint32_t slices, uint32_t slice, PositionRange when)
+        {
+            if ( when.whole_trace() )
+                return heat_slice_position(slices, slice);
             return Position::none();
         }
 

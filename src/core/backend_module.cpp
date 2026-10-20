@@ -977,6 +977,8 @@ namespace idattd
         return true;
     }
 
+    static void append_heat(const std::vector<ittd_heat_cell> &v, std::vector<HeatCell> *out);
+
     QueryResult BackendModule::query_access_heat(uint32_t page_shift, uint32_t slices,
                                                  std::vector<HeatCell> *out, ProgressSink *progress)
     {
@@ -990,7 +992,53 @@ namespace idattd
         {
             return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, &trunc, pb.get());
         });
-        out->reserve(v.size());
+        append_heat(v, out);
+        return result_of(rc, trunc);
+    }
+
+    bool BackendModule::can_window_heat() const
+    {
+        return m_handle != nullptr && ITTD_HAS(m_api, query_access_heat_window)
+            && ITTD_HAS(m_api, heat_window_slice_position);
+    }
+
+    QueryResult BackendModule::query_access_heat_window(uint32_t page_shift, uint32_t slices,
+                                                        PositionRange when, std::vector<HeatCell> *out,
+                                                        ProgressSink *progress)
+    {
+        // The whole recording goes through the original entry, which every
+        // backend with a heatmap has, and which caches its answer.
+        if ( when.whole_trace() )
+            return query_access_heat(page_shift, slices, out, progress);
+        DiagTimer diag_timer("backend.query_access_heat_window", 0);
+        if ( !can_window_heat() || out == nullptr )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        int trunc = 0;
+        std::vector<ittd_heat_cell> v;
+        const ittd_position_range w = to_abi(when);
+        int rc = count_fill(&v, [&](ittd_heat_cell *b, size_t cap, size_t *n)
+        {
+            return m_api->query_access_heat_window(m_handle, page_shift, slices, w, b, cap, n, &trunc, pb.get());
+        });
+        append_heat(v, out);
+        return result_of(rc, trunc);
+    }
+
+    Position BackendModule::heat_window_slice_position(uint32_t slices, uint32_t slice, PositionRange when)
+    {
+        if ( when.whole_trace() )
+            return heat_slice_position(slices, slice);
+        ittd_position p{};
+        if ( !can_window_heat()
+          || m_api->heat_window_slice_position(m_handle, slices, slice, to_abi(when), &p) != ITTD_OK )
+            return Position::none();
+        return from_abi(p);
+    }
+
+    static void append_heat(const std::vector<ittd_heat_cell> &v, std::vector<HeatCell> *out)
+    {
+        out->reserve(out->size() + v.size());
         for ( const ittd_heat_cell &x : v )
         {
             HeatCell c;
@@ -1001,7 +1049,6 @@ namespace idattd
             c.executes = x.executes;
             out->push_back(c);
         }
-        return result_of(rc, trunc);
     }
 
     bool BackendModule::query_out_values(const std::vector<OutSlot> &slots,

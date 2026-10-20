@@ -20,9 +20,12 @@ namespace idattd
         return g_heatJson;
     }
 
-    // {"page_shift":12,"slices":256,"starts":["HI:LO",...],
+    // {"page_shift":12,"slices":256,"starts":["HI:LO",...],"end":"HI:LO",
+    //  "whole":true,"can_zoom":true,
     //  "pages":[{"page":N,"label":"ntdll","cells":[[slice,r,w,x],...]},...]}
-    static qstring heat_json(TraceManager *mgr, const std::vector<HeatCell> &cells)
+    // 'end' is where the last slice ends: the window's last position, or the
+    // recording's.
+    static qstring heat_json(TraceManager *mgr, const std::vector<HeatCell> &cells, PositionRange when)
     {
         ITraceBackend *b = mgr->backend();
         qstring j;
@@ -31,10 +34,15 @@ namespace idattd
         {
             if ( s != 0 )
                 j.append(',');
-            Position p = b->heat_slice_position(kHeatSlices, s);
+            Position p = b->heat_window_slice_position(kHeatSlices, s, when);
             json_str(&j, p.is_valid() ? format_position(p).c_str() : "");
         }
-        j.append("],\"pages\":[");
+        Position end = when.last == Position::end() ? b->info().last : when.last;
+        j.append("],\"end\":");
+        json_str(&j, end.is_valid() ? format_position(end).c_str() : "");
+        j.cat_sprnt(",\"whole\":%s,\"can_zoom\":%s",
+                    when.whole_trace() ? "true" : "false", b->can_window_heat() ? "true" : "false");
+        j.append(",\"pages\":[");
         for ( size_t i = 0; i < cells.size(); )
         {
             const uint64_t page = cells[i].page;
@@ -70,18 +78,30 @@ namespace idattd
     }
 
     // Count, keep the answer for the window, and open it.
-    bool build_heatmap(TraceManager *mgr, qstring *err)
+    bool build_heatmap(TraceManager *mgr, qstring *err, PositionRange when)
     {
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
         {
             *err = "no trace is being replayed";
             return false;
         }
-        std::vector<HeatCell> cells;
         ITraceBackend *b = mgr->backend();
-        QueryResult qr = run_query("Counting every memory access", [&](ProgressSink *p)
+        if ( !when.whole_trace() && !b->can_window_heat() )
         {
-            return b->query_access_heat(kHeatPageShift, kHeatSlices, &cells, p);
+            *err = "this recording's backend can only count the whole recording";
+            return false;
+        }
+        if ( !when.whole_trace() && !(when.first < when.last) )
+        {
+            *err = "the span is empty: its start must come before its end";
+            return false;
+        }
+        std::vector<HeatCell> cells;
+        QueryResult qr = run_query(when.whole_trace() ? "Counting every memory access"
+                                                      : "Counting the memory accesses in this span",
+                                   [&](ProgressSink *p)
+        {
+            return b->query_access_heat_window(kHeatPageShift, kHeatSlices, when, &cells, p);
         });
         if ( !qr.ran )
         {
@@ -93,7 +113,7 @@ namespace idattd
             *err = "cancelled";
             return false;
         }
-        g_heatJson = heat_json(mgr, cells);
+        g_heatJson = heat_json(mgr, cells, when);
         return true;
     }
 

@@ -1255,10 +1255,50 @@ int main(int argc, char **argv)
                    (unsigned long long)reads, (unsigned long long)writes, (unsigned long long)execs);
             check(execs > 0 && writes > 0 && reads > 0, "  the heatmap counts reads, writes and executes");
         }
-        free(cells);
         api->heat_slice_position(B, 256, 0, &p0);
         api->heat_slice_position(B, 256, 128, &p1);
         printf("  slice 0 at %s, slice 128 at %s\n", pos_text(p0), pos_text(p1));
+
+        /* Zoomed in: slices 64..128 of the whole count, counted again as a
+           window of 64 slices of its own. Its accesses are those of whole
+           slices 64..127, plus at most the first instant of slice 128 (a
+           window includes its last position). */
+        if ( offsetof(ittd_backend_api, heat_window_slice_position) + sizeof(api->heat_window_slice_position) <= api->size
+          && api->query_access_heat_window != NULL && api->heat_window_slice_position != NULL && rc == ITTD_OK )
+        {
+            ittd_position_range w;
+            ittd_position wp0;
+            ittd_heat_cell *wc;
+            size_t wn = 0;
+            uint64_t lo = 0, hi = 0, got = 0;
+            for ( k = 0; k < n; k++ )
+            {
+                uint64_t all = (uint64_t)cells[k].reads + cells[k].writes + cells[k].executes;
+                if ( cells[k].slice >= 64 && cells[k].slice < 128 )
+                    lo += all;
+                if ( cells[k].slice >= 64 && cells[k].slice <= 128 )
+                    hi += all;
+            }
+            api->heat_slice_position(B, 256, 64, &w.first);
+            w.last = p1;
+            t0 = now_ms();
+            rc = api->query_access_heat_window(B, 12, 64, w, NULL, 0, &wn, &trunc, NULL);
+            wc = (ittd_heat_cell *)calloc(wn ? wn : 1, sizeof(*wc));
+            if ( rc == ITTD_OK )
+                rc = api->query_access_heat_window(B, 12, 64, w, wc, wn, &wn, &trunc, NULL);
+            for ( k = 0; rc == ITTD_OK && k < wn; k++ )
+                got += (uint64_t)wc[k].reads + wc[k].writes + wc[k].executes;
+            printf("  window %s..%s: %zu cell(s), %llu accesses (whole count: %llu..%llu), %.1f ms\n",
+                   pos_text(w.first), pos_text(w.last), wn, (unsigned long long)got,
+                   (unsigned long long)lo, (unsigned long long)hi, now_ms() - t0);
+            check(rc == ITTD_OK && got >= lo && got <= hi,
+                  "  a heatmap window counts what the whole count has in that stretch");
+            check(rc == ITTD_OK && (wn == 0 || wc[wn - 1].slice < 64), "  a window's slices stay within it");
+            free(wc);
+            api->heat_window_slice_position(B, 64, 0, w, &wp0);
+            check(wp0.hi == w.first.hi && wp0.lo == w.first.lo, "  a window's first slice starts where it does");
+        }
+        free(cells);
     }
 
     api->cursor_close(c);
