@@ -536,12 +536,19 @@ namespace idattd
     ssize_t TraceManager::on_set_backwards(bool backwards)
     {
         m_isForward = !backwards;
+        if ( m_navigating )
+            log_event(qstring().sprnt("set %s during a movement", backwards ? "backwards" : "forwards"));
         return DRC_OK;
     }
 
     ssize_t TraceManager::on_set_resume_mode(thid_t /*tid*/, resume_mode_t resmod)
     {
         m_resumeMode = resmod;
+        // Logged when it arrives in the middle of a movement: that is the
+        // case where it belongs to a later resume, and the event log is how
+        // to tell what IDA asked for when a step goes somewhere unexpected.
+        if ( m_navigating )
+            log_event(qstring().sprnt("resume mode %d set during a movement", (int)resmod));
         return DRC_OK;
     }
 
@@ -751,8 +758,18 @@ namespace idattd
             ~NavigatingFlag() { f = false; }
         } navigating(m_navigating);
 
+        // The resume mode is this resume's, so it is taken now and cleared
+        // before moving, not after. IDA can set the next resume's mode while
+        // this movement's wait box pumps messages (a second step pressed
+        // while a long backward step replays); cleared afterwards, that mode
+        // was lost, the next resume read RESMOD_NONE, and with the direction
+        // still backwards a step became "continue backwards" -- all the way
+        // to the start of the trace.
+        const resume_mode_t mode = m_resumeMode;
+        m_resumeMode = RESMOD_NONE;
+
         // IDA's own step modes, as opposed to a run or a queued request.
-        m_stepMode = m_pending.kind == Request::None && m_resumeMode != RESMOD_NONE;
+        m_stepMode = m_pending.kind == Request::None && mode != RESMOD_NONE;
 
         // A queued request wins over IDA's resume mode: it is the user asking
         // for a movement IDA has no action of its own for.
@@ -763,8 +780,7 @@ namespace idattd
             // second ev_resume can arrive in the middle of it, and a request
             // still set would be performed twice.
             const PendingRequest req = m_pending;
-            m_pending    = PendingRequest{};
-            m_resumeMode = RESMOD_NONE;
+            m_pending = PendingRequest{};
 
             switch ( req.kind )
             {
@@ -799,7 +815,7 @@ namespace idattd
             return DRC_OK;
         }
 
-        switch ( m_resumeMode )
+        switch ( mode )
         {
             case RESMOD_INTO:
             {
@@ -853,15 +869,13 @@ namespace idattd
                 // arrive. Step once rather than falling through to RESMOD_NONE,
                 // which would run to the end of the trace.
                 msg("[ida-ttd] unsupported resume mode %d; stepping once instead.\n",
-                    (int)m_resumeMode);
+                    (int)mode);
                 bool fwd = m_isForward;
                 navigate(fwd, [&]() { return m_nav->step(fwd); });
                 emit_stop(true);
                 break;
             }
         }
-
-        m_resumeMode = RESMOD_NONE;
         return DRC_OK;
     }
 
