@@ -15,6 +15,16 @@ ida-ttd-msttd.dll is built against the TTD Replay SDK headers
 (TTDReplay.dll, TTDReplayCPU.dll) is not included: it comes from Microsoft
 under Microsoft's own terms.
 
+The toolbar and menu icons embedded in ida-ttd.dll are:
+
+- Codicons, by Microsoft, from https://github.com/microsoft/vscode-codicons,
+  licensed under the Creative Commons Attribution 4.0 International license
+  (CC BY 4.0, https://creativecommons.org/licenses/by/4.0/). Used unchanged
+  apart from colour.
+- Material Symbols, by Google, from
+  https://github.com/google/material-design-icons, licensed under the Apache
+  License 2.0 (the same text as ida-ttd's own LICENSE file).
+
 
 -------------------------------------------------------------------------------
 win32metadata / win32json

@@ -1,5 +1,6 @@
-// icons.hh: embedded Microsoft "codicon" debugger glyphs (SVG, MIT-licensed)
-// and Google Material Symbols (Apache 2.0),
+// icons.hh: embedded Microsoft "codicon" debugger glyphs (SVG, CC BY 4.0)
+// and Google Material Symbols (Apache 2.0), both credited in
+// THIRD-PARTY-NOTICES.txt,
 // used to give the TTD debug-movement actions clean, consistent icons.
 //
 // IDA's load_custom_icon() accepts SVG data ("svg" format) because the bundled

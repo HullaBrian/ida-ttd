@@ -13,7 +13,8 @@ map, self-modifying code, strings, buffers, forks). Two kinds of recording:
   recording in its emulator, which is what forking uses.
 
 README.md is the user-facing description (features, usage, build, layout).
-`docs/` holds design notes; `docs/scripting.md` is current, while
+`docs/` holds design notes; `docs/scripting.md` and `docs/licensing.md`
+(what each binary contains and the terms it ships under) are current, while
 `session-handoff.md`, `modular-backends.md` and `code-review.md` are historical
 and may be out of date.
 
