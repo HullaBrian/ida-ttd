@@ -4,6 +4,8 @@
 #include "debugger/trace_manager.h"
 #include "debugger/module_registry.h"
 
+#include <intel.hpp>
+
 namespace idattd
 {
     // Where the annotations are recorded, so they can be taken back off again.
@@ -15,6 +17,10 @@ namespace idattd
     static const uchar CS_SITE_TAG = 'S';   // alt <site> -> 1
     static const uchar CS_TGTS_TAG = 'T';   // blob at <site> -> u64 targets
     static const uchar CS_TYPE_TAG = 'Y';   // alt <site> -> 1: its call type was set here
+    // alt <site> -> the function pointer the call loads, plus one, whose type
+    // the annotation set (and, under CS_PNAME_TAG, whose name).
+    static const uchar CS_PTR_TAG   = 'P';
+    static const uchar CS_PNAME_TAG = 'N';  // alt <site> -> 1: the pointer was renamed too
 
     static const size_t kMaxTargetsPerSite = 16;
     static const size_t kMaxSites          = 20000;
@@ -61,12 +67,24 @@ namespace idattd
     // its name -- an API export such as CreateFileW. IDA names a second
     // export of a name already taken with a "_0"-style suffix, which is not
     // part of the API's name.
-    static bool callee_type(ea_t target, tinfo_t *out)
+    static bool callee_type(TraceManager *mgr, ea_t target, tinfo_t *out)
     {
         if ( get_tinfo(out, target) && out->is_func() )
             return true;
+        // IDA's name for the target, or the export the recording names there
+        // ("WININET!InternetConnectA", module dropped). The second matters on
+        // recordings whose system DLLs are debugger segments: one not loaded
+        // where the user stands has no segment, so no name, and the call
+        // would go untyped although the recording knows exactly what it is.
         qstring name;
         if ( get_name(&name, target) <= 0 || name.empty() )
+        {
+            name = mgr != nullptr ? mgr->modules().export_name_at(target) : qstring();
+            size_t bang = name.find('!');
+            if ( bang != qstring::npos )
+                name.remove(0, bang + 1);
+        }
+        if ( name.empty() )
             return false;
         for ( int pass = 0; pass < 2; pass++ )
         {
@@ -91,6 +109,96 @@ namespace idattd
         netnode nn(CS_NODE, 0, true);
         if ( nn != BADNODE )
             nn.altset((nodeidx_t)site, 1, CS_TYPE_TAG);
+    }
+
+    // The global function pointer an indirect call loads its target from:
+    // "call cs:off_X", or "mov reg, cs:off_X" a few instructions before a
+    // "call reg" with nothing in between writing reg. BADADDR for anything
+    // else (a register computed some other way, a vtable slot, the stack).
+    //
+    // That pointer is where an analyst puts the type by hand. The decompiler
+    // prints the call through it, so a pointer typed as the API types every
+    // call made through it, names the arguments, and survives re-decompiling
+    // the function; the call-instruction type covers one site only.
+    static ea_t loaded_pointer(const insn_t &call)
+    {
+        const op_t &op = call.ops[0];
+        if ( op.type == o_mem )
+            return op.addr;
+        if ( op.type != o_reg )
+            return BADADDR;
+        ea_t ea = call.ea;
+        for ( int back = 0; back < 8; back++ )
+        {
+            // Only straight-line code: a jump target in between could reach
+            // the call with something else in the register.
+            if ( has_xref(get_flags(ea)) && back != 0 )
+                return BADADDR;
+            insn_t prev;
+            ea_t p = decode_prev_insn(&prev, ea);
+            if ( p == BADADDR )
+                return BADADDR;
+            ea = p;
+            const op_t &dst = prev.ops[0];
+            bool writes_reg = dst.type == o_reg && dst.reg == op.reg;
+            if ( !writes_reg )
+            {
+                if ( is_call_insn(prev) )
+                    return BADADDR;     // clobbers the volatile registers
+                continue;
+            }
+            if ( prev.itype == NN_mov && prev.ops[1].type == o_mem )
+                return prev.ops[1].addr;
+            return BADADDR;             // reg comes from somewhere else
+        }
+        return BADADDR;
+    }
+
+    // Type the function pointer the call at 'site' loads as a pointer to
+    // 'proto', and give it the API's name when it only has a dummy one, so
+    // the pseudocode reads "pInternetConnectA(hInternet: ...)". Nothing is
+    // done to a pointer that already has a type (someone else's work), or
+    // that calls elsewhere in the recording reached a different target
+    // through ('ptr_targets': every pointer's targets, over every site).
+    static bool type_pointer(ea_t site, const insn_t &call, ea_t target,
+                             const tinfo_t &proto, TraceManager *mgr,
+                             const std::map<ea_t, std::set<ea_t>> &ptr_targets)
+    {
+        ea_t ptr = loaded_pointer(call);
+        if ( ptr == BADADDR || get_segment_ea(ptr) == BADADDR )
+            return false;
+        auto pt_it = ptr_targets.find(ptr);
+        if ( pt_it == ptr_targets.end() || pt_it->second.size() != 1 )
+            return false;
+        tinfo_t existing;
+        if ( get_tinfo(&existing, ptr) )
+            return false;
+        tinfo_t pt;
+        if ( !pt.create_ptr(proto) || !set_tinfo(ptr, &pt) )
+            return false;
+        netnode nn(CS_NODE, 0, true);
+        if ( nn == BADNODE )
+            return true;
+        nn.altset((nodeidx_t)site, (nodeidx_t)(ptr + 1), CS_PTR_TAG);
+
+        if ( !has_user_name(get_flags(ptr)) )      // off_X, qword_X: IDA's own
+        {
+            qstring api;
+            if ( get_name(&api, target) <= 0 || api.empty() )
+            {
+                api = mgr != nullptr ? mgr->modules().export_name_at(target) : qstring();
+                size_t bang = api.find('!');
+                if ( bang != qstring::npos )
+                    api.remove(0, bang + 1);
+            }
+            qstring pname;
+            if ( !api.empty() )
+                pname.sprnt("p%s", api.c_str());
+            if ( !pname.empty() && get_name_ea(BADADDR, pname.c_str()) == BADADDR
+              && set_name(ptr, pname.c_str(), SN_NOWARN | SN_NOCHECK) )
+                nn.altset((nodeidx_t)site, 1, CS_PNAME_TAG);
+        }
+        return true;
     }
 
     static void remember(ea_t site, const std::vector<ea_t> &targets)
@@ -179,6 +287,20 @@ namespace idattd
     static void write_annotations(TraceManager *mgr, const SiteTargets &seen,
                                   ea_t lo, ea_t hi, CallSiteResult *res)
     {
+        // Which targets were reached through each global function pointer,
+        // over every site seen, not just those in [lo, hi): a pointer is only
+        // typed as one API when every call through it went there.
+        std::map<ea_t, std::set<ea_t>> ptr_targets;
+        for ( const auto &kv : seen )
+        {
+            insn_t call;
+            if ( decode_insn(&call, kv.first) <= 0 )
+                continue;
+            ea_t ptr = loaded_pointer(call);
+            if ( ptr != BADADDR )
+                ptr_targets[ptr].insert(kv.second.begin(), kv.second.end());
+        }
+
         for ( auto it = seen.lower_bound(lo); it != seen.end() && it->first < hi; ++it )
         {
             ea_t site = it->first;
@@ -228,13 +350,23 @@ namespace idattd
             for ( ea_t t : targets )
                 add_cref(site, t, fl_CN);
 
-            // The call type, for a site with one target and nothing set there.
+            // The call type, for a site with one target: on the call
+            // instruction when nothing is set there, and on the function
+            // pointer it loads (see loaded_pointer).
             tinfo_t existing, proto;
-            if ( targets.size() == 1 && !get_tinfo(&existing, site)
-              && callee_type(targets[0], &proto) && set_tinfo(site, &proto) )
+            if ( targets.size() == 1 && callee_type(mgr, targets[0], &proto) )
             {
-                remember_type(site);
-                res->typed++;
+                bool typed = false;
+                if ( !get_tinfo(&existing, site) && set_tinfo(site, &proto) )
+                {
+                    remember_type(site);
+                    typed = true;
+                }
+                insn_t call;
+                if ( decode_insn(&call, site) > 0 && type_pointer(site, call, targets[0], proto, mgr, ptr_targets) )
+                    typed = true;
+                if ( typed )
+                    res->typed++;
             }
 
             remember(site, targets);
@@ -415,6 +547,19 @@ namespace idattd
             {
                 del_tinfo(site);
                 nn.altdel(i, CS_TYPE_TAG);
+            }
+            // The pointer's type and name, when this site set them. Several
+            // sites can load one pointer; the first to be cleared undoes it,
+            // and the others find nothing left to undo.
+            nodeidx_t ptr1 = nn.altval(i, CS_PTR_TAG);
+            if ( ptr1 != 0 )
+            {
+                ea_t ptr = (ea_t)(ptr1 - 1);
+                del_tinfo(ptr);
+                if ( nn.altval(i, CS_PNAME_TAG) != 0 )
+                    set_name(ptr, "", SN_NOWARN);
+                nn.altdel(i, CS_PTR_TAG);
+                nn.altdel(i, CS_PNAME_TAG);
             }
             nn.delblob(i, CS_TGTS_TAG);
             nn.altdel(i, CS_SITE_TAG);
