@@ -13,7 +13,27 @@ namespace idattd
     //=======================================================================
     // The backend
     //=======================================================================
-    MsTtdBackend::MsTtdBackend() = default;
+    MsTtdBackend::MsTtdBackend()
+    {
+        m_err.owner = this;
+    }
+
+    qstring MsTtdBackend::last_error() const
+    {
+        std::lock_guard<std::mutex> lock(m_errorMtx);
+        return qstring(m_error.c_str());
+    }
+
+    void MsTtdBackend::set_error(const char *fmt, ...) const
+    {
+        char buf[2048];
+        va_list va;
+        va_start(va, fmt);
+        vsnprintf(buf, sizeof(buf), fmt, va);
+        va_end(va);
+        std::lock_guard<std::mutex> lock(m_errorMtx);
+        m_error = buf;
+    }
 
     MsTtdBackend::~MsTtdBackend()
     {
@@ -250,7 +270,17 @@ namespace idattd
 
     UniqueCursor MsTtdBackend::new_engine_cursor() const
     {
-        return m_engine ? UniqueCursor{ m_engine->NewCursor() } : UniqueCursor{};
+        if ( !m_engine )
+        {
+            set_error("no recording is open");
+            return UniqueCursor{};
+        }
+        UniqueCursor c{ m_engine->NewCursor() };
+        // Every query starts with a cursor of its own; one the engine will
+        // not make (out of memory, mostly) is the reason the query failed.
+        if ( !c )
+            set_error("the TTD replay engine could not create a cursor");
+        return c;
     }
 
     uint32_t MsTtdBackend::unique_thread_id(uint32_t tid, Position at) const
@@ -911,6 +941,18 @@ namespace idattd
             QueryMemoryPolicy::InFragmentAggressive, // look across the whole fragment
         };
 
+        // Whether one byte is readable under either policy: what the run
+        // query below asks, cut to a single byte.
+        auto readable = [&](size_t at) -> bool
+        {
+            uint8_t b;
+            for ( QueryMemoryPolicy p : kPolicies )
+                if ( mc->QueryMemoryBuffer(GuestAddress{ (uint64_t)(ea + at) },
+                                           BufferView{ &b, 1 }, p).Memory.Size > 0 )
+                    return true;
+            return false;
+        };
+
         uint8_t *out = (uint8_t *)buffer;
         size_t off = 0;
         while ( off < size )
@@ -925,8 +967,32 @@ namespace idattd
             }
             if ( mb.Memory.Size == 0 )
             {
-                out[off] = 0;        // hole
-                off++;
+                // A hole. Stepping over it a byte at a time costs two queries
+                // a byte, ~8K for one unreadable page. Holes need not run to a
+                // page boundary (a stack page can hold recorded stretches
+                // between unrecorded ones), so they cannot be skipped by page;
+                // but recorded memory comes in aligned blocks: every run that
+                // starts after a hole on the reference recordings holds a
+                // 32-byte-aligned address, most start on a page. So probe only
+                // the 8-byte-aligned addresses, a quarter of that granularity,
+                // and on a hit walk back to where its run starts. An eighth of
+                // the queries, and the same bytes known on those recordings;
+                // only a run shorter than 8 bytes that holds no aligned
+                // address could be missed.
+                static const size_t kStride = 8;
+                size_t hi = size;    // the start of the next run, or the end
+                size_t at = (size_t)((((uint64_t)ea + off) | (kStride - 1)) + 1 - (uint64_t)ea);
+                for ( ; at < size; at += kStride )
+                {
+                    if ( !readable(at) )
+                        continue;
+                    hi = at;
+                    while ( hi - 1 > off && readable(hi - 1) )
+                        hi--;
+                    break;
+                }
+                memset(out + off, 0, hi - off);
+                off = hi;
                 continue;
             }
             // Never past the buffer, whatever the engine claims: 'filled' is

@@ -321,6 +321,8 @@ namespace idattd
     static const uchar MM_TAG     = 'M';
     static const uint32_t MM_MAGIC   = 0x50414D54;   // 'TMAP'
     // A map of any other version is rebuilt rather than shown:
+    // 9: a Microsoft TTD change with no call chain carries its calling
+    //    instruction as a one-frame chain, so a v8 map shows no caller there.
     // 8: RC_STATE entries, with their state, region type and allocation base.
     // 7: positions are stored as the core's two words, whose "no position"
     //    marker differs from the one Microsoft TTD used, so a v6 map would
@@ -330,7 +332,7 @@ namespace idattd
     // 2: RegionChange::pc is the caller, and the stack-argument offset comes
     //    from the stack rather than being assumed, so an older map can hold a
     //    wrong Protect value.
-    static const uint32_t MM_VERSION = 8;
+    static const uint32_t MM_VERSION = 9;
     // A recording that allocates in a loop can produce a great many changes.
     // Past this there is nothing left to learn from another row, and the blob
     // has to fit in the database.

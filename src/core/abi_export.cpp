@@ -1,6 +1,7 @@
 #include "core/abi_export.h"
 
 #include <cstring>
+#include <mutex>
 
 namespace idattd
 {
@@ -9,7 +10,36 @@ namespace idattd
     static BackendFactory g_factory = nullptr;
     static LogSetter      g_set_log = nullptr;
     static BackendPtr     g_identity;     // unopened: id, names, can_open
-    static std::string    g_error;        // last_error(NULL)
+
+    // A handle's last error. The core runs queries on a worker thread while
+    // the main thread goes on reading cursors on the same handle, and reads
+    // a failed query's reason from the main thread afterwards: so the text is
+    // written and read from different threads, and lives behind a mutex.
+    // last_error hands out a per-thread copy rather than the string itself,
+    // which another thread's failure could reallocate under the caller; the
+    // copy stays valid until that thread asks again, which is all the ABI
+    // promises (until the next call on the handle).
+    struct ErrorSlot
+    {
+        void set(const char *text)
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            m_text = text != nullptr ? text : "";
+        }
+        const char *get() const
+        {
+            thread_local std::string copy;
+            std::lock_guard<std::mutex> lock(m_mtx);
+            copy = m_text;
+            return copy.c_str();
+        }
+
+    private:
+        mutable std::mutex m_mtx;
+        std::string        m_text;
+    };
+
+    static ErrorSlot      g_error;        // last_error(NULL)
 
     // One answer kept between a count query's two calls.
     struct CachedAnswer
@@ -24,7 +54,7 @@ namespace idattd
     struct ExportedBackend
     {
         BackendPtr           b;
-        std::string          error;
+        ErrorSlot            error;
         CachedAnswer         cache;
         std::vector<qstring> mapping_files;   // from the last query_mapping_changes
     };
@@ -94,22 +124,29 @@ namespace idattd
     };
 
     // Every entry point catches: an exception must not cross the C boundary.
+    //
+    // A call that fails without throwing (prepare returned false, a query did
+    // not run) takes the backend's own reason. When the backend has none,
+    // the slot is emptied rather than left alone: an earlier failure's reason
+    // would answer for this one, and the core says something generic for an
+    // empty one. Cancelling is not a failure and leaves it as it was.
     template <typename F>
-    static int guarded(std::string *err, F f)
+    static int guarded(ExportedBackend *h, F f)
     {
         try
         {
-            return f();
+            int rc = f();
+            if ( rc != ITTD_OK && rc != ITTD_E_CANCELLED )
+                h->error.set(h->b->last_error().c_str());
+            return rc;
         }
         catch ( const std::exception &e )
         {
-            if ( err != nullptr )
-                *err = e.what();
+            h->error.set(e.what());
         }
         catch ( ... )
         {
-            if ( err != nullptr )
-                *err = "unexpected exception in the backend";
+            h->error.set("unexpected exception in the backend");
         }
         return ITTD_E_FAILED;
     }
@@ -259,18 +296,18 @@ namespace idattd
             qstring err;
             if ( h->b == nullptr || !h->b->open(path, &err) )
             {
-                g_error = err.empty() ? "the recording could not be opened" : err.c_str();
+                g_error.set(err.empty() ? "the recording could not be opened" : err.c_str());
                 return nullptr;
             }
             return reinterpret_cast<ittd_backend *>(h.release());
         }
         catch ( const std::exception &e )
         {
-            g_error = e.what();
+            g_error.set(e.what());
         }
         catch ( ... )
         {
-            g_error = "unexpected exception while opening the recording";
+            g_error.set("unexpected exception while opening the recording");
         }
         return nullptr;
     }
@@ -286,7 +323,7 @@ namespace idattd
 
     static const char *x_last_error(ittd_backend *hb)
     {
-        return hb != nullptr ? B(hb)->error.c_str() : g_error.c_str();
+        return hb != nullptr ? B(hb)->error.get() : g_error.get();
     }
 
     static int x_info(ittd_backend *hb, ittd_trace_info *out)
@@ -294,7 +331,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             const TraceInfo &ti = h->b->info();
             const Capabilities &c = h->b->capabilities();
@@ -330,7 +367,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             AbiSink sink(progress);
             return h->b->prepare(&sink) ? ITTD_OK : ITTD_E_FAILED;
@@ -357,7 +394,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || buf == nullptr || buf_size == 0 )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             copy_str(buf, buf_size, h->b->format_position(from_abi(p)).c_str());
             return ITTD_OK;
@@ -369,7 +406,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || text == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Position p;
             if ( !h->b->parse_position(text, &p) )
@@ -428,7 +465,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]() { *out = to_abi(c->c->position()); return ITTD_OK; });
+        return guarded(c->owner, [&]() { *out = to_abi(c->c->position()); return ITTD_OK; });
     }
 
     static int x_cursor_seek(ittd_cursor *hc, ittd_position p)
@@ -436,7 +473,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             return c->c->seek(from_abi(p)) ? ITTD_OK : ITTD_E_NO_POSITION;
         });
@@ -447,7 +484,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]() { *out = c->c->thread_id(); return ITTD_OK; });
+        return guarded(c->owner, [&]() { *out = c->c->thread_id(); return ITTD_OK; });
     }
 
     static int x_cursor_regs(ittd_cursor *hc, ittd_regs *out)
@@ -455,7 +492,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             *out = ittd_regs{};
             return c->c->read_registers(out) ? ITTD_OK : ITTD_E_FAILED;
@@ -467,7 +504,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             *out = ittd_regs{};
             return c->c->read_thread_registers(tid, out) ? ITTD_OK : ITTD_E_UNSUPPORTED;
@@ -480,7 +517,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || (buf == nullptr && size != 0) )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             std::vector<uint8_t> &k = c->known;
             k.clear();
@@ -504,7 +541,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             return fill(c->c->live_threads(), buf, cap, out_count,
                         [](const ThreadInfo &t) { return to_abi(t); });
@@ -517,7 +554,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             size_t n = c->c->rebuild_range((ea_t)lo, (ea_t)hi, replace != 0);
             if ( out_bytes != nullptr )
@@ -541,7 +578,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             INavigator *n = nav(c);
             if ( n == nullptr )
@@ -569,7 +606,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || (bpts == nullptr && count != 0) )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             INavigator *n = nav(c);
             if ( n == nullptr )
@@ -592,7 +629,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr || buf == nullptr || buf_size == 0 )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             INavigator *n = nav(c);
             copy_str(buf, buf_size, n != nullptr ? n->take_notice().c_str() : "");
@@ -605,7 +642,7 @@ namespace idattd
         ExportedCursor *c = C(hc);
         if ( c == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&c->owner->error, [&]()
+        return guarded(c->owner, [&]()
         {
             INavigator *n = nav(c);
             if ( n == nullptr )
@@ -631,7 +668,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return fill(h->b->modules(), buf, cap, out_count, [](const ModuleInfo &m)
             {
@@ -655,7 +692,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return fill(h->b->threads(), buf, cap, out_count, [](const ThreadInfo &t) { return to_abi(t); });
         });
@@ -666,7 +703,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return fill(h->b->timeline(), buf, cap, out_count, [](const TraceEvent &e)
             {
@@ -688,7 +725,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Key k("accesses");
             k.add(lo).add(hi).add(kinds).add(when);
@@ -714,7 +751,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (ranges == nullptr && nranges != 0) )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Key k("executed");
             k.add_bytes(ranges, nranges * sizeof(ittd_range));
@@ -737,7 +774,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (targets == nullptr && ntargets != 0) )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Key k("calls");
             k.add(when).add_bytes(targets, ntargets * sizeof(uint64_t));
@@ -773,7 +810,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (ranges == nullptr && nranges != 0) )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Key k("indirect");
             k.add(flags).add_bytes(ranges, nranges * sizeof(ittd_range));
@@ -806,7 +843,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return answer<ittd_exception>(h, "exceptions", buf, cap, out_count, out_truncated,
                                           [&](std::vector<ittd_exception> *out)
@@ -839,7 +876,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return answer<ittd_syscall>(h, "syscalls", buf, cap, out_count, out_truncated,
                                         [&](std::vector<ittd_syscall> *out)
@@ -892,7 +929,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Key k("strings");
             k.add(min_length);
@@ -926,7 +963,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Key k("buffers");
             add_settings(&k, settings);
@@ -962,7 +999,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return answer<ittd_selfmod>(h, "selfmod", buf, cap, out_count, out_truncated,
                                         [&](std::vector<ittd_selfmod> *out)
@@ -994,7 +1031,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return answer<ittd_mapping_change>(h, "mapping", buf, cap, out_count, out_truncated,
                                                [&](std::vector<ittd_mapping_change> *out)
@@ -1025,7 +1062,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return fill(h->b->module_symbols((ea_t)base), buf, cap, out_count,
                         [](const ITraceBackend::Symbol &s)
@@ -1045,7 +1082,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return fill(h->b->module_functions((ea_t)base), buf, cap, out_count,
                         [](const std::pair<ea_t, ea_t> &r) { return ittd_range{ (uint64_t)r.first, (uint64_t)r.second }; });
@@ -1058,7 +1095,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (count != 0 && (positions == nullptr || out == nullptr)) )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             std::vector<Position> p;
             p.reserve(count);
@@ -1080,7 +1117,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             std::vector<Access> v;
             AbiSink sink(progress);
@@ -1104,7 +1141,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]() { *out = to_abi(h->b->position_add(from_abi(p), delta)); return ITTD_OK; });
+        return guarded(h, [&]() { *out = to_abi(h->b->position_add(from_abi(p), delta)); return ITTD_OK; });
     }
 
     static int x_query_frame_entry(ittd_backend *hb, ittd_position at, uint32_t tid, uint64_t max_back,
@@ -1113,7 +1150,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Position cp;
             ea_t e = BADADDR;
@@ -1134,7 +1171,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             AbiSink sink(progress);
             Position p;
@@ -1156,7 +1193,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             return answer<ittd_heat_cell>(h, "heat|" + std::to_string(page_shift) + "|" + std::to_string(slices),
                                           buf, cap, out_count, out_truncated,
@@ -1187,7 +1224,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || (count != 0 && (slots == nullptr || values == nullptr || known == nullptr)) )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             std::vector<OutSlot> in(count);
             for ( size_t i = 0; i < count; i++ )
@@ -1216,7 +1253,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr || out == nullptr )
             return ITTD_E_BAD_ARG;
-        return guarded(&h->error, [&]()
+        return guarded(h, [&]()
         {
             Position p = h->b->heat_slice_position(slices, slice);
             if ( !p.is_valid() )

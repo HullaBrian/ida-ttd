@@ -1,4 +1,5 @@
 #include "backend-msttd/msttd_trace_open.h"
+#include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_host.h"
 
 using namespace TTD;
@@ -11,6 +12,8 @@ namespace idattd
         char buf[2048];
         vsnprintf(buf, sizeof(buf), pFmt, argList);
         msttd_log("[ida-ttd] TTD: %s\n", buf);
+        if ( owner != nullptr )
+            owner->set_error("TTD: %s", buf);
     }
 
     // TTD invokes this from its own indexing worker threads, with the sink as

@@ -91,7 +91,15 @@ namespace idattd
         std::vector<Symbol> module_symbols(ea_t) override { return {}; }
         std::vector<std::pair<ea_t, ea_t>> module_functions(ea_t) override { return {}; }
 
+        // Why the last call failed, in words. Queries run on worker threads
+        // while the main thread reads cursors and asks this, so the text is
+        // behind a mutex and handed out as a copy.
+        qstring last_error() const override;
+
         // ---- Microsoft-only, for the rest of this backend ----
+        // Set the text last_error() gives. Const: a failure found in a const
+        // call (making a cursor) is still worth saying.
+        void set_error(const char *fmt, ...) const;
         TTD::Replay::IReplayEngine *engine() const { return m_engine.get(); }
         TTD::Replay::UniqueCursor   new_engine_cursor() const;
         bool                        is64() const { return m_info.is64; }
@@ -106,6 +114,8 @@ namespace idattd
 
         TTD::Replay::UniqueReplayEngine m_engine;
         MsttdErrorReporting             m_err;
+        mutable std::mutex              m_errorMtx;
+        mutable std::string             m_error;           // last_error()
         // Sequential, unfiltered: query_frame_entry's call/return callback
         // mutates an unsynchronized map, and the engine's default parallel
         // replay would dispatch it from several threads at once.

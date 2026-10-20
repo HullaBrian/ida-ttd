@@ -320,6 +320,8 @@ namespace idattd
         {
             msttd_log("[ida-ttd] memory map: could not find ntdll's memory syscalls in this "
                 "recording (its export table was never read during recording).\n");
+            set_error("could not find ntdll's memory syscalls in this recording "
+                      "(its export table was never read during recording)");
             return r;
         }
         auto desc_of = [&by_number](uint32_t n) -> const WatchDesc *
@@ -663,6 +665,16 @@ namespace idattd
             c.chain_n  = rc.chain_n;
             for ( uint8_t k = 0; k < rc.chain_n; k++ )
                 c.chain[k] = (uint64_t)rc.chain[k];
+            // No chain at all: the call came from a frame opened before the
+            // recording began, so the walk found no return address to follow.
+            // The calling instruction is still known, and it is what the
+            // listing shows as the caller, so it becomes the one-frame chain
+            // rather than leaving the row without one.
+            if ( c.chain_n == 0 && rc.pc != BADADDR )
+            {
+                c.chain[0] = (uint64_t)rc.pc;
+                c.chain_n  = 1;
+            }
             c.tid      = rc.os_tid;
             c.kind     = rc.d->kind;
             c.base     = rc.base;

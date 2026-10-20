@@ -9,11 +9,17 @@ namespace idattd
     // What opening a TTD trace needs besides the engine itself: somewhere for
     // its diagnostics to go, and the memory index.
 
-    // Error sink so the TTD engine's diagnostics reach the host's log.
+    class MsTtdBackend;
+
+    // Error sink so the TTD engine's diagnostics reach the host's log, and
+    // become the backend's last error: the engine says why it failed here
+    // and nowhere else.
     class MsttdErrorReporting : public TTD::ErrorReporting
     {
     public:
         void __fastcall VPrintError(char const *pFmt, va_list argList) override;
+
+        const MsTtdBackend *owner = nullptr;
     };
 
     // Build the trace's memory index if it does not already have one. Without an
