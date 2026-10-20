@@ -614,12 +614,12 @@ namespace idattd
             m_layout.refresh(m_cursor->position());
         }
 
-        // Apply any PDB that finished downloading since the last stop. This is
-        // the main thread, which is the only place IDA's symbol machinery may be
-        // driven from.
+        // A slice of PDB naming (downloads and reads run on their own threads;
+        // only set_name is left for the main thread). Kept short: the rest is
+        // set from the plugin's poll timer while the user looks at the stop.
         {
-            DiagTimer t("stop: finished PDBs");
-            m_modules.apply_finished_pdbs();
+            DiagTimer t("stop: PDB names");
+            m_modules.advance_pdbs(10);
         }
 
         // Name exports of any module loaded at this position first, so a call to a
@@ -727,6 +727,29 @@ namespace idattd
             return DRC_OK;
         if ( !m_nav )
             return DRC_OK;
+
+        // A resume that arrives while a movement is still being carried out
+        // (its wait box pumps messages, and IDA's own step actions stay
+        // enabled until ev_resume returns) is dropped. Carrying it out would
+        // move the navigator from inside its own progress callback. The stop
+        // the outer movement reports answers both resumes as far as IDA is
+        // concerned: it only waits for the process to stop again. A request
+        // queued for it is dropped too rather than left to surprise the next
+        // step.
+        if ( m_navigating )
+        {
+            msg("[ida-ttd] a movement is already in progress; ignoring the new one.\n");
+            log_event("resume ignored: a movement is in progress");
+            m_pending    = PendingRequest{};
+            m_resumeMode = RESMOD_NONE;
+            return DRC_OK;
+        }
+        struct NavigatingFlag
+        {
+            bool &f;
+            explicit NavigatingFlag(bool &flag) : f(flag) { f = true; }
+            ~NavigatingFlag() { f = false; }
+        } navigating(m_navigating);
 
         // IDA's own step modes, as opposed to a run or a queued request.
         m_stepMode = m_pending.kind == Request::None && m_resumeMode != RESMOD_NONE;

@@ -250,6 +250,10 @@ namespace idattd
         int           m_eventOrder = 2;
         bool          m_stepMode   = false;   // this resume is one of IDA's step modes
         bool          m_travelWait = false;   // set_next_position's wait box is up
+        // A movement is being carried out. Its wait box pumps messages, so IDA
+        // can deliver another ev_resume in the middle of it; that one must not
+        // move the same navigator again.
+        bool          m_navigating = false;
         // The last few events handed to IDA, resumes received and breakpoint
         // updates, oldest first, for the same reason.
         static constexpr size_t EVENT_LOG_LINES = 48;
