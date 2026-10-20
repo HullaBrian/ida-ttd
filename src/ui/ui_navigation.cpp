@@ -132,6 +132,18 @@ namespace idattd
         return 1;
     }
 
+    int idaapi FullPdbHandler::activate(action_activation_ctx_t *)
+    {
+        if ( mgr() == nullptr || !mgr()->is_active() )
+        {
+            warning("Symbols can only be loaded while replaying a trace.");
+            return 1;
+        }
+        if ( mgr()->modules().load_full_pdb(get_screen_ea()) )
+            refresh_idaview_anyway();
+        return 1;
+    }
+
     //=======================================================================
     // Starting the replay for a database that came from a .run
     //=======================================================================

@@ -2,7 +2,10 @@
 
 #include "common/pch.h"
 #include "common/symbols.h"
+#include "common/pdb_publics.h"
 #include "core/backend.h"
+
+#include <future>
 
 namespace idattd
 {
@@ -107,19 +110,27 @@ namespace idattd
         void resolve_symbols(ea_t base);
         // The same for every module mapped at 'pos'.
         void resolve_loaded(Position pos);
-        // Load symbols for the module at 'base' without blocking: the PDB the
-        // recorded image names is fetched into a local store on a worker
-        // thread (common/symsrv.h), and IDA's PDB plugin is only driven, with
-        // no "load symbols?" prompt, once the file is on disk. Deduplicated per
-        // module.
+        // Name the functions of the module at 'base' from its PDB, without
+        // ever blocking: the PDB the recorded image names is fetched into a
+        // local store on a worker thread (common/symsrv.h), its public symbols
+        // are read on another (common/pdb_publics.h), and the names are set a
+        // slice at a time by advance_pdbs(). Deduplicated per module.
         // 'stopped_here': the user is stopped in this module, so it gets its
         // PDB even when the backend's reads are not cheap.
         void load_pdb(ea_t base, bool stopped_here = false);
-        // Hand every PDB that finished downloading since the last call to IDA,
-        // and return how many were. Main thread only; called once per stop.
-        // With 'wait_box', each behind one: a big PDB takes seconds (only from
-        // a timer, not a debugger event).
-        size_t apply_finished_pdbs(bool wait_box = false);
+        // Move every PDB along: start reading the ones that finished
+        // downloading, and set names from the ones read, for at most
+        // 'budget_ms' of the main thread. Returns how many names were set.
+        // Main thread only, and only while the replay is paused.
+        size_t advance_pdbs(int budget_ms);
+        // Downloads, reads or names still to set: advance_pdbs() has work.
+        bool pdbs_pending() const;
+        // The whole PDB of the module containing 'ea' through IDA's PDB
+        // plugin: types and prototypes as well as names. Blocks for as long
+        // as the plugin takes, behind a wait box, which is why it is only
+        // ever done when the user asks. False with the reason said in the
+        // output window when it cannot be done (yet).
+        bool load_full_pdb(ea_t ea);
 
         // ---- on-disk images ------------------------------------------------
         //
@@ -141,6 +152,8 @@ namespace idattd
         // The named exports of the module at 'base', read once.
         const std::vector<std::pair<ea_t, std::string>> &exports_of(ea_t base);
         void report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb);
+        void start_publics(ea_t base, const std::string &pdb_path);
+        bool apply_publics_slice(DWORD deadline, size_t &named);
 
         ITraceBackend *m_backend = nullptr;
         bool           m_is64 = false;
@@ -167,5 +180,21 @@ namespace idattd
 
         // Scratch cursor for reading a module's headers at its load position.
         CursorPtr m_symCursor;
+
+        // A PDB whose public symbols are being read, or are read and being
+        // set as names a slice at a time.
+        struct PublicsJob
+        {
+            ea_t                    base = BADADDR;
+            std::string             pdb_name;
+            std::future<bool>       reading;    // valid while the worker runs
+            std::vector<PdbPublic>  pubs;       // written by the worker only
+            std::string             error;      // likewise
+            size_t                  next  = 0;  // first public not yet named
+            size_t                  named = 0;
+        };
+        // unique_ptr: the worker writes into the job, so it must not move
+        // when the list grows.
+        std::vector<std::unique_ptr<PublicsJob>> m_publics;
     };
 }

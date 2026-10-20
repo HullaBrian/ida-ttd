@@ -43,6 +43,9 @@
     <ClInclude Include="$(SrcDir)\common\strings.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\pdb_publics.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\symsrv.h">
       <Filter>common</Filter>
     </ClInclude>
@@ -199,6 +202,9 @@
       <Filter>common</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\common\strings.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\pdb_publics.cpp">
       <Filter>common</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\common\symsrv.cpp">

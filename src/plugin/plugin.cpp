@@ -212,17 +212,19 @@ namespace idattd
         hook_event_listener(HT_IDB, &m_idbEvents);
     }
 
-    // PDBs download in the background and used to be applied only at the next
-    // stop, so the first stop of a session showed bare addresses until the
-    // user moved. While the replay is paused, hand IDA whatever finished, and
-    // repaint so the names appear on their own.
+    // PDBs are downloaded and read in the background; the names they give are
+    // set here, a few milliseconds at a time while the replay is paused, so a
+    // module's names fill in on their own and no step ever waits on a PDB.
+    // Ticks quickly while there is work, and once a second otherwise.
     static int idaapi pdb_poll_cb(void *ud)
     {
         Plugin *p = static_cast<Plugin *>(ud);
-        if ( p->manager().is_active() && get_process_state() == DSTATE_SUSP
-          && p->manager().modules().apply_finished_pdbs(true) != 0 )
+        if ( !p->manager().is_active() )
+            return 1000;
+        if ( get_process_state() == DSTATE_SUSP
+          && p->manager().modules().advance_pdbs(15) != 0 )
             refresh_idaview_anyway();
-        return 1000;
+        return p->manager().modules().pdbs_pending() ? 100 : 1000;
     }
 
     Plugin::~Plugin()
@@ -368,6 +370,11 @@ namespace idattd
             { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
               "Analyze whole function: walk the trace backward to find the enclosing "
               "function's entry and define it (runs behind a cancellable wait box)",
+              NO_ICON, ITEM, MENU, SUB_CODE },
+            { actions::FULL_PDB, "Load full symbols for this module", &m_fullPdb, nullptr,
+              "Load full symbols: apply the whole PDB of the module under the cursor "
+              "(types and prototypes too) through IDA's PDB plugin. Function names "
+              "are applied in the background without this; it blocks while it loads",
               NO_ICON, ITEM, MENU, SUB_CODE },
             { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
               "Highlight executed code: replay the recording and color every "

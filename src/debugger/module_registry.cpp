@@ -105,6 +105,9 @@ namespace idattd
         m_mainBase = BADADDR;
         m_resolvedBases.clear();
         m_pdbBases.clear();
+        // Waits for any read still running: the futures of std::async join.
+        // A read is milliseconds, so this costs nothing noticeable.
+        m_publics.clear();
         m_funcRanges.clear();
         m_funcTried.clear();
         m_exports.clear();
@@ -526,11 +529,11 @@ namespace idattd
         switch ( fetch_pdb(pdb.name.c_str(), pdb.signature.c_str(), base) )
         {
             case FetchState::Cached:
-                apply_pdb(base, path, pdb);
+                start_publics(base, symbol_store_path(pdb.name.c_str(), pdb.signature.c_str()).c_str());
                 break;
             case FetchState::Fetching:
-                // A worker has it. apply_finished_pdbs() picks it up at the next
-                // stop; nothing blocks here, which is the whole point.
+                // A worker has it. advance_pdbs() picks it up once it lands;
+                // nothing blocks here, which is the whole point.
                 break;
             case FetchState::Failed:
                 report_missing_pdb(path, pdb);
@@ -621,43 +624,169 @@ namespace idattd
             pdb.name.c_str(), pdb.signature.c_str(), pdb.name.c_str());
     }
 
-    size_t ModuleRegistry::apply_finished_pdbs(bool wait_box)
+    void ModuleRegistry::start_publics(ea_t base, const std::string &pdb_path)
     {
-        std::vector<FetchResult> done;
-        if ( symsrv_take_completed(&done) == 0 )
-            return 0;
-
-        size_t applied = 0;
-        for ( const FetchResult &r : done )
+        // The read touches nothing but the file, so it runs on its own thread
+        // while the main thread goes on owning the database. The job is
+        // heap-allocated and only freed after its future is done, so the
+        // worker's pointer stays good.
+        auto job = std::make_unique<PublicsJob>();
+        job->base     = base;
+        job->pdb_name = base_name(pdb_path);
+        PublicsJob *j = job.get();
+        std::wstring wpath = to_wstring(pdb_path.c_str());
+        j->reading = std::async(std::launch::async, [j, wpath]()
         {
-            const ModuleInfo *m = record_at(r.base);
-            std::string path = m != nullptr ? m->path.c_str() : "";
-            if ( path.empty() )
-                continue;
+            return read_pdb_publics(wpath.c_str(), j->pubs, &j->error);
+        });
+        m_publics.push_back(std::move(job));
+    }
 
-            if ( r.path.empty() )
+    // Name publics from the jobs that have been read until 'deadline' (a
+    // GetTickCount value) passes. False when it ran out of time with names
+    // still to set.
+    bool ModuleRegistry::apply_publics_slice(DWORD deadline, size_t &named)
+    {
+        for ( size_t i = 0; i < m_publics.size(); )
+        {
+            PublicsJob &j = *m_publics[i];
+            if ( j.reading.valid() )
             {
-                msg("[ida-ttd] could not download %s for %s: %s.\n",
-                    r.name.c_str(), base_name(path).c_str(), r.error.c_str());
+                if ( j.reading.wait_for(std::chrono::seconds(0)) != std::future_status::ready )
+                {
+                    i++;
+                    continue;               // still reading
+                }
+                if ( !j.reading.get() )
+                {
+                    // Nothing set from it, so nothing is lost by saying how to
+                    // get the whole PDB instead (an OMAP image needs IDA's
+                    // own reader, which handles the rearrangement).
+                    const ModuleInfo *m = record_at(j.base);
+                    msg("[ida-ttd] could not read the names in %s for %s (%s). "
+                        "TTD > Code > Load full symbols for this module loads it "
+                        "through IDA's PDB plugin instead.\n",
+                        j.pdb_name.c_str(),
+                        m != nullptr ? base_name(m->path.c_str()).c_str() : "?",
+                        j.error.c_str());
+                    m_publics.erase(m_publics.begin() + i);
+                    continue;
+                }
+            }
+
+            // Names set on memory IDA has no segment for are dropped, so a
+            // module not mapped where the user is waits for a stop where it is.
+            if ( get_segment_ea(j.base) == BADADDR )
+            {
+                i++;
                 continue;
             }
 
-            GuestPdbInfo pdb;
-            if ( pdb_identity(r.base, &pdb) )
+            // Checked every few names, not every one: GetTickCount is cheap,
+            // set_name is cheaper still for an address with no name yet.
+            while ( j.next < j.pubs.size() )
             {
-                if ( wait_box )
+                for ( size_t k = 0; k < 64 && j.next < j.pubs.size(); k++, j.next++ )
                 {
-                    qstring text;
-                    text.sprnt("HIDECANCEL\nLoading symbols for %s...", base_name(path).c_str());
-                    show_wait_box_now(text.c_str());
+                    const PdbPublic &pub = j.pubs[j.next];
+                    if ( apply_export_name((ea_t)(j.base + pub.rva), pub.name.c_str()) )
+                    {
+                        j.named++;
+                        named++;
+                    }
                 }
-                apply_pdb(r.base, path, pdb);
-                applied++;
-                if ( wait_box )
-                    hide_wait_box();
+                if ( j.next < j.pubs.size() && (LONG)(GetTickCount() - deadline) >= 0 )
+                    return false;
+            }
+
+            const ModuleInfo *m = record_at(j.base);
+            msg("[ida-ttd] PDB names applied for %s (%s): %u name(s).\n",
+                m != nullptr ? base_name(m->path.c_str()).c_str() : "?",
+                j.pdb_name.c_str(), (unsigned)j.named);
+            m_publics.erase(m_publics.begin() + i);
+        }
+        return true;
+    }
+
+    size_t ModuleRegistry::advance_pdbs(int budget_ms)
+    {
+        DWORD deadline = GetTickCount() + (DWORD)(budget_ms > 0 ? budget_ms : 1);
+
+        // Downloads that finished: read their names in the background too.
+        std::vector<FetchResult> done;
+        if ( symsrv_take_completed(&done) != 0 )
+        {
+            for ( const FetchResult &r : done )
+            {
+                const ModuleInfo *m = record_at(r.base);
+                std::string path = m != nullptr ? m->path.c_str() : "";
+                if ( path.empty() )
+                    continue;
+                if ( r.path.empty() )
+                {
+                    msg("[ida-ttd] could not download %s for %s: %s.\n",
+                        r.name.c_str(), base_name(path).c_str(), r.error.c_str());
+                    continue;
+                }
+                start_publics(r.base, r.path.c_str());
             }
         }
-        return applied;
+
+        size_t named = 0;
+        if ( !m_publics.empty() )
+        {
+            DiagTimer diag_timer("PDB names");
+            apply_publics_slice(deadline, named);
+        }
+        return named;
+    }
+
+    bool ModuleRegistry::pdbs_pending() const
+    {
+        return !m_publics.empty() || symsrv_pending() != 0;
+    }
+
+    bool ModuleRegistry::load_full_pdb(ea_t ea)
+    {
+        ea_t lo = 0, hi = 0;
+        if ( m_backend == nullptr || !range_at(ea, lo, hi) )
+        {
+            msg("[ida-ttd] 0x%llX is in no module of this recording.\n", (uint64_t)ea);
+            return false;
+        }
+        const ModuleInfo *m = record_at(lo);
+        std::string path = m != nullptr ? m->path.c_str() : "";
+        GuestPdbInfo pdb;
+        if ( path.empty() || !pdb_identity(lo, &pdb) )
+        {
+            msg("[ida-ttd] the recording has no debug directory for the module at "
+                "0x%llX, so there is no PDB to load.\n", (uint64_t)lo);
+            return false;
+        }
+        // The background reader asks once per module and remembers; this is a
+        // separate, explicit request, so it asks again.
+        m_pdbBases.insert(lo);
+        switch ( fetch_pdb(pdb.name.c_str(), pdb.signature.c_str(), lo) )
+        {
+            case FetchState::Cached:
+            {
+                qstring text;
+                text.sprnt("HIDECANCEL\nLoading symbols for %s...", base_name(path).c_str());
+                show_wait_box_now(text.c_str());
+                apply_pdb(lo, path, pdb);
+                hide_wait_box();
+                return true;
+            }
+            case FetchState::Fetching:
+                msg("[ida-ttd] downloading %s for %s; ask again once it is done "
+                    "(its names are applied by themselves when it lands).\n",
+                    pdb.name.c_str(), base_name(path).c_str());
+                return false;
+            case FetchState::Failed:
+            default:
+                report_missing_pdb(path, pdb);
+                return false;
+        }
     }
 
     bool ModuleRegistry::pdb_identity(ea_t base, GuestPdbInfo *out)

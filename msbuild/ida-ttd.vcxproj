@@ -48,6 +48,7 @@
     <ClInclude Include="$(SrcDir)\common\symbols.h" />
     <ClInclude Include="$(SrcDir)\common\guest_pe.h" />
     <ClInclude Include="$(SrcDir)\common\strings.h" />
+    <ClInclude Include="$(SrcDir)\common\pdb_publics.h" />
     <ClInclude Include="$(SrcDir)\common\symsrv.h" />
     <ClInclude Include="$(SrcDir)\common\trace_link.h" />
     <ClInclude Include="$(SrcDir)\debugger\callconv.h" />
@@ -100,6 +101,7 @@
     <ClCompile Include="$(SrcDir)\common\symbols.cpp" />
     <ClCompile Include="$(SrcDir)\common\guest_pe.cpp" />
     <ClCompile Include="$(SrcDir)\common\strings.cpp" />
+    <ClCompile Include="$(SrcDir)\common\pdb_publics.cpp" />
     <ClCompile Include="$(SrcDir)\common\symsrv.cpp" />
     <ClCompile Include="$(SrcDir)\common\trace_link.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp" />

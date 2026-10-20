@@ -182,6 +182,7 @@ namespace idattd
         PositionCopyHandler    m_posLabel;   // toolbar readout; click copies position
         GotoPositionHandler    m_goto;
         AnalyzeFuncHandler     m_analyzeFunc;
+        FullPdbHandler         m_fullPdb;
         // Function-call tracer
         TraceFuncHandler    m_traceFunc;
         TracePatternHandler m_tracePat;

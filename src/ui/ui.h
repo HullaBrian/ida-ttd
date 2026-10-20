@@ -419,6 +419,12 @@ namespace idattd
     struct AnalyzeFuncHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
+    // The whole PDB (types too) of the module under the cursor, through IDA's
+    // PDB plugin. Names are applied in the background on their own; this is
+    // the blocking load, only ever done on request.
+    struct FullPdbHandler : public TtdAction
+    { int idaapi activate(action_activation_ctx_t *) override; };
+
     // One click: trace the function under the cursor, sweep, and show results.
     struct TraceFuncHandler : public TtdAction
     {
@@ -677,6 +683,7 @@ namespace idattd
         constexpr const char *TRACE_FUNC   = "idattd:trace_func";
         constexpr const char *TRACE_PAT    = "idattd:trace_pattern";
         constexpr const char *ANALYZE_FUNC = "idattd:analyze_func";
+        constexpr const char *FULL_PDB     = "idattd:full_pdb";
         constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
         constexpr const char *AUTO_START   = "idattd:auto_start";
         constexpr const char *INSTALL_RUNTIME = "idattd:install_runtime";
