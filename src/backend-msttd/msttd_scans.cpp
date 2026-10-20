@@ -16,8 +16,9 @@
 // Sogen leaves them out. The three answers come from the same two replays and
 // are kept, so whichever is asked for second costs nothing.
 //
-// The scanners are Sogen's (common/write_scans.h), shared with the Sogen
-// backend, so a list reads the same from either kind of recording. Every
+// The scanners (common/write_scans.h) apply Sogen's rules
+// (docs/scan-rules.md) and are shared with the Sogen backend, so a list reads
+// the same from either kind of recording. Every
 // callback is noexcept and guards its growth, as the other sweeps do.
 
 #include "backend-msttd/msttd_backend.h"

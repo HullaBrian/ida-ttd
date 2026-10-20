@@ -45,8 +45,13 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 - **`src/backend-sogen/sogen_backend.cpp`**: one file, implements the C ABI
   directly against Sogen's reader. Not in the solution (see Building).
 - **`src/common/`**: shared helpers. `write_scans.h` is header-only and
-  standard-library-only on purpose: Sogen's string and buffer scanners, shared by
+  standard-library-only on purpose: the string and buffer scanners, shared by
   both backends (the Sogen backend builds without the rest of the plugin).
+  They implement `docs/scan-rules.md`, Sogen's rules written down as
+  behaviour, and were written from that document, not ported: Sogen is
+  GPL-2.0 and the Microsoft backend that compiles them ships under
+  Apache-2.0. Never copy code from Sogen into anything outside
+  `src/backend-sogen/`; change a rule in the document, then the code.
 - **`src/common/apimeta/`** + **`data/*.bin`**: the Win32/phnt API metadata
   indexes and their loader, ported from ttd-capa-cpp (same author, Apache-2.0;
   keep them close to the original). `debugger/apidecode` decodes a call's

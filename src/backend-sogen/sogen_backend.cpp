@@ -2051,8 +2051,9 @@ namespace
     // 7 on) already holds everything a string or buffer scan looks at: every
     // write, its step, the instruction that made it and what it stored. Read
     // from there, the scans run nothing -- no registry, no emulation root, no
-    // program re-run on this machine -- and cannot diverge. The scanners are
-    // Sogen's (common/write_scans.h), fed what its emulator hooks would see:
+    // program re-run on this machine -- and cannot diverge. The scanners
+    // (common/write_scans.h) apply Sogen's rules, fed what its emulator hooks
+    // would see:
     //
     //   - buffers: every guest write with its bytes, each execution, and each
     //     mapping change, in recording order;
