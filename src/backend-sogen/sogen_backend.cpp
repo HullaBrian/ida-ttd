@@ -19,9 +19,10 @@
 //  - No exception leaves an entry point. Each one runs its body through
 //    guarded(), which turns operation_cancelled into ITTD_E_CANCELLED and
 //    anything else into ITTD_E_FAILED with the reason in last_error.
-//  - One sogen::ttd::trace per handle and per cursor. A trace is not
-//    thread-safe (one ifstream, mutable caches, a lazily built CPU), and a
-//    second one costs about 25 ms to open, so nothing is shared.
+//  - One sogen::ttd::trace per handle and per cursor, plus one for the long
+//    queries (query_reader). A trace is not thread-safe (one ifstream,
+//    mutable caches, a lazily built CPU), and a second one costs about 25 ms
+//    to open, so nothing is shared.
 
 #include <abi/ida_ttd_backend.h>
 #include <common/write_scans.h>
@@ -65,6 +66,42 @@ namespace
 {
     // ------------------------------------------------------------ handles
 
+    // A message the core reads back through last_error or scan_notice.
+    //
+    // Written by whichever thread failed -- a query on the core's worker, a
+    // cursor call on IDA's main thread -- and read by another: the core reads
+    // a worker's failure on the main thread after the worker is done, while
+    // the main thread may be failing calls of its own. A bare std::string
+    // written by one and read by the other is a data race, so the text is
+    // only touched under its mutex, and the reader is handed a copy in a
+    // buffer of its own thread's: the pointer then stays valid until that
+    // thread asks again, whatever the other threads write meanwhile, which
+    // is what the ABI promises ("valid until the next call on the same
+    // handle").
+    class text_slot
+    {
+      public:
+        void set(std::string text)
+        {
+            std::lock_guard<std::mutex> lock(m_mtx);
+            m_text = std::move(text);
+        }
+
+        void clear() { set(std::string()); }
+
+        const char *get() const
+        {
+            thread_local std::string copy;
+            std::lock_guard<std::mutex> lock(m_mtx);
+            copy = m_text;
+            return copy.c_str();
+        }
+
+      private:
+        mutable std::mutex m_mtx;
+        std::string m_text;
+    };
+
     // One page as memory_at showed it, and the positions it holds for.
     //
     // memory_at walks every recorded access to the page until each byte is
@@ -100,9 +137,15 @@ namespace
     struct backend_t
     {
         std::filesystem::path path;
-        std::unique_ptr<ttd::trace> trace;   // for the whole-trace queries
+        std::unique_ptr<ttd::trace> trace;   // for the short whole-trace calls
         std::mutex mtx;                      // guards 'trace'
-        std::string error;
+        text_slot error;
+        // The reader the long queries run on (query_reader), opened on first
+        // use and guarded by its own mutex, so a query that takes seconds
+        // never holds 'mtx' and with it the module and thread lists IDA asks
+        // for at every stop.
+        std::unique_ptr<ttd::trace> query_trace;
+        std::mutex query_mtx;                // guards 'query_trace'
         page_cache pages;                    // shared by this backend's cursors
         // Every thread's span, worked out once at open: the switch table does
         // not change, and the thread list is asked for at every stop.
@@ -120,7 +163,7 @@ namespace
         // What each cached scan skipped (scan_notice), by the same keys, and
         // the last scan's.
         std::map<std::string, std::string> scan_notes;
-        std::string scan_note;
+        text_slot scan_note;
     };
 
     struct cursor_t
@@ -143,7 +186,7 @@ namespace
         bool     recorded = false;                       // fork_record runs once
     };
 
-    std::string g_module_error;     // last_error(NULL)
+    text_slot g_module_error;       // last_error(NULL)
 
     // ------------------------------------------------------------ helpers
 
@@ -245,7 +288,7 @@ namespace
 
     // Run 'body', mapping exceptions onto status codes and 'err'.
     template <typename F>
-    int guarded(std::string &err, F &&body)
+    int guarded(text_slot &err, F &&body)
     {
         try
         {
@@ -253,22 +296,22 @@ namespace
         }
         catch ( const ttd::operation_cancelled & )
         {
-            err = "canceled";
+            err.set("canceled");
             return ITTD_E_CANCELLED;
         }
         catch ( const coded_error &e )
         {
-            err = e.what();
+            err.set(e.what());
             return e.code;
         }
         catch ( const std::exception &e )
         {
-            err = e.what();
+            err.set(e.what());
             return ITTD_E_FAILED;
         }
         catch ( ... )
         {
-            err = "unknown error";
+            err.set("unknown error");
             return ITTD_E_FAILED;
         }
     }
@@ -337,6 +380,38 @@ namespace
         }
         return std::make_unique<ttd::trace>(path);
     }
+
+    // The backend's reader for one long query, held for the query's whole run.
+    //
+    // calls, accesses, regs_at, exceptions and their like run for seconds on
+    // the core's worker thread. On the shared reader under 'mtx' they held up
+    // every main-thread call that takes it -- the module and thread lists
+    // asked for at every stop, the timeline -- so IDA waited on a query it
+    // was only showing a wait box for. They run here instead, on a reader of
+    // their own under 'query_mtx', the way the self-modifying code scan does.
+    // One reader, opened on first use and kept, not one per query: a count
+    // query's second call then finds the chunks its first decoded still
+    // cached, and a reader is too large (decoded checkpoints) to keep several.
+    // Two long queries still run one after the other.
+    class query_reader
+    {
+      public:
+        explicit query_reader(backend_t *b) : m_lock(b->query_mtx)
+        {
+            if ( b->query_trace == nullptr )
+            {
+                b->query_trace = open_trace(b->path);
+                b->query_trace->set_checkpoint_cache_size(kCheckpointsPerReader);
+            }
+            m_trace = b->query_trace.get();
+        }
+
+        ttd::trace &trace() const { return *m_trace; }
+
+      private:
+        std::lock_guard<std::mutex> m_lock;
+        ttd::trace *m_trace = nullptr;
+    };
 
     uint64_t fold_id(const std::string &id)
     {
@@ -434,7 +509,7 @@ namespace
     {
         if ( path == nullptr )
         {
-            g_module_error = "no path";
+            g_module_error.set("no path");
             return nullptr;
         }
         auto b = std::make_unique<backend_t>();
@@ -462,12 +537,12 @@ namespace
 
     const char *last_error(ittd_backend *b)
     {
-        return b == nullptr ? g_module_error.c_str() : B(b)->error.c_str();
+        return b == nullptr ? g_module_error.get() : B(b)->error.get();
     }
 
     const char *scan_notice(ittd_backend *b)
     {
-        return b == nullptr ? "" : B(b)->scan_note.c_str();
+        return b == nullptr ? "" : B(b)->scan_note.get();
     }
 
     int info(ittd_backend *hb, ittd_trace_info *out)
@@ -1091,7 +1166,7 @@ namespace
             std::optional<ttd::access_event> call = entering_call(t, pos, tid, max_back);
             if ( !call )
             {
-                b->error = "no entering call within the search bound";
+                b->error.set("no entering call within the search bound");
                 return ITTD_E_FAILED;
             }
             std::optional<ttd::access_event> entry = t.next_instruction(call->step, tid);
@@ -1215,7 +1290,7 @@ namespace
             std::optional<ttd::access_event> call = entering_call(t, c->position, tid, kNavFrameWalk);
             if ( !call )
             {
-                c->owner->error = "no call entering this frame was found";
+                c->owner->error.set("no call entering this frame was found");
                 return ITTD_E_FAILED;
             }
             uint64_t dest = 0;
@@ -1224,7 +1299,7 @@ namespace
                 std::optional<uint64_t> ret = return_of(t, call->step, tid);
                 if ( !ret )
                 {
-                    c->owner->error = "this frame does not return within the recording";
+                    c->owner->error.set("this frame does not return within the recording");
                     return ITTD_E_FAILED;
                 }
                 dest = *ret;                // just after the ret
@@ -1376,7 +1451,8 @@ namespace
     //
     // Each runs the Sogen query, holds the whole answer, and copies out what
     // fits. A count query's two calls therefore run the query twice; the
-    // second is cheap because the decoded chunks are cached in the trace.
+    // second is cheap because the decoded chunks are cached in the reader.
+    // The long ones run on the query reader (query_reader), not under 'mtx'.
 
     void set_truncated(int *out_truncated, size_t have, size_t cap, bool buf_given)
     {
@@ -1393,8 +1469,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            ttd::trace &t = reader.trace();
             uint64_t s0 = 0, s1 = 0;
             step_range(t, when, &s0, &s1);
             std::vector<ttd::access_event> ev = t.accesses(lo, hi - lo, s0, s1, sogen_mask(kinds), control(progress));
@@ -1422,8 +1498,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            ttd::trace &t = reader.trace();
             std::set<uint64_t> seen;
             ttd::operation_control ctl = control(progress);
             for ( size_t i = 0; i < nranges; i++ )
@@ -1580,8 +1656,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            ttd::trace &t = reader.trace();
             uint64_t s0 = 0, s1 = 0;
             step_range(t, when, &s0, &s1);
             std::vector<ttd::call_event> all;
@@ -1642,13 +1718,13 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
+            query_reader reader(b);
             std::vector<std::pair<uint64_t, uint64_t>> r;
             for ( size_t i = 0; i < nranges; i++ )
                 if ( ranges[i].end > ranges[i].start )
                     r.emplace_back(ranges[i].start, ranges[i].end - ranges[i].start);
             std::vector<ttd::indirect_branch> v =
-                b->trace->indirect_branches(r, (flags & ITTD_INDIRECT_JUMPS) != 0, control(progress));
+                reader.trace().indirect_branches(r, (flags & ITTD_INDIRECT_JUMPS) != 0, control(progress));
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [](const ttd::indirect_branch &e)
             {
@@ -1671,8 +1747,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            std::vector<ttd::exception_event> v = b->trace->exceptions(control(progress));
+            query_reader reader(b);
+            std::vector<ttd::exception_event> v = reader.trace().exceptions(control(progress));
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [](const ttd::exception_event &e)
             {
@@ -1740,8 +1816,8 @@ namespace
             const uint64_t need = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::execute;
             if ( (t.access_mask() & need) != need )
             {
-                b->error = "this recording was made without write or execute events, "
-                           "which finding self-modifying code needs";
+                b->error.set("this recording was made without write or execute events, "
+                             "which finding self-modifying code needs");
                 return ITTD_E_FAILED;
             }
             std::vector<ttd::self_modifying_hit> v = t.self_modifying_code(control(progress));
@@ -1854,7 +1930,7 @@ namespace
             f->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             if ( !resolve(*f->trace, at_pos, &f->position) )
             {
-                b->error = "that position is not in the recording";
+                b->error.set("that position is not in the recording");
                 return ITTD_E_NO_POSITION;
             }
             bool strict = false;
@@ -2425,7 +2501,7 @@ namespace
                 }
                 found = b->strings.emplace(key, std::move(v)).first;
             }
-            b->scan_note = b->scan_notes[key];
+            b->scan_note.set(b->scan_notes[key]);
             set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
             return fill(found->second, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
         });
@@ -2502,7 +2578,7 @@ namespace
                 }
                 found = b->buffers.emplace(key, std::move(v)).first;
             }
-            b->scan_note = b->scan_notes[key];
+            b->scan_note.set(b->scan_notes[key]);
             set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
             return fill(found->second, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
         });
@@ -2611,8 +2687,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            ttd::trace &t = reader.trace();
             ttd::operation_control ctl = control(progress);
             uint64_t s0 = 0, s1 = 0;
             step_range(t, when, &s0, &s1);
@@ -2719,11 +2795,11 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            const ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            const ttd::trace &t = reader.trace();
             if ( !t.has_memory_regions() )
             {
-                b->error = "this trace was recorded before Sogen recorded the memory map";
+                b->error.set("this trace was recorded before Sogen recorded the memory map");
                 return ITTD_E_UNSUPPORTED;
             }
             const std::vector<ttd::memory_region> &v = t.memory_regions().regions;
@@ -2763,7 +2839,7 @@ namespace
                 if ( it != sys.end() && it->step == r.step )
                 {
                     m.call_pos = before_step(it->step);
-                    syscall_chain(*b->trace, it->step, m.tid, mods, &m);
+                    syscall_chain(reader.trace(), it->step, m.tid, mods, &m);
                 }
                 return m;
             });
@@ -2795,8 +2871,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            ttd::trace &t = reader.trace();
             ttd::operation_control ctl = control(progress);
             // The positions that exist, in position order, each with the slot
             // its registers go to. Positions that do not exist keep have == 0.
