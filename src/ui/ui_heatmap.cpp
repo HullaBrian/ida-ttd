@@ -14,6 +14,10 @@ namespace idattd
     static const uint32_t kHeatSlices    = 256;
 
     static qstring g_heatJson;
+    // Where each slice of the counted span starts, and where the span ends,
+    // for placing the current position without re-asking the backend.
+    static std::vector<Position> g_heatStarts;
+    static Position              g_heatEnd = Position::none();
 
     const qstring &heatmap_json()
     {
@@ -30,14 +34,17 @@ namespace idattd
         ITraceBackend *b = mgr->backend();
         qstring j;
         j.sprnt("{\"page_shift\":%u,\"slices\":%u,\"starts\":[", kHeatPageShift, kHeatSlices);
+        g_heatStarts.clear();
         for ( uint32_t s = 0; s < kHeatSlices; s++ )
         {
             if ( s != 0 )
                 j.append(',');
             Position p = b->heat_window_slice_position(kHeatSlices, s, when);
+            g_heatStarts.push_back(p);
             json_str(&j, p.is_valid() ? format_position(p).c_str() : "");
         }
         Position end = when.last == Position::end() ? b->info().last : when.last;
+        g_heatEnd = end;
         j.append("],\"end\":");
         json_str(&j, end.is_valid() ? format_position(end).c_str() : "");
         j.cat_sprnt(",\"whole\":%s,\"can_zoom\":%s",
@@ -115,6 +122,27 @@ namespace idattd
         }
         g_heatJson = heat_json(mgr, cells, when);
         return true;
+    }
+
+    int heatmap_current_slice(TraceManager *mgr)
+    {
+        if ( mgr == nullptr || !mgr->is_active() || g_heatStarts.empty() || !g_heatEnd.is_valid() )
+            return -1;
+        const Position cur = mgr->current_position();
+        if ( !cur.is_valid() || !g_heatStarts[0].is_valid() || cur < g_heatStarts[0] || g_heatEnd < cur )
+            return -1;
+        // The last slice whose start is at or before the position. Slice
+        // starts are in order; an unknown one (none) is skipped over.
+        int found = 0;
+        for ( size_t s = 1; s < g_heatStarts.size(); s++ )
+        {
+            if ( !g_heatStarts[s].is_valid() )
+                continue;
+            if ( cur < g_heatStarts[s] )
+                break;
+            found = (int)s;
+        }
+        return found;
     }
 
     int idaapi HeatmapHandler::activate(action_activation_ctx_t *)

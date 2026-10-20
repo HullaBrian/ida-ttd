@@ -1292,6 +1292,19 @@ namespace idattd
         out.raw("heat", j);
     }
 
+    // Which slice of the heatmap's span the cursor is in, for the window's
+    // position marker; polled by the window, so cheap, and "busy" rather
+    // than an answer while the replay is moving (the cursor is mid-move).
+    static void cmd_ui_heatnow(const Args &, JObj &out)
+    {
+        if ( get_process_state() != DSTATE_SUSP )
+        {
+            out.boolean("busy", true);
+            return;
+        }
+        out.num("slice", heatmap_current_slice(&mgr()));
+    }
+
     // Count the heatmap again over a span (FROM TO), or over the whole
     // recording (no arguments), and hand the window the new counts.
     static void cmd_ui_heatzoom(const Args &a, JObj &out)
@@ -1725,6 +1738,7 @@ namespace idattd
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
         { "ui.calltree",    cmd_ui_calltree,    "the call tree last built by the TTD menu (for its window)" },
         { "ui.heat",        cmd_ui_heat,        "the memory heatmap's counts (for its window)" },
+        { "ui.heatnow",     cmd_ui_heatnow,     "the heatmap slice the current position is in (-1: outside the span)" },
         { "ui.heatzoom",    cmd_ui_heatzoom,    "[FROM TO] count the heatmap over a span (none: the whole recording)" },
         { "ui.showbytes",   cmd_ui_showbytes,   "POS EA travel there and show EA in the hex view" },
         { "an.heat",        cmd_an_heat,        "count every access by page and slice of time (the heatmap)" },

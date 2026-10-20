@@ -476,6 +476,9 @@ namespace idattd
     // Count over 'when' (the whole recording by default; part of it when the
     // window zooms in, which only some backends can).
     bool build_heatmap(TraceManager *mgr, qstring *err, PositionRange when = PositionRange{});
+    // The slice of the counted span the cursor's position falls in, -1 when
+    // it is outside the span (or nothing is counted).
+    int heatmap_current_slice(TraceManager *mgr);
 
     // The handles the program opened and closed.
     struct HandlesHandler : public TtdAction

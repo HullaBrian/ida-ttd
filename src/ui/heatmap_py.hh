@@ -10,7 +10,9 @@
 // The span can be narrowed: drag across the columns, or type a start and an
 // end position. Each zoom is a fresh count over that span alone
 // (ttd("ui.heatzoom FROM TO")), so it has the full number of slices however
-// short the span; Back and Whole recording go out again.
+// short the span; Back and Whole recording go out again. A vertical line marks
+// the slice the debugger is standing in (ttd("ui.heatnow"), polled on the UI
+// thread by a QTimer: never from another thread).
 #pragma once
 
 namespace idattd
@@ -72,6 +74,8 @@ def _ida_ttd_heatmap():
             self.image = None
             # [first slice, last slice] while a span is being dragged out.
             self.drag = None
+            # The slice the current position is in, or -1.
+            self.now = -1
             self.setMouseTracking(True)
 
         def set_rows(self, rows, mode):
@@ -162,6 +166,15 @@ def _ida_ttd_heatmap():
                     p.drawText(QtCore.QRect(4, y0 + 1, GUTTER - 8, h - 1),
                                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextSingleLine,
                                "0x%X  %s" % (r["page"] << H["shift"], r["label"]))
+            # Where the debugger stands: a line down the middle of its slice,
+            # dark-edged so it shows on any cell colour.
+            if 0 <= self.now < H["slices"]:
+                x = GUTTER + (2 * self.now + 1) * w // (2 * H["slices"])
+                y0, y1 = ev.rect().top(), ev.rect().bottom()
+                p.setPen(QtGui.QPen(QtGui.QColor(0, 0, 0), 3))
+                p.drawLine(x, y0, x, y1)
+                p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1))
+                p.drawLine(x, y0, x, y1)
             # The span being dragged out, over every row in view.
             if self.drag is not None:
                 a, b = sorted(self.drag)
@@ -284,6 +297,22 @@ def _ida_ttd_heatmap():
             self.parent.setLayout(layout)
             self.show_span()
             self.refresh()
+            self.timer = QtCore.QTimer(self.parent)
+            self.timer.timeout.connect(self.poll_now)
+            self.timer.start(500)
+            self.poll_now()
+
+        def poll_now(self):
+            try:
+                r = ttd("ui.heatnow")
+            except Exception:
+                return
+            if not r.get("ok") or r.get("busy"):
+                return              # moving, or no session: keep the last mark
+            s = r.get("slice", -1)
+            if s != self.canvas.now:
+                self.canvas.now = s
+                self.canvas.update()
 
         def show_span(self):
             self.span_from.setText(H["starts"][0] if H["starts"] else "")
@@ -307,6 +336,7 @@ def _ida_ttd_heatmap():
             load(r["heat"])
             self.show_span()
             self.refresh()
+            self.poll_now()
             return True
 
         def zoom(self, first, last):
@@ -351,6 +381,7 @@ def _ida_ttd_heatmap():
                 len(rows), len(pages), H["slices"], "the recording" if H["whole"] else "this span"))
 
         def OnClose(self, form):
+            self.timer.stop()
             _forms.pop(title, None)
 
     global _ida_ttd_heatmap_forms
