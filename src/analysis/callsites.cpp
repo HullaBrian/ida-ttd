@@ -67,6 +67,26 @@ namespace idattd
     // its name -- an API export such as CreateFileW. IDA names a second
     // export of a name already taken with a "_0"-style suffix, which is not
     // part of the API's name.
+    // Make sure the database has the Windows SDK type library, which holds
+    // the prototypes of user-mode APIs. Databases made by ttd-loader before it
+    // added one have only whatever IDA guessed, often the kernel DDK's, where
+    // no user-mode API is found. Loaded once, the way IDA's PE loader would
+    // have; true when it was missing and is now there.
+    static bool add_sdk_til()
+    {
+        const til_t *ti = get_idati();
+        for ( int i = 0; ti != nullptr && i < ti->nbases; i++ )
+            if ( ti->base[i] != nullptr && ti->base[i]->name != nullptr
+              && strncmp(ti->base[i]->name, "mssdk", 5) == 0 )
+                return false;           // already there: nothing to retry
+        const char *name = inf_is_64bit() ? "mssdk64_win10" : "mssdk_win10";
+        if ( add_til(name, ADDTIL_DEFAULT) != ADDTIL_OK )
+            return false;
+        msg("[ida-ttd] loaded the %s type library for API prototypes (this "
+            "database did not have the Windows SDK's).\n", name);
+        return true;
+    }
+
     static bool callee_type(TraceManager *mgr, ea_t target, tinfo_t *out)
     {
         if ( get_tinfo(out, target) && out->is_func() )
@@ -93,6 +113,12 @@ namespace idattd
             if ( get_named_type(get_idati(), name.c_str(), NTF_SYMU, &type, &fields) > 0
               && out->deserialize(get_idati(), &type, &fields) && out->is_func() )
                 return true;
+            // Not found, and the SDK library was missing: try again with it.
+            if ( add_sdk_til() )
+            {
+                pass--;
+                continue;
+            }
             ssize_t us = name.rfind('_');
             if ( us <= 0 || (size_t)us + 1 >= name.length() )
                 return false;

@@ -354,6 +354,12 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     inf_set_dll(false);
     set_imagebase(mainBase);
     set_compiler_id(COMP_MS);
+    // The Windows SDK type library, as IDA's own PE loader would choose. Left
+    // to itself IDA guessed the kernel DDK's (ntddk64_win7 on a beacon), which
+    // has no user-mode API at all: no CreateFileW, no InternetConnectA, so no
+    // prototype for a resolved call and no typed arguments in the decompiler.
+    // A TTD recording is always of a user-mode process.
+    add_til(is64 ? "mssdk64_win10" : "mssdk_win10", ADDTIL_DEFAULT);
 
     // ---- segments --------------------------------------------------------
     // One flat selector for the whole image: this is a 32/64-bit PC program,
