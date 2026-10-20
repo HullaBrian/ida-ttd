@@ -1,6 +1,7 @@
 // Saved trace positions: the listing, the name/comment form and the two actions.
 #include "ui/ui.h"
 #include "ui/names.h"
+#include "analysis/trace_store.h"
 
 namespace idattd
 {
@@ -46,9 +47,10 @@ namespace idattd
             warning("Bookmarks are only available while replaying a trace.");
             return false;
         }
-        b.pos = mgr->current_position();
-        b.ea  = mgr->current_pc_ea();
-        b.tid = (uint32_t)get_current_thread();
+        b.pos   = mgr->current_position();
+        b.ea    = mgr->current_pc_ea();
+        b.tid   = (uint32_t)get_current_thread();
+        b.trace = current_trace();
         // A default label so a bookmark dropped without typing anything still
         // says something useful in the list.
         if ( b.ea != BADADDR )
@@ -69,7 +71,7 @@ namespace idattd
     }
 
     void idaapi BookmarkChooser::get_row(qstrvec_t *cols, int * /*icon*/,
-                                         chooser_item_attrs_t * /*attrs*/, size_t n) const
+                                         chooser_item_attrs_t *attrs, size_t n) const
     {
         const Bookmark *b = m_store != nullptr ? m_store->at(n) : nullptr;
         if ( b == nullptr )
@@ -87,6 +89,15 @@ namespace idattd
             cols->at(4).resize(nl);
             cols->at(4).append(" ...");
         }
+        // Kept in the list (it is still the analyst's note, and the recording
+        // it belongs to may be opened again), but marked: its position names
+        // a point in a different execution.
+        if ( b->from_other_recording() )
+        {
+            cols->at(3).insert(0, "(other recording) ");
+            if ( attrs != nullptr )
+                attrs->flags |= CHITEM_GRAY;
+        }
     }
 
     ea_t idaapi BookmarkChooser::get_ea(size_t n) const
@@ -98,8 +109,16 @@ namespace idattd
     chooser_t::cbret_t idaapi BookmarkChooser::enter(size_t n)
     {
         const Bookmark *b = m_store != nullptr ? m_store->at(n) : nullptr;
-        if ( b != nullptr )
-            travel_to(m_mgr, b->pos);
+        if ( b == nullptr )
+            return cbret_t(n, NOTHING_CHANGED);
+        if ( b->from_other_recording() )
+        {
+            warning("This bookmark was made in a different recording (re-recorded "
+                    "since, or a fork), so its position does not name the same "
+                    "point in this one. Open that recording to travel to it.");
+            return cbret_t(n, NOTHING_CHANGED);
+        }
+        travel_to(m_mgr, b->pos);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

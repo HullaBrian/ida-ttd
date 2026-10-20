@@ -1,4 +1,5 @@
 #include "analysis/bookmarks.h"
+#include "analysis/trace_store.h"
 #include "common/dbstore.h"
 
 namespace idattd
@@ -13,10 +14,13 @@ namespace idattd
     // data that has to survive the plugin changing shape around it, and the
     // reader below rejects anything it does not recognise rather than guessing.
     //   u32 magic, u32 version, u32 count
-    //   count * { u64 sequence, u64 steps, u64 ea, u32 tid, str name, str comment }
+    //   count * { u64 sequence, u64 steps, u64 ea, u32 tid, str name, str comment,
+    //             u64 trace (version 2 on) }
     // where str = u32 length followed by that many bytes, no terminator.
+    // Version 1 records are still read, their marks with no recording; the
+    // next change writes the list back as version 2.
     static const uint32_t BM_MAGIC   = 0x4B4D4254;  // 'TBMK'
-    static const uint32_t BM_VERSION = 1;
+    static const uint32_t BM_VERSION = 2;
 
     // A bookmark list is small, but the blob is IDB data and IDB data can be
     // stale, truncated or written by something else entirely, so the count is
@@ -44,7 +48,8 @@ namespace idattd
         uint32_t magic   = r.u32();
         uint32_t version = r.u32();
         uint32_t count   = r.u32();
-        if ( !r.ok() || magic != BM_MAGIC || version != BM_VERSION || count > BM_MAX_ITEMS )
+        if ( !r.ok() || magic != BM_MAGIC || version < 1 || version > BM_VERSION
+          || count > BM_MAX_ITEMS )
         {
             msg("[ida-ttd] the bookmark record in this database is not one this "
                 "build understands; leaving it untouched.\n");
@@ -61,6 +66,8 @@ namespace idattd
             uint32_t tid   = r.u32();
             r.str(&b.name);
             r.str(&b.comment);
+            if ( version >= 2 )
+                b.trace = r.u64();
             if ( !r.ok() )
             {
                 msg("[ida-ttd] the bookmark record ends early; recovered %d of %d "
@@ -108,8 +115,15 @@ namespace idattd
             w.u32(b.tid);
             w.str(b.name);
             w.str(b.comment);
+            w.u64(b.trace);
         }
         nn.setblob(w.data(), w.size(), BM_IDX, BM_TAG);
+    }
+
+    bool Bookmark::from_other_recording() const
+    {
+        uint64_t now = current_trace();
+        return trace != 0 && now != 0 && trace != now;
     }
 
     size_t BookmarkStore::size()

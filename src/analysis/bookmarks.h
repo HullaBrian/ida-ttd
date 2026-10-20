@@ -15,6 +15,15 @@ namespace idattd
         uint32_t              tid = 0;
         qstring               name;
         qstring               comment;
+        // The recording it was made in (trace_store's fingerprint), so a mark
+        // left in a recording that has since been re-recorded, or in a fork
+        // opened in the same database, is not taken for a position in this
+        // one. Zero: not known (saved before marks carried it, or made with
+        // no fingerprint), and then it is trusted, as trace_store does.
+        uint64_t              trace = 0;
+
+        // Made in a different recording from the one open now.
+        bool from_other_recording() const;
     };
 
     // Bookmarks live in the IDB, not in the trace: they are the analyst's notes
