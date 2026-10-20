@@ -98,8 +98,16 @@ namespace idattd
     static void append_ttd_comments(simpleline_t &sl, const std::vector<ea_t> &eas,
                                     std::set<ea_t> &already)
     {
+        // Already on this line, painted by an earlier pass over the same text
+        // (every open or refresh of a cached view paints again). Its call
+        // sites still count as annotated: left out of `already`, the next
+        // line naming the same call -- an argument printed on its own line --
+        // would take the note too, one more line down the call per repaint.
         if ( strstr(sl.line.c_str(), TTD_CMT_MARK) != nullptr )
-            return;                          // already on this line
+        {
+            already.insert(eas.begin(), eas.end());
+            return;
+        }
 
         // Every address on the line can carry one, and a line with two indirect
         // calls in it wants both. Identical notes are shown once.
