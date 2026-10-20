@@ -6,8 +6,7 @@ legal advice; where a point is a reading rather than a fact, it says so.
 The goal: ship the plugin with **both** backends, and let people use it at
 work. Short answer: **both can ship, and both can be used commercially.** The
 Microsoft backend needs nothing further. The Sogen backend ships as a GPL-2.0
-binary with its source, after one licensing change only the owner can make
-(below, "Before the Sogen backend ships").
+binary with its source (below, "Before the Sogen backend ships").
 
 ## What is in each binary
 
@@ -57,7 +56,9 @@ from the link inputs, the CMake build and the symbols in its PDB:
 | zstd | BSD OR GPL-2.0 | notice required |
 | base64, reflect (headers) | MIT | |
 | Vulkan-Headers (headers) | Apache-2.0 OR MIT | |
-| ida-ttd: `sogen_backend.cpp`, `write_scans.h` | Apache-2.0 today | see below |
+| ida-ttd: `sogen_backend.cpp` | GPL-2.0-only (since 2026-10-20) | |
+| ida-ttd: `write_scans.h` | Apache-2.0 OR GPL-2.0-only (since 2026-10-20) | taken under GPL here |
+| ida-ttd: `ida_ttd_backend.h` | CC0-1.0 | |
 
 Two dependencies looked like problems and are not in the DLL: **minidump_cpp**
 (no license at all; GitHub reports none) and **flatbuffers** (Apache-2.0,
@@ -83,19 +84,13 @@ permits commercial use.
 
 ## Before the Sogen backend ships
 
-1. **Relicense the two ida-ttd files compiled into it (owner's decision).**
-   `write_scans.h` and `sogen_backend.cpp` are Apache-2.0. The FSF holds
-   Apache-2.0 incompatible with GPL-2.0, so as things stand the GPL-2.0-only
-   DLL contains code no license lets it carry. The owner holds the copyright,
-   so the fix is a header, for example:
-   - `sogen_backend.cpp`: `SPDX-License-Identifier: GPL-2.0-only`. It is only
-     ever built into the GPL binary.
-   - `write_scans.h`: `SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only`.
-     The MS backend keeps using it under Apache-2.0.
-
-   `docs/modular-backends.md` section 3 also says a backend "includes one
-   public-domain header". That was true until `write_scans.h` was shared. It
-   should be updated together with the headers.
+1. **Done 2026-10-20: the two ida-ttd files compiled into it are relicensed.**
+   They were Apache-2.0, which the FSF holds incompatible with GPL-2.0. Now
+   `sogen_backend.cpp` is GPL-2.0-only (it is only ever built into the GPL
+   binary), and `write_scans.h` is Apache-2.0 OR GPL-2.0-only. GPL-only would
+   have made the Microsoft backend, which compiles it too, a GPL binary. The
+   GPL text is in `LICENSES/GPL-2.0-only.txt`. Everything else in the
+   repository is Apache-2.0, apart from the ABI header (CC0).
 2. **Distribute the source with the binary.** GPL-2.0 section 3: the DLL goes
    out with the complete corresponding source, or a written offer good for
    three years. The source is:

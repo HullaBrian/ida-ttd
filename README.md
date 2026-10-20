@@ -322,7 +322,13 @@ it is used.
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE). The API metadata in `data/` is derived
+Apache 2.0. See [LICENSE](LICENSE). Two files are licensed otherwise: the
+Sogen backend (`src/backend-sogen/sogen_backend.cpp`) is GPL-2.0-only, because
+Sogen is and it is only ever built against it, and the scanners it shares with
+the Microsoft backend (`src/common/write_scans.h`) are Apache-2.0 OR
+GPL-2.0-only; see [LICENSES/GPL-2.0-only.txt](LICENSES/GPL-2.0-only.txt) and
+[docs/licensing.md](docs/licensing.md). The backend ABI header is CC0. The
+plugin package contains no GPL code. The API metadata in `data/` is derived
 from win32metadata and phnt, both MIT; their notices are in
 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which the package
 carries too.

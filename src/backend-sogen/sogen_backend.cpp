@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0-only
+//
 // ida-ttd backend for Sogen time-travel traces (.sogttd).
 //
 // A separate DLL, loaded by the ida-ttd core through the flat C ABI in
@@ -6,8 +8,9 @@
 // sees an IDA type. See docs/modular-backends.md section 6 for how each entry
 // point maps onto Sogen.
 //
-// Sogen is GPL-2.0-only, so a built ida-ttd-sogen.dll is a GPL-2.0 binary. This
-// source is what that binary is built from.
+// Sogen is GPL-2.0-only, so a built ida-ttd-sogen.dll is a GPL-2.0 binary, and
+// this file, which is only ever built into it, is GPL-2.0-only too
+// (LICENSES/GPL-2.0-only.txt), unlike the rest of ida-ttd (Apache-2.0).
 //
 // Conventions that run through the whole file:
 //

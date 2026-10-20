@@ -153,7 +153,9 @@ The consequences are what matter:
   entirely — this is the decisive point, and it is why the ABI is C rather
   than the C++ interface an in-process design would have used.
 - **A backend never links the core either.** It exports one function and
-  includes one public-domain header. So there is no Apache/GPL link to
+  includes one public-domain header. (Since then the Sogen backend also
+  compiles `common/write_scans.h`, which is dual-licensed Apache-2.0 OR
+  GPL-2.0-only for that reason; see `docs/licensing.md`.) So there is no Apache/GPL link to
   reconcile, and problem (1) reduces to the familiar question of whether a
   plugin is a derivative of its host.
 - **On that question**, the mitigations are the conventional ones and they all

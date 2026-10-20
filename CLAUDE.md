@@ -53,6 +53,9 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   GPL-2.0 and the Microsoft backend that compiles them ships under
   Apache-2.0. Never copy code from Sogen into anything outside
   `src/backend-sogen/`; change a rule in the document, then the code.
+  `write_scans.h` is Apache-2.0 OR GPL-2.0-only and `sogen_backend.cpp`
+  GPL-2.0-only (SPDX headers); everything else stays Apache-2.0, so code
+  shared with the Sogen backend must not pull in more of the plugin.
 - **`src/common/apimeta/`** + **`data/*.bin`**: the Win32/phnt API metadata
   indexes and their loader, ported from ttd-capa-cpp (same author, Apache-2.0;
   keep them close to the original). `debugger/apidecode` decodes a call's

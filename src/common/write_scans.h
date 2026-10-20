@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0 OR GPL-2.0-only
+//
+// Dual-licensed, unlike the rest of ida-ttd: compiled into the Microsoft
+// backend, which ships under Apache-2.0 (LICENSE), and into the Sogen backend,
+// which is GPL-2.0-only because Sogen is (LICENSES/GPL-2.0-only.txt). Each
+// takes it under its own license.
+//
 // The string and buffer scanners both backends feed: the Microsoft backend
 // from its watchpoint replays, the Sogen backend from recorded write events.
 // This implements docs/scan-rules.md and is written from that description,
