@@ -198,6 +198,23 @@ namespace idattd
         return 1;
     }
 
+    int idaapi InstallSogenHandler::activate(action_activation_ctx_t *)
+    {
+        extlang_object_t py = find_extlang_by_name("Python");
+        if ( py == nullptr || py->eval_snippet == nullptr )
+        {
+            warning("Installing the Sogen backend needs IDAPython, which is not available.\n\n"
+                    "Copy ida-ttd-sogen.dll to plugins\\ida-ttd-backends\\ in your IDA user "
+                    "directory instead, and restart IDA.");
+            return 1;
+        }
+        qstring err;
+        if ( !py->eval_snippet("import ida_ttd_runtime\n"
+                               "ida_ttd_runtime.install_sogen()\n", &err) )
+            warning("Installing the Sogen backend failed: %s", err.c_str());
+        return 1;
+    }
+
     //=======================================================================
     // Travel, then show memory in the hex view
     //=======================================================================

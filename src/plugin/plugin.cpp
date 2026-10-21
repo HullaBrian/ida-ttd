@@ -54,6 +54,9 @@ namespace idattd
     static const char *SUB_CODE     = "TTDCode";
     static const char *SUB_ANALYSIS = "TTDAnalysis";
     static const char *SUB_FORKS    = "TTDForks";
+    // Not a session submenu: always there, last, built by rebuild_ttd_menu().
+    static const char *SUB_BACKENDS       = "TTDBackends";
+    static const char *SUB_BACKENDS_LABEL = "Backends";
     struct SubmenuDesc
     {
         const char *name;
@@ -74,6 +77,7 @@ namespace idattd
     {
         "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2",
     };
+    static const char SUB_BACKENDS_SEP[] = "idattd:menu_sep_backends";
     struct MenuSepHandler : public action_handler_t
     {
         int idaapi activate(action_activation_ctx_t *) override { return 0; }
@@ -256,15 +260,27 @@ namespace idattd
         // After hide_actions(): it closes pseudocode views of runtime-allocated
         // code, and that check is a no-op once the Hex-Rays hook is gone.
         term_decompiler();
+        // The TTD menu outlives sessions but not the plugin.
+        delete_menu(SUB_BACKENDS);
+        for ( const SubmenuDesc &s : TTD_SUBMENUS )
+            delete_menu(s.name);
+        delete_menu(TTD_MENU);
         if ( m_attachRegistered )
         {
-            detach_action_from_menu("Debugger/", actions::ATTACH_TRACE);
             unregister_action(actions::ATTACH_TRACE);
-            detach_action_from_menu("Debugger/", actions::AUTO_START);
             unregister_action(actions::AUTO_START);
-            detach_action_from_menu("Debugger/", actions::INSTALL_RUNTIME);
-            unregister_action(actions::INSTALL_RUNTIME);    // a no-op if never registered
             m_attachRegistered = false;
+        }
+        if ( m_menuActionsRegistered )
+        {
+            unregister_action(actions::INSTALL_RUNTIME);
+            unregister_action(actions::INSTALL_SOGEN);
+            unregister_action(actions::BACKEND_HDR_MS);
+            unregister_action(actions::BACKEND_HDR_SOGEN);
+            for ( const char *sep : SUBMENU_SEP_ACTIONS )
+                unregister_action(sep);
+            unregister_action(SUB_BACKENDS_SEP);
+            m_menuActionsRegistered = false;
         }
         for ( int ic : m_icons )
             if ( ic != -1 )
@@ -505,7 +521,7 @@ namespace idattd
 
     // Start replaying the recording this database was created from.
     //
-    // No prompting here: this is the body of the Debugger menu action, where the
+    // No prompting here: this is the body of the TTD menu action, where the
     // user has already said what they want. offer_trace_session() is the one that
     // asks.
     void Plugin::start_trace_session()
@@ -787,39 +803,25 @@ namespace idattd
         if ( !trace_link_read(&link) )
             return;
 
-        // Both actions go on the Debugger menu rather than the TTD menu: the TTD
-        // menu only exists while a session is running, and these are what start
-        // one. Registered here rather than in the constructor because they are
-        // only meaningful for a database that came from a recording.
+        // Both actions go in the part of the TTD menu that is there outside a
+        // session: these are what start one. Registered here rather than in
+        // the constructor because they are only meaningful for a database
+        // that came from a recording.
         if ( !m_attachRegistered )
         {
             m_attachRegistered = true;      // one attempt, whatever it yields
-            if ( register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                     actions::ATTACH_TRACE, "Start the TTD replay for this database",
-                     &m_attachTrace, this, nullptr, nullptr, -1)) )
-            {
-                attach_action_to_menu("Debugger/", actions::ATTACH_TRACE, SETMENU_APP);
-            }
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                actions::ATTACH_TRACE, "Start the TTD replay for this database",
+                &m_attachTrace, this, nullptr, nullptr, -1));
             if ( register_action(ACTION_DESC_LITERAL_PLUGMOD(
                      actions::AUTO_START, "Replay the TTD trace when this database opens",
                      &m_autoStart, this, nullptr, nullptr, -1)) )
             {
-                attach_action_to_menu("Debugger/", actions::AUTO_START, SETMENU_APP);
                 update_action_checkable(actions::AUTO_START, true);
                 update_action_checked(actions::AUTO_START,
                                       trace_link_autostart() != TL_NO);
             }
-            // Only Microsoft recordings need Microsoft's runtime.
-            if ( is_ms_recording(link.trace_path.c_str())
-              && register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                     actions::INSTALL_RUNTIME, "Install the TTD runtime (WinDbg)...",
-                     &m_installRuntime, this, nullptr,
-                     "Get Microsoft's TTD replay runtime, which Microsoft TTD recordings "
-                     "need: copied from an installed WinDbg, or WinDbg downloaded from "
-                     "Microsoft once you accept its license", -1)) )
-            {
-                attach_action_to_menu("Debugger/", actions::INSTALL_RUNTIME, SETMENU_APP);
-            }
+            rebuild_ttd_menu();
         }
 
         // Do this first: whether or not the replay starts, the database should be
@@ -829,7 +831,7 @@ namespace idattd
             select_trace_debugger(link.trace_path.c_str(), true);
 
         // Opening a recording is a request to replay it, so nothing is asked
-        // here. The Debugger menu carries a toggle for anyone who wants to open
+        // here. The TTD menu carries a toggle for anyone who wants to open
         // the database without starting a session.
         if ( trace_link_autostart() == TL_NO )
             return;
@@ -842,7 +844,7 @@ namespace idattd
             trace_link_mark_start(false);
             msg("[ida-ttd] the last automatic replay start for this database did "
                 "not finish, so it was not repeated. Start it by hand from "
-                "Debugger > Start the TTD replay for this database, or leave it "
+                "TTD > Start the TTD replay for this database, or leave it "
                 "off with the toggle beside it.\n");
             return;
         }
@@ -874,8 +876,51 @@ namespace idattd
         update_action_checkable(actions::INDIRECT_AUTO, true);
         update_action_checked(actions::INDIRECT_AUTO, callsites_auto_enabled());
 
-        // Top-level TTD menu, created before anything is attached to it.
-        //
+        m_actionsRegistered = true;
+        rebuild_ttd_menu();
+    }
+
+    void Plugin::rebuild_ttd_menu()
+    {
+        // A headless idalib worker has no menus to build.
+        if ( !is_idaq() )
+            return;
+
+        // The actions that belong to the menu rather than to a session, once.
+        if ( !m_menuActionsRegistered )
+        {
+            m_menuActionsRegistered = true;
+            for ( const char *sep : SUBMENU_SEP_ACTIONS )
+                register_action(ACTION_DESC_LITERAL_PLUGMOD(sep, "-", &g_menuSep, this,
+                                                            nullptr, nullptr, -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(SUB_BACKENDS_SEP, "-", &g_menuSep, this,
+                                                        nullptr, nullptr, -1));
+            // Section headings: always disabled, so they read as labels.
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                actions::BACKEND_HDR_MS, "Microsoft TTD", &g_menuSep, this, nullptr, nullptr, -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                actions::BACKEND_HDR_SOGEN, "Sogen", &g_menuSep, this, nullptr, nullptr, -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                actions::INSTALL_RUNTIME, "Install the TTD runtime (WinDbg)...",
+                &m_installRuntime, this, nullptr,
+                "Get Microsoft's TTD replay runtime, which Microsoft TTD recordings "
+                "need: copied from an installed WinDbg, or WinDbg downloaded from "
+                "Microsoft once you accept its license", -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                actions::INSTALL_SOGEN, "Install the Sogen backend...",
+                &m_installSogen, this, nullptr,
+                "Install the backend that opens Sogen recordings (.sogttd) and records "
+                "forks: ida-ttd-sogen.dll, or a release zip holding it, copied into "
+                "plugins\\ida-ttd-backends in your IDA user directory", -1));
+        }
+
+        // From scratch, in order. Deleting a menu takes its items with it;
+        // the actions stay registered.
+        delete_menu(SUB_BACKENDS);
+        for ( const SubmenuDesc &s : TTD_SUBMENUS )
+            delete_menu(s.name);
+        delete_menu(TTD_MENU);
+
         // create_menu() must run first: attach_action_to_menu() resolves its path
         // against menus that already exist and uses it only to position the item,
         // so attaching to "TTD/..." before the menu exists silently does nothing.
@@ -884,6 +929,43 @@ namespace idattd
         // existing menu, or a path to a menu item, and nest TTD inside it. With
         // none given, IDA appends the menu to the menu bar.
         create_menu(TTD_MENU, "TTD");
+        bool above = false;     // anything in the menu yet, to separate from
+
+        if ( m_actionsRegistered )
+        {
+            attach_session_menu();
+            above = true;
+        }
+
+        if ( m_attachRegistered )
+        {
+            attach_action_to_menu(TTD_MENU_PATH, actions::ATTACH_TRACE,
+                                  SETMENU_APP | (above ? SETMENU_ENSURE_SEP : 0));
+            attach_action_to_menu(TTD_MENU_PATH, actions::AUTO_START, SETMENU_APP);
+            above = true;
+        }
+
+        // Backends, one section per backend with a separator between them.
+        // A separator goes above a menu item, not above a submenu: the one
+        // above Backends is a hidden action just above it.
+        if ( above )
+        {
+            attach_action_to_menu(TTD_MENU_PATH, SUB_BACKENDS_SEP, SETMENU_APP | SETMENU_ENSURE_SEP);
+            update_action_visibility(SUB_BACKENDS_SEP, false);
+        }
+        create_menu(SUB_BACKENDS, SUB_BACKENDS_LABEL, TTD_MENU_PATH);
+        qstring bpath;
+        bpath.sprnt("%s%s/", TTD_MENU_PATH, SUB_BACKENDS_LABEL);
+        attach_action_to_menu(bpath.c_str(), actions::BACKEND_HDR_MS, SETMENU_APP);
+        attach_action_to_menu(bpath.c_str(), actions::INSTALL_RUNTIME, SETMENU_APP);
+        attach_action_to_menu(bpath.c_str(), actions::BACKEND_HDR_SOGEN, SETMENU_APP | SETMENU_ENSURE_SEP);
+        attach_action_to_menu(bpath.c_str(), actions::INSTALL_SOGEN, SETMENU_APP);
+    }
+
+    // The session's part of the TTD menu: every row of the action table that
+    // goes on the menu, in their submenus.
+    void Plugin::attach_session_menu()
+    {
         CASSERT(qnumber(SUBMENU_SEP_ACTIONS) >= qnumber(TTD_SUBMENUS));
         // A recording that cannot be forked (Microsoft's) gets no Forks menu.
         const bool can_fork = can_fork_recording();
@@ -903,9 +985,7 @@ namespace idattd
                     const SubmenuDesc &s = TTD_SUBMENUS[i];
                     if ( strcmp(s.name, open_sub) != 0 )
                         continue;
-                    if ( s.new_group
-                      && register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                             SUBMENU_SEP_ACTIONS[i], "-", &g_menuSep, this, nullptr, nullptr, -1)) )
+                    if ( s.new_group )
                     {
                         attach_action_to_menu(TTD_MENU_PATH, SUBMENU_SEP_ACTIONS[i],
                                               SETMENU_APP | SETMENU_ENSURE_SEP);
@@ -923,8 +1003,6 @@ namespace idattd
         if ( attached != wanted )
             msg("[ida-ttd] only %d of %d TTD menu entries could be attached.\n",
                 attached, wanted);
-
-        m_actionsRegistered = true;
     }
 
     // Drop every TTD action, which also kills their shortcuts and removes them
@@ -933,14 +1011,6 @@ namespace idattd
     {
         if ( !m_actionsRegistered )
             return;
-
-        // Drop the whole menu rather than detaching item by item: unregistering
-        // the actions alone would leave an empty TTD menu behind in the menu bar.
-        for ( const SubmenuDesc &s : TTD_SUBMENUS )
-            delete_menu(s.name);
-        delete_menu(TTD_MENU);
-        for ( const char *sep : SUBMENU_SEP_ACTIONS )
-            unregister_action(sep);
 
         for ( const ActionDesc &d : m_actions )
             unregister_action(d.id);
@@ -952,6 +1022,8 @@ namespace idattd
         m_autoCoverDeclined.clear();
         m_autoCoverFunc = BADADDR;
         m_actionsRegistered = false;
+        // The menu stays, with what is there outside a session.
+        rebuild_ttd_menu();
     }
 
     // Re-skin the native debug-movement actions with the codicon glyphs. IDA
@@ -1578,6 +1650,9 @@ namespace idattd
                 p->try_hook_decompiler();
                 // IDAPython is surely loaded by now.
                 register_python_module();
+                // The TTD menu, with Backends, in every database: the TTD
+                // runtime is needed before a Microsoft recording can open.
+                p->rebuild_ttd_menu();
                 // Starting a debugger session from inside a UI notification is
                 // asking for reentrancy, and the prompt is modal. Hand it back to
                 // the message loop and do it a turn later.

@@ -91,9 +91,15 @@ namespace idattd
 
         // Databases created by the .run loader carry a record naming the
         // recording they came from. When one is present, offer to start
-        // replaying it, and put an action on the Debugger menu so a declined
+        // replaying it, and put an action on the TTD menu so a declined
         // offer is never a dead end. Called once the UI is up.
         void offer_trace_session();
+        // Lay the whole TTD menu out again: the session's items when a
+        // session is running, then the replay-start items of a database made
+        // from a recording, then Backends, which is always there. IDA appends
+        // to a menu and has no reliable "insert before", so every change
+        // rebuilds it in order rather than patching it.
+        void rebuild_ttd_menu();
         // Wait for the database's initial analysis to finish, then offer.
         // Starting a session rebases the program and adds segments, neither of
         // which is safe while the analysis queue is still draining.
@@ -131,6 +137,7 @@ namespace idattd
             return m_mgr.backend() != nullptr && m_mgr.backend()->capabilities().fork;
         }
         void unregister_actions();
+        void attach_session_menu();
         void restore_native_icons();          // give IDA's movement actions their own icons back
         void load_icons();
         void build_action_table();            // fill m_actions (after load_icons)
@@ -189,6 +196,7 @@ namespace idattd
         AttachTraceHandler  m_attachTrace;
         AutoStartHandler    m_autoStart;
         InstallRuntimeHandler m_installRuntime;
+        InstallSogenHandler   m_installSogen;
         // Bookmarks + execution coverage
         AddBookmarkHandler   m_addBookmark;
         OpenBookmarksHandler m_bookmarksView;
@@ -316,9 +324,12 @@ namespace idattd
         // entries are string literals, so storing the pointers is safe.
         std::vector<const char *> m_srcProvidersOff;
         // The "start the replay for this database" action, registered only when
-        // the database actually came from a .run. Unlike every other TTD action
-        // it lives OUTSIDE a session -- it is the thing that starts one.
+        // the database actually came from a .run. Unlike the session's TTD
+        // actions it lives OUTSIDE a session -- it is the thing that starts one.
         bool m_attachRegistered = false;
+        // The Backends actions and the menu separators: registered with the
+        // plugin, not with a session.
+        bool m_menuActionsRegistered = false;
         // A failed debugger switch is worth saying once, not on every try.
         bool m_switchReported   = false;
     };

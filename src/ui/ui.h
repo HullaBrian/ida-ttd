@@ -614,10 +614,10 @@ namespace idattd
         action_state_t idaapi update(action_update_ctx_t *) override;
     };
 
-    // Start the replay for a database that was created from a .run file. This is
-    // the one TTD action that exists while no trace is loaded, so it lives on
-    // the Debugger menu rather than the TTD menu (which the plugin only builds
-    // once a session is running) and is not part of the TTD action table.
+    // Start the replay for a database that was created from a .run file. It
+    // exists while no trace is loaded, so it is not part of the session's
+    // action table: it sits in the part of the TTD menu that is always there
+    // (Plugin::rebuild_ttd_menu).
     struct AttachTraceHandler : public action_handler_t
     {
         // A callback rather than a Plugin*, so nothing under ui/ has to know
@@ -629,8 +629,9 @@ namespace idattd
 
     // Turn the automatic replay start for this database on or off. A database
     // made from a .run starts replaying as soon as it is opened, which is what
-    // opening a recording is for; this is how that is switched off. Lives on
-    // the Debugger menu beside AttachTraceHandler, for the same reason.
+    // opening a recording is for; this is how that is switched off. Lives in
+    // the part of the TTD menu that is there outside a session, beside
+    // AttachTraceHandler, for the same reason.
     struct AutoStartHandler : public action_handler_t
     {
         int  idaapi activate(action_activation_ctx_t *) override;
@@ -639,9 +640,20 @@ namespace idattd
 
     // Get Microsoft's TTD replay runtime, which ida-ttd may not ship: copy it
     // from an installed WinDbg, or download WinDbg after the user accepts its
-    // license (scripts/ida_ttd_runtime.py, through IDAPython). On the
-    // Debugger menu, since it is needed exactly when no session can start.
+    // license (scripts/ida_ttd_runtime.py, through IDAPython). Under TTD >
+    // Backends, which is there in every database: it is needed exactly when
+    // no session can start.
     struct InstallRuntimeHandler : public action_handler_t
+    {
+        int  idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
+    // Install the Sogen backend (GPL-2.0, so not in the Apache-2.0 package)
+    // into $IDAUSR\plugins\ida-ttd-backends\, from a file the user picks: the
+    // DLL, or a release zip that holds it (ida_ttd_runtime.install_sogen()).
+    struct InstallSogenHandler : public action_handler_t
     {
         int  idaapi activate(action_activation_ctx_t *) override;
         action_state_t idaapi update(action_update_ctx_t *) override
@@ -692,5 +704,9 @@ namespace idattd
         constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
         constexpr const char *AUTO_START   = "idattd:auto_start";
         constexpr const char *INSTALL_RUNTIME = "idattd:install_runtime";
+        constexpr const char *INSTALL_SOGEN   = "idattd:install_sogen";
+        // Greyed section headings in TTD > Backends, one per backend.
+        constexpr const char *BACKEND_HDR_MS    = "idattd:backend_hdr_msttd";
+        constexpr const char *BACKEND_HDR_SOGEN = "idattd:backend_hdr_sogen";
     }
 }

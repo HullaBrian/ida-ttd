@@ -155,9 +155,9 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    Without HCLI, download `ida-ttd.zip` from the
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
    it into `plugins\`: it holds one `ida-ttd` folder.
-2. Get the TTD replay runtime: open a `.run`, then choose **Debugger > Install
-   the TTD runtime (WinDbg)...** (or run `import ida_ttd_runtime;
-   ida_ttd_runtime.install_runtime()` in IDAPython). If WinDbg is installed,
+2. Get the TTD replay runtime: with any database open (a `.run` included),
+   choose **TTD > Backends > Install the TTD runtime (WinDbg)...** (or run
+   `import ida_ttd_runtime; ida_ttd_runtime.install_runtime()` in IDAPython). If WinDbg is installed,
    its `amd64\ttd` folder is copied; run it again after WinDbg updates. If not,
    it shows WinDbg's license and, once you accept it, downloads WinDbg's x64
    package (about 390 MB) from Microsoft. Either way the result goes in
@@ -192,9 +192,15 @@ If you installed the trace loader by hand into IDA's own `loaders` folder (besid
 (.run)** (or **Sogen recording**). IDA builds a database from the recording and
 starts replaying it.
 
-To open the database without replaying, turn off **Debugger > Replay the TTD
-trace when this database opens**. **Debugger > Start the TTD replay for this
+To open the database without replaying, turn off **TTD > Replay the TTD
+trace when this database opens**. **TTD > Start the TTD replay for this
 database** starts it again later.
+
+The Sogen backend (for `.sogttd` recordings and forks) is GPL-2.0, so it is not
+in the package: **TTD > Backends > Install the Sogen backend...** installs
+`ida-ttd-sogen.dll`, or a zip holding it, into `plugins\ida-ttd-backends\` in
+your IDA user directory, where plugin upgrades leave it alone. Restart IDA
+afterwards.
 
 If the trace has no index yet, you are asked whether to build one. Building can
 take several minutes. Declining still gives you a database with the right

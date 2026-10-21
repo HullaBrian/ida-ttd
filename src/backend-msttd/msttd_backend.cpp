@@ -101,7 +101,7 @@ namespace idattd
     //    install (plugins\ida-ttd\ida-ttd-backends\ holds this backend):
     //    hcli replaces the package folder on every upgrade, so DLLs copied
     //    into it would vanish, while the shared folder is the user's;
-    //  - the WinDbg that TTD > Install TTD runtime put in
+    //  - the WinDbg that TTD > Backends > Install the TTD runtime put in
     //    $IDAUSR\plugins\ida-ttd-backends\windbg\ (scripts/ida_ttd_runtime.py).
     // An installed WinDbg is not used where it is: Windows refuses to load a
     // DLL from a package folder (WindowsApps) into a process outside the
@@ -163,7 +163,7 @@ namespace idattd
         if ( !load_ttd_runtime() )
             return fail("Microsoft's TTD replay runtime (TTDReplay.dll) was not found.\n\n"
                         "It comes with WinDbg, which ida-ttd may not include. "
-                        "Debugger > Install the TTD runtime (WinDbg)... copies it from an "
+                        "TTD > Backends > Install the TTD runtime (WinDbg)... copies it from an "
                         "installed WinDbg, or downloads WinDbg from Microsoft (in IDAPython: "
                         "import ida_ttd_runtime; ida_ttd_runtime.install_runtime()). "
                         "Then start the debugger again.");

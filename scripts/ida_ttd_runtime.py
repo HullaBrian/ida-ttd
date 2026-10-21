@@ -23,9 +23,12 @@ is downloaded: a zip can be read through HTTP range requests, so the bundle's
 directory, then the license inside the x64 package, then that package
 alone are fetched.
 
-In IDA: TTD > Install TTD runtime..., or install_runtime(). The functions
-below install_runtime() use no IDA module, so the download and unpacking
-can be tried outside IDA.
+In IDA: TTD > Backends > Install the TTD runtime (WinDbg)..., or
+install_runtime(). The functions below install_runtime() use no IDA module,
+so the download and unpacking can be tried outside IDA.
+
+The same menu installs the Sogen backend, which is GPL-2.0 and so not in the
+plugin's package: install_sogen(), at the end of this module.
 """
 
 import ctypes
@@ -592,3 +595,123 @@ def _installed(version, target):
                      "can be replayed now: start the debugger (Debugger > Start process) to begin."
                      % (version, target))
     return target
+
+
+# --------------------------------------------------------------------------
+# The Sogen backend
+#
+# ida-ttd-sogen.dll links Sogen and Unicorn, both GPL-2.0, so it is not in
+# the plugin's Apache-2.0 package: it is installed separately, into the same
+# folder outside the package as the TTD runtime, where plugin upgrades leave
+# it alone and where ida-ttd looks before the package's own folder. From a
+# file the user picks for now: the DLL itself, or a zip that holds it (with
+# its license and notices, which are kept beside it). The functions up to
+# install_sogen() use no IDA module.
+
+SOGEN_DLL = "ida-ttd-sogen.dll"
+SOGEN_LICENSES = "ida-ttd-sogen-licenses"
+# The one symbol every backend exports (src/abi/ida_ttd_backend.h).
+BACKEND_ENTRY = b"ida_ttd_backend\0"
+
+
+def sogen_target():
+    import ida_diskio
+    return os.path.join(ida_diskio.get_user_idadir(), "plugins", "ida-ttd-backends")
+
+
+def _check_backend(data, where):
+    if data[:2] != b"MZ" or BACKEND_ENTRY not in data:
+        raise InstallError("%s is not an ida-ttd backend DLL" % where)
+
+
+def stage_sogen(source, target):
+    """Put the backend from 'source' (the DLL, or a zip holding it) into
+    target/ida-ttd-sogen.dll.new, and any license or notice files the zip
+    has into target/ida-ttd-sogen-licenses.new/. Returns the staged DLL."""
+    os.makedirs(target, exist_ok=True)
+    staged = os.path.join(target, SOGEN_DLL + ".new")
+    lic_dir = os.path.join(target, SOGEN_LICENSES + ".new")
+    shutil.rmtree(lic_dir, ignore_errors=True)
+    if zipfile.is_zipfile(source):
+        with zipfile.ZipFile(source) as z:
+            names = [n for n in z.namelist() if not n.endswith("/")]
+            dlls = [n for n in names if os.path.basename(n).lower() == SOGEN_DLL]
+            if not dlls:
+                raise InstallError("%s holds no %s" % (os.path.basename(source), SOGEN_DLL))
+            data = z.read(dlls[0])
+            _check_backend(data, dlls[0])
+            folder = os.path.dirname(dlls[0])
+            for n in names:
+                base = os.path.basename(n)
+                if os.path.dirname(n) == folder and re.match(r"(?i)(license|copying|notice|third-party)", base):
+                    os.makedirs(lic_dir, exist_ok=True)
+                    with open(os.path.join(lic_dir, base), "wb") as f:
+                        f.write(z.read(n))
+    else:
+        with open(source, "rb") as f:
+            data = f.read()
+        _check_backend(data, os.path.basename(source))
+    with open(staged, "wb") as f:
+        f.write(data)
+    return staged
+
+
+def place_sogen(staged, target):
+    """Move the staged backend (and its licenses) into place. A backend IDA
+    has loaded cannot be overwritten, but it can be renamed: it is moved
+    aside, and removed the next time this runs. Returns True when one was
+    replaced, so IDA needs a restart to use the new one."""
+    final = os.path.join(target, SOGEN_DLL)
+    for old in os.listdir(target):
+        if old.startswith(SOGEN_DLL + ".old"):
+            try:
+                os.remove(os.path.join(target, old))
+            except OSError:
+                pass                    # still loaded by an IDA somewhere
+    replaced = os.path.exists(final)
+    if replaced:
+        try:
+            os.replace(staged, final)
+        except PermissionError:
+            n = 0
+            while os.path.exists("%s.old%d" % (final, n)):
+                n += 1
+            os.rename(final, "%s.old%d" % (final, n))
+            os.replace(staged, final)
+    else:
+        os.replace(staged, final)
+    lic_new = os.path.join(target, SOGEN_LICENSES + ".new")
+    if os.path.isdir(lic_new):
+        lic = os.path.join(target, SOGEN_LICENSES)
+        shutil.rmtree(lic, ignore_errors=True)
+        os.replace(lic_new, lic)
+    return replaced
+
+
+def install_sogen(source=None, target=None):
+    """TTD > Backends > Install the Sogen backend...: install
+    ida-ttd-sogen.dll from a file. Returns where it went, or None."""
+    import ida_kernwin
+    target = target or sogen_target()
+    if source is None:
+        source = ida_kernwin.ask_file(0, "ida-ttd-sogen.dll;*.zip",
+                                      "Choose the Sogen backend (ida-ttd-sogen.dll, or a zip holding it)")
+        if not source:
+            return None
+    try:
+        staged = stage_sogen(source, target)
+        replaced = place_sogen(staged, target)
+    except Exception as e:
+        try:
+            os.remove(os.path.join(target, SOGEN_DLL + ".new"))
+        except OSError:
+            pass
+        ida_kernwin.warning("Installing the Sogen backend failed: %s" % e)
+        return None
+    final = os.path.join(target, SOGEN_DLL)
+    ida_kernwin.msg("[ida-ttd] Installed the Sogen backend in %s; restart IDA to load it.\n" % final)
+    ida_kernwin.info("The Sogen backend is installed in\n%s\n\nRestart IDA to use it%s: "
+                     "backends are loaded when IDA starts. Then Sogen recordings (.sogttd) "
+                     "open like Microsoft ones, and the Forks menu appears for them."
+                     % (final, " (it replaces the one loaded now)" if replaced else ""))
+    return final

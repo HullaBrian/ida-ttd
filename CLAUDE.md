@@ -83,8 +83,11 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 - **`scripts/ida_ttd.py`**: the Python API (`Session`, `Recording`, `call`).
   The build copies it to `ida-ttd-python/` beside the plugin, and the plugin
   puts that folder on IDAPython's `sys.path` when it loads.
-- **`scripts/ida_ttd_runtime.py`**: Debugger > Install the TTD runtime
-  (WinDbg). Copies `amd64\ttd` out of an installed WinDbg, or shows WinDbg's
+- **`scripts/ida_ttd_runtime.py`**: TTD > Backends > Install the TTD runtime
+  (WinDbg), and Install the Sogen backend (from a file the user picks, into
+  `$IDAUSR\plugins\ida-ttd-backends\`). The TTD menu is rebuilt whole
+  (`Plugin::rebuild_ttd_menu`) whenever its contents change: session items,
+  then the replay-start items, then Backends, which every database has. Copies `amd64\ttd` out of an installed WinDbg, or shows WinDbg's
   license and downloads its x64 package from Microsoft (HTTP range reads of
   the bundle), into `$IDAUSR\plugins\ida-ttd-backends\windbg\`, where the MS
   backend looks. Copied beside `ida_ttd.py`. Everything below
