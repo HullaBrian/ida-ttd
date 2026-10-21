@@ -2,6 +2,7 @@
 #include "analysis/query_runner.h"
 #include "debugger/trace_manager.h"
 #include "analysis/fork_registry.h"
+#include "analysis/replay_scans.h"
 
 #include <filesystem>
 
@@ -240,9 +241,14 @@ namespace idattd
             result.error = "this recording's backend cannot fork it";
             return result;
         }
+        // The hives the user chose, or the documented folder, whoever built
+        // the request (the Fork dialog fills it in; a script may not).
+        ForkRequest full = req;
+        if ( full.registry_dir.empty() )
+            full.registry_dir = saved_registry_dir();
         run_query("Forking the recording: replaying to the position, then recording", [&](ProgressSink *p)
         {
-            result = backend->record_fork(req, p);
+            result = backend->record_fork(full, p);
             QueryResult q;
             q.ran = result.ok;
             q.cancelled = result.cancelled;
