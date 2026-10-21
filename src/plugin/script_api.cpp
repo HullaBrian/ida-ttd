@@ -268,8 +268,9 @@ namespace idattd
         return p;
     }
 
-    // One of the words that set up a Sogen replay: registry=DIR, strict or
-    // host. ForkRequest and ReplaySettings name the three fields alike.
+    // One of the words that set up a Sogen replay: registry=DIR, strict, host
+    // or anyregistry (replay with hives that are not the recording's).
+    // ForkRequest and ReplaySettings name the fields alike.
     template <typename T>
     static bool replay_option(const qstring &t, T *s)
     {
@@ -279,6 +280,8 @@ namespace idattd
             s->strict = true;
         else if ( t == "host" )
             s->allow_host = true;
+        else if ( t == "anyregistry" )
+            s->any_registry = true;
         else
             return false;
         return true;
@@ -1093,6 +1096,38 @@ namespace idattd
            .raw("regs", regs.done()).raw("memory", mem.done());
     }
 
+    // an.registry: where the plugin looks for the open recording's hives,
+    // what each place holds, and the folder a replay would use.
+    static void cmd_an_registry(const Args &, JObj &out)
+    {
+        need_session();
+        ITraceBackend *b = mgr().backend();
+        ReplayEnv env;
+        if ( b->replay_env(&env) )
+        {
+            out.boolean("host", env.host).boolean("registry_known", env.registry_known)
+               .str("emulation_root", env.emulation_root).str("registry_hint", env.registry_hint)
+               .str("windows_version", env.windows_version)
+               .str("system_dlls", env.system_dlls == ITTD_DLLS_SAME   ? "same"
+                                 : env.system_dlls == ITTD_DLLS_DIFFER ? "differ" : "unknown");
+        }
+        JArr arr;
+        for ( const qstring &dir : registry_candidates(&mgr()) )
+        {
+            qstring why;
+            HiveCheck c = b->check_registry(dir.c_str(), &why);
+            JObj o;
+            o.str("dir", dir)
+             .str("holds", c == HiveCheck::Match      ? "match"
+                         : c == HiveCheck::Unverified ? "unverified"
+                         : c == HiveCheck::Mismatch   ? "mismatch" : "none");
+            if ( c == HiveCheck::Mismatch )
+                o.str("why", why);
+            arr.add(o.done());
+        }
+        out.raw("candidates", arr.done()).str("chosen", find_registry_dir(&mgr()));
+    }
+
     // an.forks: the forks this database knows of (the Fork manager's graph).
     static void cmd_an_forks(const Args &, JObj &out)
     {
@@ -1168,7 +1203,7 @@ namespace idattd
         {
             const qstring &t = a.at(i);
             if ( !replay_option(t, &req) )
-                fail("'%s' is not registry=DIR, strict or host", t.c_str());
+                fail("'%s' is not registry=DIR, strict, host or anyregistry", t.c_str());
         }
         req.note = "ida-ttd script";
         ForkResult r = run_fork(&mgr(), req);
@@ -1177,7 +1212,8 @@ namespace idattd
             ReplayBlock b = mgr().backend()->last_replay_block();
             fail("the fork failed%s: %s",
                  b == ReplayBlock::HostConsent ? " (needs host)"
-                 : b == ReplayBlock::Registry ? " (needs registry=DIR)" : "",
+                 : b == ReplayBlock::Registry ? " (needs registry=DIR)"
+                 : b == ReplayBlock::RegistryMismatch ? " (wrong hives: registry=DIR or anyregistry)" : "",
                  r.error.c_str());
         }
         out.boolean("cancelled", r.cancelled).num("instructions", (int64_t)r.instructions)
@@ -1189,7 +1225,7 @@ namespace idattd
     static ReplaySettings replay_args(const Args &a, size_t from)
     {
         ReplaySettings rs;
-        rs.registry_dir = saved_registry_dir();
+        rs.registry_dir = find_registry_dir(&mgr());
         for ( size_t i = from; i < a.count(); i++ )
             replay_option(a.at(i), &rs);
         return rs;
@@ -1733,6 +1769,7 @@ namespace idattd
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
+        { "an.registry",    cmd_an_registry,    "where the recording's registry hives are looked for, and what each place holds" },
         { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
         { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },

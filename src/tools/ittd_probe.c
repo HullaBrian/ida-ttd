@@ -1041,6 +1041,57 @@ int main(int argc, char **argv)
         free(sm);
     }
 
+    /* ---- the replay environment -------------------------------------------------
+       What the recording says a replay needs, and whether ITTD_PROBE_FORK_REGISTRY
+       holds its own hives. ITTD_PROBE_OTHER_REGISTRY can name a folder of other
+       hives, which must then be told apart, and refused by a replay. */
+    if ( offsetof(ittd_backend_api, check_registry) + sizeof(api->check_registry) <= api->size
+      && api->replay_env != NULL && api->check_registry != NULL )
+    {
+        ittd_replay_env env;
+        int rc;
+        memset(&env, 0, sizeof(env));
+        env.size = sizeof(env);
+        rc = api->replay_env(B, &env);
+        printf("\nreplay environment: %s, registry %s, root \"%s\", hint \"%s\", Windows \"%s\", system DLLs %s\n",
+               env.host ? "host" : "emulation root", env.registry_known ? "named" : "not named",
+               env.emulation_root, env.registry_hint, env.windows_version,
+               env.system_dlls == ITTD_DLLS_SAME ? "same" : env.system_dlls == ITTD_DLLS_DIFFER ? "differ" : "unknown");
+        check(rc == ITTD_OK, "  replay_env answers");
+        rc = api->check_registry(B, "C:\\");
+        check(rc == ITTD_E_NO_REGISTRY, "  check_registry: a folder without hives is ITTD_E_NO_REGISTRY");
+        if ( getenv("ITTD_PROBE_FORK_REGISTRY") != NULL )
+        {
+            double t1 = now_ms();
+            rc = api->check_registry(B, getenv("ITTD_PROBE_FORK_REGISTRY"));
+            printf("check_registry(%s): %d %s, %.1f ms\n", getenv("ITTD_PROBE_FORK_REGISTRY"), rc,
+                   rc < 0 ? api->last_error(B) : "", now_ms() - t1);
+            check(rc == (env.registry_known ? ITTD_OK : ITTD_REGISTRY_UNVERIFIED),
+                  "  check_registry: the recording's own hives");
+            t1 = now_ms();
+            rc = api->check_registry(B, getenv("ITTD_PROBE_FORK_REGISTRY"));
+            printf("again: %.1f ms\n", now_ms() - t1);
+        }
+        if ( getenv("ITTD_PROBE_OTHER_REGISTRY") != NULL && env.registry_known )
+        {
+            ittd_fork_settings fs;
+            ittd_fork *fk = NULL;
+            ittd_position mid = info.first;
+            rc = api->check_registry(B, getenv("ITTD_PROBE_OTHER_REGISTRY"));
+            printf("check_registry(%s): %d %s\n", getenv("ITTD_PROBE_OTHER_REGISTRY"), rc, rc < 0 ? api->last_error(B) : "");
+            check(rc == ITTD_E_REGISTRY_MISMATCH, "  check_registry: other hives are ITTD_E_REGISTRY_MISMATCH");
+            memset(&fs, 0, sizeof(fs));
+            fs.size = sizeof(fs);
+            fs.flags = ITTD_FORK_ALLOW_HOST;
+            fs.registry_dir = getenv("ITTD_PROBE_OTHER_REGISTRY");
+            mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+            rc = api->fork_open(B, mid, &fs, NULL, &fk);
+            if ( rc == ITTD_OK )
+                api->fork_close(fk);
+            check(rc == ITTD_E_REGISTRY_MISMATCH, "  a replay with other hives is refused");
+        }
+    }
+
     /* ---- a fork ------------------------------------------------------------------
        Needs the registry hives the recording ran against, so it only runs when
        ITTD_PROBE_FORK_REGISTRY names their folder. Replays to the middle of the

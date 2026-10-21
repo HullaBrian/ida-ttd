@@ -33,10 +33,56 @@ namespace idattd
     // so the question is asked once per recording, not once per replay.
     static qstring g_hostConsent;
 
+    // What a replay of this recording needs, and what each place the plugin
+    // looks in holds, for the Registry hives dialog.
+    static qstring replay_needs_text(TraceManager *mgr)
+    {
+        ITraceBackend *b = mgr->backend();
+        ReplayEnv env;
+        bool known = b->replay_env(&env);
+        qstring s;
+        if ( known )
+        {
+            if ( env.host )
+                s = "This recording was made against its machine's own files";
+            else
+                s.sprnt("This recording was made in the emulation root %s", env.emulation_root.c_str());
+            if ( !env.windows_version.empty() )
+                s.cat_sprnt(", on Windows %s", env.windows_version.c_str());
+            s.append(".\n");
+            if ( env.system_dlls == ITTD_DLLS_DIFFER )
+                s.append(env.host
+                       ? "This machine's system DLLs (ntdll, kernel32, kernelbase) are not the ones it\n"
+                         "ran with, so a replay here stops early, whatever the hives: replay it on the\n"
+                         "machine it was recorded on.\n"
+                       : "The emulation root's system DLLs are not the ones it ran with, so a replay\n"
+                         "stops early, whatever the hives.\n");
+        }
+        s.append("A replay needs the very hive files Sogen was given when it recorded\n"
+                 "(SYSTEM, SOFTWARE, SAM, SECURITY, HARDWARE, NTUSER.DAT). A new copy of the\n"
+                 "same machine's registry is not the same: the registry changes all the time.\n"
+                 "Keep them in a registry folder beside the recording to have them found.\n"
+                 "\n"
+                 "Looked in:");
+        for ( const qstring &dir : registry_candidates(mgr) )
+        {
+            const char *what = "no hives";
+            switch ( b->check_registry(dir.c_str(), nullptr) )
+            {
+                case HiveCheck::Match:      what = "the recording's hives"; break;
+                case HiveCheck::Unverified: what = "hives (the recording does not say which it used)"; break;
+                case HiveCheck::Mismatch:   what = "other hives than the recording's"; break;
+                case HiveCheck::Missing:    break;
+            }
+            s.cat_sprnt("\n  %s: %s", dir.c_str(), what);
+        }
+        return s;
+    }
+
     ReplaySettings initial_replay_settings(TraceManager *mgr)
     {
         ReplaySettings rs;
-        rs.registry_dir = saved_registry_dir();
+        rs.registry_dir = find_registry_dir(mgr);
         rs.allow_host   = mgr != nullptr && !g_hostConsent.empty() && g_hostConsent == mgr->trace_path();
         return rs;
     }
@@ -65,28 +111,29 @@ namespace idattd
                 return true;
 
             case ReplayBlock::Registry:
+            case ReplayBlock::RegistryMismatch:
             {
                 static const char form[] =
                     "Registry hives\n"
                     "\n"
                     "\n"
-                    "Replaying the program loads the registry it ran against, and none was found.\n"
                     "%A\n"
                     "\n"
-                    "Choose the folder holding the hives the recording was made with\n"
-                    "(SYSTEM, SOFTWARE, SAM, SECURITY, HARDWARE, NTUSER.DAT).\n"
-                    "Hives in %A are found without asking.\n"
+                    "%A\n"
                     "\n"
                     "<~F~older:F::64::>\n"
+                    "<~R~eplay with these hives even if they are not the recording's:C>>\n"
                     "\n";
                 qstring why = form_text(b->last_error());
-                qstring def = form_text(user_data_dir("registry"));
+                qstring about = form_text(replay_needs_text(mgr));
                 char dir[QMAXPATH];
                 qstrncpy(dir, rs->registry_dir.c_str(), sizeof(dir));
-                if ( ask_form(form, why.c_str(), def.c_str(), dir) <= 0 || dir[0] == '\0' )
+                ushort anyway = 0;
+                if ( ask_form(form, why.c_str(), about.c_str(), dir, &anyway) <= 0 || dir[0] == '\0' )
                     return false;
                 save_registry_dir(dir);
                 rs->registry_dir = dir;
+                rs->any_registry = anyway != 0;
                 return true;
             }
 
@@ -208,6 +255,7 @@ namespace idattd
         {
             req.registry_dir = rs.registry_dir;
             req.allow_host   = rs.allow_host;
+            req.any_registry = rs.any_registry;
             r = run_fork(m, req);
             if ( r.ok || r.cancelled || !ask_replay_needs(m, &rs) )
                 break;

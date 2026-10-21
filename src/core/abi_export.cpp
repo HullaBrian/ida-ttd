@@ -909,6 +909,7 @@ namespace idattd
             rs.registry_dir = s->registry_dir != nullptr ? s->registry_dir : "";
             rs.strict       = (s->flags & ITTD_FORK_STRICT) != 0;
             rs.allow_host   = (s->flags & ITTD_FORK_ALLOW_HOST) != 0;
+            rs.any_registry = (s->flags & ITTD_FORK_ANY_REGISTRY) != 0;
         }
         return rs;
     }

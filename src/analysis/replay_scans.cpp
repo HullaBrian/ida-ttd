@@ -7,30 +7,77 @@ namespace idattd
 {
     static const char SCAN_REGKEY[] = "ida-ttd";
 
-    static bool has_hives(const qstring &dir)
-    {
-        if ( dir.empty() )
-            return false;
-        qstring system = dir;
-        system.append("\\SYSTEM");
-        return qfileexist(system.c_str());
-    }
-
     qstring saved_registry_dir()
     {
         qstring s;
         reg_read_string(&s, "ForkRegistryDir", SCAN_REGKEY);
-        if ( has_hives(s) )
-            return s;
-        // The documented place, so hives put there are found without the
-        // first replay having to ask for them.
-        qstring def = user_data_dir("registry");
-        return has_hives(def) ? def : s;
+        return s;
     }
 
     void save_registry_dir(const char *dir)
     {
         reg_write_string("ForkRegistryDir", dir != nullptr ? dir : "", SCAN_REGKEY);
+    }
+
+    static void add_candidate(qstrvec_t *v, qstring dir)
+    {
+        while ( dir.length() > 3 && (dir.last() == '\\' || dir.last() == '/') )
+            dir.remove_last();
+        if ( dir.empty() )
+            return;
+        for ( const qstring &d : *v )
+            if ( stricmp(d.c_str(), dir.c_str()) == 0 )
+                return;
+        v->push_back(dir);
+    }
+
+    qstrvec_t registry_candidates(TraceManager *mgr)
+    {
+        qstrvec_t v;
+        add_candidate(&v, saved_registry_dir());
+        if ( mgr != nullptr )
+        {
+            qstring beside = mgr->trace_path();
+            ssize_t slash = beside.rfind('\\');
+            if ( slash >= 0 )
+            {
+                beside.resize((size_t)slash);
+                beside.append("\\registry");
+                add_candidate(&v, beside);
+            }
+            ReplayEnv env;
+            if ( mgr->backend() != nullptr && mgr->backend()->replay_env(&env) )
+                add_candidate(&v, env.registry_hint);
+        }
+        add_candidate(&v, user_data_dir("registry"));
+        return v;
+    }
+
+    qstring find_registry_dir(TraceManager *mgr)
+    {
+        ITraceBackend *b = mgr != nullptr ? mgr->backend() : nullptr;
+        if ( b == nullptr )
+            return saved_registry_dir();
+        qstring unverified, mismatch;
+        for ( const qstring &dir : registry_candidates(mgr) )
+        {
+            switch ( b->check_registry(dir.c_str(), nullptr) )
+            {
+                case HiveCheck::Match:
+                    return dir;
+                case HiveCheck::Unverified:
+                    if ( unverified.empty() )
+                        unverified = dir;
+                    break;
+                case HiveCheck::Mismatch:
+                    if ( mismatch.empty() )
+                        mismatch = dir;
+                    break;
+                case HiveCheck::Missing:
+                    break;
+            }
+        }
+        return !unverified.empty() ? unverified : mismatch;
     }
 
     static ITraceBackend *scanning_backend(TraceManager *mgr, qstring *error)

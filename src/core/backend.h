@@ -3,6 +3,7 @@
 #include "common/pch.h"
 #include "core/position.h"
 #include "abi/ida_ttd_backend.h"
+#include <filesystem>
 
 // What the core plugin needs from a recording, and nothing about how any one
 // kind of recording provides it. See docs/modular-backends.md.
@@ -241,6 +242,29 @@ namespace idattd
         // Replay a recording made against the host, whose program then touches
         // this machine's files and network again (ITTD_FORK_ALLOW_HOST).
         bool    allow_host = false;
+        // Replay with hives that are not the recording's (ITTD_FORK_ANY_REGISTRY).
+        bool    any_registry = false;
+    };
+
+    // What replaying the recording needs, as far as it says (ittd_replay_env).
+    struct ReplayEnv
+    {
+        bool    host = false;               // made against the host, not an emulation root
+        bool    registry_known = false;     // names its hives, so they can be checked
+        uint32_t system_dlls = ITTD_DLLS_UNKNOWN;   // this machine's against the recording's (ITTD_DLLS_*)
+        qstring registry_hint;              // the emulation root's registry folder; empty for the host
+        qstring emulation_root;             // empty for the host
+        qstring windows_version;            // "10.0.26100.1"; empty when not recorded
+    };
+
+    // Whether a folder holds the hives the recording was made with
+    // (check_registry).
+    enum class HiveCheck
+    {
+        Match,          // the recording's own hives
+        Unverified,     // hives, and the recording does not say which
+        Missing,        // no hives there
+        Mismatch,       // other hives than the recording's
     };
 
     // A string the program had in memory (ittd_string_hit).
@@ -272,6 +296,7 @@ namespace idattd
         None,
         HostConsent,    // made against the host: needs ReplaySettings::allow_host
         Registry,       // no registry hives where the replay looked
+        RegistryMismatch, // hives that are not the recording's (ReplaySettings::any_registry)
     };
 
     // A fork: replay to 'at', change registers and memory there, and run on,
@@ -284,6 +309,7 @@ namespace idattd
         qstring  registry_dir;              // empty: the backend's default
         bool     strict = false;
         bool     allow_host = false;        // see ReplaySettings::allow_host
+        bool     any_registry = false;      // see ReplaySettings::any_registry
         std::vector<std::pair<int, uint64_t>>   regs;     // ITTD_REG_* index (or FORK_REG_RFLAGS), value
         std::vector<std::pair<ea_t, bytevec_t>> memory;   // address, bytes
         qstring  note;                      // goes into the new trace's manifest
@@ -616,6 +642,26 @@ namespace idattd
         // refused for, when it was something the user can give: consent to
         // replay a recording made against the host, or the registry hives.
         virtual ReplayBlock last_replay_block() const { return ReplayBlock::None; }
+
+        // What a replay of the open recording needs. False when the backend
+        // does not say.
+        virtual bool replay_env(ReplayEnv * /*out*/) { return false; }
+        // Whether 'dir' holds the recording's own hives; 'why' says why not.
+        // A backend that cannot tell answers Unverified for any folder with
+        // a SYSTEM hive in it. Reads every hive, so it takes a moment.
+        virtual HiveCheck check_registry(const char *dir, qstring *why)
+        {
+            // std::filesystem, not qfileexist: the Microsoft backend builds
+            // this header without ida.lib.
+            std::error_code ec;
+            if ( dir != nullptr && *dir != '\0'
+              && std::filesystem::is_regular_file(
+                     std::filesystem::path(std::u8string(reinterpret_cast<const char8_t *>(dir))) / "SYSTEM", ec) )
+                return HiveCheck::Unverified;
+            if ( why != nullptr )
+                why->sprnt("no registry hives (SYSTEM, SOFTWARE, ...) in %s", dir != nullptr ? dir : "");
+            return HiveCheck::Missing;
+        }
 
         // What the last query_strings or query_buffers skipped, in words: the
         // stretches of the recording its replay could not follow on this

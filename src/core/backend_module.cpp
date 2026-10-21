@@ -770,11 +770,13 @@ namespace idattd
     }
 
     // The settings point into 'registry_dir', which must outlive them.
-    static ittd_fork_settings replay_settings(const qstring &registry_dir, bool strict, bool allow_host)
+    static ittd_fork_settings replay_settings(const qstring &registry_dir, bool strict, bool allow_host,
+                                              bool any_registry)
     {
         ittd_fork_settings fs{};
         fs.size  = sizeof(fs);
-        fs.flags = (strict ? ITTD_FORK_STRICT : 0) | (allow_host ? ITTD_FORK_ALLOW_HOST : 0);
+        fs.flags = (strict ? ITTD_FORK_STRICT : 0) | (allow_host ? ITTD_FORK_ALLOW_HOST : 0)
+                 | (any_registry ? ITTD_FORK_ANY_REGISTRY : 0);
         fs.registry_dir   = registry_dir.empty() ? nullptr : registry_dir.c_str();
         fs.emulation_root = nullptr;
         return fs;
@@ -782,7 +784,44 @@ namespace idattd
 
     static ittd_fork_settings replay_settings(const ReplaySettings &s)
     {
-        return replay_settings(s.registry_dir, s.strict, s.allow_host);
+        return replay_settings(s.registry_dir, s.strict, s.allow_host, s.any_registry);
+    }
+
+    bool BackendModule::replay_env(ReplayEnv *out)
+    {
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, replay_env) )
+            return false;
+        ittd_replay_env e{};
+        e.size = sizeof(e);
+        if ( m_api->replay_env(m_handle, &e) != ITTD_OK )
+            return false;
+        out->host            = e.host != 0;
+        out->registry_known  = e.registry_known != 0;
+        out->system_dlls     = e.system_dlls;
+        out->registry_hint   = e.registry_hint;
+        out->emulation_root  = e.emulation_root;
+        out->windows_version = e.windows_version;
+        return true;
+    }
+
+    HiveCheck BackendModule::check_registry(const char *dir, qstring *why)
+    {
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, check_registry) )
+            return ITraceBackend::check_registry(dir, why);
+        int rc = m_api->check_registry(m_handle, dir);
+        switch ( rc )
+        {
+            case ITTD_OK:                  return HiveCheck::Match;
+            case ITTD_REGISTRY_UNVERIFIED: return HiveCheck::Unverified;
+            case ITTD_E_REGISTRY_MISMATCH:
+                if ( why != nullptr )
+                    *why = last_error();
+                return HiveCheck::Mismatch;
+            default:
+                if ( why != nullptr )
+                    *why = last_error();
+                return HiveCheck::Missing;
+        }
     }
 
     qstring BackendModule::scan_notice() const
@@ -796,6 +835,7 @@ namespace idattd
     {
         m_replayBlock = rc == ITTD_E_HOST_REPLAY ? ReplayBlock::HostConsent
                       : rc == ITTD_E_NO_REGISTRY ? ReplayBlock::Registry
+                      : rc == ITTD_E_REGISTRY_MISMATCH ? ReplayBlock::RegistryMismatch
                       : ReplayBlock::None;
         return rc;
     }
@@ -884,7 +924,7 @@ namespace idattd
         };
 
         ProgressBridge pb(progress);
-        ittd_fork_settings fs = replay_settings(req.registry_dir, req.strict, req.allow_host);
+        ittd_fork_settings fs = replay_settings(req.registry_dir, req.strict, req.allow_host, req.any_registry);
         ittd_fork *f = nullptr;
         int rc = note_replay(m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f));
         if ( rc != ITTD_OK || f == nullptr )

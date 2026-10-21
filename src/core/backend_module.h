@@ -103,6 +103,8 @@ namespace idattd
         // The backend's own reason for its last failure on the open trace.
         qstring last_error() const override;
         ReplayBlock last_replay_block() const override { return m_replayBlock; }
+        bool replay_env(ReplayEnv *out) override;
+        HiveCheck check_registry(const char *dir, qstring *why) override;
         qstring scan_notice() const override;
 
     private:

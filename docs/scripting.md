@@ -114,6 +114,7 @@ database. The scope is given here instead of in a dialog.
 | `an.calltree [MAX]` | the calls the function at the playhead made during this run of it, nested (depth), from its entry to its return |
 | `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
+| `an.registry` | where the recording's registry hives are looked for (the chosen folder, `registry\` beside the recording, the emulation root's, `ida-ttd\registry`), whether each holds the recording's own hives, and the folder a replay would use |
 | `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
 | `an.buffers [MAX] [registry=DIR] [strict]` | replay the recording (Sogen) and list the buffers it filled |
 | `switch PATH [TIMEOUT]` | end the session and replay PATH (a fork of the recording) in this database, as the Fork manager's "Switch here" does |
@@ -121,7 +122,7 @@ database. The scope is given here instead of in a dialog.
 | `an.forget PATH` | take a fork out of the graph; its file stays |
 | `an.forkhere` | make the playhead a fork (TTD > Fork here); change it with IDA's own calls (`ida_dbg.set_reg_val`, `ida_dbg.write_dbg_memory`), which only succeed at the fork's position |
 | `an.forkdraft` | the fork being prepared: its position, whether the playhead is there, and its register and memory changes |
-| `an.forkrecord PATH N [registry=DIR] [strict] [host]` | record the fork being prepared: replay to it, apply its changes, record N (hex) instructions (0: to the end) into PATH. The error says `(needs host)` or `(needs registry=DIR)` when that is what stopped it |
+| `an.forkrecord PATH N [registry=DIR] [strict] [host]` | record the fork being prepared: replay to it, apply its changes, record N (hex) instructions (0: to the end) into PATH. The error says `(needs host)`, `(needs registry=DIR)` or `(wrong hives: ...)` when that is what stopped it; `anyregistry` replays with hives that are not the recording's |
 | `an.forkdiscard` | drop the fork being prepared |
 | `an.fork PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
 

@@ -241,11 +241,12 @@ namespace idattd
             result.error = "this recording's backend cannot fork it";
             return result;
         }
-        // The hives the user chose, or the documented folder, whoever built
-        // the request (the Fork dialog fills it in; a script may not).
+        // The recording's hives wherever they are found (find_registry_dir),
+        // whoever built the request: the Fork dialog fills it in, a script
+        // may not.
         ForkRequest full = req;
         if ( full.registry_dir.empty() )
-            full.registry_dir = saved_registry_dir();
+            full.registry_dir = find_registry_dir(mgr);
         run_query("Forking the recording: replaying to the position, then recording", [&](ProgressSink *p)
         {
             result = backend->record_fork(full, p);

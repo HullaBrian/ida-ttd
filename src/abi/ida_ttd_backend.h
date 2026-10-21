@@ -86,6 +86,9 @@ extern "C" {
 #define ITTD_E_HOST_REPLAY    -7
 /* A replay found no registry hives where it looked (ittd_fork_settings). */
 #define ITTD_E_NO_REGISTRY    -8
+/* A replay was refused because the registry hives it was given are not the
+ * ones the recording was made with, and ITTD_FORK_ANY_REGISTRY was not given. */
+#define ITTD_E_REGISTRY_MISMATCH -9
 #define ITTD_E_FAILED        -100  /* anything else; see ittd_last_error */
 
 /* ----------------------------------------------------------------- position */
@@ -563,6 +566,45 @@ typedef struct ittd_fork ittd_fork;   /* opaque */
  * renamed, deleted or sent, it does again. Without the flag a backend refuses
  * such a replay. */
 #define ITTD_FORK_ALLOW_HOST  0x2u
+/* Replay with registry hives that are not the ones the recording was made
+ * with (check_registry). The replay then diverges wherever the program reads
+ * a key that differs. Without the flag a backend that can tell refuses. */
+#define ITTD_FORK_ANY_REGISTRY 0x4u
+
+/* What replaying a recording needs, as far as the recording says
+ * (replay_env), so the core can look for it first and say plainly what is
+ * missing. */
+typedef struct ittd_replay_env
+{
+    uint32_t size;                  /* sizeof(ittd_replay_env), set by the caller */
+    /* Non-zero: made against the host, not an emulation root. A replay then
+     * needs ITTD_FORK_ALLOW_HOST, and the system DLLs of the machine it was
+     * made on. */
+    uint32_t host;
+    /* Non-zero: the recording names the registry hives it was made with, so
+     * check_registry can tell the right ones from others. */
+    uint32_t registry_known;
+    /* Whether this machine has the system DLLs the recording was made with
+     * (its emulation root's, or for the host this machine's own):
+     * ITTD_DLLS_*. A replay with others diverges early. */
+    uint32_t system_dlls;
+    /* Where the recording's own environment keeps its hives (the emulation
+     * root's registry folder), whether or not it exists here; empty for a
+     * recording made against the host. */
+    char     registry_hint[ITTD_PATH_MAX];
+    /* The emulation root it was made with; empty for the host. */
+    char     emulation_root[ITTD_PATH_MAX];
+    /* The Windows it ran on, as "10.0.26100.1"; empty when not recorded. */
+    char     windows_version[ITTD_NAME_MAX];
+} ittd_replay_env;
+
+#define ITTD_DLLS_UNKNOWN 0u    /* the recording does not say, or they cannot be read */
+#define ITTD_DLLS_SAME    1u
+#define ITTD_DLLS_DIFFER  2u
+
+/* check_registry: the folder holds hives, and the recording does not say
+ * which it was made with. */
+#define ITTD_REGISTRY_UNVERIFIED 1
 
 typedef struct ittd_fork_settings
 {
@@ -1020,6 +1062,19 @@ typedef struct ittd_backend_api
                                     int *out_truncated, const ittd_progress *progress);
     int (*heat_window_slice_position)(ittd_backend *b, uint32_t slices, uint32_t slice,
                                       ittd_position_range when, ittd_position *out);
+
+    /* ---- the replay environment ---------------------------------------- */
+
+    /* What a replay of this recording needs (ittd_replay_env). Optional
+     * (both or neither), and only for a backend with ITTD_CAP_FORK or replay
+     * scans: without them the core takes any folder holding hives. */
+    int (*replay_env)(ittd_backend *b, ittd_replay_env *out);
+    /* Whether 'dir' holds the registry hives this recording was made with:
+     * ITTD_OK when it does, ITTD_REGISTRY_UNVERIFIED when it holds hives and
+     * the recording does not say which, ITTD_E_NO_REGISTRY when it holds
+     * none, ITTD_E_REGISTRY_MISMATCH when they are others (ittd_last_error
+     * says so in words). Reads every hive, so it takes a moment. */
+    int (*check_registry)(ittd_backend *b, const char *dir);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */
