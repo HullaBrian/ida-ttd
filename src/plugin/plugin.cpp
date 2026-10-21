@@ -72,7 +72,9 @@ namespace idattd
 
     // A separator goes above a menu item, not above a submenu. The one above
     // a submenu belongs to a hidden action that sits just above it, one per
-    // submenu (an action goes on a menu once).
+    // submenu (an action goes on a menu once). It needs a real label: IDA 9.4
+    // refuses to attach an action labelled "-", and with it the separator.
+    static const char SEP_CARRIER_LABEL[] = "separator";
     static const char *const SUBMENU_SEP_ACTIONS[] =
     {
         "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2",
@@ -891,9 +893,9 @@ namespace idattd
         {
             m_menuActionsRegistered = true;
             for ( const char *sep : SUBMENU_SEP_ACTIONS )
-                register_action(ACTION_DESC_LITERAL_PLUGMOD(sep, "-", &g_menuSep, this,
+                register_action(ACTION_DESC_LITERAL_PLUGMOD(sep, SEP_CARRIER_LABEL, &g_menuSep, this,
                                                             nullptr, nullptr, -1));
-            register_action(ACTION_DESC_LITERAL_PLUGMOD(SUB_BACKENDS_SEP, "-", &g_menuSep, this,
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(SUB_BACKENDS_SEP, SEP_CARRIER_LABEL, &g_menuSep, this,
                                                         nullptr, nullptr, -1));
             // Section headings: always disabled, so they read as labels.
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
