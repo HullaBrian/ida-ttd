@@ -217,12 +217,33 @@ namespace idattd
                 if ( bang != qstring::npos )
                     api.remove(0, bang + 1);
             }
-            qstring pname;
-            if ( !api.empty() )
-                pname.sprnt("p%s", api.c_str());
-            if ( !pname.empty() && get_name_ea(BADADDR, pname.c_str()) == BADADDR
-              && set_name(ptr, pname.c_str(), SN_NOWARN | SN_NOCHECK) )
-                nn.altset((nodeidx_t)site, 1, CS_PNAME_TAG);
+            // Without IDA's "_0"-style suffix, which it gives a second export
+            // of a name already taken (kernel32's VirtualAlloc_0 forwards to
+            // kernelbase's) and which is not part of the API's name. Kept
+            // only when the plain name is already used in the database.
+            qstring plain = api;
+            ssize_t us = plain.rfind('_');
+            if ( us > 0 && (size_t)us + 1 < plain.length() )
+            {
+                bool digits = true;
+                for ( size_t k = (size_t)us + 1; k < plain.length() && digits; k++ )
+                    digits = plain[k] >= '0' && plain[k] <= '9';
+                if ( digits )
+                    plain.resize((size_t)us);
+            }
+            for ( const qstring &cand : { plain, api } )
+            {
+                if ( cand.empty() )
+                    continue;
+                qstring pname;
+                pname.sprnt("p%s", cand.c_str());
+                if ( get_name_ea(BADADDR, pname.c_str()) == BADADDR
+                  && set_name(ptr, pname.c_str(), SN_NOWARN | SN_NOCHECK) )
+                {
+                    nn.altset((nodeidx_t)site, 1, CS_PNAME_TAG);
+                    break;
+                }
+            }
         }
         return true;
     }
