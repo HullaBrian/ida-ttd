@@ -62,13 +62,54 @@ namespace idattd
         const char *name;
         const char *label;
         bool        new_group;      // separator above it in the TTD menu
+        const char *icon_svg;       // nullptr: none
     };
     static const SubmenuDesc TTD_SUBMENUS[] =
     {
-        { SUB_CODE,     "Code",     true  },
-        { SUB_ANALYSIS, "Analysis", false },
-        { SUB_FORKS,    "Forks",    true  },
+        // Among the items with icons, so it has one too.
+        { SUB_FORKS,    "Forks",    true,  icons_fork_svg },
+        { SUB_CODE,     "Code",     true,  nullptr },
+        { SUB_ANALYSIS, "Analysis", false, nullptr },
     };
+
+    // create_menu() takes no icon, so it is set on the submenu's Qt action,
+    // through IDAPython's PySide (IDA's Qt renders SVG, as load_custom_icon
+    // relies on). Without IDAPython or Qt (an idalib worker) the submenu
+    // simply has none.
+    static void set_submenu_icon(const char *label, const char *svg)
+    {
+        extlang_object_t py = find_extlang_by_name("Python");
+        if ( py == nullptr || py->eval_snippet == nullptr )
+            return;
+        // The label and the SVG hold no quote or backslash, so they go into
+        // Python string literals as they are.
+        qstring code;
+        code.sprnt("def _idattd_submenu_icon():\n"
+                   "    try:\n"
+                   "        from PySide6 import QtGui, QtWidgets\n"
+                   "        import shiboken6\n"
+                   "    except ImportError:\n"
+                   "        return\n"
+                   "    app = QtWidgets.QApplication.instance()\n"
+                   "    if app is None:\n"
+                   "        return\n"
+                   "    pix = QtGui.QPixmap()\n"
+                   "    pix.loadFromData(b'%s', 'SVG')\n"
+                   "    for m in app.allWidgets():\n"
+                   "        if not isinstance(m, QtWidgets.QMenu) or not shiboken6.isValid(m) \\\n"
+                   "                or m.title().replace('&', '') != '%s':\n"
+                   "            continue\n"
+                   "        for a in m.actions():\n"
+                   "            sub = a.menu()\n"
+                   "            if sub is not None and shiboken6.isValid(sub) and a.text().replace('&', '') == '%s':\n"
+                   "                a.setIcon(QtGui.QIcon(pix))\n"
+                   "_idattd_submenu_icon()\n"
+                   "del _idattd_submenu_icon\n",
+                   svg, TTD_MENU, label);
+        qstring err;
+        if ( !py->eval_snippet(code.c_str(), &err) )
+            msg("[ida-ttd] could not give the %s submenu its icon: %s\n", label, err.c_str());
+    }
 
     // A separator goes above a menu item, not above a submenu. The one above
     // a submenu belongs to a hidden action that sits just above it, one per
@@ -342,6 +383,31 @@ namespace idattd
               "Bookmarks: the saved trace positions for this database",
               m_icons[ICO_BOOKMARKS], ITEM, MENU },
 
+            // Forks, right after the bookmarks: both are about positions you
+            // come back to.
+            { actions::FORK, "Fork here", &m_fork, nullptr,
+              "Fork here: make this position a fork. Change registers and memory in "
+              "IDA as on a live target, then Record fork (Sogen recordings)",
+              NO_ICON, ITEM, MENU, SUB_FORKS },
+            { actions::FORK_RECORD, "Record fork...", &m_forkRecord, nullptr,
+              "Record fork: replay the program to the fork, apply the changes, and let "
+              "it run on into a new recording",
+              NO_ICON, ITEM, MENU, SUB_FORKS },
+            { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
+              "Discard fork: drop the fork and its changes",
+              NO_ICON, ITEM, MENU, SUB_FORKS },
+            { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
+              "Fork manager: this recording and the forks recorded from it, as a graph; "
+              "double-click one to switch to it",
+              NO_ICON, GROUP, MENU, SUB_FORKS },
+            // On the Fork manager's popup only.
+            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
+              "Switch this IDA to the selected recording, or open it in a new IDA",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
+            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
+              "Take the selected fork out of the graph (its file stays)",
+              NO_ICON, ITEM, TOOLBAR_ONLY },
+
             // Searching the recording.
             { actions::TRACE_FUNC, "Find all calls to this function", &m_traceFunc, "Ctrl+Shift+C",
               "Find all calls to this function: sweep the whole trace and list every "
@@ -447,30 +513,6 @@ namespace idattd
             { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
               "Re-read memory: discard what IDA cached for the selected range, rebuild "
               "it from the recording and disassemble it again",
-              NO_ICON, ITEM, TOOLBAR_ONLY },
-
-            // Forks, in a section of their own.
-            { actions::FORK, "Fork here", &m_fork, nullptr,
-              "Fork here: make this position a fork. Change registers and memory in "
-              "IDA as on a live target, then Record fork (Sogen recordings)",
-              NO_ICON, ITEM, MENU, SUB_FORKS },
-            { actions::FORK_RECORD, "Record fork...", &m_forkRecord, nullptr,
-              "Record fork: replay the program to the fork, apply the changes, and let "
-              "it run on into a new recording",
-              NO_ICON, ITEM, MENU, SUB_FORKS },
-            { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
-              "Discard fork: drop the fork and its changes",
-              NO_ICON, ITEM, MENU, SUB_FORKS },
-            { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
-              "Fork manager: this recording and the forks recorded from it, as a graph; "
-              "double-click one to switch to it",
-              NO_ICON, GROUP, MENU, SUB_FORKS },
-            // On the Fork manager's popup only.
-            { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
-              "Switch this IDA to the selected recording, or open it in a new IDA",
-              NO_ICON, ITEM, TOOLBAR_ONLY },
-            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
-              "Take the selected fork out of the graph (its file stays)",
               NO_ICON, ITEM, TOOLBAR_ONLY },
 
             // Toolbar only. The backward movement and run-to-cursor actions sit
@@ -994,6 +1036,8 @@ namespace idattd
                         update_action_visibility(SUBMENU_SEP_ACTIONS[i], false);
                     }
                     create_menu(s.name, s.label, TTD_MENU_PATH);
+                    if ( s.icon_svg != nullptr )
+                        set_submenu_icon(s.label, s.icon_svg);
                     path.sprnt("%s%s/", TTD_MENU_PATH, s.label);
                 }
             }
