@@ -157,10 +157,13 @@ namespace idattd
     action_state_t idaapi AttachTraceHandler::update(action_update_ctx_t *)
     {
         // Only offer it when there is a recording to attach to and nothing is
-        // running yet -- otherwise it would restart a live session.
+        // running yet -- otherwise it would restart a live session. Both
+        // answers are asked again on every update: an _ALWAYS state is never
+        // re-evaluated, so an item enabled before the replay started would
+        // have stayed enabled throughout it.
         if ( !trace_link_present() || get_process_state() != DSTATE_NOTASK )
             return AST_DISABLE;
-        return AST_ENABLE_ALWAYS;
+        return AST_ENABLE;
     }
 
     int idaapi AutoStartHandler::activate(action_activation_ctx_t *)
