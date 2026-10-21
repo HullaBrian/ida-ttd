@@ -96,6 +96,6 @@ namespace idattd
         // draws the menu, and the answer lives in the database, not in this
         // object, so it can change underneath when a different IDB is opened.
         update_action_checked(actions::COVERAGE_AUTO, coverage_auto_enabled());
-        return AST_ENABLE_ALWAYS;
+        return AST_ENABLE;      // not _ALWAYS: that stops IDA asking, and the tick with it
     }
 }

@@ -84,6 +84,6 @@ namespace idattd
     {
         // As for automatic highlighting: the answer lives in the database.
         update_action_checked(actions::INDIRECT_AUTO, callsites_auto_enabled());
-        return AST_ENABLE_ALWAYS;
+        return AST_ENABLE;      // not _ALWAYS: that stops IDA asking, and the tick with it
     }
 }
