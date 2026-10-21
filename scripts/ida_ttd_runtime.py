@@ -9,10 +9,12 @@ does what installing WinDbg by hand would: it downloads WinDbg from
 Microsoft, shows Microsoft's license, and only after the user accepts it
 unpacks the x64 package into
 
-    $IDAUSR/plugins/ida-ttd-backends/windbg/
+    $IDAUSR/ida-ttd/windbg/
 
 where the backend looks for amd64/ttd/TTDReplay.dll. That folder is outside
-the plugin's own package folder, so plugin upgrades leave it alone. With
+the plugin's own package folder, so plugin upgrades leave it alone. (Earlier
+versions used $IDAUSR/plugins/ida-ttd-backends/windbg/; the backend still
+looks there, and install_runtime() moves it.) With
 WinDbg already installed (Microsoft Store, winget, Microsoft's installer),
 nothing is downloaded: its amd64/ttd folder is copied there instead, since
 Windows will not load DLLs from an installed package's folder into IDA.
@@ -399,9 +401,38 @@ def rtf_to_text(rtf):
 # --------------------------------------------------------------------------
 # In IDA
 
-def default_target():
+def user_data_dir(*parts):
+    """$IDAUSR/ida-ttd: where what the user adds after installing lives
+    (src/core/backend_module.h, user_data_dir). Not the plugin's package
+    folder, which HCLI replaces on every upgrade, and not under plugins/,
+    since none of it is a plugin."""
     import ida_diskio
-    return os.path.join(ida_diskio.get_user_idadir(), "plugins", "ida-ttd-backends", "windbg")
+    return os.path.join(ida_diskio.get_user_idadir(), "ida-ttd", *parts)
+
+
+def legacy_dir(*parts):
+    """$IDAUSR/plugins/ida-ttd-backends: where earlier versions installed
+    the runtime and the Sogen backend. Still searched, so nothing breaks."""
+    import ida_diskio
+    return os.path.join(ida_diskio.get_user_idadir(), "plugins", "ida-ttd-backends", *parts)
+
+
+def default_target():
+    return user_data_dir("windbg")
+
+
+def adopt_folder(old, new):
+    """Move the folder 'old' to 'new' when only the old one exists. False
+    when it cannot (a DLL in it is loaded, say): the old copy then stays
+    where it is, and is still found there."""
+    if os.path.exists(new) or not os.path.isdir(old):
+        return False
+    try:
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        os.replace(old, new)
+        return True
+    except OSError:
+        return False
 
 
 def _in_background(title, work, status):
@@ -495,7 +526,12 @@ def install_runtime(target=None):
     """TTD > Install TTD runtime...: find, or else install, WinDbg's TTD
     runtime. Returns the folder that holds it, or None."""
     import ida_kernwin
-    target = target or default_target()
+    if target is None:
+        target = default_target()
+        # A runtime an earlier version installed moves to the new place, so
+        # the version checks below see it.
+        if adopt_folder(legacy_dir("windbg"), target):
+            ida_kernwin.msg("[ida-ttd] Moved the TTD runtime from %s to %s.\n" % (legacy_dir("windbg"), target))
 
     mine = read_marker(target) if has_runtime(target) else None
     found = installed_windbg()
@@ -601,9 +637,9 @@ def _installed(version, target):
 # The Sogen backend
 #
 # ida-ttd-sogen.dll links Sogen and Unicorn, both GPL-2.0, so it is not in
-# the plugin's Apache-2.0 package: it is installed separately, into the same
-# folder outside the package as the TTD runtime, where plugin upgrades leave
-# it alone and where ida-ttd looks before the package's own folder. From a
+# the plugin's Apache-2.0 package: it is installed separately, into
+# $IDAUSR/ida-ttd/backends/ beside the TTD runtime's folder, where plugin
+# upgrades leave it alone and where ida-ttd looks before anywhere else. From a
 # file the user picks for now: the DLL itself, or a zip that holds it (with
 # its license and notices, which are kept beside it). The functions up to
 # install_sogen() use no IDA module.
@@ -615,8 +651,31 @@ BACKEND_ENTRY = b"ida_ttd_backend\0"
 
 
 def sogen_target():
-    import ida_diskio
-    return os.path.join(ida_diskio.get_user_idadir(), "plugins", "ida-ttd-backends")
+    return user_data_dir("backends")
+
+
+def retire_sogen(folder):
+    """Take the backend out of 'folder' (where an earlier version installed
+    it), so IDA does not load that copy too. A loaded DLL cannot be deleted,
+    but it can be renamed, and place_sogen removes .old files later.
+    Returns True when there was one."""
+    final = os.path.join(folder, SOGEN_DLL)
+    if not os.path.isdir(folder):
+        return False
+    for old in os.listdir(folder):
+        if old.startswith(SOGEN_DLL + ".old"):
+            try:
+                os.remove(os.path.join(folder, old))
+            except OSError:
+                pass                    # still loaded by an IDA somewhere
+    if not os.path.exists(final):
+        return False
+    n = 0
+    while os.path.exists("%s.old%d" % (final, n)):
+        n += 1
+    os.rename(final, "%s.old%d" % (final, n))
+    shutil.rmtree(os.path.join(folder, SOGEN_LICENSES), ignore_errors=True)
+    return True
 
 
 def _check_backend(data, where):
@@ -692,6 +751,7 @@ def install_sogen(source=None, target=None):
     """TTD > Backends > Install the Sogen backend...: install
     ida-ttd-sogen.dll from a file. Returns where it went, or None."""
     import ida_kernwin
+    legacy = legacy_dir() if target is None else None
     target = target or sogen_target()
     if source is None:
         source = ida_kernwin.ask_file(0, "ida-ttd-sogen.dll;*.zip",
@@ -701,6 +761,14 @@ def install_sogen(source=None, target=None):
     try:
         staged = stage_sogen(source, target)
         replaced = place_sogen(staged, target)
+        # Where an earlier version put it. Left there, it would still load
+        # if this one failed to, and be the version nobody expects.
+        if legacy is not None and retire_sogen(legacy):
+            replaced = True
+        # Its registry hives sat beside it, where the backend looked; the
+        # plugin now looks in ida-ttd/registry.
+        if legacy is not None:
+            adopt_folder(os.path.join(legacy, "registry"), user_data_dir("registry"))
     except Exception as e:
         try:
             os.remove(os.path.join(target, SOGEN_DLL + ".new"))

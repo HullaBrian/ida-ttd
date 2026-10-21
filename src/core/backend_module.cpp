@@ -1347,6 +1347,18 @@ namespace idattd
         FindClose(f);
     }
 
+    qstring user_data_dir(const char *sub)
+    {
+        qstring dir = get_user_idadir();
+        dir.append("\\ida-ttd");
+        if ( sub != nullptr )
+        {
+            dir.append('\\');
+            dir.append(sub);
+        }
+        return dir;
+    }
+
     void load_backend_modules()
     {
         static bool done = false;
@@ -1356,19 +1368,21 @@ namespace idattd
         // Called first from the plugin's init, on the main thread.
         g_main_tid = GetCurrentThreadId();
 
-        // Not plugins\ itself: IDA loads everything there as a plugin. And
-        // both places a plugin can be: plugins\ida-ttd-backends\ beside a
-        // hand-installed ida-ttd.dll, and plugins\ida-ttd\ida-ttd-backends\
+        // First the backends the user installed (TTD > Backends > Install the
+        // Sogen backend puts it there), so one they added wins over one an
+        // installation shipped: a second module with the same id is skipped.
+        load_dir(user_data_dir("backends"));
+
+        // Then where a plugin's own backends are, never plugins\ itself (IDA
+        // loads everything there as a plugin): plugins\ida-ttd-backends\
+        // beside a hand-installed ida-ttd.dll, and plugins\ida-ttd\ida-ttd-backends\
         // inside the folder IDA's plugin manager installs the package into.
-        // The loader looks in the same places, having no plugin path of its
-        // own to go by.
+        // The user's plugins\ida-ttd-backends\ is also where earlier versions
+        // installed the Sogen backend. The loader looks in the same places,
+        // having no plugin path of its own to go by.
         qstring user = get_user_idadir();
         user.append("\\plugins");
         qstring install = idadir(PLG_SUBDIR);
-
-        // The user's directories first, so a backend they built themselves
-        // wins over one an installation shipped (a second module with the
-        // same id is skipped).
         for ( const qstring &root : { user, install } )
         {
             qstring flat = root;

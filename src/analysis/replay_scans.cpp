@@ -1,16 +1,31 @@
 #include "analysis/replay_scans.h"
 #include "analysis/query_runner.h"
 #include "debugger/trace_manager.h"
+#include "core/backend_module.h"
 
 namespace idattd
 {
     static const char SCAN_REGKEY[] = "ida-ttd";
 
+    static bool has_hives(const qstring &dir)
+    {
+        if ( dir.empty() )
+            return false;
+        qstring system = dir;
+        system.append("\\SYSTEM");
+        return qfileexist(system.c_str());
+    }
+
     qstring saved_registry_dir()
     {
         qstring s;
         reg_read_string(&s, "ForkRegistryDir", SCAN_REGKEY);
-        return s;
+        if ( has_hives(s) )
+            return s;
+        // The documented place, so hives put there are found without the
+        // first replay having to ask for them.
+        qstring def = user_data_dir("registry");
+        return has_hives(def) ? def : s;
     }
 
     void save_registry_dir(const char *dir)

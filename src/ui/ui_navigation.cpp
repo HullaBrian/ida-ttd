@@ -190,8 +190,8 @@ namespace idattd
         {
             warning("Installing the TTD runtime needs IDAPython, which is not available.\n\n"
                     "Install WinDbg (aka.ms/windbg/download) and copy its amd64\\ttd folder "
-                    "to plugins\\ida-ttd-backends\\windbg\\amd64\\ttd in your IDA user "
-                    "directory instead.");
+                    "to ida-ttd\\windbg\\amd64\\ttd in your IDA user directory "
+                    "(%%APPDATA%%\\Hex-Rays\\IDA Pro) instead.");
             return 1;
         }
         qstring err;
@@ -207,8 +207,8 @@ namespace idattd
         if ( py == nullptr || py->eval_snippet == nullptr )
         {
             warning("Installing the Sogen backend needs IDAPython, which is not available.\n\n"
-                    "Copy ida-ttd-sogen.dll to plugins\\ida-ttd-backends\\ in your IDA user "
-                    "directory instead, and restart IDA.");
+                    "Copy ida-ttd-sogen.dll to ida-ttd\\backends\\ in your IDA user "
+                    "directory (%%APPDATA%%\\Hex-Rays\\IDA Pro) instead, and restart IDA.");
             return 1;
         }
         qstring err;

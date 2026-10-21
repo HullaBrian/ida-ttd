@@ -200,7 +200,7 @@ namespace idattd
         }
 
         // Whichever backend reads this kind of recording: Microsoft TTD, built
-        // in, for a .run; one loaded from plugins/ida-ttd-backends for others.
+        // in, for a .run; one the user installed (load_backend_modules) for others.
         load_backend_modules();
         m_tracePath = path;
         ITraceBackend *backend = BackendRegistry::instance().for_file(path);
@@ -209,8 +209,9 @@ namespace idattd
             return start_failed(errbuf, DRC_NOFILE,
                        "No installed backend reads %s.\n\n"
                        "A Microsoft TTD trace (.run) is read by the plugin itself; "
-                       "other kinds need their backend DLL in the plugins\\ida-ttd-backends "
-                       "folder of your IDA user directory (%%APPDATA%%\\Hex-Rays\\IDA Pro).",
+                       "other kinds need their backend DLL in the ida-ttd\\backends folder of "
+                       "your IDA user directory (%%APPDATA%%\\Hex-Rays\\IDA Pro); "
+                       "TTD > Backends installs the Sogen one.",
                        path);
         }
         qstring err;

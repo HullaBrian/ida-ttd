@@ -82,8 +82,10 @@ msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
 ```
 
 The backend lands in `build\Release\backends\ida-ttd-sogen.dll`. It goes in
-`plugins\ida-ttd-backends\` under the IDA user directory: a folder of its own,
-not the plugin's `plugins\ida-ttd\`, which HCLI replaces on upgrade.
+`ida-ttd\backends\` under the IDA user directory (**TTD > Backends > Install
+the Sogen backend...** puts it there): not the plugin's `plugins\ida-ttd\`,
+which HCLI replaces on upgrade, and not under `plugins\`, since it is not a
+plugin.
 
 ## 3. Probe a trace
 
@@ -126,9 +128,11 @@ ABI header honest about being C.
 Forks and the replay scans run the program again in Sogen's emulator, which
 loads the registry the recording ran against: `HARDWARE`, `NTUSER.DAT`, `SAM`,
 `SECURITY`, `SOFTWARE` and `SYSTEM` (Sogen's `grab-registry.bat` captures
-them; an emulation root's `registry` folder has them). The backend looks for
-them in a `registry` folder next to `ida-ttd-sogen.dll`; the dialogs take any
-other folder and remember it. A replay on another machine than the recording
+them; an emulation root's `registry` folder has them). The plugin looks for
+them in `ida-ttd\registry\` under the IDA user directory; the dialogs take any
+other folder and remember it. Given no folder (`ittd-probe` without
+`ITTD_PROBE_FORK_REGISTRY`), the backend looks in a `registry` folder next to
+`ida-ttd-sogen.dll`. A replay on another machine than the recording
 one can diverge, and a recording made against the host also needs that
 machine's system DLLs; the replay then fails, naming what differs.
 

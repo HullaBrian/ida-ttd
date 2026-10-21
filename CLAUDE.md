@@ -31,7 +31,9 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 
 - **`src/abi/ida_ttd_backend.h`**: the versioned C interface every backend DLL
   exports (`ittd_*` types, count-then-fill queries, `ITTD_CAP_*` capability
-  bits). Backends are found in IDA's `plugins\ida-ttd-backends\`.
+  bits). Backends are found in `$IDAUSR\ida-ttd\backends\` (user-installed),
+  then `plugins\ida-ttd-backends\` and `plugins\ida-ttd\ida-ttd-backends\`
+  (`load_backend_modules`).
 - **`src/core/`**: `ITraceBackend` / `ITraceCursor` (`backend.h`), the
   backend-neutral `Position` (`position.h`; shown as `HI:LO` hex), `BackendModule`
   (adapts a DLL to `ITraceBackend`) and `abi_export` (the reverse: wraps a C++
@@ -85,11 +87,11 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   puts that folder on IDAPython's `sys.path` when it loads.
 - **`scripts/ida_ttd_runtime.py`**: TTD > Backends > Install the TTD runtime
   (WinDbg), and Install the Sogen backend (from a file the user picks, into
-  `$IDAUSR\plugins\ida-ttd-backends\`). The TTD menu is rebuilt whole
+  `$IDAUSR\ida-ttd\backends\`). The TTD menu is rebuilt whole
   (`Plugin::rebuild_ttd_menu`) whenever its contents change: session items,
   then the replay-start items, then Backends, which every database has. Copies `amd64\ttd` out of an installed WinDbg, or shows WinDbg's
   license and downloads its x64 package from Microsoft (HTTP range reads of
-  the bundle), into `$IDAUSR\plugins\ida-ttd-backends\windbg\`, where the MS
+  the bundle), into `$IDAUSR\ida-ttd\windbg\`, where the MS
   backend looks. Copied beside `ida_ttd.py`. Everything below
   `install_runtime()` runs without IDA, for testing.
 - **`src/loader/`**: `ttd-loader.dll`, so File > Open accepts a recording.
@@ -158,7 +160,10 @@ by comparing MS and Sogen recordings of the same program.
 
 - **HCLI replaces `plugins\ida-ttd\` on every upgrade.** Nothing the user adds
   (the TTD runtime DLLs, a Sogen backend, its `registry\` folder) may be
-  expected to live there: point them at `plugins\ida-ttd-backends\`.
+  expected to live there. They go in `$IDAUSR\ida-ttd\` (`windbg\`,
+  `backends\`, `registry\`; `user_data_dir()` in `core/backend_module.h`),
+  outside `plugins\` since none of them is a plugin. The old
+  `plugins\ida-ttd-backends\` is still searched.
   `hcli plugin lint` exits 0 even on errors; read its output.
 - **Never ship or fetch Microsoft's TTD runtime any other way.** Its terms
   forbid redistribution, and the standalone TTD package's terms forbid

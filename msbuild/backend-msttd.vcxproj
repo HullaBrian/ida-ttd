@@ -47,7 +47,7 @@
   <Import Project="common.props" />
   <PropertyGroup>
     <TargetName>ida-ttd-msttd</TargetName>
-    <!-- backends\ mirrors where IDA looks for them: plugins\ida-ttd-backends\. -->
+    <!-- backends\ mirrors where the package keeps them: plugins\ida-ttd\ida-ttd-backends\. -->
     <OutDir>$(RepoRoot)build\$(Configuration)\backends\</OutDir>
   </PropertyGroup>
 

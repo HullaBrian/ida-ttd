@@ -102,7 +102,9 @@ namespace idattd
     //    hcli replaces the package folder on every upgrade, so DLLs copied
     //    into it would vanish, while the shared folder is the user's;
     //  - the WinDbg that TTD > Backends > Install the TTD runtime put in
-    //    $IDAUSR\plugins\ida-ttd-backends\windbg\ (scripts/ida_ttd_runtime.py).
+    //    $IDAUSR\ida-ttd\windbg\ (scripts/ida_ttd_runtime.py), or in
+    //    $IDAUSR\plugins\ida-ttd-backends\windbg\, where earlier versions
+    //    put it.
     // An installed WinDbg is not used where it is: Windows refuses to load a
     // DLL from a package folder (WindowsApps) into a process outside the
     // package (ERROR_ACCESS_DENIED), though it lets one read it, so the
@@ -132,7 +134,10 @@ namespace idattd
         }
         const fs::path ttd = fs::path(L"amd64") / L"ttd" / L"TTDReplay.dll";
         for ( const fs::path &u : user_ida_dirs() )
+        {
+            candidates.push_back(u / L"ida-ttd" / L"windbg" / ttd);
             candidates.push_back(u / L"plugins" / L"ida-ttd-backends" / L"windbg" / ttd);
+        }
 
         for ( const fs::path &p : candidates )
         {

@@ -2,6 +2,7 @@
 // asks the user for.
 #include "ui/ui.h"
 #include "analysis/fork.h"
+#include "core/backend_module.h"
 
 namespace idattd
 {
@@ -74,13 +75,15 @@ namespace idattd
                     "\n"
                     "Choose the folder holding the hives the recording was made with\n"
                     "(SYSTEM, SOFTWARE, SAM, SECURITY, HARDWARE, NTUSER.DAT).\n"
+                    "Hives in %A are found without asking.\n"
                     "\n"
                     "<~F~older:F::64::>\n"
                     "\n";
                 qstring why = form_text(b->last_error());
+                qstring def = form_text(user_data_dir("registry"));
                 char dir[QMAXPATH];
                 qstrncpy(dir, rs->registry_dir.c_str(), sizeof(dir));
-                if ( ask_form(form, why.c_str(), dir) <= 0 || dir[0] == '\0' )
+                if ( ask_form(form, why.c_str(), def.c_str(), dir) <= 0 || dir[0] == '\0' )
                     return false;
                 save_registry_dir(dir);
                 rs->registry_dir = dir;

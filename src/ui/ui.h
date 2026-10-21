@@ -651,7 +651,7 @@ namespace idattd
     };
 
     // Install the Sogen backend (GPL-2.0, so not in the Apache-2.0 package)
-    // into $IDAUSR\plugins\ida-ttd-backends\, from a file the user picks: the
+    // into $IDAUSR\ida-ttd\backends\, from a file the user picks: the
     // DLL, or a release zip that holds it (ida_ttd_runtime.install_sogen()).
     struct InstallSogenHandler : public action_handler_t
     {

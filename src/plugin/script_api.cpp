@@ -1702,7 +1702,7 @@ namespace idattd
     static const Command g_commands[] = {
         { "help",           cmd_help,           "this list" },
         { "state",          cmd_state,          "the debugger and session state" },
-        { "backends",       cmd_backends,       "the backends loaded from plugins/ida-ttd-backends" },
+        { "backends",       cmd_backends,       "the backends loaded, and the folders they came from" },
         { "start",          cmd_start,          "[TIMEOUT] start the replay for this database and wait for the first stop" },
         { "wait",           cmd_wait,           "[TIMEOUT] wait for the debugger to stop" },
         { "step",           cmd_move,           "[back] one instruction" },

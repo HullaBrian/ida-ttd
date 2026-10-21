@@ -118,10 +118,17 @@ namespace idattd
         ReplayBlock   m_replayBlock = ReplayBlock::None;
     };
 
-    // Load every backend DLL in IDA's plugins/ida-ttd-backends and
-    // plugins/ida-ttd/ida-ttd-backends directories -- the user's and the
-    // installation's -- and add the ones that answer for
-    // this core's ABI version to BackendRegistry. A module that fails to load,
+    // $IDAUSR\ida-ttd, or a folder in it when 'sub' is given: where the
+    // things a user adds after installing live (the TTD runtime in windbg\,
+    // the Sogen backend in backends\, registry hives in registry\). Not in
+    // plugins\ida-ttd\, which HCLI replaces on every upgrade, and not under
+    // plugins\ at all, since none of it is a plugin.
+    qstring user_data_dir(const char *sub = nullptr);
+
+    // Load every backend DLL in $IDAUSR\ida-ttd\backends, then in the
+    // plugins\ida-ttd-backends and plugins\ida-ttd\ida-ttd-backends
+    // directories -- the user's and the installation's -- and add the ones
+    // that answer for this core's ABI version to BackendRegistry. A module that fails to load,
     // or answers for another version, is named in the output window and
     // skipped. Safe to call more than once; later calls do nothing.
     void load_backend_modules();

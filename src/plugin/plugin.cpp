@@ -157,7 +157,7 @@ namespace idattd
     {
         g_live_plugin = this;
         // Backends for kinds of recording other than Microsoft's, installed as
-        // DLLs under plugins/ida-ttd-backends. Nothing is there unless the user
+        // DLLs in $IDAUSR\ida-ttd\backends. Nothing is there unless the user
         // put it there, in which case each one is named in the output window.
         load_backend_modules();
         m_pdbTimer.arm(1000, pdb_poll_cb, this);
@@ -913,7 +913,7 @@ namespace idattd
                 &m_installSogen, this, nullptr,
                 "Install the backend that opens Sogen recordings (.sogttd) and records "
                 "forks: ida-ttd-sogen.dll, or a release zip holding it, copied into "
-                "plugins\\ida-ttd-backends in your IDA user directory", -1));
+                "ida-ttd\\backends in your IDA user directory", -1));
         }
 
         // From scratch, in order. Deleting a menu takes its items with it;

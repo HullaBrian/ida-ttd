@@ -161,22 +161,38 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    its `amd64\ttd` folder is copied; run it again after WinDbg updates. If not,
    it shows WinDbg's license and, once you accept it, downloads WinDbg's x64
    package (about 390 MB) from Microsoft. Either way the result goes in
-   `plugins\ida-ttd-backends\windbg\`. Then start the debugger.
+   `ida-ttd\windbg\`. Then start the debugger.
 
    WinDbg's license allows commercial use. The standalone TTD package's license
    does not, which is why the plugin never uses it.
 
-   To do it by hand instead, copy `TTDReplay.dll` and `TTDReplayCPU.dll` from
-   WinDbg's `amd64\ttd` folder next to `ida.exe`, or into
-   `plugins\ida-ttd-backends\`. Either way, keep them out of
-   `plugins\ida-ttd\`: HCLI replaces that folder on every upgrade, so anything
-   you add to it is lost.
-3. Optional, for Sogen recordings: build `ida-ttd-sogen.dll`
-   ([docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
-   and put it in `plugins\ida-ttd-backends\`, again outside the package folder.
-   The replay features (forks, recovered strings and buffers) also need the
-   registry hives the recording ran against: a `registry` folder next to the
-   backend. Without one, the first replay asks for the folder and remembers it.
+   To do it by hand instead, copy WinDbg's `amd64\ttd` folder to
+   `ida-ttd\windbg\amd64\ttd`, or `TTDReplay.dll` and `TTDReplayCPU.dll` from
+   it next to `ida.exe`.
+3. Optional, for Sogen recordings: **TTD > Backends > Install the Sogen
+   backend...** installs `ida-ttd-sogen.dll` (build it with
+   [docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
+   into `ida-ttd\backends\`. The replay features (forks, recovered strings
+   and buffers) also need the registry hives the recording ran against: put
+   them in `ida-ttd\registry\`. Without them, the first replay asks for a
+   folder and remembers it.
+
+Everything you add yourself lives in the `ida-ttd` folder of the IDA user
+directory, never in `plugins\ida-ttd\`: HCLI replaces that folder on every
+upgrade, so anything added to it is lost.
+
+```
+%APPDATA%\Hex-Rays\IDA Pro\
+  plugins\ida-ttd\     the plugin package (HCLI's; replaced on upgrade)
+  loaders\             ttd-loader.dll, copied there by the plugin
+  ida-ttd\             yours; upgrades leave it alone
+    windbg\              the TTD runtime, copied from WinDbg
+    backends\            ida-ttd-sogen.dll and its licenses
+    registry\            registry hives for Sogen replays and forks
+```
+
+Earlier versions used `plugins\ida-ttd-backends\` for these. It is still
+searched, and the installers move what they find there.
 
 The output window names each backend as it loads, and says why when one does
 not.
@@ -198,8 +214,8 @@ database** starts it again later.
 
 The Sogen backend (for `.sogttd` recordings and forks) is GPL-2.0, so it is not
 in the package: **TTD > Backends > Install the Sogen backend...** installs
-`ida-ttd-sogen.dll`, or a zip holding it, into `plugins\ida-ttd-backends\` in
-your IDA user directory, where plugin upgrades leave it alone. Restart IDA
+`ida-ttd-sogen.dll`, or a zip holding it, into `ida-ttd\backends\` in your
+IDA user directory, where plugin upgrades leave it alone. Restart IDA
 afterwards.
 
 If the trace has no index yet, you are asked whether to build one. Building can

@@ -20,8 +20,10 @@ namespace idattd
     bool recover_buffers(TraceManager *mgr, const ReplaySettings &settings,
                          std::vector<BufferHit> *out, bool *cancelled, qstring *error);
 
-    // The folder of registry hives a replay needs, as the user last gave it
-    // (shared by forks and the scans); empty for the backend's default.
+    // The folder of registry hives a replay needs (shared by forks and the
+    // scans): the one the user last gave, while it still holds hives; else
+    // $IDAUSR\ida-ttd\registry when that does; else whatever was saved, empty
+    // for the backend's default (a registry folder beside its DLL).
     qstring saved_registry_dir();
     void    save_registry_dir(const char *dir);
 }
