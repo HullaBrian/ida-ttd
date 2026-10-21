@@ -25,16 +25,25 @@ namespace idattd
     qstring saved_registry_dir();
     void    save_registry_dir(const char *dir);
 
-    // Where the open recording's hives may be, best first: the folder the
-    // user chose, a registry folder beside the recording (how one is shared
-    // with its hives), the emulation root's registry folder, and
+    // The emulation root a replay of a recording made in one uses: the
+    // folder the user named for this recording in this session, or empty for
+    // the one the recording names.
+    qstring chosen_emulation_root(TraceManager *mgr);
+    void    choose_emulation_root(TraceManager *mgr, const char *dir);
+
+    // Where the open recording's hives may be, best first. Made in an
+    // emulation root: only that root's registry folder, the one a replay
+    // loads. Made against the host: the folder the user chose, a registry
+    // folder beside the recording (how one is shared with its hives), and
     // $IDAUSR\ida-ttd\registry. Without duplicates.
     qstrvec_t registry_candidates(TraceManager *mgr);
 
-    // The folder a replay of the open recording should use: the first
-    // candidate holding the recording's own hives; else the first holding
-    // hives the recording cannot vouch for; else the first holding other
-    // hives (the replay is then refused, saying so); else empty, for the
-    // backend's default. Checking reads the hives, once per folder.
+    // The registry folder a replay of the open recording should be given:
+    // the first candidate holding the recording's own hives; unless the
+    // recording carries what it read of them, else the first holding hives
+    // it cannot vouch for, else the first holding other hives (the replay is
+    // then refused, saying so); else empty. Always empty for a recording
+    // made in an emulation root, whose replay loads the root's own.
+    // Checking reads the hives, once per folder.
     qstring find_registry_dir(TraceManager *mgr);
 }

@@ -247,6 +247,8 @@ namespace idattd
         ForkRequest full = req;
         if ( full.registry_dir.empty() )
             full.registry_dir = find_registry_dir(mgr);
+        if ( full.emulation_root.empty() )
+            full.emulation_root = chosen_emulation_root(mgr);
         run_query("Forking the recording: replaying to the position, then recording", [&](ProgressSink *p)
         {
             result = backend->record_fork(full, p);

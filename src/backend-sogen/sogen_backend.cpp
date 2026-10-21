@@ -42,9 +42,6 @@
 #include <platform/ui_backend.hpp>
 #include <ttd_string_scan.hpp>
 #include <ttd_buffer_scan.hpp>
-// The registry fingerprint (hive_fingerprint), as Sogen's recorder hashes it.
-#define XXH_INLINE_ALL
-#include <common/xxhash.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -1880,60 +1877,19 @@ namespace
     // The hives Sogen loads, in the order it fingerprints them.
     constexpr const char *kHives[] = { "SYSTEM", "SECURITY", "SAM", "SOFTWARE", "HARDWARE", "NTUSER.DAT" };
 
-    // Named files.
-    using named_files = std::vector<std::pair<std::string, std::filesystem::path>>;
-
-    // Files as the recording's manifest fingerprints them ("registry",
-    // "system_dlls"): XXH64 over each file's name, size and contents, as
-    // file_fingerprint in Sogen's ttd_session.cpp computes it when recording.
-    // It must stay byte for byte the same, or every folder would read as the
-    // wrong one; Sogen keeps it file-private, so it is restated here.
-    std::string files_fingerprint_uncached(const named_files &files)
-    {
-        XXH64_state_t state{};
-        XXH64_reset(&state, 0);
-        std::vector<char> buffer(1024 * 1024);
-        for ( const auto &[name, file] : files )
-        {
-            XXH64_update(&state, name.data(), name.size());
-            std::error_code ec;
-            const auto size = std::filesystem::file_size(file, ec);
-            std::ifstream stream(file, std::ios::binary);
-            if ( ec || !stream )
-            {
-                constexpr std::string_view missing = "missing";
-                XXH64_update(&state, missing.data(), missing.size());
-                continue;
-            }
-            XXH64_update(&state, &size, sizeof(size));
-            while ( stream )
-            {
-                stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-                XXH64_update(&state, buffer.data(), static_cast<size_t>(stream.gcount()));
-            }
-            if ( !stream.eof() )
-            {
-                constexpr std::string_view unreadable = "unreadable";
-                XXH64_update(&state, unreadable.data(), unreadable.size());
-            }
-        }
-        char text[17];
-        std::snprintf(text, sizeof(text), "%016llx", static_cast<unsigned long long>(XXH64_digest(&state)));
-        return text;
-    }
-
-    // The same, remembered until a file changes size or time: the hives are
+    // ttd::registry_fingerprint (the manifest's "registry" value for a folder
+    // of hives), remembered until a hive changes size or time: the hives are
     // well over 100 MB, and the core checks a folder before every replay.
-    std::string files_fingerprint(const named_files &files)
+    std::string hive_fingerprint(const std::filesystem::path &dir)
     {
-        std::wstring key;
-        for ( const auto &[name, file] : files )
+        std::wstring key = dir.native();
+        for ( const char *hive : kHives )
         {
             std::error_code ec;
-            const auto size = std::filesystem::file_size(file, ec);
-            const auto when = std::filesystem::last_write_time(file, ec);
-            key += file.native() + L'|' + std::to_wstring(ec ? 0 : size) + L':'
-                 + std::to_wstring(ec ? 0 : when.time_since_epoch().count()) + L'|';
+            const auto size = std::filesystem::file_size(dir / hive, ec);
+            const auto when = std::filesystem::last_write_time(dir / hive, ec);
+            key += L'|' + std::to_wstring(ec ? 0 : size) + L':'
+                 + std::to_wstring(ec ? 0 : when.time_since_epoch().count());
         }
         static std::mutex mtx;
         static std::map<std::wstring, std::string> cache;
@@ -1942,24 +1898,17 @@ namespace
             if ( auto it = cache.find(key); it != cache.end() )
                 return it->second;
         }
-        std::string fp = files_fingerprint_uncached(files);
+        std::string fp = ttd::registry_fingerprint(dir);
         std::lock_guard<std::mutex> lock(mtx);
         return cache.emplace(key, std::move(fp)).first->second;
     }
 
-    std::string hive_fingerprint(const std::filesystem::path &dir)
-    {
-        named_files files;
-        for ( const char *hive : kHives )
-            files.emplace_back(hive, dir / hive);
-        return files_fingerprint(files);
-    }
-
-    // The system DLLs a replay would load, as the recording's "system_dlls"
-    // names them: Sogen reads them from the guest's System32, which is the
-    // emulation root's filesys\c\windows\system32, or this machine's own for
-    // a recording made against the host. Assumes the guest's Windows lives
-    // in C:\Windows, so a difference is a warning only.
+    // The manifest's "system_dlls" value for the System32 a replay would
+    // load from: the emulation root's filesys\c\windows\system32, or this
+    // machine's own for a recording made against the host. Assumes the
+    // guest's Windows lives in C:\Windows (environment_differences reads the
+    // real system root from the hives, which a recording carrying its hives
+    // may not have here), so a difference is a warning only.
     std::string system_dll_fingerprint(const std::string &root)
     {
         std::filesystem::path sys;
@@ -1975,10 +1924,7 @@ namespace
         {
             sys = utf8_path(root.c_str()) / L"filesys" / L"c" / L"windows" / L"system32";
         }
-        named_files files;
-        for ( const char *dll : { "ntdll.dll", "kernel32.dll", "kernelbase.dll" } )
-            files.emplace_back(dll, sys / dll);
-        return files_fingerprint(files);
+        return ttd::system_dll_fingerprint(sys);
     }
 
     // Whether 'dir' holds the hives a recording that names 'recorded' was
@@ -2020,12 +1966,16 @@ namespace
                                                              bool *strict)
     {
         std::filesystem::path registry = module_dir() / "registry";
-        std::filesystem::path root = manifest_value(t, "emulation_root");
+        std::filesystem::path root = utf8_path(manifest_value(t, "emulation_root").c_str());
         *strict = false;
         if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr && **v != '\0' )
             registry = utf8_path(*v);
         if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
             root = utf8_path(*v);
+        // windows_emulator loads <root>\registry whenever there is a root and
+        // ignores registry_directory, so that is the folder to check.
+        if ( !root.empty() )
+            registry = root / "registry";
         bool allow_host = false, any_registry = false;
         if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
         {
@@ -2039,11 +1989,18 @@ namespace
             throw coded_error(ITTD_E_HOST_REPLAY, "this recording was made against the host, not an emulation root: "
                                      "replaying it runs the program's file and network operations on this "
                                      "machine again. Allow that explicitly to go ahead");
-        // Other hives than the recording's are refused before the replay
-        // spends minutes getting to where it diverges, unless asked for.
         std::string why;
         const int hives = check_hives(manifest_value(t, "registry"), registry, &why);
-        if ( hives == ITTD_E_NO_REGISTRY || (hives == ITTD_E_REGISTRY_MISMATCH && !any_registry) )
+        // A recording that carries what it read of its hives replays without
+        // hive files (Sogen serves the registry from it in seek, run_to and
+        // replay_to_end). The recording's own files are still loaded when
+        // they are here, so a fork can read further than the recording did;
+        // other files would answer differently, so they are left out.
+        const bool carried = t.has_registry_hives();
+        const bool load = !carried || hives == ITTD_OK;
+        // Otherwise other hives than the recording's are refused before the
+        // replay spends minutes getting to where it diverges, unless asked for.
+        if ( !carried && (hives == ITTD_E_NO_REGISTRY || (hives == ITTD_E_REGISTRY_MISMATCH && !any_registry)) )
             throw coded_error(hives, why);
 
         sogen::emulator_settings es{};
@@ -2051,6 +2008,7 @@ namespace
         es.use_relative_time  = true;
         es.emulation_root     = root;
         es.registry_directory = registry;
+        es.load_registry      = load;
         sogen::emulator_interfaces ifs{};
         ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
         auto emu = std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), es,
@@ -3186,6 +3144,7 @@ namespace
             const std::string root = manifest_value(t, "emulation_root");
             out->host = root.empty() ? 1 : 0;
             out->registry_known = manifest_value(t, "registry").empty() ? 0 : 1;
+            out->registry_carried = t.has_registry_hives() ? 1 : 0;
             if ( const std::string dlls = manifest_value(t, "system_dlls"); !dlls.empty() )
             {
                 const std::string here = system_dll_fingerprint(root);
@@ -3193,7 +3152,8 @@ namespace
                                  : here == dlls ? ITTD_DLLS_SAME : ITTD_DLLS_DIFFER;
             }
             copy_str(out->emulation_root, sizeof(out->emulation_root), root);
-            // Where Sogen's create-root.bat puts the hives of a root it makes.
+            // The folder a replay in the root loads its hives from (whatever
+            // registry_dir says), and where create-root.bat puts them.
             if ( !root.empty() )
                 copy_str(out->registry_hint, sizeof(out->registry_hint),
                          path_utf8(utf8_path(root.c_str()) / "registry"));

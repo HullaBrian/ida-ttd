@@ -58,12 +58,20 @@ namespace idattd
                        : "The emulation root's system DLLs are not the ones it ran with, so a replay\n"
                          "stops early, whatever the hives.\n");
         }
-        s.append("A replay needs the very hive files Sogen was given when it recorded\n"
-                 "(SYSTEM, SOFTWARE, SAM, SECURITY, HARDWARE, NTUSER.DAT). A new copy of the\n"
-                 "same machine's registry is not the same: the registry changes all the time.\n"
-                 "Keep them in a registry folder beside the recording to have them found.\n"
-                 "\n"
-                 "Looked in:");
+        if ( known && env.registry_carried )
+            s.append("It carries what it read of its registry hives, so a replay needs no hive\n"
+                     "files. This one reads further than the recording did, so it needs the very\n"
+                     "hive files Sogen was given when it recorded.\n");
+        else
+            s.append("A replay needs the very hive files Sogen was given when it recorded\n"
+                     "(SYSTEM, SOFTWARE, SAM, SECURITY, HARDWARE, NTUSER.DAT). A new copy of the\n"
+                     "same machine's registry is not the same: the registry changes all the time.\n");
+        if ( known && !env.host )
+            s.append("A replay in an emulation root loads the root's registry folder, so choose\n"
+                     "the root itself where it is elsewhere on this machine.\n");
+        else
+            s.append("Keep them in a registry folder beside the recording to have them found.\n");
+        s.append("\nLooked in:");
         for ( const qstring &dir : registry_candidates(mgr) )
         {
             const char *what = "no hives";
@@ -83,6 +91,7 @@ namespace idattd
     {
         ReplaySettings rs;
         rs.registry_dir = find_registry_dir(mgr);
+        rs.emulation_root = chosen_emulation_root(mgr);
         rs.allow_host   = mgr != nullptr && !g_hostConsent.empty() && g_hostConsent == mgr->trace_path();
         return rs;
     }
@@ -113,6 +122,10 @@ namespace idattd
             case ReplayBlock::Registry:
             case ReplayBlock::RegistryMismatch:
             {
+                // A replay in an emulation root loads <root>\registry and
+                // nothing else, so there the question is where the root is.
+                ReplayEnv env;
+                const bool in_root = b->replay_env(&env) && !env.host;
                 static const char form[] =
                     "Registry hives\n"
                     "\n"
@@ -124,15 +137,37 @@ namespace idattd
                     "<~F~older:F::64::>\n"
                     "<~R~eplay with these hives even if they are not the recording's:C>>\n"
                     "\n";
+                static const char root_form[] =
+                    "Emulation root\n"
+                    "\n"
+                    "\n"
+                    "%A\n"
+                    "\n"
+                    "%A\n"
+                    "\n"
+                    "<~E~mulation root:F::64::>\n"
+                    "<~R~eplay with its hives even if they are not the recording's:C>>\n"
+                    "\n";
                 qstring why = form_text(b->last_error());
                 qstring about = form_text(replay_needs_text(mgr));
                 char dir[QMAXPATH];
-                qstrncpy(dir, rs->registry_dir.c_str(), sizeof(dir));
+                qstrncpy(dir, in_root ? (rs->emulation_root.empty() ? env.emulation_root.c_str()
+                                                                     : rs->emulation_root.c_str())
+                                      : rs->registry_dir.c_str(), sizeof(dir));
                 ushort anyway = 0;
-                if ( ask_form(form, why.c_str(), about.c_str(), dir, &anyway) <= 0 || dir[0] == '\0' )
+                if ( ask_form(in_root ? root_form : form, why.c_str(), about.c_str(), dir, &anyway) <= 0
+                  || dir[0] == '\0' )
                     return false;
-                save_registry_dir(dir);
-                rs->registry_dir = dir;
+                if ( in_root )
+                {
+                    choose_emulation_root(mgr, dir);
+                    rs->emulation_root = dir;
+                }
+                else
+                {
+                    save_registry_dir(dir);
+                    rs->registry_dir = dir;
+                }
                 rs->any_registry = anyway != 0;
                 return true;
             }
@@ -256,6 +291,7 @@ namespace idattd
             req.registry_dir = rs.registry_dir;
             req.allow_host   = rs.allow_host;
             req.any_registry = rs.any_registry;
+            req.emulation_root = rs.emulation_root;
             r = run_fork(m, req);
             if ( r.ok || r.cancelled || !ask_replay_needs(m, &rs) )
                 break;

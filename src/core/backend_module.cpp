@@ -769,22 +769,22 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
-    // The settings point into 'registry_dir', which must outlive them.
-    static ittd_fork_settings replay_settings(const qstring &registry_dir, bool strict, bool allow_host,
-                                              bool any_registry)
+    // The settings point into 'registry_dir' and 'root', which must outlive them.
+    static ittd_fork_settings replay_settings(const qstring &registry_dir, const qstring &root, bool strict,
+                                              bool allow_host, bool any_registry)
     {
         ittd_fork_settings fs{};
         fs.size  = sizeof(fs);
         fs.flags = (strict ? ITTD_FORK_STRICT : 0) | (allow_host ? ITTD_FORK_ALLOW_HOST : 0)
                  | (any_registry ? ITTD_FORK_ANY_REGISTRY : 0);
         fs.registry_dir   = registry_dir.empty() ? nullptr : registry_dir.c_str();
-        fs.emulation_root = nullptr;
+        fs.emulation_root = root.empty() ? nullptr : root.c_str();
         return fs;
     }
 
     static ittd_fork_settings replay_settings(const ReplaySettings &s)
     {
-        return replay_settings(s.registry_dir, s.strict, s.allow_host, s.any_registry);
+        return replay_settings(s.registry_dir, s.emulation_root, s.strict, s.allow_host, s.any_registry);
     }
 
     bool BackendModule::replay_env(ReplayEnv *out)
@@ -797,6 +797,7 @@ namespace idattd
             return false;
         out->host            = e.host != 0;
         out->registry_known  = e.registry_known != 0;
+        out->registry_carried = e.registry_carried != 0;
         out->system_dlls     = e.system_dlls;
         out->registry_hint   = e.registry_hint;
         out->emulation_root  = e.emulation_root;
@@ -924,7 +925,8 @@ namespace idattd
         };
 
         ProgressBridge pb(progress);
-        ittd_fork_settings fs = replay_settings(req.registry_dir, req.strict, req.allow_host, req.any_registry);
+        ittd_fork_settings fs = replay_settings(req.registry_dir, req.emulation_root, req.strict, req.allow_host,
+                                                req.any_registry);
         ittd_fork *f = nullptr;
         int rc = note_replay(m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f));
         if ( rc != ITTD_OK || f == nullptr )

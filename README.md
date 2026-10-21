@@ -173,14 +173,17 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    backend...** installs `ida-ttd-sogen.dll` (build it with
    [docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
    into `ida-ttd\backends\`. The replay features (forks, recovered strings
-   and buffers) also need the registry hives the recording ran against: the
-   very files Sogen was given when it recorded, since a new copy of the same
-   registry is not the same. Keep them in a `registry` folder beside the
-   recording, or in `ida-ttd\registry\`, and they are found and checked
-   against the recording; otherwise the first replay asks for a folder and
-   remembers it. A recording made against the host replays only on a machine
-   with the same system DLLs, normally the one it was recorded on. The hives
-   hold that machine's password hashes, so share them with care.
+   and buffers) of a recording from Sogen before 2026-10-21 also need the
+   registry hives it ran against: the very files Sogen was given when it
+   recorded, since a new copy of the same registry is not the same. Newer
+   recordings carry what they read of them and need none. For a recording
+   made against the host, keep the hives in a `registry` folder beside it, or
+   in `ida-ttd\registry\`, and they are found and checked; one made in an
+   emulation root uses the root's own `registry` folder, and the plugin asks
+   where the root is when it is not where it was. A recording made against
+   the host replays only on a machine with the same Windows build, normally
+   the one it was recorded on. Hives hold that machine's password hashes, so
+   share them with care.
 
 Everything you add yourself lives in the `ida-ttd` folder of the IDA user
 directory, never in `plugins\ida-ttd\`: HCLI replaces that folder on every

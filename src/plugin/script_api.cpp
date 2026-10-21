@@ -268,14 +268,17 @@ namespace idattd
         return p;
     }
 
-    // One of the words that set up a Sogen replay: registry=DIR, strict, host
-    // or anyregistry (replay with hives that are not the recording's).
+    // One of the words that set up a Sogen replay: registry=DIR, root=DIR (the
+    // emulation root, where it is elsewhere here), strict, host or
+    // anyregistry (replay with hives that are not the recording's).
     // ForkRequest and ReplaySettings name the fields alike.
     template <typename T>
     static bool replay_option(const qstring &t, T *s)
     {
         if ( t.starts_with("registry=") )
             s->registry_dir = t.substr(9);
+        else if ( t.starts_with("root=") )
+            s->emulation_root = t.substr(5);
         else if ( t == "strict" )
             s->strict = true;
         else if ( t == "host" )
@@ -1106,6 +1109,8 @@ namespace idattd
         if ( b->replay_env(&env) )
         {
             out.boolean("host", env.host).boolean("registry_known", env.registry_known)
+               .boolean("registry_carried", env.registry_carried)
+               .str("chosen_root", chosen_emulation_root(&mgr()))
                .str("emulation_root", env.emulation_root).str("registry_hint", env.registry_hint)
                .str("windows_version", env.windows_version)
                .str("system_dlls", env.system_dlls == ITTD_DLLS_SAME   ? "same"
@@ -1203,7 +1208,7 @@ namespace idattd
         {
             const qstring &t = a.at(i);
             if ( !replay_option(t, &req) )
-                fail("'%s' is not registry=DIR, strict, host or anyregistry", t.c_str());
+                fail("'%s' is not registry=DIR, root=DIR, strict, host or anyregistry", t.c_str());
         }
         req.note = "ida-ttd script";
         ForkResult r = run_fork(&mgr(), req);
@@ -1226,6 +1231,7 @@ namespace idattd
     {
         ReplaySettings rs;
         rs.registry_dir = find_registry_dir(&mgr());
+        rs.emulation_root = chosen_emulation_root(&mgr());
         for ( size_t i = from; i < a.count(); i++ )
             replay_option(a.at(i), &rs);
         return rs;

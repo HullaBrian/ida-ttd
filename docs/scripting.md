@@ -63,6 +63,11 @@ ida_ttd.call("drv.seek", "f4240")    # 1,000,000: numbers are hex
   double quotes, which may also sit inside a word:
   `registry="C:\Program Files\x"`. Numbers are hex, with or without `0x`.
 - **A trailing `back`** makes a movement go backwards.
+- **Sogen replays** (`an.strings`, `an.buffers`, `an.fork`, `an.forkrecord`)
+  take `registry=DIR` (the hives, for a recording made against the host),
+  `root=DIR` (the emulation root, where it is elsewhere on this machine),
+  `host` (consent to replay a host recording), `strict`, and `anyregistry`
+  (replay with hives that are not the recording's).
 - **Answers** are JSON objects with `"ok"`; a failure also carries `"error"`.
   Addresses and positions are strings (`"0x..."`, or the backend's own position
   text), so 64-bit values survive a JSON reader that uses doubles.

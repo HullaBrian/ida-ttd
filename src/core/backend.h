@@ -237,7 +237,8 @@ namespace idattd
     // What replaying the recording needs beyond the recording itself.
     struct ReplaySettings
     {
-        qstring registry_dir;               // empty: the backend's default
+        qstring registry_dir;               // empty: the backend's default; host recordings only
+        qstring emulation_root;             // empty: the recording's own
         bool    strict = false;
         // Replay a recording made against the host, whose program then touches
         // this machine's files and network again (ITTD_FORK_ALLOW_HOST).
@@ -251,6 +252,7 @@ namespace idattd
     {
         bool    host = false;               // made against the host, not an emulation root
         bool    registry_known = false;     // names its hives, so they can be checked
+        bool    registry_carried = false;   // carries what it read of them: no hive files needed
         uint32_t system_dlls = ITTD_DLLS_UNKNOWN;   // this machine's against the recording's (ITTD_DLLS_*)
         qstring registry_hint;              // the emulation root's registry folder; empty for the host
         qstring emulation_root;             // empty for the host
@@ -307,6 +309,7 @@ namespace idattd
         qstring  path;
         uint64_t max_instructions = 0;      // 0: until the program exits
         qstring  registry_dir;              // empty: the backend's default
+        qstring  emulation_root;            // empty: the recording's own
         bool     strict = false;
         bool     allow_host = false;        // see ReplaySettings::allow_host
         bool     any_registry = false;      // see ReplaySettings::any_registry

@@ -31,9 +31,47 @@ namespace idattd
         v->push_back(dir);
     }
 
+    // By recording, for this session: a root is a property of the machine
+    // the recording is looked at on, and moving one is rare.
+    static std::map<qstring, qstring> g_roots;
+
+    qstring chosen_emulation_root(TraceManager *mgr)
+    {
+        if ( mgr == nullptr )
+            return qstring();
+        auto it = g_roots.find(mgr->trace_path());
+        return it != g_roots.end() ? it->second : qstring();
+    }
+
+    void choose_emulation_root(TraceManager *mgr, const char *dir)
+    {
+        if ( mgr != nullptr )
+            g_roots[mgr->trace_path()] = dir != nullptr ? dir : "";
+    }
+
+    static bool get_env(TraceManager *mgr, ReplayEnv *env)
+    {
+        return mgr != nullptr && mgr->backend() != nullptr && mgr->backend()->replay_env(env);
+    }
+
     qstrvec_t registry_candidates(TraceManager *mgr)
     {
         qstrvec_t v;
+        ReplayEnv env;
+        if ( get_env(mgr, &env) && !env.host )
+        {
+            qstring root = chosen_emulation_root(mgr);
+            if ( root.empty() )
+            {
+                add_candidate(&v, env.registry_hint);
+            }
+            else
+            {
+                root.append("\\registry");
+                add_candidate(&v, root);
+            }
+            return v;
+        }
         add_candidate(&v, saved_registry_dir());
         if ( mgr != nullptr )
         {
@@ -45,9 +83,6 @@ namespace idattd
                 beside.append("\\registry");
                 add_candidate(&v, beside);
             }
-            ReplayEnv env;
-            if ( mgr->backend() != nullptr && mgr->backend()->replay_env(&env) )
-                add_candidate(&v, env.registry_hint);
         }
         add_candidate(&v, user_data_dir("registry"));
         return v;
@@ -58,6 +93,10 @@ namespace idattd
         ITraceBackend *b = mgr != nullptr ? mgr->backend() : nullptr;
         if ( b == nullptr )
             return saved_registry_dir();
+        ReplayEnv env;
+        const bool known = get_env(mgr, &env);
+        if ( known && !env.host )
+            return qstring();
         qstring unverified, mismatch;
         for ( const qstring &dir : registry_candidates(mgr) )
         {
@@ -77,6 +116,10 @@ namespace idattd
                     break;
             }
         }
+        // Carrying its hives, a recording replays without files: only its
+        // own would add anything (a fork reading further than it did).
+        if ( known && env.registry_carried )
+            return qstring();
         return !unverified.empty() ? unverified : mismatch;
     }
 

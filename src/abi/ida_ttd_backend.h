@@ -584,6 +584,10 @@ typedef struct ittd_replay_env
     /* Non-zero: the recording names the registry hives it was made with, so
      * check_registry can tell the right ones from others. */
     uint32_t registry_known;
+    /* Non-zero: the recording carries what it read of its hives, so a replay
+     * needs no hive files. A fork that reads further than the recording did
+     * still needs the recording's own hives (check_registry finds them). */
+    uint32_t registry_carried;
     /* Whether this machine has the system DLLs the recording was made with
      * (its emulation root's, or for the host this machine's own):
      * ITTD_DLLS_*. A replay with others diverges early. */
@@ -611,10 +615,13 @@ typedef struct ittd_fork_settings
     uint32_t    size;               /* sizeof(ittd_fork_settings) */
     uint32_t    flags;              /* ITTD_FORK_* */
     /* The folder holding the registry hives (SYSTEM, SOFTWARE, SAM, SECURITY,
-     * HARDWARE, NTUSER.DAT). NULL or empty: the backend's default. */
+     * HARDWARE, NTUSER.DAT). NULL or empty: the backend's default. Only for a
+     * recording made against the host: one made in an emulation root loads
+     * <emulation_root>\registry. */
     const char *registry_dir;
     /* The emulation root. NULL: the one the recording was made with (empty
-     * for a recording made against the host). */
+     * for a recording made against the host). Where that root is elsewhere
+     * on this machine, name it here. */
     const char *emulation_root;
 } ittd_fork_settings;
 

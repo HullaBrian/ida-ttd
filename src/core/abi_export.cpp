@@ -907,6 +907,7 @@ namespace idattd
         if ( s != nullptr )
         {
             rs.registry_dir = s->registry_dir != nullptr ? s->registry_dir : "";
+            rs.emulation_root = s->emulation_root != nullptr ? s->emulation_root : "";
             rs.strict       = (s->flags & ITTD_FORK_STRICT) != 0;
             rs.allow_host   = (s->flags & ITTD_FORK_ALLOW_HOST) != 0;
             rs.any_registry = (s->flags & ITTD_FORK_ANY_REGISTRY) != 0;

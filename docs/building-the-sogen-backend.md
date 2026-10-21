@@ -126,30 +126,47 @@ ABI header honest about being C.
 ## 4. Registry hives for replay
 
 Forks and the replay scans run the program again in Sogen's emulator, which
-loads the registry the recording ran against: `HARDWARE`, `NTUSER.DAT`, `SAM`,
-`SECURITY`, `SOFTWARE` and `SYSTEM` (Sogen's `grab-registry.bat` captures
-them; an emulation root's `registry` folder has them).
+reads the registry the recording ran against: `HARDWARE`, `NTUSER.DAT`,
+`SOFTWARE` and `SYSTEM`, and `SAM` and `SECURITY` when they were there
+(Sogen's `grab-registry.bat` captures them; an emulation root's `registry`
+folder has them).
 
-They must be the very files the recorder was given: the recording's manifest
-holds a fingerprint of them (`registry`), and a new capture of the same
-machine gives other bytes. The backend checks a folder against it
-(`check_registry`) and refuses other hives unless `ITTD_FORK_ANY_REGISTRY` is
-given. The plugin looks, in order, in the folder last chosen, a `registry`
-folder beside the recording, the emulation root's `registry` folder, and
-`ida-ttd\registry\` under the IDA user directory, and uses the first that
-holds the recording's own hives (`an.registry` lists them). Given no folder
-(`ittd-probe` without `ITTD_PROBE_FORK_REGISTRY`), the backend looks in a
-`registry` folder next to `ida-ttd-sogen.dll`.
+**Recordings that carry their hives** (Sogen since `8a9fb161`, 2026-10-21)
+hold the parts of the hive files the run read, and replay with no hive files
+at all (`replay_env` reports `registry_carried`). The backend still loads the
+recording's own hive files when they are found, so a fork that reads further
+than the recording did can go on; without them, such a fork fails saying it
+needs them.
 
-A recording made against the host also needs that machine's system DLLs
-(ntdll, kernel32, kernelbase; the manifest's `system_dlls`): replayed
-elsewhere it diverges early, whatever the hives. `replay_env` says when they
-differ, and the Registry hives dialog says so.
+**Older recordings** need the very files the recorder was given: the
+manifest holds a fingerprint of them (`registry`), and a new capture of the
+same machine gives other bytes. The backend checks a folder against it
+(`check_registry`, Sogen's `registry_fingerprint`) and refuses other hives
+unless `ITTD_FORK_ANY_REGISTRY` is given.
 
-The hives include `SAM` and `SECURITY`, which with `SYSTEM` hold the
-recording machine's local password hashes: share them only with people who
-may have those. (`docs/sogen-ttd-requests-7.md` asks Sogen for recordings that
-need no hives.)
+Where the hives are looked for depends on how the recording was made:
+
+- **In an emulation root:** Sogen loads `<root>\registry` and ignores any
+  other folder, so the plugin asks for the root itself when it is elsewhere on
+  this machine (`ittd_fork_settings::emulation_root`; `root=DIR` in scripts).
+- **Against the host:** the plugin looks, in order, in the folder last chosen,
+  a `registry` folder beside the recording, and `ida-ttd\registry\` under the
+  IDA user directory, and uses the first that holds the recording's own hives
+  (`an.registry` lists them). Given no folder (`ittd-probe` without
+  `ITTD_PROBE_FORK_REGISTRY`), the backend looks in a `registry` folder next
+  to `ida-ttd-sogen.dll`.
+
+A recording made against the host also replays only on a Windows build like
+the one it ran on: what the program loads or reads after the first checkpoint
+(further DLLs, NLS files, fonts) comes from this machine. The manifest's
+`system_dlls` (ntdll, kernel32, kernelbase) stands in for that; `replay_env`
+says when it differs, and the Registry hives dialog says so. Record in an
+emulation root when a recording has to travel.
+
+`SAM` and `SECURITY`, with `SYSTEM`, hold the recording machine's local
+password hashes. Sogen no longer requires them, and a recording that carries
+its hives holds only their 340-byte headers unless the program opened them;
+delete them from a root you mean to share.
 
 ## Results
 
