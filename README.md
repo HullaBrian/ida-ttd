@@ -155,13 +155,14 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    Without HCLI, download `ida-ttd.zip` from the
    [latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract
    it into `plugins\`: it holds one `ida-ttd` folder.
-2. Get the TTD replay runtime: with any database open (a `.run` included),
-   choose **TTD > Backends > Install the TTD runtime (WinDbg)...** (or run
+2. Get the TTD replay runtime: choose **TTD > Backends > Install the TTD runtime (WinDbg)...** (or run
    `import ida_ttd_runtime; ida_ttd_runtime.install_runtime()` in IDAPython). If WinDbg is installed,
    its `amd64\ttd` folder is copied; run it again after WinDbg updates. If not,
    it shows WinDbg's license and, once you accept it, downloads WinDbg's x64
    package (about 390 MB) from Microsoft. Either way the result goes in
-   `ida-ttd\windbg\`. Then start the debugger.
+   `ida-ttd\windbg\`. Then start the debugger. The TTD menu is there with no
+   database open too (once IDA has been restarted after installing the
+   plugin), so this can be done before opening anything.
 
    WinDbg's license allows commercial use. The standalone TTD package's license
    does not, which is why the plugin never uses it.

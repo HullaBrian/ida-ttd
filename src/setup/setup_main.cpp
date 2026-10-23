@@ -16,11 +16,18 @@
 // debugger, and keeping it resident for the whole session would be a change of
 // its own.
 //
-// Its whole job is in init(), which then returns nullptr (a PLUGIN_MULTI
-// plugin declining to load), so nothing of it stays loaded.
+// It also gives IDA a TTD > Backends menu while no database is open. The main
+// plugin's menu, which has the same two installers, only exists with a
+// database, so on a fresh install the TTD runtime and the Sogen backend could
+// only be installed after opening some unrelated file first. This one is taken
+// down as a database opens (the main plugin builds the full menu then) and put
+// back when it closes. Without the GUI, or without the installer script beside
+// the plugin, init() returns nullptr (a PLUGIN_MULTI plugin declining to load)
+// once the loader is in place, and nothing of it stays loaded.
 // ---------------------------------------------------------------------------
 #include "common/pch.h"
 #include <diskio.hpp>
+#include <expr.hpp>
 
 #include <filesystem>
 #include <fstream>
@@ -117,6 +124,184 @@ namespace
         fs::remove(staged, ec);
         return false;
     }
+
+    // Copy the bundled loader into $IDAUSR\loaders\ when it is not already
+    // there as it is. 'dir' is this DLL's folder.
+    void install_loader(const fs::path &dir)
+    {
+        // Only a package install has the loader beside this DLL. A copy of this
+        // DLL anywhere else (a build folder copied into plugins\ wholesale) has
+        // nothing to install and stays quiet.
+        const fs::path bundled = dir / LOADER_NAME;
+        std::error_code ec;
+        if ( !fs::is_regular_file(bundled, ec) )
+            return;
+
+        // A loader installed by hand in the IDA directory is the user's choice.
+        // A second copy under $IDAUSR would put the format in File > Open twice.
+        if ( fs::is_regular_file(utf8_path(idadir(LDR_SUBDIR)) / LOADER_NAME, ec) )
+            return;
+
+        const fs::path loaders = utf8_path(get_user_idadir()) / L"loaders";
+        const fs::path target = loaders / LOADER_NAME;
+        if ( same_contents(bundled, target) )
+        {
+            fs::remove(fs::path(target).concat(L".old"), ec);
+            return;
+        }
+
+        const bool update = fs::exists(target, ec);
+        fs::create_directories(loaders, ec);
+        qstring err;
+        if ( install(bundled, target, &err) )
+            msg("[ida-ttd] %s the trace loader in %s: File > Open now recognizes "
+                ".run and .sogttd recordings. It is not removed when the plugin is "
+                "uninstalled; delete it by hand then.%s\n",
+                update ? "Updated" : "Installed", display(loaders).c_str(),
+                update ? "" : " TTD > Backends installs what opening them needs: "
+                              "the TTD runtime for Microsoft recordings, the Sogen "
+                              "backend for Sogen ones.");
+        else
+            msg("[ida-ttd] Could not install the trace loader, so File > Open will not "
+                "recognize recordings (%s). Copy %s into %s by hand.\n",
+                err.c_str(), display(bundled).c_str(), display(loaders).c_str());
+    }
+
+    //-----------------------------------------------------------------------
+    // TTD > Backends while no database is open
+    //-----------------------------------------------------------------------
+    // Internal names of their own: the main plugin's menu is "TTD" with a
+    // "Backends" submenu, and the two must not be mistaken for each other in
+    // the moment both could exist. The labels, which the paths below use,
+    // are the same, so the menu looks the same with and without a database.
+    const char MENU[]            = "idattd_setup:TTD";
+    const char SUBMENU[]         = "idattd_setup:Backends";
+    const char ACT_RUNTIME[]     = "idattd_setup:install_runtime";
+    const char ACT_SOGEN[]       = "idattd_setup:install_sogen";
+
+    // Runs one function of ida_ttd_runtime (scripts/ida_ttd_runtime.py, in
+    // ida-ttd-python\ beside the main plugin) through IDAPython, as the main
+    // plugin's own installer actions do. Nothing has put that folder on
+    // sys.path yet with no database open, so the snippet does.
+    struct installer_t : public action_handler_t
+    {
+        qstring pydir;          // forward slashes, quotes escaped
+        const char *func;       // "install_runtime" or "install_sogen"
+        const char *what;       // for the failure message
+
+        installer_t(const char *f, const char *w) : func(f), what(w) {}
+
+        int idaapi activate(action_activation_ctx_t *) override
+        {
+            extlang_object_t py = find_extlang_by_name("Python");
+            if ( py == nullptr || py->eval_snippet == nullptr )
+            {
+                warning("Installing %s needs IDAPython, which is not available.", what);
+                return 1;
+            }
+            qstring code;
+            code.sprnt("import sys\n"
+                       "if '%s' not in sys.path:\n"
+                       "    sys.path.append('%s')\n"
+                       "import ida_ttd_runtime\n"
+                       "ida_ttd_runtime.%s()\n", pydir.c_str(), pydir.c_str(), func);
+            qstring err;
+            if ( !py->eval_snippet(code.c_str(), &err) )
+                warning("Installing %s failed: %s", what, err.c_str());
+            return 1;
+        }
+
+        action_state_t idaapi update(action_update_ctx_t *) override
+        {
+            return AST_ENABLE_ALWAYS;
+        }
+    };
+
+    struct setup_plugin_t : public plugmod_t, public event_listener_t
+    {
+        installer_t runtime{ "install_runtime", "the TTD runtime" };
+        installer_t sogen{ "install_sogen", "the Sogen backend" };
+        qtimer_t    timer = nullptr;
+        bool        db_open = false;
+        bool        shown = false;
+
+        explicit setup_plugin_t(const qstring &pydir)
+        {
+            runtime.pydir = pydir;
+            sogen.pydir = pydir;
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                ACT_RUNTIME, "Install the TTD runtime (WinDbg)...", &runtime, this, nullptr,
+                "Get Microsoft's TTD replay runtime, which Microsoft TTD recordings "
+                "need: copied from an installed WinDbg, or WinDbg downloaded from "
+                "Microsoft once you accept its license", -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                ACT_SOGEN, "Install the Sogen backend...", &sogen, this, nullptr,
+                "Install the backend that opens Sogen recordings (.sogttd) and records "
+                "forks: ida-ttd-sogen.dll, or a release zip holding it, copied into "
+                "ida-ttd\\backends in your IDA user directory", -1));
+            ::hook_event_listener(HT_UI, this, this);
+            // Not from init(): IDA is still starting, and the menu bar may not
+            // be there yet. A file named on the command line opens before or
+            // after this fires; ui_initing_database takes the menu down again
+            // if it opens after.
+            timer = register_timer(0, [](void *ud) -> int
+            {
+                setup_plugin_t *self = static_cast<setup_plugin_t *>(ud);
+                self->timer = nullptr;
+                if ( !self->db_open )
+                    self->show_menu();
+                return -1;
+            }, this);
+        }
+
+        ~setup_plugin_t() override
+        {
+            if ( timer != nullptr )
+                unregister_timer(timer);
+            hide_menu();
+            ::unhook_event_listener(HT_UI, this);
+        }
+
+        bool idaapi run(size_t) override { return true; }
+
+        void show_menu()
+        {
+            if ( shown )
+                return;
+            // No position: IDA appends the menu to the menu bar, where the
+            // main plugin's goes too.
+            create_menu(MENU, "TTD");
+            create_menu(SUBMENU, "Backends", "TTD/");
+            attach_action_to_menu("TTD/Backends/", ACT_RUNTIME, SETMENU_APP);
+            attach_action_to_menu("TTD/Backends/", ACT_SOGEN, SETMENU_APP);
+            shown = true;
+        }
+
+        void hide_menu()
+        {
+            if ( !shown )
+                return;
+            delete_menu(SUBMENU);
+            delete_menu(MENU);
+            shown = false;
+        }
+
+        ssize_t idaapi on_event(ssize_t code, va_list) override
+        {
+            switch ( code )
+            {
+                case ui_initing_database:
+                    db_open = true;
+                    hide_menu();
+                    break;
+                case ui_database_closed:
+                    db_open = false;
+                    show_menu();
+                    break;
+            }
+            return 0;
+        }
+    };
 }
 
 static plugmod_t *idaapi init()
@@ -124,40 +309,20 @@ static plugmod_t *idaapi init()
     const fs::path dir = module_dir();
     if ( dir.empty() )
         return nullptr;
-    // Only a package install has the loader beside this DLL. A copy of this
-    // DLL anywhere else (a build folder copied into plugins\ wholesale) has
-    // nothing to install and stays quiet.
-    const fs::path bundled = dir / LOADER_NAME;
+    install_loader(dir);
+
+    // The menu needs the GUI and the installer script; the package puts the
+    // script in ida-ttd-python\ beside the main plugin, one level up.
+    if ( !is_idaq() )
+        return nullptr;
     std::error_code ec;
-    if ( !fs::is_regular_file(bundled, ec) )
+    const fs::path pydir = dir.parent_path() / L"ida-ttd-python";
+    if ( !fs::is_regular_file(pydir / L"ida_ttd_runtime.py", ec) )
         return nullptr;
-
-    // A loader installed by hand in the IDA directory is the user's choice.
-    // A second copy under $IDAUSR would put the format in File > Open twice.
-    if ( fs::is_regular_file(utf8_path(idadir(LDR_SUBDIR)) / LOADER_NAME, ec) )
-        return nullptr;
-
-    const fs::path loaders = utf8_path(get_user_idadir()) / L"loaders";
-    const fs::path target = loaders / LOADER_NAME;
-    if ( same_contents(bundled, target) )
-    {
-        fs::remove(fs::path(target).concat(L".old"), ec);
-        return nullptr;
-    }
-
-    const bool update = fs::exists(target, ec);
-    fs::create_directories(loaders, ec);
-    qstring err;
-    if ( install(bundled, target, &err) )
-        msg("[ida-ttd] %s the trace loader in %s: File > Open now recognizes "
-            ".run and .sogttd recordings. It is not removed when the plugin is "
-            "uninstalled; delete it by hand then.\n",
-            update ? "Updated" : "Installed", display(loaders).c_str());
-    else
-        msg("[ida-ttd] Could not install the trace loader, so File > Open will not "
-            "recognize recordings (%s). Copy %s into %s by hand.\n",
-            err.c_str(), display(bundled).c_str(), display(loaders).c_str());
-    return nullptr;
+    qstring py = display(pydir);
+    py.replace("\\", "/");      // a Python string literal without escapes...
+    py.replace("'", "\\'");     // ...except a quote (C:/Users/O'Neil)
+    return new setup_plugin_t(py);
 }
 
 plugin_t PLUGIN =

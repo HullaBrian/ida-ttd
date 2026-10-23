@@ -165,6 +165,7 @@ namespace idattd
 
         std::set<ea_t> m_resolvedBases;   // modules whose exports have been named
         std::set<ea_t> m_pdbBases;        // modules whose PDB has been requested
+        std::set<ea_t> m_pdbRetried;      // ... and asked for again after a failed download
 
         // Per-module function bounds, keyed by module base; each vector is
         // sorted by start address.

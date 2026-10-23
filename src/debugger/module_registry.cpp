@@ -105,6 +105,7 @@ namespace idattd
         m_mainBase = BADADDR;
         m_resolvedBases.clear();
         m_pdbBases.clear();
+        m_pdbRetried.clear();
         // Waits for any read still running: the futures of std::async join.
         // A read is milliseconds, so this costs nothing noticeable.
         m_publics.clear();
@@ -724,8 +725,15 @@ namespace idattd
                     continue;
                 if ( r.path.empty() )
                 {
-                    msg("[ida-ttd] could not download %s for %s: %s.\n",
-                        r.name.c_str(), base_name(path).c_str(), r.error.c_str());
+                    // Once more, at the next stop in the module (load_pdb with
+                    // stopped_here): a server that did not answer while a whole
+                    // recording's PDBs were wanted usually does a moment later.
+                    const bool retry = m_pdbRetried.insert(r.base).second;
+                    if ( retry )
+                        m_pdbBases.erase(r.base);
+                    msg("[ida-ttd] could not download %s for %s: %s.%s\n",
+                        r.name.c_str(), base_name(path).c_str(), r.error.c_str(),
+                        retry ? " It is asked for again at the next stop in that module." : "");
                     continue;
                 }
                 start_publics(r.base, r.path.c_str());

@@ -98,7 +98,9 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 - **`src/setup/`**: `ida-ttd-loader-setup.dll`, a `PLUGIN_FIX` component of the
   HCLI package that copies the bundled `ttd-loader.dll` into
   `$IDAUSR\loaders\` as IDA starts (HCLI installs only into
-  `plugins\ida-ttd\`, and IDA finds loaders only in `loaders\`).
+  `plugins\ida-ttd\`, and IDA finds loaders only in `loaders\`). It stays
+  loaded in the GUI to show TTD > Backends while no database is open (the
+  main plugin, and its menu, load only with a database).
 - **`scripts/package.py`**: builds `dist\ida-ttd.zip`, the HCLI package (an
   `ida-ttd/` suite folder, with the setup component and its generated
   `ida-plugin.json`). The release workflow runs it, then `hcli plugin lint`.

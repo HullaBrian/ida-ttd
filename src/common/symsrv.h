@@ -34,8 +34,11 @@ namespace idattd
     //
     //   Cached   the file is already in the store; load it now
     //   Fetching a worker is downloading it; symsrv_take_completed() will report
-    //   Failed   there is nothing to wait for (bad identity, or a fetch already
-    //            failed for it this session)
+    //   Failed   there is nothing to wait for (a bad identity, or a fetch of
+    //            it already running; a fetch that failed may be asked again)
+    //
+    // A few downloads run at a time, and one the server did not answer is
+    // tried again after a pause before it is reported as failed.
     enum class FetchState { Cached, Fetching, Failed };
     FetchState fetch_pdb(const char *name, const char *signature, ea_t base);
 

@@ -1,6 +1,7 @@
 #include "common/symsrv.h"
 #include "common/strings.h"
 
+#include <condition_variable>
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
 
@@ -20,6 +21,14 @@ namespace idattd
     static const int TMO_SEND    = 15000;
     static const int TMO_RECEIVE = 60000;
 
+    // A recording loads dozens of modules at once, and asking for all their
+    // PDBs at the same moment is what made the server stop answering some of
+    // them on a fresh machine (ntdll's among them). So a few at a time, and
+    // a request that got no answer is asked again after a pause.
+    static const size_t MAX_PARALLEL = 4;
+    static const int    ATTEMPTS     = 3;
+    static const int    RETRY_MS[]   = { 2000, 6000 };
+
     namespace
     {
         struct State
@@ -29,6 +38,8 @@ namespace idattd
             std::vector<FetchResult> completed;
             std::set<qstring>        seen;      // identities asked for this session
             size_t                   pending = 0;
+            size_t                   running = 0;   // downloads holding a slot
+            std::condition_variable  cv;            // a slot freed, or abort
             std::atomic<bool>        abort{ false };
             // Requests a worker is blocked in. Closing one from another thread
             // makes the worker's WinHTTP call fail at once, which is the only
@@ -67,9 +78,12 @@ namespace idattd
 
         // Download one PDB to 'dest'. Writes to a temporary beside it and renames
         // on success, so an interrupted fetch never leaves a short file that a
-        // later run would mistake for a complete one.
-        bool download(const std::wstring &url_path, const qstring &dest, qstring *err)
+        // later run would mistake for a complete one. '*again' says whether the
+        // failure is worth another try: the server not answering, or answering
+        // that it is busy, rather than a PDB it does not have.
+        bool download(const std::wstring &url_path, const qstring &dest, qstring *err, bool *again)
         {
+            *again = false;
             Handle session;
             session.h = WinHttpOpen(SYM_AGENT, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                                     WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
@@ -85,6 +99,7 @@ namespace idattd
             if ( conn.h == nullptr )
             {
                 *err = "could not reach the symbol server";
+                *again = true;
                 return false;
             }
 
@@ -126,6 +141,7 @@ namespace idattd
               || !WinHttpReceiveResponse(req.h, nullptr) )
             {
                 *err = "no response from the symbol server";
+                *again = true;
                 return false;
             }
 
@@ -141,6 +157,7 @@ namespace idattd
             if ( status != 200 )
             {
                 err->sprnt("the symbol server answered %d", (int)status);
+                *again = status == 429 || status >= 500;
                 return false;
             }
 
@@ -168,6 +185,7 @@ namespace idattd
                 if ( !WinHttpReadData(req.h, buf.data(), (DWORD)buf.size(), &got) )
                 {
                     *err = "the download was interrupted";
+                    *again = true;
                     ok = false;
                     break;
                 }
@@ -190,6 +208,41 @@ namespace idattd
                 return false;
             }
             return true;
+        }
+
+        // Up to ATTEMPTS downloads, holding one of the MAX_PARALLEL slots
+        // throughout. The pauses between attempts end early on shutdown.
+        bool download_with_retries(const std::wstring &url_path, const qstring &dest, qstring *err)
+        {
+            State &s = state();
+            {
+                std::unique_lock<std::mutex> lock(s.mtx);
+                s.cv.wait(lock, [&] { return s.abort.load() || s.running < MAX_PARALLEL; });
+                if ( s.abort.load() )
+                {
+                    *err = "canceled";
+                    return false;
+                }
+                s.running++;
+            }
+            bool ok = false;
+            for ( int attempt = 0; attempt < ATTEMPTS; attempt++ )
+            {
+                bool again = false;
+                ok = download(url_path, dest, err, &again);
+                if ( ok || !again || attempt + 1 == ATTEMPTS )
+                    break;
+                std::unique_lock<std::mutex> lock(s.mtx);
+                if ( s.cv.wait_for(lock, std::chrono::milliseconds(RETRY_MS[attempt]),
+                                   [&] { return s.abort.load(); }) )
+                    break;
+            }
+            {
+                std::lock_guard<std::mutex> lock(s.mtx);
+                s.running--;
+            }
+            s.cv.notify_all();
+            return ok;
         }
     }
 
@@ -276,7 +329,7 @@ namespace idattd
 
         std::lock_guard<std::mutex> lock(s.mtx);
         if ( !s.seen.insert(key).second )
-            return FetchState::Failed;      // asked once already; do not retry
+            return FetchState::Failed;      // already being fetched
 
         // The store directory has to exist before the worker writes into it, and
         // creating it here keeps all the path handling on one thread.
@@ -295,13 +348,17 @@ namespace idattd
 
         qstring qname = name;
         s.pending++;
-        s.workers.emplace_back([url, dest, qname, base]()
+        s.workers.emplace_back([url, dest, qname, key, base]()
         {
             qstring err;
-            bool ok = download(url, dest, &err);
+            bool ok = download_with_retries(url, dest, &err);
 
             State &st = state();
             std::lock_guard<std::mutex> l(st.mtx);
+            // A failed identity may be asked for again later (the next stop
+            // in its module); a fetched one is in the store from now on.
+            if ( !ok )
+                st.seen.erase(key);
             FetchResult r;
             r.base  = base;
             r.name  = qname;
@@ -337,6 +394,7 @@ namespace idattd
     {
         State &s = state();
         s.abort.store(true);
+        s.cv.notify_all();      // workers waiting for a slot or between attempts
 
         // Move the threads out under the lock, then join outside it: a worker
         // takes the same lock on its way out and would deadlock against a join
@@ -358,6 +416,7 @@ namespace idattd
         s.completed.clear();
         s.seen.clear();
         s.pending = 0;
+        s.running = 0;
         s.abort.store(false);
     }
 }
