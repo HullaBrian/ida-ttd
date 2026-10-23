@@ -492,15 +492,8 @@ namespace idattd
               "Resolve indirect calls: record where each one actually went, as a "
               "comment and a cross-reference",
               NO_ICON, ITEM, MENU, SUB_CODE },
-            // The automatic behaviors.
-            { actions::COVERAGE_AUTO, "Highlight functions automatically", &m_coverageAuto, nullptr,
-              "Highlight functions automatically: measure and color each function "
-              "the first time you stop in it",
-              NO_ICON, GROUP, MENU, SUB_CODE },
-            { actions::INDIRECT_AUTO, "Resolve indirect calls automatically", &m_indirectAuto, nullptr,
-              "Resolve indirect calls automatically: annotate the indirect calls of "
-              "each function the first time you stop in it (one replay per module)",
-              NO_ICON, ITEM, MENU, SUB_CODE },
+            // Doing either automatically on every stop is a setting
+            // (auto_coverage, auto_callsites; TTD > Settings...), not a menu item.
             // Undoing the above, in a section of their own.
             { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
               "Clear execution highlight: remove the coverage color from the whole "
@@ -938,12 +931,6 @@ namespace idattd
             }
         }
 
-        // Checkable menu entry, ticked from the database's own setting.
-        update_action_checkable(actions::COVERAGE_AUTO, true);
-        update_action_checked(actions::COVERAGE_AUTO, coverage_auto_enabled());
-        update_action_checkable(actions::INDIRECT_AUTO, true);
-        update_action_checked(actions::INDIRECT_AUTO, callsites_auto_enabled());
-
         m_actionsRegistered = true;
         rebuild_ttd_menu();
     }
@@ -984,8 +971,8 @@ namespace idattd
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
                 SETTINGS_ACTION, "Settings...", &g_settingsHandler, this, nullptr,
                 "ida-ttd's settings (symbol downloads, automatic coverage and call-site "
-                "comments, fork length, ...), in the IDA Settings Editor. They take effect "
-                "the next time a database opens", -1));
+                "comments, fork length, ...), in the IDA Settings Editor. Changes apply "
+                "from the next stop of the replay", -1));
         }
 
         // From scratch, in order. Deleting a menu takes its items with it;
@@ -1388,6 +1375,8 @@ namespace idattd
         } unquiet{ this };
         restore_renderers();
         settle_stop();
+        // Before anything below asks a setting (automatic coverage, ...).
+        reload_settings_if_changed();
         // Both write to the database or open windows, so they wait for here
         // rather than running inside IDA's stop notification.
         if ( m_mgr.is_active() )

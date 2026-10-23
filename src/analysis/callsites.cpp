@@ -477,8 +477,6 @@ namespace idattd
     // collects every indirect call made from it, and each function stopped in
     // afterwards is annotated from that. Code in no module is one more scope:
     // everything between the modules.
-    static const nodeidx_t CS_AUTO_IDX = 0;
-    static const uchar     CS_AUTO_TAG = 'A';
 
     struct AutoScope
     {
@@ -488,20 +486,11 @@ namespace idattd
     static std::map<ea_t, AutoScope> g_autoScopes;   // module base, or 0
     static std::set<ea_t>            g_autoDone;     // functions annotated
 
+    // The auto_callsites setting. Databases used to keep their own answer
+    // (alt 0, tag 'A', of CS_NODE); it is no longer read.
     bool callsites_auto_enabled()
     {
-        // 0 = never set, 1 = off, 2 = on. Never set: the auto_callsites
-        // setting (off unless changed).
-        netnode nn(CS_NODE);
-        nodeidx_t v = nn != BADNODE ? nn.altval(CS_AUTO_IDX, CS_AUTO_TAG) : 0;
-        return v == 0 ? settings().auto_callsites : v == 2;
-    }
-
-    void set_callsites_auto_enabled(bool on)
-    {
-        netnode nn(CS_NODE, 0, true);
-        if ( nn != BADNODE )
-            nn.altset(CS_AUTO_IDX, on ? 2 : 1, CS_AUTO_TAG);
+        return settings().auto_callsites;
     }
 
     bool callsites_function_done(ea_t start)

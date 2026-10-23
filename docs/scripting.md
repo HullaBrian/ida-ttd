@@ -131,8 +131,9 @@ database. The scope is given here instead of in a dialog.
 | `an.forkdiscard` | drop the fork being prepared |
 | `an.fork PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
 
-`help` lists every command with its arguments, and `backends` lists the loaded
-backend DLLs.
+`help` lists every command with its arguments, `backends` lists the loaded
+backend DLLs, and `settings` shows the plugin's settings as it holds them
+(TTD > Settings...; read again first if they changed).
 
 ## From the IDA MCP
 

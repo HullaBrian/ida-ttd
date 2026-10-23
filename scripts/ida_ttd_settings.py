@@ -69,7 +69,7 @@ def show_editor():
         "Install it with:\n    hcli plugin install ida-settings-editor\n\n"
         "Or set a value from the command line:\n    hcli plugin config ida-ttd set KEY VALUE\n"
         "    hcli plugin config ida-ttd list\n\n"
-        "Settings take effect the next time a database is opened.%s"
+        "Changes apply from the next stop of the replay.%s"
         % ("" if have else
            "\n\nThe ida-settings Python package is not installed either, so ida-ttd uses its "
            "defaults. Installing ida-ttd with hcli installs it."))

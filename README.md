@@ -216,18 +216,19 @@ If you installed the trace loader by hand into IDA's own `loaders` folder (besid
 Nothing is asked during installation; every setting has a default. Change
 them in **TTD > Settings...**, which opens the IDA Settings Editor
 (`hcli plugin install ida-settings-editor`), or from the command line with
-`hcli plugin config ida-ttd set KEY VALUE`. They take effect the next time a
-database opens.
+`hcli plugin config ida-ttd set KEY VALUE`. Changes apply from the next stop
+of the replay. The editor has no sections, so each setting's label starts
+with its section.
 
-| Key | Default | |
-| --- | --- | --- |
-| `symbol_downloads` | `true` | download system DLLs' PDBs in the background |
-| `symbol_server` | `https://msdl.microsoft.com/download/symbols` | where from |
-| `auto_coverage` | `true` | colour what ran in each function a stop lands in, in databases where TTD > Code has never set it |
-| `auto_callsites` | `false` | comment indirect calls with their targets, likewise |
-| `fork_instructions` | `1000000` | the Fork dialog's default length (0: to the end) |
-| `registry_folder` | (none) | another folder to look in for a Sogen recording's registry hives |
-| `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
+| Section | Key | Default | |
+| --- | --- | --- | --- |
+| Symbols | `symbol_downloads` | `true` | download system DLLs' PDBs in the background |
+| | `symbol_server` | `https://msdl.microsoft.com/download/symbols` | where from |
+| Analysis | `auto_coverage` | `true` | measure and colour each function the first time the replay stops in it |
+| | `auto_callsites` | `false` | comment its indirect calls with where they went, likewise |
+| Sogen | `fork_instructions` | `1000000` | the Fork dialog's default length (0: to the end) |
+| | `registry_folder` | (none) | another folder to look in for a recording's registry hives |
+| Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
 
 Settings are read through the `ida-settings` Python package, which HCLI
 installs with the plugin. Without it (a hand install), the defaults apply.

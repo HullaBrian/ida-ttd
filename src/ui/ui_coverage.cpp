@@ -80,22 +80,4 @@ namespace idattd
         return 1;
     }
 
-    int idaapi AutoCoverageHandler::activate(action_activation_ctx_t *)
-    {
-        bool on = !coverage_auto_enabled();
-        set_coverage_auto_enabled(on);
-        update_action_checked(actions::COVERAGE_AUTO, on);
-        msg("[ida-ttd] automatic coverage of the function you stop in is now %s.\n",
-            on ? "on" : "off");
-        return 1;
-    }
-
-    action_state_t idaapi AutoCoverageHandler::update(action_update_ctx_t *)
-    {
-        // The tick has to be re-asserted here: IDA asks for the state when it
-        // draws the menu, and the answer lives in the database, not in this
-        // object, so it can change underneath when a different IDB is opened.
-        update_action_checked(actions::COVERAGE_AUTO, coverage_auto_enabled());
-        return AST_ENABLE;      // not _ALWAYS: that stops IDA asking, and the tick with it
-    }
 }

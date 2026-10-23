@@ -2,6 +2,7 @@
 #include "common/symsrv.h"
 #include "core/diag.h"
 
+#include <diskio.hpp>
 #include <expr.hpp>
 
 namespace idattd
@@ -89,8 +90,26 @@ namespace idattd
         return text;
     }
 
+    // ida-config.json's modification time when the values were last read.
+    static qtime64_t g_configTime = 0;
+
+    static qtime64_t config_time()
+    {
+        qstring path = get_user_idadir();
+        path.append("\\ida-config.json");
+        qstatbuf st;
+        return qstat(path.c_str(), &st) == 0 ? st.qst_mtime : 0;
+    }
+
+    void reload_settings_if_changed()
+    {
+        if ( config_time() != g_configTime )
+            load_settings();
+    }
+
     void load_settings()
     {
+        g_configTime = config_time();
         Settings s;
         qstring text = read_values();
         size_t at = 0;

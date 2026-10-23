@@ -43,10 +43,9 @@ namespace idattd
     // wrote.
     size_t clear_indirect_call_annotations();
 
-    // Automatic resolution in the function you stop in. Off by default,
-    // remembered per database.
+    // Automatic resolution in the function you stop in: the auto_callsites
+    // setting (TTD > Settings...).
     bool callsites_auto_enabled();
-    void set_callsites_auto_enabled(bool on);
     // Annotated by auto_annotate_function() in this session.
     bool callsites_function_done(ea_t start);
     // The session ended: drop the sweeps kept for it.

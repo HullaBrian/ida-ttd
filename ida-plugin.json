@@ -49,7 +49,7 @@
         "required": false,
         "default": true,
         "prompt": false,
-        "name": "Download symbols",
+        "name": "Symbols: download PDBs",
         "documentation": "Download the PDBs of a recording's modules from the symbol server, in the background, so system DLLs get their function names. Off: only PDBs already in the local store are used."
       },
       {
@@ -58,7 +58,7 @@
         "required": false,
         "default": "https://msdl.microsoft.com/download/symbols",
         "prompt": false,
-        "name": "Symbol server",
+        "name": "Symbols: symbol server",
         "documentation": "The symbol server PDBs are downloaded from (an HTTP or HTTPS URL laid out like Microsoft's).",
         "validation_pattern": "^https?://[^\\s/]+(/\\S*)?$"
       },
@@ -68,8 +68,8 @@
         "required": false,
         "default": true,
         "prompt": false,
-        "name": "Measure coverage automatically",
-        "documentation": "Colour what ran in each function the replay stops in, for databases where TTD > Code > Measure coverage automatically has never been set."
+        "name": "Analysis: highlight functions automatically",
+        "documentation": "Measure and colour each function the first time the replay stops in it."
       },
       {
         "key": "auto_callsites",
@@ -77,8 +77,8 @@
         "required": false,
         "default": false,
         "prompt": false,
-        "name": "Annotate indirect calls automatically",
-        "documentation": "Comment each indirect call in a function the replay stops in with its targets, for databases where TTD > Code > Annotate indirect calls automatically has never been set."
+        "name": "Analysis: resolve indirect calls automatically",
+        "documentation": "Comment the indirect calls of each function the first time the replay stops in it with where they went (one replay per module)."
       },
       {
         "key": "fork_instructions",
@@ -86,7 +86,7 @@
         "required": false,
         "default": "1000000",
         "prompt": false,
-        "name": "Fork length",
+        "name": "Sogen: default fork length",
         "documentation": "How many instructions the Fork dialog offers to record by default (decimal; 0 records to the end of the program).",
         "validation_pattern": "^[0-9]{1,19}$"
       },
@@ -96,7 +96,7 @@
         "required": false,
         "default": "",
         "prompt": false,
-        "name": "Registry hives folder",
+        "name": "Sogen: registry hives folder",
         "documentation": "Another folder to look for a Sogen recording's registry hives in, after the folder beside the recording and before ida-ttd\\registry in the IDA user directory. Empty: none."
       },
       {
@@ -105,7 +105,7 @@
         "required": false,
         "default": true,
         "prompt": false,
-        "name": "Diagnostics log",
+        "name": "Diagnostics: write the log",
         "documentation": "Write slow operations and session events to %TEMP%\\ida-ttd-diag.log, which is what explains a hang after the fact."
       }
     ]

@@ -21,7 +21,6 @@ namespace idattd
     static const char  CV_NODE[]   = "$ ida-ttd coverage";
     static const uchar CV_LAST_TAG = 'L';   // alt 0 -> last colour, biased by 1
     static const uchar CV_USED_TAG = 'C';   // alt <colour> -> 1
-    static const uchar CV_AUTO_TAG = 'A';   // alt 0 -> 1 off, 2 on (0 = never set)
     static const uchar CV_FUNC_TAG = 'F';   // alt <function start> -> 1
     static const uchar CV_PREV_TAG = 'P';   // alt <colour> -> 1: shows another recording's coverage
 
@@ -179,20 +178,11 @@ namespace idattd
         return nn != BADNODE && c != DEFCOLOR && nn.altval((nodeidx_t)c, CV_PREV_TAG) != 0;
     }
 
+    // The auto_coverage setting. Databases used to keep their own answer
+    // (alt 0, tag 'A', of the coverage node); it is no longer read.
     bool coverage_auto_enabled()
     {
-        netnode nn = cv_node(false);
-        // 0 = never set, 1 = off, 2 = on. Never set: the auto_coverage
-        // setting (on unless changed).
-        nodeidx_t v = nn != BADNODE ? nn.altval(0, CV_AUTO_TAG) : 0;
-        return v == 0 ? settings().auto_coverage : v == 2;
-    }
-
-    void set_coverage_auto_enabled(bool on)
-    {
-        netnode nn = cv_node(true);
-        if ( nn != BADNODE )
-            nn.altset(0, on ? 2 : 1, CV_AUTO_TAG);
+        return settings().auto_coverage;
     }
 
     // Functions swept this session in debugger segments. Those segments (the

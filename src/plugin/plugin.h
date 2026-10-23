@@ -202,7 +202,6 @@ namespace idattd
         OpenBookmarksHandler m_bookmarksView;
         CoverageHandler      m_coverage;
         ClearCoverageHandler m_coverageClear;
-        AutoCoverageHandler  m_coverageAuto;
         // Memory access search + indirect call annotation
         MemSearchHandler          m_memSearch;
         SyscallsHandler           m_syscalls;
@@ -225,7 +224,6 @@ namespace idattd
         HeatmapHandler            m_heatmap;
         IndirectCallsHandler      m_indirect;
         ClearIndirectCallsHandler m_indirectClear;
-        AutoIndirectCallsHandler  m_indirectAuto;
 
         // Every TTD command, in menu order. Built once in the constructor.
         std::vector<ActionDesc> m_actions;

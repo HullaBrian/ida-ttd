@@ -26,4 +26,10 @@ namespace idattd
     // symbol downloader, the diagnostics log). Needs ida-ttd-python on
     // sys.path (register_python_module) when IDAPython is there.
     void load_settings();
+
+    // load_settings() again if IDA's settings file (ida-config.json, where
+    // ida-settings keeps the values) changed since: called on every stop, so
+    // a change in the Settings Editor applies from the next one. A stat when
+    // nothing changed.
+    void reload_settings_if_changed();
 }

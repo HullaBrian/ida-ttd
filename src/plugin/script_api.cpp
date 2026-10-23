@@ -1,4 +1,5 @@
 #include "plugin/script_api.h"
+#include "plugin/settings.h"
 #include "plugin/plugin.h"
 #include "ui/ui.h"
 #include "core/backend_registry.h"
@@ -1740,11 +1741,13 @@ namespace idattd
 
     static void cmd_help(const Args &, JObj &out);
     static void cmd_backends(const Args &, JObj &out);
+    static void cmd_settings(const Args &, JObj &out);
 
     static const Command g_commands[] = {
         { "help",           cmd_help,           "this list" },
         { "state",          cmd_state,          "the debugger and session state" },
         { "backends",       cmd_backends,       "the backends loaded, and the folders they came from" },
+        { "settings",       cmd_settings,       "the plugin's settings, as it holds them" },
         { "start",          cmd_start,          "[TIMEOUT] start the replay for this database and wait for the first stop" },
         { "wait",           cmd_wait,           "[TIMEOUT] wait for the debugger to stop" },
         { "step",           cmd_move,           "[back] one instruction" },
@@ -1833,6 +1836,21 @@ namespace idattd
             arr.add(o.done());
         }
         out.raw("backends", arr.done());
+    }
+
+    // The settings as the plugin holds them (read again first if IDA's
+    // settings file changed), so a test can see a change arrive.
+    static void cmd_settings(const Args &, JObj &out)
+    {
+        reload_settings_if_changed();
+        const Settings &s = settings();
+        out.boolean("symbol_downloads", s.symbol_downloads)
+           .str("symbol_server", s.symbol_server)
+           .boolean("auto_coverage", s.auto_coverage)
+           .boolean("auto_callsites", s.auto_callsites)
+           .str("fork_instructions", qstring().sprnt("%llu", (unsigned long long)s.fork_instructions))
+           .str("registry_folder", s.registry_folder)
+           .boolean("diagnostics_log", s.diagnostics_log);
     }
 
     static void cmd_help(const Args &, JObj &out)

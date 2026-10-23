@@ -29,10 +29,9 @@ namespace idattd
     // after the stop, or a command): it writes to every painted instruction.
     void coverage_settle_recording_change();
 
-    // Automatic highlighting of the function you stop in. On by default,
-    // remembered per database.
+    // Automatic highlighting of the function you stop in: the auto_coverage
+    // setting (TTD > Settings...).
     bool coverage_auto_enabled();
-    void set_coverage_auto_enabled(bool on);
 
     // Has the function starting at 'start' already been swept in this database?
     // Sweeps are recorded so a function is measured once, ever, not once a stop.
