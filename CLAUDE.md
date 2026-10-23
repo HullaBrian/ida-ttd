@@ -87,6 +87,13 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
 - **`scripts/ida_ttd.py`**: the Python API (`Session`, `Recording`, `call`).
   The build copies it to `ida-ttd-python/` beside the plugin, and the plugin
   puts that folder on IDAPython's `sys.path` when it loads.
+- **Settings**: declared in `ida-plugin.json` (`settings`, every one with a
+  default and `"prompt": false`, so HCLI asks nothing at install; keep it
+  that way), read through the `ida-settings` package by
+  `scripts/ida_ttd_settings.py` and handed to C++ once per plugin load
+  (`plugin/settings.h`, whose defaults must match the JSON). Without
+  `ida-settings` the defaults apply. TTD > Settings... opens the IDA
+  Settings Editor.
 - **`scripts/ida_ttd_runtime.py`**: TTD > Backends > Install the TTD runtime
   (WinDbg), and Install the Sogen backend (from a file the user picks, into
   `$IDAUSR\ida-ttd\backends\`). The TTD menu is rebuilt whole

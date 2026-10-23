@@ -3,6 +3,7 @@
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
 #include "debugger/module_registry.h"
+#include "plugin/settings.h"
 
 #include <intel.hpp>
 
@@ -489,8 +490,11 @@ namespace idattd
 
     bool callsites_auto_enabled()
     {
+        // 0 = never set, 1 = off, 2 = on. Never set: the auto_callsites
+        // setting (off unless changed).
         netnode nn(CS_NODE);
-        return nn != BADNODE && nn.altval(CS_AUTO_IDX, CS_AUTO_TAG) == 2;   // off by default
+        nodeidx_t v = nn != BADNODE ? nn.altval(CS_AUTO_IDX, CS_AUTO_TAG) : 0;
+        return v == 0 ? settings().auto_callsites : v == 2;
     }
 
     void set_callsites_auto_enabled(bool on)

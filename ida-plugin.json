@@ -38,6 +38,76 @@
         "name": "HullaBrian",
         "email": "git@beierle.win"
       }
+    ],
+    "pythonDependencies": [
+      "ida-settings>=3.5"
+    ],
+    "settings": [
+      {
+        "key": "symbol_downloads",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Download symbols",
+        "documentation": "Download the PDBs of a recording's modules from the symbol server, in the background, so system DLLs get their function names. Off: only PDBs already in the local store are used."
+      },
+      {
+        "key": "symbol_server",
+        "type": "string",
+        "required": false,
+        "default": "https://msdl.microsoft.com/download/symbols",
+        "prompt": false,
+        "name": "Symbol server",
+        "documentation": "The symbol server PDBs are downloaded from (an HTTP or HTTPS URL laid out like Microsoft's).",
+        "validation_pattern": "^https?://[^\\s/]+(/\\S*)?$"
+      },
+      {
+        "key": "auto_coverage",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Measure coverage automatically",
+        "documentation": "Colour what ran in each function the replay stops in, for databases where TTD > Code > Measure coverage automatically has never been set."
+      },
+      {
+        "key": "auto_callsites",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "prompt": false,
+        "name": "Annotate indirect calls automatically",
+        "documentation": "Comment each indirect call in a function the replay stops in with its targets, for databases where TTD > Code > Annotate indirect calls automatically has never been set."
+      },
+      {
+        "key": "fork_instructions",
+        "type": "string",
+        "required": false,
+        "default": "1000000",
+        "prompt": false,
+        "name": "Fork length",
+        "documentation": "How many instructions the Fork dialog offers to record by default (decimal; 0 records to the end of the program).",
+        "validation_pattern": "^[0-9]{1,19}$"
+      },
+      {
+        "key": "registry_folder",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "prompt": false,
+        "name": "Registry hives folder",
+        "documentation": "Another folder to look for a Sogen recording's registry hives in, after the folder beside the recording and before ida-ttd\\registry in the IDA user directory. Empty: none."
+      },
+      {
+        "key": "diagnostics_log",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Diagnostics log",
+        "documentation": "Write slow operations and session events to %TEMP%\\ida-ttd-diag.log, which is what explains a hang after the fact."
+      }
     ]
   }
 }

@@ -6,6 +6,7 @@
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
 #include "plugin/script_api.h"
+#include "plugin/settings.h"
 #include "debugger/registers.h"
 #include "core/diag.h"
 #include <expr.hpp>
@@ -128,6 +129,27 @@ namespace idattd
     };
     static MenuSepHandler g_menuSep;
 
+    // TTD > Settings...: the IDA Settings Editor on ida-ttd's settings, or how
+    // to change them without it (scripts/ida_ttd_settings.py).
+    struct SettingsHandler : public action_handler_t
+    {
+        int idaapi activate(action_activation_ctx_t *) override
+        {
+            extlang_object_t py = find_extlang_by_name("Python");
+            qstring err;
+            if ( py == nullptr || py->eval_snippet == nullptr
+              || !py->eval_snippet("import ida_ttd_settings\n"
+                                   "ida_ttd_settings.show_editor()\n", &err) )
+                warning("ida-ttd's settings are changed with "
+                        "\"hcli plugin config ida-ttd set KEY VALUE\"%s%s",
+                        err.empty() ? "" : "\n\n", err.c_str());
+            return 1;
+        }
+        action_state_t idaapi update(action_update_ctx_t *) override { return AST_ENABLE_ALWAYS; }
+    };
+    static SettingsHandler g_settingsHandler;
+    static const char SETTINGS_ACTION[] = "idattd:settings";
+
     // `import ida_ttd` in IDAPython: the module (scripts/ida_ttd.py) is
     // installed in ida-ttd-python\ beside the plugin, and that folder goes on
     // IDAPython's sys.path. Safe to call more than once, and a no-op without
@@ -208,6 +230,7 @@ namespace idattd
         // In an idalib worker no ui_ready_to_run follows; IDAPython is
         // loaded already when it is there at all.
         register_python_module();
+        load_settings();
 
         configure_debugger(m_debugger, inf_is_64bit());
         m_tracer.set_manager(&m_mgr);
@@ -323,6 +346,7 @@ namespace idattd
             for ( const char *sep : SUBMENU_SEP_ACTIONS )
                 unregister_action(sep);
             unregister_action(SUB_BACKENDS_SEP);
+            unregister_action(SETTINGS_ACTION);
             m_menuActionsRegistered = false;
         }
         for ( int ic : m_icons )
@@ -957,6 +981,11 @@ namespace idattd
                 "of it (ida-ttd-sogen.dll, or a release zip holding it) into "
                 "ida-ttd\\backends in your IDA user directory, where it takes the "
                 "packaged one's place", -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                SETTINGS_ACTION, "Settings...", &g_settingsHandler, this, nullptr,
+                "ida-ttd's settings (symbol downloads, automatic coverage and call-site "
+                "comments, fork length, ...), in the IDA Settings Editor. They take effect "
+                "the next time a database opens", -1));
         }
 
         // From scratch, in order. Deleting a menu takes its items with it;
@@ -1005,6 +1034,7 @@ namespace idattd
         attach_action_to_menu(bpath.c_str(), actions::INSTALL_RUNTIME, SETMENU_APP);
         attach_action_to_menu(bpath.c_str(), actions::BACKEND_HDR_SOGEN, SETMENU_APP | SETMENU_ENSURE_SEP);
         attach_action_to_menu(bpath.c_str(), actions::INSTALL_SOGEN, SETMENU_APP);
+        attach_action_to_menu(TTD_MENU_PATH, SETTINGS_ACTION, SETMENU_APP);
     }
 
     // The session's part of the TTD menu: every row of the action table that
@@ -1697,6 +1727,7 @@ namespace idattd
                 p->try_hook_decompiler();
                 // IDAPython is surely loaded by now.
                 register_python_module();
+                load_settings();
                 // The TTD menu, with Backends, in every database: the TTD
                 // runtime is needed before a Microsoft recording can open.
                 p->rebuild_ttd_menu();

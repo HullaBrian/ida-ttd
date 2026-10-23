@@ -539,6 +539,8 @@ namespace idattd
             case FetchState::Failed:
                 report_missing_pdb(path, pdb);
                 break;
+            case FetchState::Off:
+                break;      // the user turned downloads off: nothing to say per module
         }
     }
 
@@ -618,10 +620,10 @@ namespace idattd
     {
         msg("[ida-ttd] PDB symbols not resolved for %s.\n"
             "           The matching symbols are %s %s:\n"
-            "           https://msdl.microsoft.com/download/symbols/%s/%s/%s\n"
+            "           %s/%s/%s/%s\n"
             "           Save that file, then File > Load file > PDB file.\n",
             base_name(path).c_str(),
-            pdb.name.c_str(), pdb.signature.c_str(),
+            pdb.name.c_str(), pdb.signature.c_str(), symsrv_server_url().c_str(),
             pdb.name.c_str(), pdb.signature.c_str(), pdb.name.c_str());
     }
 

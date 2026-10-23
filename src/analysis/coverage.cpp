@@ -2,6 +2,7 @@
 #include "analysis/query_runner.h"
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
+#include "plugin/settings.h"
 
 namespace idattd
 {
@@ -181,10 +182,10 @@ namespace idattd
     bool coverage_auto_enabled()
     {
         netnode nn = cv_node(false);
-        if ( nn == BADNODE )
-            return true;                    // never asked: on by default
-        nodeidx_t v = nn.altval(0, CV_AUTO_TAG);
-        return v != 1;                      // 0 = never set, 1 = off, 2 = on
+        // 0 = never set, 1 = off, 2 = on. Never set: the auto_coverage
+        // setting (on unless changed).
+        nodeidx_t v = nn != BADNODE ? nn.altval(0, CV_AUTO_TAG) : 0;
+        return v == 0 ? settings().auto_coverage : v == 2;
     }
 
     void set_coverage_auto_enabled(bool on)

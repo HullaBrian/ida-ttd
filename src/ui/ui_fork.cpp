@@ -3,6 +3,7 @@
 #include "ui/ui.h"
 #include "analysis/fork.h"
 #include "core/backend_module.h"
+#include "plugin/settings.h"
 
 namespace idattd
 {
@@ -263,7 +264,9 @@ namespace idattd
         qstring changes = form_text(describe_changes(req));
         char path[QMAXPATH];
         qstrncpy(path, default_fork_path(m, req.at).c_str(), sizeof(path));
-        static sval_t count = 1000000;
+        // The fork_instructions setting at first, then what was last asked
+        // for this session.
+        static sval_t count = (sval_t)qmin(settings().fork_instructions, (uint64)INT64_MAX);
         for ( ;; )
         {
             if ( ask_form(form, where.c_str(), changes.c_str(), path, &count) <= 0 )

@@ -7,8 +7,19 @@
 
 namespace idattd
 {
-    static const wchar_t SYM_HOST[] = L"msdl.microsoft.com";
-    static const wchar_t SYM_ROOT[] = L"/download/symbols";
+    // Where PDBs come from: Microsoft's server unless the symbol_server
+    // setting names another (symsrv_configure). Set as the plugin loads,
+    // before any fetch, and copied into each fetch, so workers never read it.
+    struct Server
+    {
+        bool          enabled = true;
+        qstring       url     = "https://msdl.microsoft.com/download/symbols";
+        std::wstring  host    = L"msdl.microsoft.com";
+        INTERNET_PORT port    = INTERNET_DEFAULT_HTTPS_PORT;
+        bool          secure  = true;
+        std::wstring  root    = L"/download/symbols";
+    };
+    static Server g_server;
     // The conventional symbol-client user agent. Some symbol servers serve only
     // clients that identify themselves this way.
     static const wchar_t SYM_AGENT[] = L"Microsoft-Symbol-Server/10.0.0.0";
@@ -81,7 +92,8 @@ namespace idattd
         // later run would mistake for a complete one. '*again' says whether the
         // failure is worth another try: the server not answering, or answering
         // that it is busy, rather than a PDB it does not have.
-        bool download(const std::wstring &url_path, const qstring &dest, qstring *err, bool *again)
+        bool download(const Server &srv, const std::wstring &url_path, const qstring &dest,
+                      qstring *err, bool *again)
         {
             *again = false;
             Handle session;
@@ -95,7 +107,7 @@ namespace idattd
             WinHttpSetTimeouts(session.h, TMO_RESOLVE, TMO_CONNECT, TMO_SEND, TMO_RECEIVE);
 
             Handle conn;
-            conn.h = WinHttpConnect(session.h, SYM_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
+            conn.h = WinHttpConnect(session.h, srv.host.c_str(), srv.port, 0);
             if ( conn.h == nullptr )
             {
                 *err = "could not reach the symbol server";
@@ -106,7 +118,7 @@ namespace idattd
             Handle req;
             req.h = WinHttpOpenRequest(conn.h, L"GET", url_path.c_str(), nullptr,
                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
-                                       WINHTTP_FLAG_SECURE);
+                                       srv.secure ? WINHTTP_FLAG_SECURE : 0);
             if ( req.h == nullptr )
             {
                 *err = "could not build the request";
@@ -212,7 +224,8 @@ namespace idattd
 
         // Up to ATTEMPTS downloads, holding one of the MAX_PARALLEL slots
         // throughout. The pauses between attempts end early on shutdown.
-        bool download_with_retries(const std::wstring &url_path, const qstring &dest, qstring *err)
+        bool download_with_retries(const Server &srv, const std::wstring &url_path, const qstring &dest,
+                                   qstring *err)
         {
             State &s = state();
             {
@@ -229,7 +242,7 @@ namespace idattd
             for ( int attempt = 0; attempt < ATTEMPTS; attempt++ )
             {
                 bool again = false;
-                ok = download(url_path, dest, err, &again);
+                ok = download(srv, url_path, dest, err, &again);
                 if ( ok || !again || attempt + 1 == ATTEMPTS )
                     break;
                 std::unique_lock<std::mutex> lock(s.mtx);
@@ -298,7 +311,12 @@ namespace idattd
     {
         qstring store = symbol_store_dir();
         qstring want;
-        want.sprnt("srv*%s*https://msdl.microsoft.com/download/symbols", store.c_str());
+        // With downloads off, the store alone: IDA's PDB plugin must not
+        // fetch what the setting says not to.
+        if ( g_server.enabled )
+            want.sprnt("srv*%s*%s", store.c_str(), g_server.url.c_str());
+        else
+            want.sprnt("srv*%s", store.c_str());
 
         // Keep whatever the user had, after ours: their own store may hold PDBs
         // for modules the public server has never heard of.
@@ -312,6 +330,41 @@ namespace idattd
         qsetenv("_NT_SYMBOL_PATH", want.c_str());
     }
 
+    bool symsrv_configure(bool enabled, const char *url)
+    {
+        Server srv;
+        srv.enabled = enabled;
+        if ( url != nullptr && url[0] != '\0' && strcmp(url, srv.url.c_str()) != 0 )
+        {
+            // WinHttpCrackUrl writes pointers into the string it is given,
+            // so the wide copy outlives the call.
+            std::wstring wurl = to_wstring(url);
+            URL_COMPONENTS uc = { sizeof(uc) };
+            uc.dwHostNameLength = (DWORD)-1;
+            uc.dwUrlPathLength  = (DWORD)-1;
+            if ( !WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc) || uc.dwHostNameLength == 0
+              || (uc.nScheme != INTERNET_SCHEME_HTTPS && uc.nScheme != INTERNET_SCHEME_HTTP) )
+            {
+                g_server.enabled = enabled;
+                return false;               // keep the server, honour the switch
+            }
+            srv.url    = url;
+            srv.host   = std::wstring(uc.lpszHostName, uc.dwHostNameLength);
+            srv.port   = uc.nPort;
+            srv.secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
+            srv.root   = std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength);
+            while ( !srv.root.empty() && srv.root.back() == L'/' )
+                srv.root.pop_back();
+        }
+        g_server = srv;
+        return true;
+    }
+
+    qstring symsrv_server_url()
+    {
+        return g_server.url;
+    }
+
     FetchState fetch_pdb(const char *name, const char *signature, ea_t base)
     {
         qstring dest = symbol_store_path(name, signature);
@@ -319,6 +372,8 @@ namespace idattd
             return FetchState::Failed;
         if ( qfileexist(dest.c_str()) )
             return FetchState::Cached;
+        if ( !g_server.enabled )
+            return FetchState::Off;
 
         State &s = state();
         if ( s.abort.load() )
@@ -338,7 +393,7 @@ namespace idattd
         make_dirs(dir);
 
         std::wstring url;
-        url.append(SYM_ROOT);
+        url.append(g_server.root);
         url.append(L"/");
         url.append(to_wstring(name));
         url.append(L"/");
@@ -348,10 +403,10 @@ namespace idattd
 
         qstring qname = name;
         s.pending++;
-        s.workers.emplace_back([url, dest, qname, key, base]()
+        s.workers.emplace_back([srv = g_server, url, dest, qname, key, base]()
         {
             qstring err;
-            bool ok = download_with_retries(url, dest, &err);
+            bool ok = download_with_retries(srv, url, dest, &err);
 
             State &st = state();
             std::lock_guard<std::mutex> l(st.mtx);

@@ -2,6 +2,7 @@
 #include "analysis/query_runner.h"
 #include "debugger/trace_manager.h"
 #include "core/backend_module.h"
+#include "plugin/settings.h"
 
 namespace idattd
 {
@@ -84,6 +85,7 @@ namespace idattd
                 add_candidate(&v, beside);
             }
         }
+        add_candidate(&v, settings().registry_folder);     // the registry_folder setting
         add_candidate(&v, user_data_dir("registry"));
         return v;
     }

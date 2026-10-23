@@ -175,6 +175,9 @@
     <ClInclude Include="$(SrcDir)\plugin\script_api.h">
       <Filter>plugin</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\settings.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\plugin\plugin.h">
       <Filter>plugin</Filter>
     </ClInclude>
@@ -367,6 +370,9 @@
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\script_api.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\settings.cpp">
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp">

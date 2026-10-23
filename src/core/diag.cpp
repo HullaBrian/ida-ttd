@@ -5,6 +5,12 @@
 namespace idattd
 {
     static std::mutex g_mtx;
+    static std::atomic<bool> g_enabled{ true };
+
+    void diag_set_enabled(bool on)
+    {
+        g_enabled.store(on);
+    }
 
     static std::wstring log_path(const wchar_t *name)
     {
@@ -28,6 +34,8 @@ namespace idattd
 
     void diag(const char *fmt, ...)
     {
+        if ( !g_enabled.load() )
+            return;
         char line[2048];
         va_list va;
         va_start(va, fmt);

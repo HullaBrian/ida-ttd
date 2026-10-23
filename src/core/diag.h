@@ -15,6 +15,9 @@ namespace idattd
     // Start a fresh log, keeping the last one as ida-ttd-diag.prev.log.
     void diag_rotate();
 
+    // Off: nothing more is written (the diagnostics_log setting).
+    void diag_set_enabled(bool on);
+
     // Logs '<what> <detail>: <n> ms' on destruction when the scope took at
     // least 'threshold_ms'. 0 logs always.
     class DiagTimer

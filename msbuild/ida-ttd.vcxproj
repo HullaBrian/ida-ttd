@@ -92,6 +92,7 @@
     <ClInclude Include="$(SrcDir)\ui\ui.h" />
     <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h" />
     <ClInclude Include="$(SrcDir)\plugin\script_api.h" />
+    <ClInclude Include="$(SrcDir)\plugin\settings.h" />
     <ClInclude Include="$(SrcDir)\plugin\plugin.h" />
   </ItemGroup>
 
@@ -156,6 +157,7 @@
     <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\script_api.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\settings.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\apidecode.cpp" />
     <ClCompile Include="$(SrcDir)\common\apimeta\win32meta.cpp" />
@@ -177,7 +179,7 @@
   <!-- The ida_ttd Python module, in plugins\ida-ttd-python\, which the plugin
        puts on IDAPython's sys.path. -->
   <Target Name="CopyPythonModule" AfterTargets="Build">
-    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py;$(RepoRoot)scripts\ida_ttd_runtime.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py;$(RepoRoot)scripts\ida_ttd_runtime.py;$(RepoRoot)scripts\ida_ttd_settings.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

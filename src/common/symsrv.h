@@ -39,8 +39,17 @@ namespace idattd
     //
     // A few downloads run at a time, and one the server did not answer is
     // tried again after a pause before it is reported as failed.
-    enum class FetchState { Cached, Fetching, Failed };
+    //   Off      not in the store, and downloads are turned off
+    enum class FetchState { Cached, Fetching, Failed, Off };
     FetchState fetch_pdb(const char *name, const char *signature, ea_t base);
+
+    // The symbol_downloads and symbol_server settings, before any fetch (and
+    // before symsrv_install_path). False when 'url' is not an HTTP(S) URL,
+    // which keeps the server in use.
+    bool symsrv_configure(bool enabled, const char *url);
+
+    // The server PDBs come from, as a URL.
+    qstring symsrv_server_url();
 
     // One finished download, taken off the completion queue.
     struct FetchResult
