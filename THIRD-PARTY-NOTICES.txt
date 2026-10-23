@@ -15,6 +15,11 @@ ida-ttd-msttd.dll is built against the TTD Replay SDK headers
 (TTDReplay.dll, TTDReplayCPU.dll) is not included: it comes from Microsoft
 under Microsoft's own terms.
 
+ida-ttd-backends/ida-ttd-sogen.dll, the Sogen backend, is licensed under the
+GPL version 2 only. Its license, the notices of the projects it contains
+(Sogen, Unicorn, Capstone, Mbed TLS, zstd, base64, reflect, Vulkan-Headers)
+and where its source is are in ida-ttd-backends/ida-ttd-sogen-licenses/.
+
 The toolbar and menu icons embedded in ida-ttd.dll are:
 
 - Codicons, by Microsoft, from https://github.com/microsoft/vscode-codicons,

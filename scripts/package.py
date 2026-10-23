@@ -9,7 +9,11 @@ layout is the installed layout:
 
     ida-plugin.json                 the suite root (components: below)
     ida-ttd.dll                     the plugin
-    ida-ttd-backends/               the Microsoft TTD backend
+    ida-ttd-backends/               the backends: Microsoft TTD (Apache-2.0
+        ida-ttd-msttd.dll           OR GPL-2.0-only, like the plugin) and,
+        ida-ttd-sogen.dll           when the build has it, Sogen (GPL-2.0-only),
+        ida-ttd-sogen-licenses/     with its license, notices and where its
+                                    source is (scripts/sogen_dist.py)
     ida-ttd-data/                   API metadata, found beside ida-ttd.dll
     ida-ttd-python/                 the ida_ttd module, found beside ida-ttd.dll
     LICENSE, THIRD-PARTY-NOTICES.txt, README.md
@@ -17,6 +21,9 @@ layout is the installed layout:
         ida-plugin.json             copies ttd-loader.dll into $IDAUSR/loaders/
         ida-ttd-loader-setup.dll    as IDA starts, since HCLI can install
         ttd-loader.dll              nothing outside the plugin folder
+
+The Sogen backend is optional here (--require-sogen makes it not): a build
+without it packages the rest. It never goes in without its licenses folder.
 
 The component's ida-plugin.json is written here from the root one, so its
 version, authors and URLs cannot drift from the suite's. The zip is built with
@@ -55,6 +62,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--build", default=str(REPO / "build" / "Release"))
     ap.add_argument("--out", default=str(REPO / "dist"))
+    ap.add_argument("--require-sogen", action="store_true",
+                    help="fail when the build has no Sogen backend")
     args = ap.parse_args()
     build = pathlib.Path(args.build)
     out = pathlib.Path(args.out)
@@ -75,6 +84,17 @@ def main():
         (SETUP + "/" + SETUP + ".dll", build / (SETUP + ".dll")),
         (SETUP + "/ttd-loader.dll", build / "ttd-loader.dll"),
     ]
+    sogen = build / "backends" / "ida-ttd-sogen.dll"
+    licenses = build / "backends" / "ida-ttd-sogen-licenses"
+    if sogen.is_file():
+        found = sorted(p for p in licenses.glob("*") if p.is_file())
+        if not any(p.name == "COPYING.txt" for p in found):
+            raise SystemExit("%s has no licenses beside it (%s): run scripts/sogen_dist.py"
+                             % (sogen, licenses))
+        files.append(("ida-ttd-backends/ida-ttd-sogen.dll", sogen))
+        files += [("ida-ttd-backends/ida-ttd-sogen-licenses/" + p.name, p) for p in found]
+    elif args.require_sogen:
+        raise SystemExit("no Sogen backend in the build (%s)" % sogen)
     for folder in ("ida-ttd-data", "ida-ttd-python"):
         found = sorted(p for p in (build / folder).glob("*") if p.is_file())
         if not found:

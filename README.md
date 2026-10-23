@@ -170,10 +170,12 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    To do it by hand instead, copy WinDbg's `amd64\ttd` folder to
    `ida-ttd\windbg\amd64\ttd`, or `TTDReplay.dll` and `TTDReplayCPU.dll` from
    it next to `ida.exe`.
-3. Optional, for Sogen recordings: **TTD > Backends > Install the Sogen
-   backend...** installs `ida-ttd-sogen.dll` (build it with
+3. Sogen recordings need nothing more: the package includes the Sogen
+   backend (`ida-ttd-backends\ida-ttd-sogen.dll`). **TTD > Backends > Install
+   the Sogen backend...** installs another build of it (yours, from
    [docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md))
-   into `ida-ttd\backends\`. The replay features (forks, recovered strings
+   into `ida-ttd\backends\`, where it takes the place of the packaged one;
+   delete it from there to go back. The replay features (forks, recovered strings
    and buffers) of a recording from Sogen before 2026-10-21 also need the
    registry hives it ran against: the very files Sogen was given when it
    recorded, since a new copy of the same registry is not the same. Newer
@@ -196,7 +198,7 @@ upgrade, so anything added to it is lost.
   loaders\             ttd-loader.dll, copied there by the plugin
   ida-ttd\             yours; upgrades leave it alone
     windbg\              the TTD runtime, copied from WinDbg
-    backends\            ida-ttd-sogen.dll and its licenses
+    backends\            a Sogen backend of your own, if any
     registry\            registry hives for Sogen replays and forks
 ```
 
@@ -220,12 +222,6 @@ starts replaying it.
 To open the database without replaying, turn off **TTD > Replay the TTD
 trace when this database opens**. **TTD > Start the TTD replay for this
 database** starts it again later.
-
-The Sogen backend (for `.sogttd` recordings and forks) is GPL-2.0, so it is not
-in the package: **TTD > Backends > Install the Sogen backend...** installs
-`ida-ttd-sogen.dll`, or a zip holding it, into `ida-ttd\backends\` in your
-IDA user directory, where plugin upgrades leave it alone. Restart IDA
-afterwards.
 
 If the trace has no index yet, you are asked whether to build one. Building can
 take several minutes. Declining still gives you a database with the right
@@ -353,13 +349,24 @@ it is used.
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE). Two files are licensed otherwise: the
-Sogen backend (`src/backend-sogen/sogen_backend.cpp`) is GPL-2.0-only, because
-Sogen is and it is only ever built against it, and the scanners it shares with
-the Microsoft backend (`src/common/write_scans.h`) are Apache-2.0 OR
-GPL-2.0-only; see [LICENSES/GPL-2.0-only.txt](LICENSES/GPL-2.0-only.txt) and
-[docs/licensing.md](docs/licensing.md). The backend ABI header is CC0. The
-plugin package contains no GPL code. The API metadata in `data/` is derived
-from win32metadata and phnt, both MIT; their notices are in
-[THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt), which the package
-carries too.
+ida-ttd is dual-licensed: use it under the Apache License 2.0
+([LICENSE](LICENSE)) or the GNU GPL version 2
+([LICENSES/GPL-2.0-only.txt](LICENSES/GPL-2.0-only.txt)), whichever you
+choose (`Apache-2.0 OR GPL-2.0-only`). The GPL option is there so the plugin
+can ship together with the Sogen backend.
+
+Exceptions:
+
+- The Sogen backend (`src/backend-sogen/sogen_backend.cpp`, and the
+  `ida-ttd-sogen.dll` built from it) is GPL-2.0-only, because Sogen and
+  Unicorn are. The package carries its license, notices and where its source
+  is in `ida-ttd-backends\ida-ttd-sogen-licenses\`; the source itself is
+  `ida-ttd-sogen-source.zip` on the same release.
+- The API metadata loader (`src/common/apimeta/`, from ttd-capa-cpp) and the
+  Material Symbols icons are Apache-2.0; the Codicons are CC BY 4.0.
+- The backend ABI header is CC0.
+
+The API metadata in `data/` is derived from win32metadata and phnt, both MIT.
+Third-party notices are in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt),
+which the package carries too. [docs/licensing.md](docs/licensing.md) has the
+details.

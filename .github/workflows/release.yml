@@ -43,12 +43,82 @@ jobs:
       - name: Build
         run: msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -t:Rebuild -m:1
 
+      # The Sogen backend: Sogen at the commit msbuild/sogen.pin names, built
+      # as docs/building-the-sogen-backend.md describes, then the backend
+      # linked against it. Sogen's libraries are cached per pin, since they
+      # take far longer to build than everything else together.
+      - name: Read the Sogen pin
+        id: pin
+        shell: pwsh
+        run: |
+          $pin = @{}
+          foreach ($line in Get-Content msbuild\sogen.pin) {
+            if ($line -match '^\s*([a-z]+)\s*=\s*(.+?)\s*$') { $pin[$Matches[1]] = $Matches[2] }
+          }
+          "repo=$($pin.repository -replace '^https://github.com/', '')" >> $env:GITHUB_OUTPUT
+          "commit=$($pin.commit)" >> $env:GITHUB_OUTPUT
+
+      # Some of Sogen's dependencies have paths past MAX_PATH.
+      - name: Allow long paths
+        run: git config --global core.longpaths true
+
+      - name: Check out Sogen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pin.outputs.repo }}
+          ref: ${{ steps.pin.outputs.commit }}
+          submodules: recursive
+          path: sogen
+
+      - name: Cache Sogen's libraries
+        id: sogen-cache
+        uses: actions/cache@v4
+        with:
+          path: sogen-build/artifacts
+          key: sogen-${{ steps.pin.outputs.commit }}-${{ hashFiles('.github/workflows/release.yml') }}
+
+      - name: Set up the MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Both targets, always: the backend links windows-ttd.lib and
+      # windows-emulator.lib too, and a stale one with new headers reads
+      # every register as zero.
+      - name: Build Sogen
+        if: steps.sogen-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          python -m pip install --quiet ninja
+          cmake -S sogen -B sogen-build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
+            -DSOGEN_BUILD_STATIC=ON -DSOGEN_BUILD_TOOLS=OFF -DSOGEN_ENABLE_PYTHON_BINDINGS=OFF `
+            -DSOGEN_ENABLE_RUST_CODE=OFF -DSOGEN_DISABLE_FEX=ON -DSOGEN_ENABLE_SDL3=OFF `
+            -DSOGEN_ENABLE_LTO=OFF -DSOGEN_STATIC_CRT=OFF
+          if ($LASTEXITCODE -ne 0) { throw "configuring Sogen failed" }
+          cmake --build sogen-build --target windows-ttd windows-ttd-view
+          if ($LASTEXITCODE -ne 0) { throw "building Sogen failed" }
+
+      - name: Build the Sogen backend
+        shell: pwsh
+        run: |
+          msbuild msbuild\backend-sogen.vcxproj -t:Rebuild -p:Configuration=Release -p:Platform=x64 `
+            "-p:SogenRoot=$env:GITHUB_WORKSPACE\sogen" "-p:SogenBuild=$env:GITHUB_WORKSPACE\sogen-build"
+          if ($LASTEXITCODE -ne 0) { throw "building the Sogen backend failed" }
+
+      # Its licenses go in the package beside it; its source goes on the
+      # release (GPL-2.0 section 3: source offered "from the same place").
+      - name: Licenses and source for the Sogen backend
+        shell: pwsh
+        run: |
+          python scripts\sogen_dist.py --sogen sogen --out dist
+          if ($LASTEXITCODE -ne 0) { throw "sogen_dist failed" }
+
       - name: Package
         shell: pwsh
         run: |
-          # The plugin package; scripts/package.py says what goes in it and
-          # why. (The Sogen backend needs a Sogen build and ships separately.)
-          python scripts\package.py --build build\Release --out dist
+          # The plugin package, both backends included; scripts/package.py
+          # says what goes in it and why.
+          python scripts\package.py --build build\Release --out dist --require-sogen
           if ($LASTEXITCODE -ne 0) { throw "packaging failed" }
 
           # The trace loader on its own as well, for installs without HCLI:
@@ -76,6 +146,7 @@ jobs:
           path: |
             dist/ida-ttd.zip
             dist/ttd-loader.dll
+            dist/ida-ttd-sogen-source.zip
 
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/')
@@ -87,4 +158,4 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create $env:GITHUB_REF_NAME --generate-notes --title $env:GITHUB_REF_NAME
           }
-          gh release upload $env:GITHUB_REF_NAME dist\ida-ttd.zip dist\ttd-loader.dll --clobber
+          gh release upload $env:GITHUB_REF_NAME dist\ida-ttd.zip dist\ttd-loader.dll dist\ida-ttd-sogen-source.zip --clobber

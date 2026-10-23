@@ -636,11 +636,11 @@ def _installed(version, target):
 # --------------------------------------------------------------------------
 # The Sogen backend
 #
-# ida-ttd-sogen.dll links Sogen and Unicorn, both GPL-2.0, so it is not in
-# the plugin's Apache-2.0 package: it is installed separately, into
-# $IDAUSR/ida-ttd/backends/ beside the TTD runtime's folder, where plugin
-# upgrades leave it alone and where ida-ttd looks before anywhere else. From a
-# file the user picks for now: the DLL itself, or a zip that holds it (with
+# The package ships ida-ttd-sogen.dll. This installs another build of it
+# (one the user made, or a newer one) into $IDAUSR/ida-ttd/backends/ beside
+# the TTD runtime's folder, where plugin upgrades leave it alone and where
+# ida-ttd looks before anywhere else, so it takes the packaged one's place.
+# From a file the user picks: the DLL itself, or a zip that holds it (with
 # its license and notices, which are kept beside it). The functions up to
 # install_sogen() use no IDA module.
 

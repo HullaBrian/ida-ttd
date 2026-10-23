@@ -1,0 +1,7 @@
+# The Sogen commit the Sogen backend (ida-ttd-sogen.dll) is built from: the
+# release workflow checks it out, and scripts/sogen_dist.py names it in the
+# source the backend ships with. Move it only after the backend builds and
+# ittd-probe passes against it (docs/building-the-sogen-backend.md), and check
+# the licensing note in docs/licensing.md again.
+repository=https://github.com/TTD-Club/sogen
+commit=8a9fb16172f81cbf3d803f18120b019640d30a0e

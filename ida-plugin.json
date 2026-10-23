@@ -9,7 +9,7 @@
     ],
     "version": "1.0.0",
     "description": "Replay Microsoft Time Travel Debugging (.run) and Sogen (.sogttd) recordings as an IDA debugger session: step forwards and backwards, and query the whole recording for calls, coverage, memory accesses, syscalls and strings.",
-    "license": "Apache-2.0",
+    "license": "Apache-2.0 OR GPL-2.0-only",
     "platforms": [
       "windows-x86_64"
     ],

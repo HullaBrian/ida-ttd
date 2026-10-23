@@ -52,12 +52,14 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   both backends (the Sogen backend builds without the rest of the plugin).
   They implement `docs/scan-rules.md`, Sogen's rules written down as
   behaviour, and were written from that document, not ported: Sogen is
-  GPL-2.0 and the Microsoft backend that compiles them ships under
-  Apache-2.0. Never copy code from Sogen into anything outside
-  `src/backend-sogen/`; change a rule in the document, then the code.
-  `write_scans.h` is Apache-2.0 OR GPL-2.0-only and `sogen_backend.cpp`
-  GPL-2.0-only (SPDX headers); everything else stays Apache-2.0, so code
-  shared with the Sogen backend must not pull in more of the plugin.
+  GPL-2.0-only and the rest of ida-ttd is `Apache-2.0 OR GPL-2.0-only`
+  (dual, so the plugin can ship with the GPL backend; `docs/licensing.md`).
+  Never copy code from Sogen into anything outside `src/backend-sogen/`;
+  change a rule in the document, then the code. `sogen_backend.cpp` is
+  GPL-2.0-only (SPDX header), so code shared with the Sogen backend must not
+  pull in more of the plugin. The package ships `ida-ttd-sogen.dll` with
+  its licenses folder (`scripts/sogen_dist.py`), and its source goes on
+  the release; the Sogen commit it is built from is `msbuild/sogen.pin`.
 - **`src/common/apimeta/`** + **`data/*.bin`**: the Win32/phnt API metadata
   indexes and their loader, ported from ttd-capa-cpp (same author, Apache-2.0;
   keep them close to the original). `debugger/apidecode` decodes a call's

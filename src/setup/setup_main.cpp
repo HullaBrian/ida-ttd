@@ -236,9 +236,10 @@ namespace
                 "Microsoft once you accept its license", -1));
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
                 ACT_SOGEN, "Install the Sogen backend...", &sogen, this, nullptr,
-                "Install the backend that opens Sogen recordings (.sogttd) and records "
-                "forks: ida-ttd-sogen.dll, or a release zip holding it, copied into "
-                "ida-ttd\\backends in your IDA user directory", -1));
+                "The package includes the Sogen backend. This installs another build "
+                "of it (ida-ttd-sogen.dll, or a release zip holding it) into "
+                "ida-ttd\\backends in your IDA user directory, where it takes the "
+                "packaged one's place", -1));
             ::hook_event_listener(HT_UI, this, this);
             // Not from init(): IDA is still starting, and the menu bar may not
             // be there yet. A file named on the command line opens before or

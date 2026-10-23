@@ -650,7 +650,7 @@ namespace idattd
         { return AST_ENABLE_ALWAYS; }
     };
 
-    // Install the Sogen backend (GPL-2.0, so not in the Apache-2.0 package)
+    // Install another build of the Sogen backend (the package has one)
     // into $IDAUSR\ida-ttd\backends\, from a file the user picks: the
     // DLL, or a release zip that holds it (ida_ttd_runtime.install_sogen()).
     struct InstallSogenHandler : public action_handler_t

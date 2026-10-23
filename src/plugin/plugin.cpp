@@ -953,9 +953,10 @@ namespace idattd
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
                 actions::INSTALL_SOGEN, "Install the Sogen backend...",
                 &m_installSogen, this, nullptr,
-                "Install the backend that opens Sogen recordings (.sogttd) and records "
-                "forks: ida-ttd-sogen.dll, or a release zip holding it, copied into "
-                "ida-ttd\\backends in your IDA user directory", -1));
+                "The package includes the Sogen backend. This installs another build "
+                "of it (ida-ttd-sogen.dll, or a release zip holding it) into "
+                "ida-ttd\\backends in your IDA user directory, where it takes the "
+                "packaged one's place", -1));
         }
 
         // From scratch, in order. Deleting a menu takes its items with it;

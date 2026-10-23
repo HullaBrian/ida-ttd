@@ -6,7 +6,12 @@ Sogen's trace reader and `cpu_view`, and for forks and the replay scans
 Sogen's replay, recorder and Windows emulator, all GPL-2.0-only. The DLL it
 produces is therefore a GPL-2.0 binary
 ([modular-backends.md](modular-backends.md) §3). It is not part of
-`ida-ttd.slnx`, so building ida-ttd never needs Sogen.
+`ida-ttd.slnx`, so building ida-ttd never needs Sogen. Releases build it from
+the commit in `msbuild/sogen.pin` (`.github/workflows/release.yml`) and ship
+it in the plugin package; `scripts/sogen_dist.py` writes the licenses that go
+beside it and the source archive that goes on the release
+([licensing.md](licensing.md)). A local build goes in the package the same
+way: run `sogen_dist.py` after building, then `package.py`.
 
 The core does not load backends yet (that is phase 4 of the plan). Until it
 does, the backend is exercised with `ittd-probe`, which is in the solution.
