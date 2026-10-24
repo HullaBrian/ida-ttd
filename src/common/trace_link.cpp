@@ -2,16 +2,14 @@
 
 namespace idattd
 {
-    // Same naming convention as the other per-database records the plugin keeps
-    // (bookmarks, coverage, callsites): a '$' name is reserved for a netnode, so
-    // it can never collide with a program byte name.
+    // A "$ " name, like the plugin's other netnodes, cannot collide with a
+    // program byte name.
     static const char  TL_NODE[] = "$ ida-ttd trace";
     static const uchar TL_STR    = 'S';   // supstr slots
     static const uchar TL_NUM    = 'N';   // altval slots
 
-    // Slot numbers. Adding a field means a new slot and a version bump; changing
-    // the meaning of an existing one means the version check below must reject
-    // the old layout rather than misread it.
+    // Slot numbers. A new field takes a new slot and a version bump; changing
+    // a slot's meaning requires the version check to reject the old layout.
     enum
     {
         S_TRACE_PATH  = 0,
@@ -23,8 +21,7 @@ namespace idattd
         N_VERSION     = 0,
         N_MODULE_BASE = 1,
         N_MODULE_SIZE = 2,
-        // Biased so that "never written" (altval returns 0 for a missing slot)
-        // is distinguishable from a real answer: 1 = 32-bit, 2 = 64-bit.
+        // 1 = 32-bit, 2 = 64-bit, so 0 (altval's missing slot) means unknown.
         N_BITNESS     = 3,
         N_AUTOSTART   = 4,
     };
@@ -46,8 +43,7 @@ namespace idattd
         netnode nn(TL_NODE);
         if ( nn == BADNODE )
             return false;
-        // A record from a schema this build does not know is not readable field
-        // by field: refuse it rather than hand back half of it.
+        // Refuse an unknown schema rather than return half of it.
         if ( nn.altval(N_VERSION, TL_NUM) != TL_VERSION )
             return false;
 
@@ -98,8 +94,8 @@ namespace idattd
         nn.altset(N_AUTOSTART, (nodeidx_t)v, TL_NUM);
     }
 
-    // Settings subkey and value name for the start mark. One value per database,
-    // so a database that fails does not stop any other one from starting.
+    // Settings subkey for the start mark. One value per database, so one that
+    // fails does not block the others.
     static const char TL_REGKEY[] = "ida-ttd";
 
     static qstring start_mark_name()

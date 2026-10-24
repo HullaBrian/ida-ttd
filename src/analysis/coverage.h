@@ -6,42 +6,39 @@ namespace idattd
 {
     class TraceManager;
 
-    // Default background colour for executed instructions: #584848, a muted
-    // red-brown that reads well on IDA's default dark theme without drowning
-    // the listing's syntax colours. bgcolor_t is 0xBBGGRR. The shade is
-    // configurable per database because IDA exposes no way to ask whether the
-    // current theme is light or dark.
+    // Default background for executed instructions: #584848, a muted
+    // red-brown that suits IDA's default dark theme (bgcolor_t is 0xBBGGRR).
+    // Configurable per database because IDA cannot report whether the theme
+    // is light or dark.
     static const bgcolor_t COVERAGE_DEFAULT_COLOR = 0x484858;
 
     // The colour this database was last painted with (the default if never).
     bgcolor_t coverage_color();
 
-    // Every colour this database has been painted with. Callers use it to
-    // recognise their own work: the disassembly when clearing, the decompiler
-    // when repainting pseudocode lines.
+    // Every colour this database has been painted with, so callers recognise
+    // their own paint (clearing the disassembly, repainting pseudocode).
     std::set<bgcolor_t> coverage_colors();
-    // The colour shows another recording's coverage: painted before the
-    // replay switched to this one (a fork, or the recording it came from),
-    // in the complement of the shade it had.
+    // The colour marks another recording's coverage (painted before the replay
+    // switched to this one), in the complement of its original shade.
     bool coverage_is_previous(bgcolor_t c);
     // After the replay changed recording, repaint the other recording's
     // coverage in the complementary shade. Only from a safe place (a timer
-    // after the stop, or a command): it writes to every painted instruction.
+    // after the stop, or a command): it writes every painted instruction.
     void coverage_settle_recording_change();
 
-    // Automatic highlighting of the function you stop in: the auto_coverage
+    // Automatic highlighting of the function stopped in: the auto_coverage
     // setting (TTD > Settings...).
     bool coverage_auto_enabled();
 
-    // Has the function starting at 'start' already been swept in this database?
-    // Sweeps are recorded so a function is measured once, ever, not once a stop.
+    // Has the function starting at 'start' been swept against this recording?
+    // Recorded so a function is measured once, not on every stop.
     bool coverage_function_done(ea_t start);
     // The session ended: what it painted in debugger segments went with them.
     void coverage_session_ended();
 
-    // Sweep and colour one function with the database's current colour, then
-    // record it as done. False means it did not complete (no trace, or the user
-    // cancelled), and the caller should not keep retrying it.
+    // Sweep and colour one function in the current colour, then mark it done.
+    // False when it did not complete (no trace, or cancelled); the caller
+    // should not keep retrying.
     bool cover_function(TraceManager *mgr, ea_t start, ea_t end);
 
     struct CoverageResult
@@ -52,19 +49,19 @@ namespace idattd
         bool     cancelled = false;
     };
 
-    // Replay the whole recording and colour every instruction inside 'ranges'
-    // that actually ran. Ranges are [lo, hi) and need not be sorted; they become
-    // Execute watchpoints, so a narrow scope lets the engine skip whole segments
-    // of the trace rather than replaying all of it.
+    // Replay the recording and colour every instruction in 'ranges' that ran.
+    // Ranges are [lo, hi), any order; they become Execute watchpoints, so a
+    // narrow scope lets the engine skip stretches of the trace.
     //
-    // Runs behind a cancellable wait box. Returns false when there is no trace,
-    // the scope is unusable, or the sweep was abandoned.
+    // Runs behind a cancellable wait box. False when there is no trace, the
+    // scope is unusable, or the backend could not run it; a cancelled sweep
+    // returns true with 'cancelled' set and paints nothing.
     bool run_coverage(TraceManager *mgr,
                       const std::vector<std::pair<ea_t, ea_t>> &ranges,
                       bgcolor_t color,
                       CoverageResult *out);
 
-    // Remove every colour this database has been painted with. Returns the
-    // number of instructions cleared.
+    // Remove every coverage colour from the database; returns the number of
+    // instructions cleared.
     size_t clear_coverage();
 }

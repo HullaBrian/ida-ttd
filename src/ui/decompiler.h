@@ -6,14 +6,12 @@ namespace idattd
 {
     // Pseudocode coverage highlighting.
     //
-    // The decompiler cannot be linked against unconditionally -- plenty of IDA
-    // installs have no Hex-Rays -- so everything here is a no-op when
-    // init_decompiler() reports it is absent, and the plugin works exactly as
-    // before in that case.
+    // Many IDA installs have no Hex-Rays, so everything here is a no-op when
+    // init_decompiler() reports it absent.
     //
-    // Nothing new is stored for this. Coverage already lives in the database as
-    // a per-instruction colour, so a pseudocode line is painted by asking the
-    // address it came from what colour it has.
+    // Nothing new is stored: coverage is already a per-instruction colour in
+    // the database, and a pseudocode line takes the colour of the addresses it
+    // came from.
     bool init_decompiler();     // true when Hex-Rays is present and hooked
     void term_decompiler();
 
@@ -24,14 +22,10 @@ namespace idattd
     // coverage sweep or an annotation pass changes what the database says.
     void refresh_pseudocode_views();
 
-    // Close pseudocode views whose function lives in memory that only exists
-    // while a trace is loaded, and do it without saving them to the desktop.
-    //
-    // Code the recording allocated at runtime has no segment once the session
-    // ends. A view left open on it is saved in the desktop, restored when the
-    // database is reopened, and then greets the user with "cannot convert to
-    // microcode" every time they touch that tab, because there are no bytes to
-    // decompile any more. Called at session end.
+    // Close, without saving to the desktop, pseudocode views of code that
+    // exists only while a trace is loaded. Called at session end: runtime
+    // allocated code has no segment afterwards, and a view restored from the
+    // desktop would fail with "cannot convert to microcode" on every touch.
     void close_volatile_pseudocode_views();
 
     // Every open pseudocode view. Asks IDA by window title rather than

@@ -105,10 +105,10 @@ namespace idattd
         cur()->SetMemoryWatchpointCallback(&record_hit, reinterpret_cast<uintptr_t>(&m_lastHitData));
     }
 
-    // Did the instruction just before the playhead make an access a data
-    // breakpoint watches? A backward run cannot say -- the engine would report
-    // it at the playhead itself, and skips that -- so replay that one
-    // instruction forward and see. When it did, stop on it.
+    // Did the instruction just before the playhead make a watched data access?
+    // A backward run cannot say (the engine would report it at the playhead
+    // itself, which it skips), so replay that one instruction forward and
+    // see. When it did, stop on it.
     bool MsTtdNavigator::data_hit_just_before()
     {
         if ( !data_breakpoints_armed() )
@@ -147,9 +147,8 @@ namespace idattd
 
     StopReason MsTtdNavigator::settle(EventType sr, bool forward, ea_t target)
     {
-        // Do this FIRST and unconditionally: a run that reached either end of
-        // the trace leaves the cursor on the limit sentinel, not on a real
-        // recorded position.
+        // First and unconditionally: a run that reached either end leaves the
+        // cursor on the limit sentinel, not a recorded position.
         m_cursor->clamp_to_trace();
 
         // A breakpoint stop is not a trace edge.
@@ -197,8 +196,7 @@ namespace idattd
     StopReason MsTtdNavigator::step_over(bool forward)
     {
         // IDA has no RESMOD_BACKOVER: "step over backwards" arrives as
-        // ev_set_backwards plus the ordinary RESMOD_OVER, and is a real
-        // backward step-over, not a plain backward step.
+        // ev_set_backwards plus RESMOD_OVER, and is a real backward step-over.
         EventType sr = forward ? navigate_over(false) : navigate_over_backward();
         return settle(sr, forward);
     }
@@ -237,9 +235,8 @@ namespace idattd
     //=======================================================================
     EventType MsTtdNavigator::navigate_steps(bool forward, StepCount steps)
     {
-        // A bounded step must start from a position that exists in the
-        // recording. Replaying backward "one step" from the end-of-trace
-        // sentinel does not move one instruction -- it runs to the start.
+        // A bounded step must start from a recorded position: one step
+        // backward from the end-of-trace sentinel runs to the start instead.
         if ( steps != StepCount::Max )
             m_cursor->clamp_to_trace();
         const TtdPosition before = cur()->GetPosition();
@@ -248,9 +245,8 @@ namespace idattd
             ? cur()->ReplayForward(TtdPosition::Max, steps)
             : cur()->ReplayBackward(TtdPosition::Min, steps);
 
-        // A bounded backward step that lands on the trace's first position
-        // moved to the start instead of stepping. Say so rather than silently
-        // teleporting the user.
+        // A bounded backward step that lands on the first position jumped to
+        // the start instead of stepping; say so.
         if ( !forward && steps != StepCount::Max )
         {
             const TtdPosition after = cur()->GetPosition();
@@ -272,9 +268,8 @@ namespace idattd
         wp.Address    = GuestAddress{ (uint64_t)addr };
         wp.Size       = 1;
         wp.AccessMask = DataAccessMask::Execute;
-        // An identical user breakpoint is this watchpoint as far as the engine
-        // is concerned. Leave it alone: removing "ours" afterwards would
-        // silently delete the user's breakpoint.
+        // An identical user breakpoint is the same watchpoint to the engine;
+        // removing "ours" afterwards would delete the user's.
         if ( m_userWatchpoints.find(wp) != m_userWatchpoints.end() )
             return false;
         return cur()->AddMemoryWatchpoint(wp);
@@ -324,7 +319,7 @@ namespace idattd
 
     // Run backward to 'addr': a temporary Execute watchpoint and one backward
     // replay, which the engine answers by seeking straight to the previous
-    // execution of 'addr' -- not a backward single-step loop.
+    // execution (no backward single-step loop).
     EventType MsTtdNavigator::navigate_backward_to(ea_t addr)
     {
         MemoryWatchpointData wp{};
@@ -351,9 +346,74 @@ namespace idattd
         return r.StopReason;
     }
 
+    // Forward step-out without stepping: find the call that entered the frame
+    // and run to its return address, accepting the hit only on this thread
+    // with the stack back where it was at the call (a recursive call's return
+    // to the same address happens deeper). One frame search and one replay,
+    // where the step loop can take a hundred thousand single steps. 'origin'
+    // is where the movement began, to go back to when the frame never
+    // returns. Called part-way through a step-out, never on its first
+    // instruction, so any data access from here on is a stop.
+    bool MsTtdNavigator::step_out_by_entry(EventType *result, const TtdPosition &origin)
+    {
+        const uint64_t    start_sp  = (uint64_t)cur()->GetStackPointer();
+        const uint32_t    utid      = (uint32_t)cur()->GetThreadInfo().UniqueId;
+
+        MsTtdBackend::FrameEntry fe;
+        bool cancelled = false;
+        if ( !find_frame_entry_position(fe, cancelled) )
+        {
+            if ( !cancelled )
+                return false;
+            *result = EventType::Position;          // stay where it started
+            return true;
+        }
+
+        // The stack pointer at the call itself, before its push: the callback
+        // that found the call may report it either side of the push. Inside
+        // the callee the stack is lower, or the call found is not this
+        // frame's, and the step loop decides instead.
+        ICursorView *fc = frame_cursor();
+        if ( fc == nullptr || fe.ret_addr == 0 )
+            return false;
+        fc->SetPosition(fe.pos);
+        if ( (uint32_t)fc->GetThreadInfo().UniqueId != utid )
+            return false;
+        const uint64_t call_sp = (uint64_t)fc->GetStackPointer();
+        if ( call_sp <= start_sp )
+            return false;
+        const ea_t ret = (ea_t)fe.ret_addr;
+
+        switch ( run_to_addr_guarded(ret, call_sp, utid) )
+        {
+            case RunStop::Reached:
+                *result = EventType::Position;
+                break;
+            case RunStop::Breakpoint:
+                *result = EventType::MemoryWatchpoint;
+                break;
+            case RunStop::TraceBoundary:
+                // The recording ended before the frame unwound, which is no
+                // answer to "step out": stay where it started.
+                cur()->SetPosition(origin);
+                m_notice = "This frame does not return anywhere in the "
+                           "recording, so there is nothing to step out to.\n\n"
+                           "The position has been left where it was.";
+                *result = EventType::Position;
+                break;
+        }
+        return true;
+    }
+
     // Forward step-over and step-out on the playhead: step over a call by
     // running to the return site; step out by repeating until the frame is
     // unwound. Single instructions are stepped directly.
+    //
+    // A step-out first single-steps a short budget: most frames end within
+    // it, sooner than the frame search and seek of step_out_by_entry (tens
+    // to hundreds of milliseconds) would. A frame still running after it is
+    // left by the entering call's return, and the loop goes on only when that
+    // call cannot be found.
     EventType MsTtdNavigator::navigate_over(bool step_out)
     {
         TtdPosition start_pos = cur()->GetPosition();
@@ -362,11 +422,12 @@ namespace idattd
         bool hit_bpt  = false;
         bool boundary = false;      // ran out of recording rather than unwinding
 
-        // Both can run for a long time: stepping over a call that never
-        // returns replays to the END of the trace, and step-out repeats that
-        // until the frame unwinds. The core's progress sink is what keeps
-        // Cancel working between iterations.
+        // Both can run long: stepping over a call that never returns replays
+        // to the end of the trace, and step-out repeats until the frame
+        // unwinds. The core's progress sink keeps Cancel working between
+        // iterations.
         const int CAP = 100000;                 // backstop against a pathological frame
+        const int kQuickSteps = 64;             // step-out's budget before the frame search
         int iters = 0;
         for ( ;; )
         {
@@ -386,10 +447,9 @@ namespace idattd
 
             if ( is_call )
             {
-                // The guard belongs to THIS call, not to the frame being
-                // stepped out of: by a nested call the stack has grown past
-                // the frame's entry level, so guarding on start_sp would
-                // reject the very return being waited for.
+                // Guard on this call's stack pointer, not the frame's: at a
+                // nested call the stack is below start_sp, so guarding on it
+                // would reject the very return being waited for.
                 uint64_t call_sp = (uint64_t)cur()->GetStackPointer();
                 // The call's own push is not a stop (step_past_own_access).
                 if ( iters == 1 )
@@ -417,15 +477,21 @@ namespace idattd
 
             if ( !step_out )
                 break;                                  // step-over: a single iteration
-            // Step-out: the frame has returned once a RET took the stack above
-            // where it started. The rise alone is not the test -- an epilogue's
-            // 'add rsp' does that a few instructions before the RET.
+            // Step-out: done once a RET takes the stack above where it
+            // started. The rise alone is not enough; an epilogue's 'add rsp'
+            // does that a few instructions before the RET.
             if ( is_ret && (uint64_t)cur()->GetStackPointer() > start_sp )
                 break;
+            if ( iters == kQuickSteps )
+            {
+                EventType ev;
+                if ( step_out_by_entry(&ev, start_pos) )
+                    return ev;
+            }
         }
 
-        // The recording ran out before the frame unwound: the end of the
-        // recording is not an answer to "step out", so stay where it started.
+        // The recording ended before the frame unwound, which is no answer to
+        // "step out": stay where it started.
         if ( step_out && boundary && (uint64_t)cur()->GetStackPointer() <= start_sp )
         {
             cur()->SetPosition(start_pos);
@@ -448,173 +514,31 @@ namespace idattd
         return m_frameCursor.get();
     }
 
-    // Find the CALL instruction that entered the frame the playhead stands in,
-    // so the caller can seek straight to it in one engine hop.
-    //
-    // Never by single-stepping backward -- that re-seeks a keyframe per step
-    // and takes minutes. Instead: seek to a position before the playhead and
-    // replay forward to it, tracking a per-thread stack of open calls; the top
-    // of the playhead thread's stack is the entering call. The window
-    // widens until it captures that call.
-    bool MsTtdNavigator::find_frame_entry_position(TtdPosition &out, bool &cancelled)
+    // Find the CALL that entered the playhead's frame, so the caller can seek
+    // straight to it or run to its return (MsTtdBackend::find_frame_entry).
+    bool MsTtdNavigator::find_frame_entry_position(MsTtdBackend::FrameEntry &out, bool &cancelled)
     {
         cancelled = false;
-        out       = TtdPosition::Invalid;
+        out       = MsTtdBackend::FrameEntry{};
         if ( frame_cursor() == nullptr )
             return false;
 
-        IReplayEngine *engine = m_backend->engine();
-        const TTD::Replay::ThreadInfo &ti = cur()->GetThreadInfo();
-        const uint32_t    tid  = (uint32_t)ti.UniqueId;
-        const TtdPosition last = engine->GetLastPosition();
-
-        // Floor for the search: nothing this thread did lies before its
-        // ActiveTime, so a window reaching it without an open call means the
-        // thread really is in its outermost frame.
-        TtdPosition first = engine->GetFirstPosition();
-        if ( ti.ActiveTime.Min.IsValid() && first < ti.ActiveTime.Min )
-            first = ti.ActiveTime.Min;
-
-        // Work from a position that exists, and that this thread reached: the
-        // end of the recording can belong to another thread, and a window
-        // ending there holds none of this one's instructions.
-        TtdPosition here = cur()->GetPosition();
-        if ( last.IsValid() && here > last )
-            here = last;
-        if ( ti.ActiveTime.Max.IsValid() && here > ti.ActiveTime.Max )
-            here = ti.ActiveTime.Max;
-        if ( first.IsValid() && here < first )
-            here = first;
-
-        // A CALL pushes, a RET pops. A RET with nothing on the stack is a frame
-        // already open when the window began; ignoring it is what makes a
-        // partial window still give the right answer.
-        struct Open { TtdPosition pos; uint64_t sp; };
-        std::map<uint32_t, std::vector<Open>> stacks;
-        uint64_t seen_all  = 0;
-        uint64_t seen_mine = 0;
-        auto on_call_ret = [&](GuestAddress, GuestAddress fall_through, IThreadView const *t) noexcept
-        {
-            // Engine callbacks are noexcept: cap the depth rather than let an
-            // allocation throw in here.
-            static const size_t kMaxDepth = 8192;
-            uint32_t utid = (uint32_t)t->GetThreadInfo().UniqueId;
-            seen_all++;
-            if ( utid == tid )
-                seen_mine++;
-            try
-            {
-                if ( (uint64_t)fall_through != 0 )
-                {
-                    std::vector<Open> &st = stacks[utid];
-                    if ( st.size() < kMaxDepth )
-                        st.push_back(Open{ t->GetPosition(), (uint64_t)t->GetStackPointer() });
-                }
-                else
-                {
-                    auto it = stacks.find(utid);
-                    if ( it != stacks.end() && !it->second.empty() )
-                        it->second.pop_back();
-                }
-            }
-            catch ( ... )
-            {
-            }
+        // Look-back schedule: a slice of the current sequence, then all of
+        // it, then ever more whole sequences. Capped, or a frame entered near
+        // the start of a long recording would mean replaying all of it.
+        // Sequence ids advance unevenly, hence widening well past 64.
+        using Kind = MsTtdBackend::FrameWindowKind;
+        static const MsTtdBackend::FrameWindow kWindows[] = {
+            { Kind::InSequence, 4096  }, { Kind::InSequence, 65536 },
+            { Kind::Sequences,  1     }, { Kind::Sequences,  4     }, { Kind::Sequences, 16    },
+            { Kind::Sequences,  64    }, { Kind::Sequences,  256   }, { Kind::Sequences, 1024  },
+            { Kind::Sequences,  4096  }, { Kind::Sequences,  16384 },
         };
-
-        // Look-back schedule: a slice of the current sequence, then the whole
-        // of it, then progressively more whole sequences. Capped: a frame
-        // entered near the start of a long recording would otherwise mean
-        // replaying all of it. Sequence ids do not advance at a uniform rate,
-        // which is why the schedule keeps widening well past 64.
-        struct Attempt { bool by_steps; uint64_t back; };
-        static const Attempt kAttempts[] = {
-            { true,  4096  }, { true,  65536 },
-            { false, 1     }, { false, 4     }, { false, 16    },
-            { false, 64    }, { false, 256   }, { false, 1024  },
-            { false, 4096  }, { false, 16384 },
-        };
-
-        // Not every call is matched by a RET: one that leaves by a syscall, a
-        // context switch or an exception stays open on the stack forever. The
-        // call that entered this frame is the innermost open one made from a
-        // shallower frame -- at or above the stack pointer here (at the
-        // callee's first instruction the two can be equal, depending on whether
-        // the engine reports the stack before or after the call's push).
-        // Anything below it is one of those deeper calls that never came back.
-        const uint64_t here_sp = (uint64_t)cur()->GetStackPointer();
-
-        bool        found     = false;
-        TtdPosition lastStart = TtdPosition::Invalid;
-        TtdPosition winStart  = TtdPosition::Invalid;
-        uint64_t    winInsns  = 0;
-        for ( size_t i = 0; i < qnumber(kAttempts) && !found; i++ )
-        {
-            if ( this->cancelled() )
-            {
-                cancelled = true;
-                break;
-            }
-            if ( m_progress != nullptr )
-                m_progress->report((uint32_t)(i * 100 / qnumber(kAttempts)));
-
-            TtdPosition s = here;
-            if ( kAttempts[i].by_steps )
-            {
-                uint64_t st = (uint64_t)here.Steps;
-                s.Steps = (StepCount)(st > kAttempts[i].back ? st - kAttempts[i].back : 0);
-            }
-            else
-            {
-                uint64_t sq = (uint64_t)here.Sequence;
-                uint64_t bk = kAttempts[i].back;
-                s.Sequence = (SequenceId)(sq > bk ? sq - bk : 0);
-                s.Steps    = StepCount::Min;
-            }
-            if ( s < first )
-                s = first;
-            if ( s == lastStart )
-                continue;           // the step-based windows collapse near a sequence start
-            lastStart = s;
-
-            stacks.clear();
-            seen_all  = 0;
-            seen_mine = 0;
-            m_frameCursor->SetPosition(s);
-            m_frameCursor->SetCallReturnCallback(on_call_ret);
-            ICursorView::ReplayResult rr = m_frameCursor->ReplayForward(here);
-            m_frameCursor->SetCallReturnCallback(nullptr, 0);
-            winStart = s;
-            winInsns = (uint64_t)rr.InstructionsExecuted;
-
-            auto it = stacks.find(tid);
-            if ( it != stacks.end() )
-            {
-                for ( auto o = it->second.rbegin(); o != it->second.rend(); ++o )
-                    if ( o->sp >= here_sp )
-                    {
-                        out   = o->pos;
-                        found = true;
-                        break;
-                    }
-                if ( found )
-                    break;
-            }
-            if ( !(first < s) )
-                break;      // the window already reached the start of the trace
-        }
-        if ( !found && !cancelled )
-        {
-            // A thread really in its outermost frame and a window that replayed
-            // nothing look the same in the popup; say which.
-            msttd_log("[ida-ttd] no entering call for thread %X searching back from "
-                "%llX:%llX. Last window %llX:%llX replayed %llu instructions, "
-                "%llu call/ret events, %llu of them on this thread.\n",
-                tid, (uint64_t)here.Sequence, (uint64_t)here.Steps,
-                (uint64_t)winStart.Sequence, (uint64_t)winStart.Steps,
-                winInsns, seen_all, seen_mine);
-        }
-        return found;
+        MsTtdBackend::FrameSearch fs = m_backend->find_frame_entry(
+            m_frameCursor.get(), cur()->GetPosition(), (uint32_t)cur()->GetThreadInfo().UniqueId,
+            (uint64_t)cur()->GetStackPointer(), kWindows, qnumber(kWindows), m_progress, true, &out);
+        cancelled = fs == MsTtdBackend::FrameSearch::Cancelled;
+        return fs == MsTtdBackend::FrameSearch::Found;
     }
 
     X86Branch MsTtdNavigator::branch_here()
@@ -636,8 +560,8 @@ namespace idattd
 
     EventType MsTtdNavigator::rewind_to(const TtdPosition &p)
     {
-        // One engine call rather than a step loop. User breakpoints stay
-        // armed, so anything hit between here and 'p' stops the run there instead.
+        // One engine call, not a step loop. User breakpoints stay armed, so a
+        // hit between here and 'p' stops the run there.
         ICursorView::ReplayResult r = cur()->ReplayBackward(p);
         return r.StopReason == EventType::MemoryWatchpoint ? EventType::MemoryWatchpoint
                                                             : EventType::Position;
@@ -645,8 +569,8 @@ namespace idattd
 
     EventType MsTtdNavigator::navigate_out_backward()
     {
-        TtdPosition entry;
-        bool        cancelled = false;
+        MsTtdBackend::FrameEntry entry;
+        bool cancelled = false;
         if ( !find_frame_entry_position(entry, cancelled) )
         {
             if ( !cancelled )
@@ -655,7 +579,7 @@ namespace idattd
                            "reaches, or this thread is in its outermost frame.";
             return EventType::Position;     // leave the cursor where it is
         }
-        return rewind_to(entry);
+        return rewind_to(entry.pos);
     }
 
     // Backward step-over: one backward step; if that landed on the tail of a
@@ -669,10 +593,9 @@ namespace idattd
         ICursorView::ReplayResult r = cur()->ReplayBackward(TtdPosition::Min, StepCount{ 1 });
         const bool hit_bpt = r.StopReason == EventType::MemoryWatchpoint;
 
-        // A lower stack pointer alone is not the test -- stepping back over a
-        // 'pop' does that too. What identifies a returning callee is landing
-        // on its RET with the return address still stacked: both, on the same
-        // thread.
+        // A lower stack pointer alone is not enough (stepping back over a
+        // 'pop' does that too): a returning callee is identified by landing on
+        // its RET with the stack lower, on the same thread.
         bool deeper = false;
         if ( !hit_bpt
           && (uint32_t)cur()->GetThreadInfo().UniqueId == utid
@@ -685,10 +608,10 @@ namespace idattd
         {
             // If the entering call cannot be found, stay on the RET: the step
             // already moved, and a popup would be noise for "step back one".
-            TtdPosition entry;
-            bool        cancelled = false;
+            MsTtdBackend::FrameEntry entry;
+            bool cancelled = false;
             if ( find_frame_entry_position(entry, cancelled) )
-                return rewind_to(entry);
+                return rewind_to(entry.pos);
         }
         return hit_bpt ? EventType::MemoryWatchpoint : EventType::Position;
     }

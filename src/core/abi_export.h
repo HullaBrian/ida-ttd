@@ -17,11 +17,11 @@ namespace idattd
     //
     // and the core sees it through BackendModule like any other. Each
     // ittd_backend handle is a fresh backend from 'factory', opened on one
-    // recording; identity questions are answered by one kept unopened.
+    // recording; identity questions go to one kept unopened.
     //
-    // The ABI's count queries are asked twice -- once for the count, once to
-    // fill -- and a replay engine answers each by replaying the recording, so
-    // the answer is kept between the two calls rather than worked out again.
+    // Count queries are asked twice (count, then fill), and a replay engine
+    // answers each by replaying the recording, so the answer is kept between
+    // the two calls.
     using BackendFactory = BackendPtr (*)();
     using LogCallback    = void (*)(void *ud, const char *line);
     using LogSetter      = void (*)(LogCallback log, void *ud);

@@ -8,12 +8,9 @@
 namespace idattd
 {
     // Microsoft TTD (.run recordings) behind ITraceBackend, exported as the
-    // C ABI by msttd_entry.cpp; nothing outside src/backend-msttd/ knows
-    // these types.
-    //
-    // The engine is a replay engine: a question about the whole trace is
-    // answered by replaying with a watchpoint armed, and moving the playhead is
-    // cheap.
+    // C ABI by msttd_entry.cpp; nothing outside src/backend-msttd/ sees these
+    // types. Whole-trace questions are replays with a watchpoint armed;
+    // moving the playhead is cheap.
     class MsTtdBackend : public ITraceBackend
     {
     public:
@@ -95,9 +92,8 @@ namespace idattd
         std::vector<Symbol> module_symbols(ea_t) override { return {}; }
         std::vector<std::pair<ea_t, ea_t>> module_functions(ea_t) override { return {}; }
 
-        // Why the last call failed, in words. Queries run on worker threads
-        // while the main thread reads cursors and asks this, so the text is
-        // behind a mutex and handed out as a copy.
+        // Why the last call failed. Queries run on worker threads while the
+        // main thread asks this, so the text is mutex-guarded and copied out.
         qstring last_error() const override;
 
         // ---- Microsoft-only, for the rest of this backend ----
@@ -112,6 +108,38 @@ namespace idattd
         // that had the id; 0 when none did.
         uint32_t                    unique_thread_id(uint32_t tid, Position at) const;
 
+        // The CALL that entered a thread's frame, for query_frame_entry and
+        // the navigator's step-out (forward and backward) and backward
+        // step-over: one search with each caller's own look-back schedule.
+        struct FrameEntry
+        {
+            TTD::Replay::Position pos{};          // the call instruction
+            ea_t                  entry    = 0;   // its target
+            uint64_t              ret_addr = 0;   // where it returns to
+        };
+        enum class FrameWindowKind
+        {
+            InSequence,     // 'back' steps, clipped at the start of the sequence
+            ThreadSteps,    // 'back' of the thread's steps, across sequences
+            Sequences,      // from the start of the sequence 'back' sequences earlier
+        };
+        struct FrameWindow
+        {
+            FrameWindowKind kind;
+            uint64_t        back;
+        };
+        enum class FrameSearch { Found, NotFound, Cancelled };
+        // Replays each window up to 'here' on 'scratch' (sequential and
+        // unfiltered, owned by the caller and used by one thread at a time)
+        // with the call/return callback, keeping thread 'utid''s open calls,
+        // until a window holds the entering call: the innermost open call
+        // made at or above 'here_sp' (0 accepts the innermost). 'progress'
+        // may be null; 'log_miss' logs why a search found nothing.
+        FrameSearch find_frame_entry(TTD::Replay::ICursorView *scratch, TTD::Replay::Position here,
+                                     uint32_t utid, uint64_t here_sp,
+                                     const FrameWindow *windows, size_t nwindows,
+                                     ProgressSink *progress, bool log_miss, FrameEntry *out) const;
+
     private:
         // The end of user-mode address space, for watchpoints over all of it.
         uint64_t user_space_end() const { return m_info.is64 ? 0x800000000000ull : 0x100000000ull; }
@@ -123,9 +151,17 @@ namespace idattd
         // Sequential, unfiltered: query_frame_entry's call/return callback
         // mutates an unsynchronized map, and the engine's default parallel
         // replay would dispatch it from several threads at once.
+        // Each scratch object has its own mutex: the core may ask one query
+        // on a worker while the main thread asks another on every stop. Each
+        // is held only for that query's bounded work and never with another,
+        // so none can deadlock. The write scans (m_scans) run for minutes and
+        // are not locked: a main thread blocked behind them would hang IDA.
         TTD::Replay::UniqueCursor       m_frameScratch;
         TTD::Replay::UniqueCursor       m_insnScratch;     // query_instructions, likewise
         TTD::Replay::UniqueCursor       m_regsScratch;     // registers_at
+        std::mutex                      m_frameMtx;        // m_frameScratch
+        std::mutex                      m_insnMtx;         // m_insnScratch
+        std::mutex                      m_regsMtx;         // m_regsScratch, m_syscallRegs
         struct SyscallRegs
         {
             uint64_t gp[ITTD_REG_GP_COUNT];
@@ -150,10 +186,9 @@ namespace idattd
     };
 
     // A position in a Microsoft recording, with the playhead's thread and
-    // registers. Reads come from a second engine cursor that is only ever
-    // positioned, never executed: a cursor left "in execution" answers every
-    // memory query thread-locally whatever policy is asked for, which is what
-    // made non-executed bytes read back as zeros.
+    // registers. Memory reads use a second cursor that is only positioned,
+    // never executed: a cursor left "in execution" answers every memory query
+    // thread-locally whatever the policy, so unexecuted bytes read as zeros.
     class MsTtdCursor : public ITraceCursor
     {
     public:
@@ -190,13 +225,17 @@ namespace idattd
         std::vector<uint8_t> m_probe;
 
         // Bytes rebuilt from recorded writes (rebuild_range); they win over
-        // the position query, which only zero-fills that memory.
+        // the position query, which only zero-fills that memory. Each holds
+        // the memory as of one position and is served only there: elsewhere
+        // later writes, or earlier absence, make it wrong. The few most recent
+        // are kept, so travelling back and forth does not replay again.
         struct Rebuilt
         {
-            ea_t                 lo = 0, hi = 0;
-            std::vector<uint8_t> data;
-            std::vector<bool>    known;
+            ea_t                  lo = 0, hi = 0;
+            TTD::Replay::Position pos{};
+            std::vector<uint8_t>  data;
+            std::vector<bool>     known;
         };
-        std::vector<Rebuilt> m_rebuilt;
+        std::vector<Rebuilt> m_rebuilt;     // oldest first
     };
 }

@@ -1,36 +1,34 @@
 """Install the TTD replay runtime that Microsoft recordings need.
 
 The Microsoft TTD backend replays a .run through TTDReplay.dll and
-TTDReplayCPU.dll. Microsoft's terms do not allow anyone but Microsoft to
-distribute them, so ida-ttd cannot ship them. They come with WinDbg, and
-WinDbg's terms allow any use, commercial included (the standalone TTD
-package's terms do not, which is why it is not used here). So this module
-does what installing WinDbg by hand would: it downloads WinDbg from
-Microsoft, shows Microsoft's license, and only after the user accepts it
-unpacks the x64 package into
+TTDReplayCPU.dll. Only Microsoft may distribute them, so ida-ttd cannot ship
+them. They come with WinDbg, whose terms allow any use, commercial included
+(the standalone TTD package's terms do not, so it is not used). This module
+does what installing WinDbg by hand would: download WinDbg from Microsoft,
+show Microsoft's license, and only after the user accepts it unpack the x64
+package into
 
     $IDAUSR/ida-ttd/windbg/
 
 where the backend looks for amd64/ttd/TTDReplay.dll. That folder is outside
-the plugin's own package folder, so plugin upgrades leave it alone. (Earlier
-versions used $IDAUSR/plugins/ida-ttd-backends/windbg/; the backend still
-looks there, and install_runtime() moves it.) With
-WinDbg already installed (Microsoft Store, winget, Microsoft's installer),
-nothing is downloaded: its amd64/ttd folder is copied there instead, since
-Windows will not load DLLs from an installed package's folder into IDA.
+the plugin's package folder, so upgrades leave it alone. (Earlier versions
+used $IDAUSR/plugins/ida-ttd-backends/windbg/; the backend still looks there,
+and install_runtime() moves it.) With WinDbg already installed (Microsoft
+Store, winget, Microsoft's installer), nothing is downloaded: its amd64/ttd
+folder is copied instead, since Windows will not load DLLs from an installed
+package's folder into IDA.
 
-Microsoft publishes WinDbg as one bundle (about 1.2 GB) holding a package
-per architecture, stored uncompressed. Only the x64 package (about 400 MB)
-is downloaded: a zip can be read through HTTP range requests, so the bundle's
-directory, then the license inside the x64 package, then that package
-alone are fetched.
+WinDbg is published as one bundle (about 1.2 GB) with an uncompressed package
+per architecture. Only the x64 package (about 400 MB) is downloaded, through
+HTTP range requests: the bundle's zip directory, then the license inside the
+x64 package, then that package.
 
 In IDA: TTD > Backends > Install the TTD runtime (WinDbg)..., or
-install_runtime(). The functions below install_runtime() use no IDA module,
-so the download and unpacking can be tried outside IDA.
+install_runtime(). The functions it calls to find, download, unpack and copy
+WinDbg use no IDA module, so they can be tested outside IDA.
 
-The same menu installs the Sogen backend, which is GPL-2.0 and so not in the
-plugin's package: install_sogen(), at the end of this module.
+The same menu installs another build of the Sogen backend: install_sogen(),
+at the end of this module.
 """
 
 import ctypes
@@ -73,10 +71,9 @@ def has_runtime(root):
 
 def installed_windbg():
     """(folder, version) of WinDbg installed as a Windows package for this
-    user (Microsoft Store, winget, Microsoft's installer), if it holds the
-    runtime, else None. The backend cannot load the runtime from there:
-    Windows refuses to load a DLL from a package folder into a process
-    outside the package, though it allows reading it. So it is copied out."""
+    user, if it holds the runtime, else None. Windows refuses to load a DLL
+    from a package folder into a process outside the package (reading is
+    allowed), so the runtime is copied out."""
     try:
         k32 = ctypes.WinDLL("kernel32")
         count = ctypes.c_uint32(0)
@@ -117,7 +114,7 @@ def read_marker(target):
 # Reading Microsoft's package over HTTP
 
 def _check_microsoft(url):
-    """Only ever fetch from Microsoft, over HTTPS, wherever a redirect leads."""
+    """Refuse anything but Microsoft over HTTPS, checked after redirects."""
     u = urllib.parse.urlsplit(url)
     host = (u.hostname or "").lower()
     if u.scheme != "https" or not (host == "microsoft.com" or host.endswith(".microsoft.com")):
@@ -245,8 +242,8 @@ def download(release, dest, progress=None, chunk=1 << 20):
             done += len(data)
             if progress is not None and progress(done, release.size) is False:
                 raise Cancelled()
-    # The bundle's directory has the package's checksum; a mismatch is a
-    # broken download, not something to unpack.
+    # The bundle's directory holds the package's CRC; a mismatch is a broken
+    # download.
     if crc != release.crc:
         raise InstallError("the download is damaged (checksum mismatch); try again")
 
@@ -257,8 +254,8 @@ _PACKAGE_META = ("[Content_Types].xml",)
 
 def unpack(package, target, version, progress=None):
     """Unpack a downloaded package into 'target', replacing what is there.
-    Unpacked beside it first and renamed into place, so a failure halfway
-    leaves the old install (or none), never half of one."""
+    It is unpacked beside it and renamed into place, so a failure leaves the
+    old install (or none), never half of one."""
     staging = target + ".new"
     shutil.rmtree(staging, ignore_errors=True)
     os.makedirs(staging)
@@ -306,15 +303,40 @@ def _finish(staging, target, version, source, license_note):
         }, f, indent=2)
 
     old = target + ".old"
-    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(old):
+        if os.path.exists(target):
+            shutil.rmtree(old, ignore_errors=True)
+        else:
+            # An earlier install stopped between its two renames: the old
+            # folder is the only working copy, so it is put back rather
+            # than deleted.
+            try:
+                os.rename(old, target)
+            except OSError as e:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise InstallError("Could not restore %s from %s (%s). Close every IDA that has "
+                                   "a Microsoft recording open, then try again." % (target, old, e))
+    moved = False
     if os.path.exists(target):
         try:
             os.rename(target, old)
+            moved = True
         except OSError:
             shutil.rmtree(staging, ignore_errors=True)
             raise InstallError("%s is in use. Close every IDA that has a Microsoft recording "
                                "open, then try again." % target)
-    os.rename(staging, target)
+    try:
+        os.rename(staging, target)
+    except OSError as e:
+        # Put the previous runtime back, so a failed upgrade leaves it working.
+        if moved:
+            try:
+                os.rename(old, target)
+            except OSError:
+                pass
+        shutil.rmtree(staging, ignore_errors=True)
+        raise InstallError("Could not move the new runtime into %s (%s); the previous one "
+                           "was kept." % (target, e))
     shutil.rmtree(old, ignore_errors=True)
 
 
@@ -378,8 +400,14 @@ def rtf_to_text(rtf):
             elif w == "uc":
                 ucskip = int(arg or 1)
             elif w == "u":
-                c = int(arg)
-                out.append(chr(c + 0x10000 if c < 0 else c))
+                # \u takes a signed 16-bit number; a missing or out-of-range
+                # one (a damaged file) becomes U+FFFD rather than an error.
+                c = int(arg) if arg else None
+                if c is not None and c < 0:
+                    c += 0x10000
+                if c is None or not 0 <= c <= 0x10FFFF or 0xD800 <= c <= 0xDFFF:
+                    c = 0xFFFD
+                out.append(chr(c))
                 pending = ucskip
             elif w in _RTF_CHARS:
                 out.append(_RTF_CHARS[w])
@@ -402,10 +430,10 @@ def rtf_to_text(rtf):
 # In IDA
 
 def user_data_dir(*parts):
-    """$IDAUSR/ida-ttd: where what the user adds after installing lives
-    (src/core/backend_module.h, user_data_dir). Not the plugin's package
-    folder, which HCLI replaces on every upgrade, and not under plugins/,
-    since none of it is a plugin."""
+    """$IDAUSR/ida-ttd: what the user adds after installing
+    (src/core/backend_module.h, user_data_dir). Not the package folder,
+    which HCLI replaces on every upgrade, and not under plugins/, since none
+    of it is a plugin."""
     import ida_diskio
     return os.path.join(ida_diskio.get_user_idadir(), "ida-ttd", *parts)
 
@@ -422,9 +450,9 @@ def default_target():
 
 
 def adopt_folder(old, new):
-    """Move the folder 'old' to 'new' when only the old one exists. False
-    when it cannot (a DLL in it is loaded, say): the old copy then stays
-    where it is, and is still found there."""
+    """Move folder 'old' to 'new' when only the old one exists. False when
+    it cannot (a DLL in it is loaded, say); the old copy then stays where it
+    is found anyway."""
     if os.path.exists(new) or not os.path.isdir(old):
         return False
     try:
@@ -436,9 +464,9 @@ def adopt_folder(old, new):
 
 
 def _in_background(title, work, status):
-    """Run work() on a worker thread behind a cancellable wait box. The
-    thread does only network and file work; every IDA call stays here, on
-    the main thread. status() is the wait box's current text."""
+    """Run work(cancel) on a worker thread behind a cancellable wait box.
+    The thread does only network and file work; every IDA call stays on the
+    main thread. status() is the wait box's current text."""
     import ida_kernwin
     result = {}
     cancel = threading.Event()
@@ -523,13 +551,13 @@ def _license_dialog(QtWidgets, intro, text):
 
 
 def install_runtime(target=None):
-    """TTD > Install TTD runtime...: find, or else install, WinDbg's TTD
-    runtime. Returns the folder that holds it, or None."""
+    """TTD > Backends > Install the TTD runtime (WinDbg)...: find, or else
+    install, WinDbg's TTD runtime. Returns the folder holding it, or None."""
     import ida_kernwin
     if target is None:
         target = default_target()
-        # A runtime an earlier version installed moves to the new place, so
-        # the version checks below see it.
+        # Move an earlier version's runtime here, so the version checks below
+        # see it.
         if adopt_folder(legacy_dir("windbg"), target):
             ida_kernwin.msg("[ida-ttd] Moved the TTD runtime from %s to %s.\n" % (legacy_dir("windbg"), target))
 
@@ -637,12 +665,11 @@ def _installed(version, target):
 # The Sogen backend
 #
 # The package ships ida-ttd-sogen.dll. This installs another build of it
-# (one the user made, or a newer one) into $IDAUSR/ida-ttd/backends/ beside
-# the TTD runtime's folder, where plugin upgrades leave it alone and where
-# ida-ttd looks before anywhere else, so it takes the packaged one's place.
-# From a file the user picks: the DLL itself, or a zip that holds it (with
-# its license and notices, which are kept beside it). The functions up to
-# install_sogen() use no IDA module.
+# into $IDAUSR/ida-ttd/backends/, which upgrades leave alone and which
+# ida-ttd searches first, so it takes the packaged one's place. The source
+# is a file the user picks: the DLL, or a zip holding it (its license and
+# notice files are kept beside it). The functions up to install_sogen() use
+# no IDA module.
 
 SOGEN_DLL = "ida-ttd-sogen.dll"
 SOGEN_LICENSES = "ida-ttd-sogen-licenses"
@@ -656,9 +683,9 @@ def sogen_target():
 
 def retire_sogen(folder):
     """Take the backend out of 'folder' (where an earlier version installed
-    it), so IDA does not load that copy too. A loaded DLL cannot be deleted,
-    but it can be renamed, and place_sogen removes .old files later.
-    Returns True when there was one."""
+    it), so IDA does not load that copy too. A loaded DLL cannot be deleted
+    but can be renamed; .old files are removed on a later run. True when
+    there was one."""
     final = os.path.join(folder, SOGEN_DLL)
     if not os.path.isdir(folder):
         return False
@@ -716,10 +743,10 @@ def stage_sogen(source, target):
 
 
 def place_sogen(staged, target):
-    """Move the staged backend (and its licenses) into place. A backend IDA
-    has loaded cannot be overwritten, but it can be renamed: it is moved
-    aside, and removed the next time this runs. Returns True when one was
-    replaced, so IDA needs a restart to use the new one."""
+    """Move the staged backend (and its licenses) into place. A loaded
+    backend cannot be overwritten but can be renamed, so it is moved aside
+    and removed on the next run. True when one was replaced (IDA needs a
+    restart to use the new one)."""
     final = os.path.join(target, SOGEN_DLL)
     for old in os.listdir(target):
         if old.startswith(SOGEN_DLL + ".old"):
@@ -761,25 +788,36 @@ def install_sogen(source=None, target=None):
     try:
         staged = stage_sogen(source, target)
         replaced = place_sogen(staged, target)
-        # Where an earlier version put it. Left there, it would still load
-        # if this one failed to, and be the version nobody expects.
-        if legacy is not None and retire_sogen(legacy):
-            replaced = True
-        # Its registry hives sat beside it, where the backend looked; the
-        # plugin now looks in ida-ttd/registry.
-        if legacy is not None:
-            adopt_folder(os.path.join(legacy, "registry"), user_data_dir("registry"))
     except Exception as e:
         try:
             os.remove(os.path.join(target, SOGEN_DLL + ".new"))
         except OSError:
             pass
+        shutil.rmtree(os.path.join(target, SOGEN_LICENSES + ".new"), ignore_errors=True)
         ida_kernwin.warning("Installing the Sogen backend failed: %s" % e)
         return None
+    # The new backend is in place from here on, so a failure tidying up
+    # after an earlier version is reported, not taken for a failed install.
+    leftover = None
+    if legacy is not None:
+        try:
+            # An earlier version's copy would still load if this one failed
+            # to, and be the version nobody expects.
+            if retire_sogen(legacy):
+                replaced = True
+            # Its registry hives sat beside it; the plugin now looks in
+            # ida-ttd/registry.
+            adopt_folder(os.path.join(legacy, "registry"), user_data_dir("registry"))
+        except Exception as e:
+            leftover = "Could not move the earlier copy out of %s (%s). Delete %s there by hand, " \
+                       "or IDA may load that one too." % (legacy, e, SOGEN_DLL)
     final = os.path.join(target, SOGEN_DLL)
     ida_kernwin.msg("[ida-ttd] Installed the Sogen backend in %s; restart IDA to load it.\n" % final)
+    if leftover:
+        ida_kernwin.msg("[ida-ttd] %s\n" % leftover)
     ida_kernwin.info("The Sogen backend is installed in\n%s\n\nRestart IDA to use it%s: "
                      "backends are loaded when IDA starts. Then Sogen recordings (.sogttd) "
-                     "open like Microsoft ones, and the Forks menu appears for them."
-                     % (final, " (it replaces the one loaded now)" if replaced else ""))
+                     "open like Microsoft ones, and the Forks menu appears for them.%s"
+                     % (final, " (it replaces the one loaded now)" if replaced else "",
+                        "\n\nWarning: " + leftover if leftover else ""))
     return final

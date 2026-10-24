@@ -4,21 +4,20 @@
 
 namespace idattd
 {
-    // A deferred call onto IDA's UI thread, used wherever work must not run
-    // inside the notification that decided to do it.
+    // A deferred call onto IDA's UI thread, for work that must not run inside
+    // the notification that decided on it.
     //
-    // The callback is NOT run from IDA's timer. IDA holds a lock on its timer
-    // list while a timer callback runs, and a one-shot timer firing inside
-    // that callback -- which happens as soon as the callback pumps the event
-    // loop, as every wait box and dialog does -- waits for that lock to
-    // unregister itself. The main thread then waits on itself forever. That is
-    // how stepping into a new function froze IDA: the auto-coverage sweep ran
-    // behind a wait box from its timer and the decompiler re-focus timer fired
-    // inside it. So the timer only queues an execute_sync(MFF_NOWAIT) request,
-    // which IDA runs on a later turn of the UI loop, outside any timer.
+    // The callback does NOT run from IDA's timer. IDA locks its timer list
+    // while a timer callback runs; if the callback pumps the event loop (any
+    // wait box or dialog does) and another one-shot timer fires, that timer
+    // waits on the same lock to unregister itself, and the main thread
+    // deadlocks. This froze IDA when the auto-coverage sweep ran behind a wait
+    // box from its timer and the decompiler re-focus timer fired inside it.
+    // So the timer only queues an execute_sync(MFF_NOWAIT) request, which IDA
+    // runs on a later turn of the UI loop, outside any timer.
     //
-    // The callback returns a positive interval to be called again after it,
-    // anything else to stop.
+    // The callback returns a positive interval to be called again, anything
+    // else to stop.
     class OneShotTimer
     {
     public:
@@ -29,8 +28,8 @@ namespace idattd
         OneShotTimer(const OneShotTimer &) = delete;
         OneShotTimer &operator=(const OneShotTimer &) = delete;
 
-        // Arm, unless it is already armed or its call is already queued -- a
-        // second request before the first has run is the same request.
+        // Arm, unless already armed or queued: a second request before the
+        // first has run is the same request.
         void arm(int interval_ms, callback_t callback, void *ud)
         {
             if ( m_timer != nullptr || m_req != nullptr )
@@ -78,6 +77,14 @@ namespace idattd
             r->owner = t;
             t->m_req = r;
             t->m_reqId = (int)execute_sync(*r, MFF_WRITE | MFF_NOWAIT);
+            if ( t->m_reqId < 0 )
+            {
+                // Not queued, so IDA will neither run nor delete it; left
+                // in m_req it would also block every later arm().
+                t->m_req   = nullptr;
+                t->m_reqId = 0;
+                delete r;
+            }
             return -1;
         }
 

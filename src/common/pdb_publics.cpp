@@ -8,9 +8,8 @@ namespace idattd
 {
     namespace
     {
-        // The layout read here is the MSF 7.00 container ("big MSF") and the
-        // three streams the public symbols need, as documented by LLVM
-        // (llvm.org/docs/PDB/) and Microsoft's microsoft-pdb repository:
+        // The MSF 7.00 container ("big MSF") and the streams the public
+        // symbols need, per llvm.org/docs/PDB/ and Microsoft's microsoft-pdb:
         //
         //   superblock   magic, block size, ..., directory size, block map addr
         //   directory    stream count, every stream's size, every stream's blocks
@@ -30,9 +29,8 @@ namespace idattd
         const size_t   kDbgOmapFromSrc  = 4;
         const size_t   kDbgSectionHdr   = 5;
 
-        // Bounds on what a damaged or hostile file can make this allocate. The
-        // biggest system PDBs are a few hundred MB, with streams well under
-        // the stream cap; nothing legitimate comes near either.
+        // Allocation bounds against damaged or hostile files. The biggest
+        // system PDBs are a few hundred MB, with streams well under the cap.
         const uint32_t kMaxStreams      = 1u << 20;
         const uint64_t kMaxStreamBytes  = 1ull << 30;
 
@@ -71,11 +69,13 @@ namespace idattd
                     return fail(error, "unexpected MSF block size");
                 if ( (uint64_t)nblocks * m_blockSize > m_fileSize + m_blockSize )
                     return fail(error, "the file is shorter than its header says");
-                if ( dirSize < 4 || dirSize > kMaxStreamBytes )
+                m_nblocks = nblocks;
+                if ( dirSize < 4 || dirSize > kMaxStreamBytes || !fits(dirSize) )
                     return fail(error, "bad stream directory size");
+                if ( mapAddr >= m_nblocks )
+                    return fail(error, "bad block map address");
 
-                // The block map is one block of directory block numbers; the
-                // directory itself is spread over those blocks.
+                // The block map is one block listing the directory's blocks.
                 uint32_t dirBlocks = blocks_for(dirSize);
                 if ( (uint64_t)dirBlocks * 4 > m_blockSize )
                     return fail(error, "the stream directory does not fit its block map");
@@ -100,6 +100,8 @@ namespace idattd
                     uint32_t size = rd32(&dir[4 + (size_t)s * 4]);
                     if ( size == 0xFFFFFFFF )
                         size = 0;       // a deleted (nil) stream
+                    if ( !fits(size) )
+                        return fail(error, "a stream is larger than the file");
                     m_sizes[s] = size;
                     uint32_t n = blocks_for(size);
                     if ( at + (uint64_t)n * 4 > dir.size() )
@@ -127,6 +129,13 @@ namespace idattd
                 return false;
             }
 
+            // A stream cannot hold more bytes than the file has blocks; checked
+            // before any buffer is sized from an untrusted length.
+            bool fits(uint32_t size) const
+            {
+                return (uint64_t)size <= (uint64_t)m_nblocks * m_blockSize;
+            }
+
             uint32_t blocks_for(uint32_t size) const
             {
                 return (uint32_t)(((uint64_t)size + m_blockSize - 1) / m_blockSize);
@@ -144,12 +153,18 @@ namespace idattd
             bool gather(const std::vector<uint32_t> &blocks, uint32_t size,
                         std::vector<uint8_t> &out) const
             {
+                // Every block index must name a block of the file, and the
+                // list must be long enough for 'size', before allocating.
+                if ( !fits(size) || (uint64_t)blocks.size() * m_blockSize < size )
+                    return false;
                 out.resize(size);
                 size_t done = 0;
                 for ( uint32_t b : blocks )
                 {
                     if ( done >= size )
                         break;
+                    if ( b >= m_nblocks )
+                        return false;
                     size_t n = size - done < m_blockSize ? size - done : m_blockSize;
                     if ( !read_at((uint64_t)b * m_blockSize, out.data() + done, n) )
                         return false;
@@ -161,6 +176,7 @@ namespace idattd
             std::unique_ptr<FILE, FileCloser>   m_file;
             uint64_t                            m_fileSize  = 0;
             uint32_t                            m_blockSize = 0;
+            uint32_t                            m_nblocks   = 0;
             std::vector<uint32_t>               m_sizes;
             std::vector<std::vector<uint32_t>>  m_blocks;
         };
@@ -180,9 +196,9 @@ namespace idattd
             return false;
         };
 
-        // DBI header (64 bytes): the symbol record stream at 20, and the
-        // substream sizes in their order in the stream. The optional debug
-        // header is the last substream, after the EC substream.
+        // DBI header (64 bytes): the symbol record stream at 20, then the
+        // substream sizes. The optional debug header is the last substream,
+        // after the EC substream.
         std::vector<uint8_t> dbi;
         if ( !msf.stream(kDbiStream, dbi) || dbi.size() < 64 )
             return fail("no DBI stream");
@@ -215,16 +231,15 @@ namespace idattd
             return rd16(&dbi[(size_t)at + slot * 2]);
         };
 
-        // A PDB whose image was rearranged after linking (OMAP) gives public
-        // offsets in the pre-rearrangement layout; the section headers here
-        // would put every name in the wrong place.
+        // An OMAP image's public offsets use the pre-rearrangement layout;
+        // these section headers would put every name in the wrong place.
         uint16_t omap = dbg_stream(kDbgOmapFromSrc);
         std::vector<uint8_t> omapBytes;
         if ( omap != kNilStream && msf.stream(omap, omapBytes) && !omapBytes.empty() )
             return fail("the image was rearranged after linking (OMAP)");
 
-        // IMAGE_SECTION_HEADER is 40 bytes, VirtualAddress at 12. Segment n
-        // of a public is section n, counted from one.
+        // IMAGE_SECTION_HEADER is 40 bytes, VirtualAddress at 12. A public's
+        // segment n is section n, counted from one.
         std::vector<uint8_t> sh;
         uint16_t shStream = dbg_stream(kDbgSectionHdr);
         if ( shStream == kNilStream || !msf.stream(shStream, sh) || sh.size() < 40 )

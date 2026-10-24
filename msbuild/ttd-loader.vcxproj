@@ -62,6 +62,7 @@
     <ClInclude Include="$(SrcDir)\core\backend_registry.h" />
     <ClInclude Include="$(SrcDir)\core\guest_view.h" />
     <ClInclude Include="$(SrcDir)\common\symbols.h" />
+    <ClInclude Include="$(SrcDir)\common\local_path.h" />
     <ClInclude Include="$(SrcDir)\common\guest_pe.h" />
     <ClInclude Include="$(SrcDir)\common\strings.h" />
     <ClInclude Include="$(SrcDir)\common\trace_link.h" />

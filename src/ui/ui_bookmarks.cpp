@@ -13,9 +13,9 @@ namespace idattd
     // answers out; false means the user cancelled.
     static bool ask_bookmark_details(Bookmark &b, bool is_new)
     {
-        // The form text is a format string to IDA as well, so only the hex
-        // position is interpolated into it -- never a symbol name, which could
-        // contain characters the form parser treats as syntax.
+        // The form text is parsed by IDA, so only the hex position is
+        // interpolated into it, never a symbol name, which may contain form
+        // syntax characters.
         qstring fmt;
         fmt.sprnt("%s TTD bookmark\n"
                   "\n"
@@ -51,8 +51,7 @@ namespace idattd
         b.ea    = mgr->current_pc_ea();
         b.tid   = (uint32_t)get_current_thread();
         b.trace = current_trace();
-        // A default label so a bookmark dropped without typing anything still
-        // says something useful in the list.
+        // A default label, for a bookmark saved without typing a name.
         if ( b.ea != BADADDR )
             b.name = func_display_name(b.ea);
         return true;
@@ -89,9 +88,8 @@ namespace idattd
             cols->at(4).resize(nl);
             cols->at(4).append(" ...");
         }
-        // Kept in the list (it is still the analyst's note, and the recording
-        // it belongs to may be opened again), but marked: its position names
-        // a point in a different execution.
+        // Kept (its recording may be opened again) but marked: its position
+        // names a point in a different execution.
         if ( b->from_other_recording() )
         {
             cols->at(3).insert(0, "(other recording) ");
@@ -161,8 +159,7 @@ namespace idattd
         store()->add(b);
         msg("[ida-ttd] bookmarked %s (%s).\n",
             format_position(b.pos).c_str(), b.name.c_str());
-        // Any open bookmark window reads the same store, so tell it to re-read
-        // rather than leaving the new entry invisible until it is reopened.
+        // An open bookmark window reads the same store; have it re-read.
         refresh_chooser(g_bm_title);
         return 1;
     }

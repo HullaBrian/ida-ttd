@@ -15,14 +15,14 @@ namespace idattd
         if ( cursor == nullptr )
             return false;
 
-        // Whether filtering is on is the caller's to choose -- a maskable
-        // watchpoint lets the engine skip segments, a call/return callback gives
-        // it nothing to filter on -- so only the sequential bit is added.
+        // Filtering is the caller's choice (a maskable watchpoint lets the
+        // engine skip segments, a call/return callback does not), so only the
+        // sequential bit is added.
         cursor->SetReplayFlags(cursor->GetReplayFlags() | ReplayFlags::ReplaySegmentsSequentially);
 
-        // A percentage over the sequence numbers, the only monotonic measure
-        // the progress callback reports. It runs on the engine's threads, so it
-        // only stores a number.
+        // A percentage over sequence numbers, the only monotonic measure the
+        // progress callback gives. It runs on the engine's threads, so it only
+        // stores a number.
         const uint64_t from = first.IsValid() && first != TTD::Replay::Position::Min ? (uint64_t)first.Sequence : 0;
         // 'last' may be Position::Max; the cursor clamps a seek to the trace's
         // real end, which is the number a percentage needs.
@@ -52,9 +52,9 @@ namespace idattd
             cv.notify_one();
         });
 
-        // Woken as soon as the replay ends, not at the next poll: some callers
-        // (query_register_change's widening windows) run many short sweeps
-        // in a row, and a fixed sleep would cost each one a whole interval.
+        // Woken as soon as the replay ends, not at the next poll: callers such
+        // as query_register_change run many short sweeps in a row, and a fixed
+        // sleep would cost each one a whole interval.
         bool stopped = false;
         uint32_t shown = 101;
         std::unique_lock<std::mutex> lock(mu);

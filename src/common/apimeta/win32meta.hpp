@@ -6,9 +6,9 @@
 // Loader for the pre-baked Win32 API metadata index (win32-index.bin) produced by
 // tools/build-win32-index.py from the win32json submodule.
 //
-// The index answers one question per recorded call: "given this export name, what
-// are its parameters?" -- count, names, types, direction, and how to decode each
-// one. That turns the extractor's blind 4-register grab into an exact capture.
+// The index answers one question per recorded call: given this export name, what
+// are its parameters (count, names, types, direction, how to decode each)? That
+// turns a blind 4-register grab into an exact capture.
 //
 // Lookup is keyed on the bare function name. Module is carried for display only:
 // API sets mean the metadata's "CreateFileW -> KERNEL32.dll" shows up in a trace as
@@ -44,10 +44,10 @@ namespace idattd::win32meta {
         FuncPtr,
         Guid,              // pointer to a 16-byte GUID
         Pointer,           // opaque pointer, contents unknown
-        PtrToAnsiString,   // char** -- out-param that receives an allocated string
+        PtrToAnsiString,   // char**: out-param that receives an allocated string
         PtrToWideString,   // wchar_t**
-        CountedAnsiString, // ANSI_STRING* / STRING* -- {USHORT Length; USHORT Max; PSTR Buffer;}
-        CountedWideString, // UNICODE_STRING* -- the same shape with a PWSTR
+        CountedAnsiString, // ANSI_STRING* / STRING*: {USHORT Length; USHORT Max; PSTR Buffer;}
+        CountedWideString, // UNICODE_STRING*: the same shape with a PWSTR
     };
 
     // Bitmask of a parameter's direction/nullability attributes.

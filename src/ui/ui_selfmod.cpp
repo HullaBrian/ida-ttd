@@ -38,8 +38,8 @@ namespace idattd
         cols->at(5).sprnt("%llu", (unsigned long long)h.executions);
     }
 
-    // Selecting a row shows the code that was written; travelling goes to the
-    // write, which is the interesting part -- the stub that unpacked it.
+    // Selecting a row shows the written code; travelling goes to the write,
+    // in the stub that unpacked it.
     ea_t idaapi SelfModChooser::get_ea(size_t n) const
     {
         return n < m_hits.size() ? m_hits[n].address : BADADDR;

@@ -1,14 +1,12 @@
-// The Microsoft backend's memory map: reconstructed from the syscalls that
-// shape a process's address space, because the Replay SDK reports no
-// protections and no region list. The syscalls come from the recording's
-// transitions into the kernel (msttd_syscalls.h), so memory a program maps
-// with syscalls of its own is in the map too. analysis/memmap.cpp keeps the
-// model, the fold, the persistence and the listing -- everything that is the
-// same for every backend -- and asks ITraceBackend::query_mapping_changes for
-// the changes.
+// The Microsoft backend's memory map, reconstructed from the syscalls that
+// shape the address space, because the Replay SDK reports no protections and
+// no region list. The syscalls come from the recording's kernel transitions
+// (msttd_syscalls.h), so memory a program maps with its own syscalls is
+// included. analysis/memmap.cpp holds the backend-independent model, fold,
+// persistence and listing, and asks query_mapping_changes for the changes.
 //
-// The replay's callbacks write plain memory only; Cancel and progress come
-// through the ProgressSink, so nothing here touches IDA's UI.
+// Callbacks write plain memory only; Cancel and progress go through the
+// ProgressSink, so nothing here touches IDA's UI.
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
@@ -56,10 +54,9 @@ namespace idattd
         //
         // The indexes are the syscall's own arguments, as the kernel takes them.
         //
-        // 'deferred' marks the two whose out-params the kernel fills in. A free's
-        // are written by the caller before the call, so they are in the recording
-        // and need none of the recovery machinery below. Note that Map's process
-        // handle is its second argument, not its first.
+        // 'deferred' marks those whose out-params the kernel fills in. A free's
+        // are written by the caller before the call, so they are recorded and
+        // need no recovery. Map's process handle is its second argument.
         static const WatchDesc kWatches[] =
         {
             { "NtAllocateVirtualMemory", ITTD_MAP_ALLOC,     6, 0, 1,  3,  5, true,  true  },
@@ -74,14 +71,12 @@ namespace idattd
 
         static const uint64_t PAGE = 0x1000;
 
-        // These syscalls round the caller's request to pages before writing it
-        // back, so a value that is not page-granular provably did not come from
-        // the kernel. That is the acceptance test -- not "is it non-zero".
-        //
-        // It matters because an aggressive memory query cannot tell the kernel's
-        // write from the caller's own store before the call: only the latter is
-        // recorded. A non-zero check passes on the caller's request and reports a
-        // region short by however much the kernel rounded up, silently.
+        // These syscalls round the request to pages before writing it back, so
+        // a value that is not page-granular did not come from the kernel. That,
+        // not "non-zero", is the acceptance test: an aggressive query cannot
+        // tell the kernel's write from the caller's own earlier store (only the
+        // latter is recorded), and accepting the request would silently report
+        // a region short by the kernel's rounding.
         static bool page_granular(uint64_t v) { return v != 0 && (v % PAGE) == 0; }
         static uint64_t page_floor(uint64_t v)   { return v - (v % PAGE); }
         static uint64_t page_ceiling(uint64_t v)
@@ -118,9 +113,8 @@ namespace idattd
             bool     otherProcess = false;
         };
 
-        // An out-param not readable yet, retried as the same replay rolls
-        // forward. The value becomes visible the moment the guest reads it back,
-        // and the replay's callbacks are already firing on that thread.
+        // An out-param not readable yet, retried as the replay rolls forward:
+        // the value becomes visible once the guest reads it back.
         struct Retry
         {
             uint64_t addr = 0;
@@ -143,9 +137,8 @@ namespace idattd
             bool truncated = false;
         };
 
-        // Hard cap. A recording that allocates in a loop can produce millions of
-        // these, and the engine's callback is noexcept -- a bad_alloc in there
-        // does not unwind, it terminates the process with no message.
+        // Hard cap: a recording that allocates in a loop can produce millions,
+        // and a bad_alloc in a noexcept callback terminates the process.
         static const size_t kMaxRecs = 200000;     // the memory map's own storage cap
     }
 
@@ -161,18 +154,16 @@ namespace idattd
         return true;
     }
 
-    // Last resort for one out-param: replay this thread forward a bounded number
-    // of steps with a Read watchpoint on the slot, and take the value the guest
-    // reads back. That read is the only recorded event the kernel's write ever
-    // produces.
-    static bool recover_by_readback(const MsTtdBackend *backend, const TtdPosition &from,
+    // Last resort for one out-param: replay the thread forward a bounded number
+    // of steps with a Read watchpoint on the slot and take the value the guest
+    // reads back, the only recorded trace of the kernel's write. 'cur' is the
+    // caller's, reused across slots (a cursor per slot is not free, and there
+    // can be hundreds of thousands); it is left with nothing armed. It must
+    // not be one used for policy reads: a replayed cursor answers thread-locally.
+    static bool recover_by_readback(ICursorView *cur, const TtdPosition &from,
                                     uint32_t tid, uint64_t addr, uint32_t width,
                                     uint64_t *out)
     {
-        UniqueCursor cur = backend->new_engine_cursor();
-        if ( !cur )
-            return false;
-
         uint64_t found = 0;
         bool     got   = false;
 
@@ -193,9 +184,8 @@ namespace idattd
         wp.Address    = GuestAddress{ addr };
         wp.Size       = width;
         wp.AccessMask = DataAccessMask::Read;
-        // Only the thread that made the call can read its own out-param, and
-        // confining the replay to it keeps the step budget from being spent
-        // somewhere else entirely.
+        // Confined to the calling thread, which is the one that reads the
+        // out-param, so the step budget is not spent elsewhere.
         wp.ThreadId   = (UniqueThreadId)tid;
         cur->AddMemoryWatchpoint(wp);
         cur->SetMemoryWatchpointCallback(on_read);
@@ -205,6 +195,8 @@ namespace idattd
         cur->SetPositionOnThread((UniqueThreadId)tid, from);
         cur->ReplayForward(TtdPosition::Max, (StepCount)0x2000);
         cur->SetMemoryWatchpointCallback(nullptr, 0);
+        cur->RemoveMemoryWatchpoint(wp);
+        cur->SetEventMask(EventMask::None);
 
         if ( got )
             *out = found;
@@ -212,11 +204,10 @@ namespace idattd
     }
 
     // What syscalls wrote through out parameters (ReplayAPI.md, "the
-    // kernel-write gap"). The kernel's write is not in the recording where it
-    // happened: the value first appears where the engine notices it -- a
-    // DataMismatch or NewData on the slot -- or where the program reads it.
-    // So each slot is watched on its own thread from the call, a bounded
-    // number of steps, for the first of those. A write by the program first
+    // kernel-write gap"). The kernel's write is not recorded where it
+    // happened; the value first appears at a DataMismatch or NewData on the
+    // slot, or where the program reads it. Each slot is watched on its thread
+    // from the call, for a bounded number of steps. A program write first
     // means the kernel's value never surfaced: unknown, not the stale one.
     bool MsTtdBackend::query_out_values(const std::vector<OutSlot> &slots,
                                         std::vector<std::optional<uint64_t>> *out, ProgressSink *progress)
@@ -307,9 +298,8 @@ namespace idattd
 
         // ---- which syscall numbers to look at ---------------------------------
         //
-        // By number, not by watching ntdll's exports: the syscalls themselves
-        // are what change the address space, and a program that makes its own
-        // never calls the export.
+        // By number, not by watching ntdll's exports: a program that makes its
+        // own syscalls never calls the export.
         SyscallTable table;
         build_syscall_table(this, &table);
         std::map<uint32_t, const WatchDesc *> by_number;
@@ -346,10 +336,10 @@ namespace idattd
         {
             try
             {
-                // A wrapper reuses one stack local for every call it makes, so an
-                // older request watching this slot would happily pick up a newer
-                // call's value. Retire it: a missing region is a gap, a wrong one
-                // displaces a real region silently.
+                // A wrapper reuses one stack local for every call, so an older
+                // retry on this slot would pick up a newer call's value. Retire
+                // it: a missing region is a gap, a wrong one silently displaces
+                // a real region.
                 auto it = st.byThread.find(tid);
                 if ( it != st.byThread.end() )
                 {
@@ -375,9 +365,9 @@ namespace idattd
             }
         };
 
-        // An out-param the kernel wrote is often not in the recording when the
-        // syscall returns -- only once the program reads it back. Each later
-        // call and return on the same thread looks again.
+        // A kernel-written out-param is often not recorded when the syscall
+        // returns, only once the program reads it back, so each later call and
+        // return on the same thread looks again.
         auto poll_retries = [&st, &retire](IThreadView const *t, uint32_t tid) noexcept
         {
             if ( st.outstanding == 0 )
@@ -405,19 +395,18 @@ namespace idattd
                     retire(i);
                 }
             }
-            // Forget the settled ones: this runs on every call and return the
-            // thread makes, and a thread that made many memory syscalls would
-            // otherwise walk all of them every time.
+            // Drop the settled ones: this runs on every call and return, and
+            // would otherwise walk all of a thread's past retries each time.
             std::vector<size_t> &mine = it->second;
             mine.erase(std::remove_if(mine.begin(), mine.end(),
                                       [&st](size_t i) { return !st.retries[i].live; }),
                        mine.end());
         };
 
-        // The memory syscalls still out, per thread, innermost last. Each
-        // is settled at the return from the call that made it -- the stub's
-        // return to its caller -- where the result is still in rax and the
-        // out-params are as the caller first sees them.
+        // The memory syscalls still out, per thread, innermost last. Each is
+        // settled at the return from the call that made it (the stub's return
+        // to its caller), where the result is still in rax and the out-params
+        // are as the caller first sees them.
         std::map<uint32_t, std::vector<KernelCall>> out_now;
 
         auto on_syscall = [&](const KernelCall &k, IThreadView const *) noexcept
@@ -488,9 +477,9 @@ namespace idattd
                 else if ( msttd_read_word(t, rec.pSize, width, &rec.size) )
                     rec.sizeOk = !d->deferred || page_granular(rec.size);
 
-                // A free's out-params were written by the caller before the
-                // call, so what was just read is in the recording and is the
-                // answer. Only the kernel-written ones need chasing.
+                // A free's out-params were written by the caller, so what was
+                // just read is recorded and final. Only kernel-written ones
+                // need chasing.
                 st.recs.push_back(rec);
                 size_t idx = st.recs.size() - 1;
                 if ( d->deferred )
@@ -515,9 +504,9 @@ namespace idattd
             auto it = out_now.find(utid);
             if ( it == out_now.end() || it->second.empty() )
                 return;
-            // The innermost call this return leaves: a return can leave
-            // several frames at once (an unwind), and the syscalls made in
-            // the ones above it never came back the usual way.
+            // The innermost call this return leaves. An unwind can leave
+            // several frames at once; syscalls in the frames above it never
+            // came back the usual way.
             std::vector<KernelCall> &v = it->second;
             for ( size_t i = v.size(); i-- > 0; )
             {
@@ -531,8 +520,8 @@ namespace idattd
 
         // ---- the syscalls, with their chains ---------------------------------
         //
-        // One replay, with the call/return callback: the chains need it, and
-        // it is what settles each call. No second replay for the results.
+        // One replay with the call/return callback, which both the chains and
+        // the settling need. No second replay for results.
         KernelCallOptions opts;
         opts.args_wanted = [&desc_of](uint32_t n) { return desc_of(n) != nullptr; };
         opts.chains      = true;
@@ -546,14 +535,15 @@ namespace idattd
         st.truncated = st.truncated || kr.truncated;
         const std::vector<std::pair<ea_t, ea_t>> mods = module_ranges(all_modules);
 
-        // Cancelling either the replay or the resolve pass below leaves a partial
-        // map, which the caller is told about so it is not saved as a whole one.
+        // Cancelling the replay or the resolve pass leaves a partial map; the
+        // caller is told so it is not saved as complete.
         bool stopped = kr.cancelled;
 
         // ---- whatever the in-replay retry did not catch ----------------------
         size_t viaPolicy = 0, viaReplay = 0, snapped = 0, dropped = 0;
         {
             UniqueCursor cur;
+            UniqueCursor readback;      // recover_by_readback's, kept apart from 'cur'
             size_t n = st.recs.size();
             for ( size_t i = 0; i < n && !stopped; i++ )
             {
@@ -576,11 +566,10 @@ namespace idattd
                     break;
                 cur->SetPosition(rc.retPos);
 
-                // InFragmentAggressive searches the whole fragment INCLUDING
-                // future steps, which is where the caller's read-back usually is.
+                // InFragmentAggressive searches the whole fragment, including
+                // future steps where the caller's read-back usually is;
                 // GloballyAggressive widens that at lower confidence. Both are
-                // still only accepted when page-granular, because neither can
-                // tell the kernel's write from the caller's own earlier store.
+                // accepted only when page-granular (see page_granular).
                 static const QueryMemoryPolicy pols[] =
                 {
                     QueryMemoryPolicy::InFragmentAggressive,
@@ -605,13 +594,19 @@ namespace idattd
                         break;
                 }
 
+                if ( (rc.baseOk || rc.pBase == 0) && (rc.sizeOk || rc.pSize == 0) )
+                    continue;
+                if ( !readback )
+                    readback = new_engine_cursor();
+                if ( !readback )
+                    break;
                 if ( !rc.baseOk && rc.pBase != 0
-                  && recover_by_readback(this, rc.retPos, rc.tid, rc.pBase, width, &rc.base) )
+                  && recover_by_readback(readback.get(), rc.retPos, rc.tid, rc.pBase, width, &rc.base) )
                 {
                     rc.baseOk = true; viaReplay++;
                 }
                 if ( !rc.sizeOk && rc.pSize != 0
-                  && recover_by_readback(this, rc.retPos, rc.tid, rc.pSize, width, &rc.size) )
+                  && recover_by_readback(readback.get(), rc.retPos, rc.tid, rc.pSize, width, &rc.size) )
                 {
                     rc.sizeOk = true; viaReplay++;
                 }
@@ -637,18 +632,16 @@ namespace idattd
 
             if ( !rc.baseOk || (rc.d->iSize >= 0 && rc.d->deferred && !rc.sizeOk) )
             {
-                // Nothing readable at all is the only case worth giving up on:
-                // without a base there is no region and without a size there is
-                // nothing to bound it with.
+                // Give up only when nothing was readable: no base means no
+                // region, no size means nothing to bound it.
                 if ( rc.base == 0 || (rc.d->iSize >= 0 && rc.size == 0 && rc.d->deferred) )
                 {
                     dropped++;
                     continue;
                 }
-                // What survived is the caller's own request, and the kernel's
-                // answer is that request snapped to pages: the base down to the
-                // page holding it, the size up to cover the last byte asked for.
-                // A floor, never an overstatement.
+                // What survived is the caller's request; the kernel's answer is
+                // that request snapped to pages (base down, end up). A floor,
+                // never an overstatement.
                 uint64_t nb = page_floor(rc.base);
                 rc.size = page_ceiling(rc.size + (rc.base - nb));
                 rc.base = nb;
@@ -665,11 +658,9 @@ namespace idattd
             c.chain_n  = rc.chain_n;
             for ( uint8_t k = 0; k < rc.chain_n; k++ )
                 c.chain[k] = (uint64_t)rc.chain[k];
-            // No chain at all: the call came from a frame opened before the
-            // recording began, so the walk found no return address to follow.
-            // The calling instruction is still known, and it is what the
-            // listing shows as the caller, so it becomes the one-frame chain
-            // rather than leaving the row without one.
+            // No chain: the call came from a frame opened before the recording
+            // began. The calling instruction is still known (the listing shows
+            // it as the caller), so it becomes a one-frame chain.
             if ( c.chain_n == 0 && rc.pc != BADADDR )
             {
                 c.chain[0] = (uint64_t)rc.pc;
@@ -691,9 +682,8 @@ namespace idattd
             out->push_back(c);
         }
 
-        // In position order, as the ABI hands changes out: the calls were
-        // recorded as they returned, and a later out-param recovery or a
-        // second thread can leave them out of order.
+        // In position order, as the ABI requires: calls were recorded as they
+        // returned, which interleaved threads can leave out of order.
         std::stable_sort(out->begin() + (ptrdiff_t)before, out->end(),
                          [](const ittd_mapping_change &a, const ittd_mapping_change &b)
         {

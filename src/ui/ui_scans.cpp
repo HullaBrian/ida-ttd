@@ -38,8 +38,7 @@ namespace idattd
         cols->at(0) = format_position(h.pos);
         cols->at(1).sprnt("0x%llX", (uint64_t)h.address);
         cols->at(2) = h.wide ? "W" : "A";
-        // A recovered string can hold anything, new lines included, and a row
-        // is one line.
+        // A recovered string may hold line breaks; a row is one line.
         qstring t = h.text;
         for ( size_t i = 0; i < t.length(); i++ )
             if ( t[i] == '\n' || t[i] == '\r' || t[i] == '\t' )
@@ -124,10 +123,10 @@ namespace idattd
             err.clear();
             if ( scan(rs, &err) )
             {
-                // A replay that could not follow all of the recording here
-                // still found what it could; say what it missed.
-                // Once per scan: the backend keeps its answer, and asking
-                // again for the same scan shows the same note.
+                // A replay that could not follow the whole recording still
+                // returns what it found; say what it missed. The dialog shows
+                // once per scan, recording and note, since the backend keeps
+                // its answer and a repeat scan gives the same note.
                 static std::set<std::string> told;
                 qstring note = mgr->backend()->scan_notice();
                 if ( !note.empty() )
@@ -202,8 +201,8 @@ namespace idattd
             warning("This recording's backend cannot recover buffers.");
             return 1;
         }
-        // No questions up front: every buffer, replaying the whole recording
-        // behind a cancellable wait box.
+        // No questions up front: every buffer, from a replay of the whole
+        // recording behind a cancellable wait box.
         std::vector<BufferHit> hits;
         bool cancelled = false;
         if ( !run_scan(mgr(), "buffer recovery", &cancelled, [&](const ReplaySettings &rs, qstring *err)

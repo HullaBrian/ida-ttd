@@ -12,13 +12,10 @@ namespace idattd
     static BackendPtr     g_identity;     // unopened: id, names, can_open
 
     // A handle's last error. The core runs queries on a worker thread while
-    // the main thread goes on reading cursors on the same handle, and reads
-    // a failed query's reason from the main thread afterwards: so the text is
-    // written and read from different threads, and lives behind a mutex.
-    // last_error hands out a per-thread copy rather than the string itself,
-    // which another thread's failure could reallocate under the caller; the
-    // copy stays valid until that thread asks again, which is all the ABI
-    // promises (until the next call on the handle).
+    // the main thread reads cursors on the same handle and later reads the
+    // failure reason, so the text sits behind a mutex. get() hands out a
+    // per-thread copy, which another thread's failure cannot reallocate; it
+    // stays valid until the same thread asks again.
     struct ErrorSlot
     {
         void set(const char *text)
@@ -51,10 +48,15 @@ namespace idattd
         int                   served = 0;
     };
 
+    // 'cache' and 'mapping_files' are guarded by 'mtx': the core may run a
+    // query on a worker while the main thread asks another on the same
+    // handle. The lock is never held while a query computes, so a long query
+    // does not stall the other thread and cancellation cannot deadlock on it.
     struct ExportedBackend
     {
         BackendPtr           b;
         ErrorSlot            error;
+        std::mutex           mtx;
         CachedAnswer         cache;
         std::vector<qstring> mapping_files;   // from the last query_mapping_changes
     };
@@ -65,9 +67,8 @@ namespace idattd
         CursorPtr                   c;
         std::unique_ptr<INavigator> nav;      // made on the first movement
         std::unique_ptr<ProgressSink> nav_sink;
-        // read_memory's 'known', kept between reads: every memory read the
-        // host makes comes through, and a cursor is used by one thread at a
-        // time, so one buffer serves them all without an allocation each.
+        // read_memory's 'known', reused between reads to avoid an allocation
+        // per read; a cursor is used by one thread at a time.
         std::vector<uint8_t>        known;
     };
 
@@ -91,8 +92,7 @@ namespace idattd
     }
 
     // Into a fixed-size ABI field, cut to fit and always terminated. Not
-    // qstrncpy: this file is also built into a backend that does not link
-    // ida.dll.
+    // qstrncpy: this file is built into a backend that does not link ida.dll.
     static void copy_str(char *dst, size_t cap, const char *src)
     {
         if ( cap == 0 )
@@ -126,11 +126,10 @@ namespace idattd
 
     // Every entry point catches: an exception must not cross the C boundary.
     //
-    // A call that fails without throwing (prepare returned false, a query did
-    // not run) takes the backend's own reason. When the backend has none,
-    // the slot is emptied rather than left alone: an earlier failure's reason
-    // would answer for this one, and the core says something generic for an
-    // empty one. Cancelling is not a failure and leaves it as it was.
+    // A call that fails without throwing takes the backend's own reason, even
+    // an empty one, so an earlier failure's reason never answers for this one
+    // (the core says something generic for an empty reason). Cancelling is
+    // not a failure and leaves the slot alone.
     template <typename F>
     static int guarded(ExportedBackend *h, F f)
     {
@@ -164,8 +163,8 @@ namespace idattd
         return ITTD_OK;
     }
 
-    // The same for an expensive answer: worked out once for the count call
-    // and handed out again for the fill, then forgotten. 'key' identifies the
+    // The same for an expensive answer: computed once for the count call,
+    // handed out again for the fill, then dropped. 'key' identifies the
     // question, so a different one is never answered from the cache.
     template <typename T>
     static int answer(ExportedBackend *h, const std::string &key, T *buf, size_t cap,
@@ -173,37 +172,63 @@ namespace idattd
                       const std::function<QueryResult(std::vector<T> *)> &run)
     {
         CachedAnswer &c = h->cache;
-        if ( c.key != key || c.data == nullptr )
+        std::shared_ptr<void> data;
+        int rc = ITTD_OK;
+        int truncated = 0;
         {
+            std::lock_guard<std::mutex> lock(h->mtx);
+            if ( c.key == key && c.data != nullptr )
+            {
+                data      = c.data;
+                rc        = c.rc;
+                truncated = c.truncated;
+            }
+        }
+        if ( data == nullptr )
+        {
+            // Computed without the lock. Two threads asking at once each
+            // compute; the later store wins, and a fill that then finds
+            // another key in the cache computes again, which is slow but
+            // still answers its own question.
             auto v = std::make_shared<std::vector<T>>();
             QueryResult r = run(v.get());
+            data      = v;
+            rc        = !r.ran ? ITTD_E_UNSUPPORTED : r.cancelled ? ITTD_E_CANCELLED : ITTD_OK;
+            truncated = r.truncated || r.cancelled ? 1 : 0;
+            std::lock_guard<std::mutex> lock(h->mtx);
             c.key       = key;
-            c.data      = v;
-            c.rc        = !r.ran ? ITTD_E_UNSUPPORTED : r.cancelled ? ITTD_E_CANCELLED : ITTD_OK;
-            c.truncated = r.truncated || r.cancelled ? 1 : 0;
+            c.data      = data;
+            c.rc        = rc;
+            c.truncated = truncated;
             c.served    = 0;
         }
-        const std::vector<T> &v = *std::static_pointer_cast<std::vector<T>>(c.data);
-        int rc = c.rc;
+        // The shared_ptr keeps this answer alive even if another thread
+        // replaces the cache entry meanwhile.
+        const std::vector<T> &v = *std::static_pointer_cast<std::vector<T>>(data);
         if ( out_count != nullptr )
             *out_count = v.size();
         if ( out_truncated != nullptr )
-            *out_truncated = c.truncated;
+            *out_truncated = truncated;
         if ( buf != nullptr )
             for ( size_t i = 0; i < v.size() && i < cap; i++ )
                 buf[i] = v[i];
-        // A count call and its fill, or a fill alone: either way the question
-        // has been answered. A failed count gets no fill, so its answer is not
-        // kept either: asking again must run the query again, not repeat the
-        // failure from the cache.
+        // After a count and its fill, or a fill alone, the question is
+        // answered. A failed count gets no fill, so it is not kept either:
+        // asking again reruns the query rather than repeating the failure.
+        // Nor does an empty answer: the core skips the fill when the count
+        // is zero, and a kept entry would answer the next identical question
+        // (a cancelled one included) without running it.
         bool failed = rc != ITTD_OK && rc != ITTD_E_CANCELLED;
-        if ( ++c.served >= 2 || buf != nullptr || failed )
         {
-            c.data.reset();
-            c.key.clear();
+            std::lock_guard<std::mutex> lock(h->mtx);
+            if ( c.data == data && (++c.served >= 2 || buf != nullptr || failed || v.empty()) )
+            {
+                c.data.reset();
+                c.key.clear();
+            }
         }
-        // A cancelled count still reports what it gathered; ITTD_OK with the
-        // truncated flag is what the core takes for that.
+        // A cancelled count still reports what it gathered, as ITTD_OK with
+        // the truncated flag set.
         return rc == ITTD_E_CANCELLED ? ITTD_OK : rc;
     }
 
@@ -1040,8 +1065,11 @@ namespace idattd
                                                [&](std::vector<ittd_mapping_change> *out)
             {
                 AbiSink sink(progress);
-                h->mapping_files.clear();
-                return h->b->query_mapping_changes(out, &h->mapping_files, &sink);
+                std::vector<qstring> files;
+                QueryResult r = h->b->query_mapping_changes(out, &files, &sink);
+                std::lock_guard<std::mutex> lock(h->mtx);
+                h->mapping_files.swap(files);
+                return r;
             });
         });
     }
@@ -1051,6 +1079,7 @@ namespace idattd
         ExportedBackend *h = B(hb);
         if ( h == nullptr )
             return ITTD_E_BAD_ARG;
+        std::lock_guard<std::mutex> lock(h->mtx);
         return fill(h->mapping_files, buf, cap, out_count, [](const qstring &s)
         {
             ittd_name n{};
@@ -1199,9 +1228,8 @@ namespace idattd
             return ITTD_E_BAD_ARG;
         return guarded(h, [&]()
         {
-            // The window is part of the key: count-then-fill asks twice, and
-            // the second call must find the first's answer, not another
-            // window's.
+            // The window is part of the key, so the fill finds this window's
+            // answer and not another's.
             std::string key = "heat|" + std::to_string(page_shift) + "|" + std::to_string(slices)
                             + "|" + std::to_string(when.first.hi) + ":" + std::to_string(when.first.lo)
                             + "|" + std::to_string(when.last.hi) + ":" + std::to_string(when.last.lo);
@@ -1364,7 +1392,7 @@ namespace idattd
         a.query_access_heat     = x_query_access_heat;
         a.heat_slice_position   = x_heat_slice_position;
         a.query_out_values      = x_query_out_values;
-        // Only offered when the backend can count part of the recording: the
+        // Only offered when the backend can count part of the recording; the
         // core reads a missing entry as "the heatmap cannot zoom".
         if ( g_identity->can_window_heat() )
         {

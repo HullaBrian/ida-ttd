@@ -17,15 +17,13 @@ namespace idattd
 
     // "module!symbol+offset" for an address, as honestly as the database allows.
     //
-    // The naive answer -- ask IDA for the nearest name -- is actively misleading
-    // in a system DLL. Only exports are named there unless a PDB was loaded, and
-    // the code that allocates memory is almost always an internal helper, so the
-    // nearest name below it can be an unrelated function tens of kilobytes away.
+    // The nearest name is misleading in a system DLL: without a PDB only
+    // exports are named, and allocating code is usually an internal helper,
+    // so the nearest name can be an unrelated function tens of KB away.
     //
-    // So the enclosing function is established first -- from IDA when it has
-    // defined one, otherwise from the module's exception table, which knows where
-    // every x64 function starts whether or not anything named it. A name is only
-    // used when it lies inside that function. Failing all of that the address is
-    // given relative to the module, which says less but is never wrong.
+    // So the enclosing function comes first (IDA's, else the module's
+    // exception table, which knows every x64 function start), and a name is
+    // used only inside it. Failing that, the address is given relative to the
+    // module: less informative, never wrong.
     qstring describe_address(TraceManager *mgr, ea_t ea);
 }

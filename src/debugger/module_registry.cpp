@@ -2,6 +2,7 @@
 #include "core/diag.h"
 #include "common/strings.h"
 #include "common/symsrv.h"
+#include "common/local_path.h"
 #include "analysis/query_runner.h"
 
 namespace idattd
@@ -64,9 +65,9 @@ namespace idattd
             std::string bn = base_name(m.path.empty() ? m.name.c_str() : m.path.c_str());
             s.file = bn.c_str();
 
-            // The segment identifier keeps the extension -- "kernel32_dll"
-            // says more than "kernel32" -- but a segment name has to be a
-            // legal IDA name, so anything else becomes an underscore.
+            // The segment identifier keeps the extension ("kernel32_dll" says
+            // more than "kernel32"); anything not legal in an IDA name becomes
+            // an underscore.
             std::string ident = bn;
             for ( char &c : ident )
                 if ( !qisalnum(c) && c != '_' )
@@ -106,12 +107,15 @@ namespace idattd
         m_resolvedBases.clear();
         m_pdbBases.clear();
         m_pdbRetried.clear();
-        // Waits for any read still running: the futures of std::async join.
-        // A read is milliseconds, so this costs nothing noticeable.
+        // Waits for any read still running (std::async futures join); a read
+        // takes milliseconds.
         m_publics.clear();
         m_funcRanges.clear();
         m_funcTried.clear();
         m_exports.clear();
+        m_loadImage.clear();
+        m_loadImageTried.clear();
+        m_lastImageLoad = (size_t)-1;
         m_moduleImages.clear();
         m_targetName.clear();
     }
@@ -272,18 +276,16 @@ namespace idattd
             if ( nm == nullptr || !wildcard_match(namepat.c_str(), nm) )
                 continue;
             ea_t ea = get_nlist_ea(i);
-            // A module's import slots and CFG pointers are named data in it
-            // (__imp_memset, __guard_dispatch_icall_fptr). Followed, they
-            // would list every call to another module's function under this
-            // module's pattern.
+            // Import slots and CFG pointers are named data (__imp_memset,
+            // __guard_dispatch_icall_fptr); followed, they would list calls to
+            // another module's functions under this module's pattern.
             if ( is_data(get_flags(ea)) || strncmp(nm, "__imp_", 6) == 0 || strncmp(nm, "__guard_", 8) == 0 )
                 continue;
 
             if ( !modpat.empty() )
             {
-                // The table already holds each name with and without its
-                // extension, so a module filter is one binary search and two
-                // string compares rather than a scan of the module list.
+                // The table holds each name with and without its extension,
+                // so this is one binary search and two compares.
                 size_t idx = index_at(ea);
                 if ( idx == (size_t)-1 )
                     continue;
@@ -293,10 +295,9 @@ namespace idattd
                     continue;
             }
 
-            // A name inside a function rather than at its start is a label
-            // there (a funclet, a jump target the PDB named), not a function
-            // to trace; tracing the function around it listed calls to an
-            // unnamed function under the pattern.
+            // A name inside a function is a label (a funclet, a jump target
+            // the PDB named), not a function to trace; tracing the enclosing
+            // function listed its calls under the pattern.
             ea_t fstart = get_func_start(ea);
             if ( fstart != BADADDR && fstart != ea )
                 continue;
@@ -304,10 +305,10 @@ namespace idattd
                 out.push_back(ea);
         }
 
-        // IDA names a module once it is mapped where the user is, so a module
-        // loaded later in the recording -- kernel32, from the very start --
-        // has no names yet. Its exports are known all the same: the
-        // recording's own list, or the export directory read where it loaded.
+        // IDA names a module only once it is mapped where the user is, so a
+        // module loaded later (kernel32, seen from the very start) has no
+        // names yet. Its exports are known anyway: the recording's list, or
+        // the export directory read where it loaded.
         ModuleRegistry *self = const_cast<ModuleRegistry *>(this);
         for ( const Span &s : m_spans )
         {
@@ -327,7 +328,7 @@ namespace idattd
         size_t idx = index_at(ea);
         if ( idx == (size_t)-1 )
             return qstring();
-        // Sorted by address, so the first of several names at 'ea' is the
+        // Stable-sorted by address, so of several names at 'ea' this is the
         // first the module lists.
         const std::vector<std::pair<ea_t, std::string>> &v = exports_of(m_spans[idx].base);
         auto it = std::lower_bound(v.begin(), v.end(), ea,
@@ -372,27 +373,30 @@ namespace idattd
     //=======================================================================
     GuestRead ModuleRegistry::read_at_load(ea_t base)
     {
+        return read_at_record(record_at(base));
+    }
+
+    GuestRead ModuleRegistry::read_at_record(const ModuleInfo *m)
+    {
         if ( m_backend == nullptr )
             return GuestRead{};
         if ( !m_symCursor )
             m_symCursor = m_backend->make_cursor();
         if ( !m_symCursor )
             return GuestRead{};
-        const ModuleInfo *m = record_at(base);
         m_symCursor->seek(m != nullptr && m->loaded.is_valid() ? m->loaded : m_backend->info().first);
         return guest_read(m_symCursor.get());
     }
 
     void ModuleRegistry::resolve_symbols(ea_t base)
     {
-        // Every stop calls this for every mapped module, so the common case,
-        // a module already done, returns before any logging.
+        // Called per mapped module on every stop, so a module already done
+        // returns before any logging.
         if ( m_backend == nullptr || base == BADADDR || m_resolvedBases.count(base) != 0 )
             return;
-        // Not before the module has a segment: names set on memory IDA does
-        // not have are dropped, and remembering the module as done would
-        // leave it unnamed for the rest of the session. The next stop tries
-        // again (resolve_loaded).
+        // Not before the module has a segment: names on memory IDA lacks are
+        // dropped, and marking the module done would leave it unnamed for the
+        // session. The next stop tries again (resolve_loaded).
         if ( get_segment_ea(base) == BADADDR )
             return;
         m_resolvedBases.insert(base);
@@ -405,8 +409,8 @@ namespace idattd
         const ModuleInfo *rec = record_at(base);
         std::string modpath = rec != nullptr ? rec->path.c_str() : "";
 
-        // Names: the recording's own export list when the backend keeps one,
-        // otherwise the image's export directory read where it is mapped.
+        // Names: the recording's export list when the backend keeps one, else
+        // the image's export directory read where it is mapped.
         size_t named = 0;
         if ( m_backend->capabilities().recorded_exports )
         {
@@ -421,9 +425,9 @@ namespace idattd
                 named = apply_module_exports(rd, base, m_is64);
         }
 
-        // Function boundaries: now when reads are cheap, otherwise when a stop
-        // first asks for one in this module (function_range_at) -- they can
-        // mean reading the module's whole .pdata out of the recording.
+        // Function bounds: now when reads are cheap, else when a stop first
+        // asks (function_range_at), since they can mean reading the whole
+        // .pdata out of the recording.
         size_t nfunc = 0;
         if ( m_backend->capabilities().cheap_reads )
             nfunc = function_ranges(base);
@@ -434,12 +438,11 @@ namespace idattd
                                                   : "");
     }
 
-    // Function boundaries, so a whole function can be laid out (including
-    // code before the current PC) when the user steps into runtime-only code:
-    // from the backend if it knows them, else the module's .pdata -- from the
-    // on-disk file when it is the build the recording ran (it is complete),
-    // from recorded memory otherwise (always right, sometimes incomplete).
-    // Worked out once per module; returns how many there are.
+    // Function bounds, so a whole function (including code before the PC) can
+    // be laid out: from the backend if it knows them, else the module's
+    // .pdata, read from the on-disk file when it is the recorded build
+    // (complete), otherwise from recorded memory (right, sometimes
+    // incomplete). Once per module; returns how many.
     size_t ModuleRegistry::function_ranges(ea_t base)
     {
         if ( !m_funcTried.insert(base).second )
@@ -492,17 +495,15 @@ namespace idattd
     {
         if ( base == BADADDR || m_backend == nullptr )
             return;
-        // Applying a PDB has IDA's PDB plugin read through the module, which
-        // on a backend whose reads are not cheap is seconds per module -- and
-        // a recording loads dozens. Then only the module a stop lands in
-        // gets its PDB, when it does.
+        // Naming from a PDB reads through the module, which without cheap
+        // reads is seconds per module, and a recording loads dozens. Then
+        // only the module a stop lands in gets its PDB.
         if ( !stopped_here && !m_backend->capabilities().cheap_reads )
             return;
 
-        // Never fetch a PDB for the analysed binary itself. IDA already owns
-        // that file's database, and asking the PDB plugin only triggers a
-        // redundant, possibly networked, lookup for the very file being
-        // analysed. Matched by base, which is authoritative.
+        // Never for the analysed binary: IDA already has its database, and a
+        // lookup would be redundant and possibly networked. Matched by base,
+        // which is authoritative.
         if ( base == m_mainBase )
             return;
 
@@ -514,15 +515,13 @@ namespace idattd
         if ( path.empty() )
             return;
 
-        // The same refusal again by name, for the input file: a database opened
-        // against a trace of a differently-based copy would miss the check above.
+        // Again by name, for a trace of a copy loaded at another base.
         if ( _stricmp(base_name(path).c_str(), m_targetName.c_str()) == 0 )
             return;
 
-        // Which PDB this module was actually built with, read from the image as
-        // the recording had it mapped. The copy of the DLL on this machine cannot
-        // answer that: it is often a different build, and its symbols would
-        // describe code this recording never ran.
+        // The PDB identity comes from the image as recorded. The local copy
+        // of the DLL is often a different build whose symbols would describe
+        // code this recording never ran.
         GuestPdbInfo pdb;
         if ( !pdb_identity(base, &pdb) )
             return;     // no debug directory recorded: nothing to look up
@@ -533,8 +532,7 @@ namespace idattd
                 start_publics(base, symbol_store_path(pdb.name.c_str(), pdb.signature.c_str()).c_str());
                 break;
             case FetchState::Fetching:
-                // A worker has it. advance_pdbs() picks it up once it lands;
-                // nothing blocks here, which is the whole point.
+                // A worker has it; advance_pdbs() picks it up when it lands.
                 break;
             case FetchState::Failed:
                 report_missing_pdb(path, pdb);
@@ -547,31 +545,40 @@ namespace idattd
     void ModuleRegistry::apply_pdb(ea_t base, const std::string &path, const GuestPdbInfo &pdb)
     {
         DiagTimer diag_timer("apply PDB", qstring(pdb.name.c_str()));
-        // Drive the PDB plugin with PDB_CC_USER_WITH_DATA (3): it reads the
-        // load address and path from the "$ pdb" netnode and applies symbols
-        // without the "load symbols?" prompt the automatic DOPT_LOAD_DINFO path
-        // shows.
+        // PDB_CC_USER_WITH_DATA (3): the PDB plugin reads the load address
+        // and path from the "$ pdb" netnode and applies symbols without the
+        // "load symbols?" prompt of the DOPT_LOAD_DINFO path.
         //
-        // It resolves the PDB through _NT_SYMBOL_PATH, which symsrv_install_path()
-        // put the plugin's store at the front of, so this finds a local file rather than
-        // going to the network from the main thread.
+        // It resolves the PDB through _NT_SYMBOL_PATH, which starts with the
+        // plugin's store (symsrv_install_path()), so it finds a local file
+        // instead of going to the network from the main thread.
         static const char *PDB_NODE_NAME = "$ pdb";
         const int PDB_DLLBASE_NODE_IDX  = 0;
         const int PDB_DLLNAME_NODE_IDX  = 0;
         const int PDB_CC_USER_WITH_DATA = 3;
+        //
+        // The plugin opens the file named here. The module path is the
+        // recording's, so a UNC or device path (which would make Windows
+        // contact another host) is never handed over; the PDB in the store,
+        // which the plugin also accepts, stands in for it. So does a local
+        // path with no file behind it.
+        std::string input = path;
+        if ( !is_local_drive_path(input.c_str()) || !qfileexist(input.c_str()) )
+            input = symbol_store_path(pdb.name.c_str(), pdb.signature.c_str()).c_str();
+        if ( input.empty() )
+        {
+            report_missing_pdb(path, pdb);
+            return;
+        }
         netnode pdbnode;
         pdbnode.create(PDB_NODE_NAME);
         pdbnode.altset(PDB_DLLBASE_NODE_IDX, base);
-        pdbnode.supset(PDB_DLLNAME_NODE_IDX, path.c_str(), path.size() + 1);
+        pdbnode.supset(PDB_DLLNAME_NODE_IDX, input.c_str(), input.size() + 1);
 
-        // Suppress the plugin's dialogs while it runs: when the PDB cannot be
-        // matched it would otherwise pop an error or file-locate dialog for
-        // every module. With 'batch' set those become log lines, and the miss is
-        // reported to the output window here instead.
-        //
-        // Restored by a scope guard: 'batch' is a global that changes how IDA
-        // reports every subsequent error, so an early return or a throw out of
-        // the plugin must not leave it stuck on.
+        // 'batch' turns the plugin's error and file-locate dialogs for an
+        // unmatched PDB into log lines; the miss is reported here instead.
+        // A scope guard restores it: 'batch' is a global affecting all later
+        // error reporting, so a return or throw must not leave it on.
         struct BatchGuard
         {
             bool saved;
@@ -591,12 +598,11 @@ namespace idattd
         report_missing_pdb(path, pdb);
     }
 
-    // The PDB plugin queues every function it names for analysis, and
-    // analysing a library reads nearly all of its code. On a backend whose
-    // reads are not cheap that is minutes with IDA frozen (ntdll's 600 pages
-    // at tens of milliseconds each), so the names are kept and the queued
-    // work dropped. Code the user stops in is laid out per stop anyway
-    // (CodeAnalyzer), which is all a library needs to be read.
+    // The PDB plugin queues every function it names for analysis, which reads
+    // nearly all of a library's code. Without cheap reads that freezes IDA for
+    // minutes (ntdll's 600 pages at tens of milliseconds each), so the names
+    // are kept and the queued work dropped. CodeAnalyzer lays out code the
+    // user stops in anyway.
     void ModuleRegistry::keep_names_only(ea_t base)
     {
         if ( m_backend == nullptr || m_backend->capabilities().cheap_reads )
@@ -613,9 +619,9 @@ namespace idattd
             auto_unmark(base, end, q);
     }
 
-    // Say which PDB is wanted and where it lives. Only the recording knows: the
-    // identity comes from the CodeView record of the image as it was mapped, and
-    // that is the one thing a mismatched local DLL cannot tell the user.
+    // Say which PDB is wanted and where it lives. The identity comes from the
+    // recorded image's CodeView record, which a mismatched local DLL cannot
+    // provide.
     void ModuleRegistry::report_missing_pdb(const std::string &path, const GuestPdbInfo &pdb)
     {
         msg("[ida-ttd] PDB symbols not resolved for %s.\n"
@@ -629,10 +635,9 @@ namespace idattd
 
     void ModuleRegistry::start_publics(ea_t base, const std::string &pdb_path)
     {
-        // The read touches nothing but the file, so it runs on its own thread
-        // while the main thread goes on owning the database. The job is
-        // heap-allocated and only freed after its future is done, so the
-        // worker's pointer stays good.
+        // The read touches only the file, so it runs on its own thread. The
+        // job is heap-allocated and freed only after its future completes, so
+        // the worker's pointer stays valid.
         auto job = std::make_unique<PublicsJob>();
         job->base     = base;
         job->pdb_name = base_name(pdb_path);
@@ -662,9 +667,8 @@ namespace idattd
                 }
                 if ( !j.reading.get() )
                 {
-                    // Nothing set from it, so nothing is lost by saying how to
-                    // get the whole PDB instead (an OMAP image needs IDA's
-                    // own reader, which handles the rearrangement).
+                    // Point to the full PDB load instead (an OMAP image needs
+                    // IDA's own reader, which handles the rearrangement).
                     const ModuleInfo *m = record_at(j.base);
                     msg("[ida-ttd] could not read the names in %s for %s (%s). "
                         "TTD > Code > Load full symbols for this module loads it "
@@ -677,16 +681,15 @@ namespace idattd
                 }
             }
 
-            // Names set on memory IDA has no segment for are dropped, so a
-            // module not mapped where the user is waits for a stop where it is.
+            // Names on memory without a segment are dropped, so a module not
+            // mapped here waits for a stop where it is.
             if ( get_segment_ea(j.base) == BADADDR )
             {
                 i++;
                 continue;
             }
 
-            // Checked every few names, not every one: GetTickCount is cheap,
-            // set_name is cheaper still for an address with no name yet.
+            // The deadline is checked every 64 names, not every one.
             while ( j.next < j.pubs.size() )
             {
                 for ( size_t k = 0; k < 64 && j.next < j.pubs.size(); k++, j.next++ )
@@ -715,7 +718,7 @@ namespace idattd
     {
         DWORD deadline = GetTickCount() + (DWORD)(budget_ms > 0 ? budget_ms : 1);
 
-        // Downloads that finished: read their names in the background too.
+        // Finished downloads: read their names in the background.
         std::vector<FetchResult> done;
         if ( symsrv_take_completed(&done) != 0 )
         {
@@ -727,9 +730,9 @@ namespace idattd
                     continue;
                 if ( r.path.empty() )
                 {
-                    // Once more, at the next stop in the module (load_pdb with
-                    // stopped_here): a server that did not answer while a whole
-                    // recording's PDBs were wanted usually does a moment later.
+                    // Retried once, at the next stop in the module: a server
+                    // that did not answer during a burst of requests usually
+                    // does a moment later.
                     const bool retry = m_pdbRetried.insert(r.base).second;
                     if ( retry )
                         m_pdbBases.erase(r.base);
@@ -773,8 +776,8 @@ namespace idattd
                 "0x%llX, so there is no PDB to load.\n", (uint64_t)lo);
             return false;
         }
-        // The background reader asks once per module and remembers; this is a
-        // separate, explicit request, so it asks again.
+        // An explicit request asks again even if the background path already
+        // did; marking the base stops that path from asking too.
         m_pdbBases.insert(lo);
         switch ( fetch_pdb(pdb.name.c_str(), pdb.signature.c_str(), lo) )
         {
@@ -788,7 +791,7 @@ namespace idattd
                 return true;
             }
             case FetchState::Fetching:
-                msg("[ida-ttd] downloading %s for %s; ask again once it is done "
+                msg("[ida-ttd] %s for %s is still downloading; ask again once it is done "
                     "(its names are applied by themselves when it lands).\n",
                     pdb.name.c_str(), base_name(path).c_str());
                 return false;
@@ -808,41 +811,81 @@ namespace idattd
     //=======================================================================
     // On-disk images
     //=======================================================================
-    const ModuleImage *ModuleRegistry::image_for(ea_t ea, ea_t &base_out)
+    const ModuleImage *ModuleRegistry::image_for(ea_t ea, Position pos, ea_t &base_out)
     {
         if ( m_backend == nullptr )
             return nullptr;
 
-        // Which loaded module, if any, contains 'ea'? A binary search: this
-        // runs once per gap of every memory read.
-        size_t mi = index_at(ea);
-        if ( mi == (size_t)-1 )
+        // The load mapped at 'ea' at 'pos', by the same rule as loaded_at.
+        // The module table spans the whole recording, so without the
+        // position a read before a module's load or after its unload would
+        // be served from its file as if it were mapped. This runs once per
+        // gap of every memory read: the last match is tried first, and the
+        // scan over every load (a few hundred at most) only on a miss.
+        auto live = [&](const ModuleInfo &m)
+        {
+            return m.base != BADADDR
+                && ea >= m.base && ea - m.base < (ea_t)m.size
+                && (!m.loaded.is_valid() || m.loaded <= pos)
+                && (!m.unloaded.is_valid() || pos < m.unloaded);
+        };
+        size_t li = (size_t)-1;
+        if ( m_lastImageLoad < m_modules.size() && live(m_modules[m_lastImageLoad]) )
+        {
+            li = m_lastImageLoad;
+        }
+        else
+        {
+            for ( size_t i = 0; i < m_modules.size(); i++ )
+            {
+                if ( live(m_modules[i]) )
+                {
+                    li = i;
+                    break;
+                }
+            }
+        }
+        if ( li == (size_t)-1 )
             return nullptr;
-        ea_t base = m_spans[mi].base;
+        m_lastImageLoad = li;
 
+        const ModuleInfo *m = &m_modules[li];
+        ea_t base = m->base;
         base_out = base;
-        auto it = m_moduleImages.find(base);
-        if ( it != m_moduleImages.end() )
-            return it->second.ok ? &it->second : nullptr;
 
-        const ModuleInfo *m = record_at(base);
-        std::string path = m != nullptr ? m->path.c_str() : "";
+        if ( m_loadImage.size() != m_modules.size() )
+        {
+            m_loadImage.assign(m_modules.size(), nullptr);
+            m_loadImageTried.assign(m_modules.size(), 0);
+        }
+        if ( m_loadImageTried[li] != 0 )
+            return m_loadImage[li];
+        m_loadImageTried[li] = 1;
+
+        std::string path = m->path.c_str();
+        qstring key;
+        key.sprnt("%s|%llX|%llX|%08X|%08X", path.c_str(), (uint64_t)base, (uint64_t)m->size,
+                  m->timestamp, m->checksum);
+        auto it = m_moduleImages.find(key);
+        if ( it != m_moduleImages.end() )
+        {
+            m_loadImage[li] = it->second.ok ? &it->second : nullptr;
+            return m_loadImage[li];
+        }
 
         ModuleImage img;
         load_module_image(path.c_str(), img);   // img.ok == false on failure
 
-        // The path was recorded on the machine that made the trace. The file at
-        // that path here may be a different build of the same DLL -- a different
-        // patch level of ntdll is the common case -- and its bytes would then be
-        // served as ground truth with nothing to say they are wrong. So the
-        // image's timestamp and checksum must match the recording's: the
-        // backend's, else the recorded headers'.
-        uint32_t ts = m != nullptr ? m->timestamp : 0;
-        uint32_t cs = m != nullptr ? m->checksum : 0;
+        // The path was recorded on another machine, where the file may be a
+        // different build (commonly another ntdll patch level) whose bytes
+        // would be served as truth. So the timestamp and checksum must match
+        // the recording's: the backend's, else the recorded headers'.
+        uint32_t ts = m->timestamp;
+        uint32_t cs = m->checksum;
         if ( img.ok && ts == 0 && cs == 0 )
         {
             GuestPeInfo pe;
-            GuestRead rd = read_at_load(base);
+            GuestRead rd = read_at_record(m);
             if ( rd && read_guest_pe_info(rd, base, &pe) )
             {
                 ts = pe.timestamp;
@@ -866,7 +909,8 @@ namespace idattd
                 img.ok ? "loaded" : "file unavailable / not a PE");
         }
 
-        it = m_moduleImages.emplace(base, std::move(img)).first;
-        return it->second.ok ? &it->second : nullptr;
+        it = m_moduleImages.emplace(key, std::move(img)).first;
+        m_loadImage[li] = it->second.ok ? &it->second : nullptr;
+        return m_loadImage[li];
     }
 }

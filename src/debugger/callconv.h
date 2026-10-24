@@ -5,14 +5,14 @@
 
 namespace idattd
 {
-    // Calling-convention helpers used by the function tracer to read arguments
-    // and return values out of the trace. The view passed in must already be
-    // at the call site (for arguments) or just after the matching return (for
-    // return values). Any backend's cursor gives one (core/guest_view.h).
+    // Calling-convention helpers the function tracer uses to read arguments
+    // and return values. The view must be at the call site (arguments) or
+    // just after the matching return (return values); any backend's cursor
+    // gives one (core/guest_view.h).
 
-    // Offset (in bytes) from the stack pointer to the n-th argument, summing the
-    // sizes of the stack-resident arguments that precede it. 'slot' is the stack
-    // slot granularity -- 8 for x64, 4 for x86.
+    // Byte offset of the n-th argument from the first stack argument: the
+    // sizes of the stack arguments before it, each rounded up to 'slot'
+    // (the stack slot size; only x86, with 4, uses this).
     size_t stack_arg_offset(const tinfo_t &func_tinfo, size_t n, size_t first_stack_arg,
                             size_t slot);
 

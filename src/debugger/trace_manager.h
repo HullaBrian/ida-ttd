@@ -13,8 +13,8 @@
 namespace idattd
 {
     // What the plugin wants done when a trace session begins and ends. This is
-    // the backend's only way back out to the plugin, so debugger/ does not
-    // depend on plugin/ at all.
+    // the only way back out to the plugin, so debugger/ does not depend on
+    // plugin/.
     struct SessionHooks
     {
         std::function<void()> on_start;   // a trace is loaded: show the TTD UI
@@ -23,11 +23,11 @@ namespace idattd
 
     // The debugger session: translates IDA debugger events (ev_*) into
     // movement through a recording, register and memory reads, and IDA debug
-    // events, through whichever backend reads the recording (core/backend.h)
-    // -- Microsoft TTD for a .run, Sogen for a .sogttd. It owns the backend's
-    // playhead cursor and navigator; everything it does with them is the
-    // interface's, so nothing here knows which engine is underneath. One
-    // instance lives for the lifetime of the plugin.
+    // events, through whichever backend reads the recording (core/backend.h;
+    // Microsoft TTD for a .run, Sogen for a .sogttd). It owns the backend's
+    // playhead cursor and navigator and uses only the interface, so nothing
+    // here knows which engine is underneath. One instance lives as long as the
+    // plugin.
     class TraceManager
     {
     public:
@@ -41,6 +41,9 @@ namespace idattd
 
         void set_session_hooks(SessionHooks h) { m_hooks = std::move(h); }
         bool is_active() const { return (bool)m_cursor; }
+        // A movement is replaying the playhead cursor; anything that would use
+        // the backend from a message pump during it should wait.
+        bool is_navigating() const { return m_navigating; }
 
         // ---- IDA debugger event handlers (return drc_t in an ssize_t) ------
         ssize_t on_init();
@@ -57,15 +60,15 @@ namespace idattd
         const qstring &last_resume() const { return m_lastResume; }
         // The recording this session replays, as IDA was given it.
         const qstring &trace_path() const { return m_tracePath; }
-        // Counts ev_resume calls. Lets the UI tell what a movement did (between
-        // a resume and the stop that ends it) from what the user did.
+        // Counts ev_resume calls, so the UI can tell what a movement did
+        // (between a resume and its stop) from what the user did.
         uint64 resume_serial() const { return m_resumeSerial; }
         const std::deque<qstring> &event_log() const { return m_eventLog; }
 
-        // When the thread and module changes a movement caused are reported,
-        // relative to its stop. Under IDA's own step modes an event that is not
-        // the step ends the step there, with the step's own event left queued,
-        // so the order matters. Experimental, set from the script API:
+        // When a movement's thread and module changes are reported relative to
+        // its stop. Under IDA's step modes any non-step event ends the step
+        // there and leaves the step's own event queued, so the order matters.
+        // Experimental, set from the script API:
         //   0  changes, then the stop
         //   1  the stop, then the changes
         //   2  as 0, but during IDA's step modes the changes are held back and
@@ -77,9 +80,9 @@ namespace idattd
         ssize_t on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel);
         ssize_t on_exit_process();
 
-        // What the UI has asked for, to be carried out by the next ev_resume.
-        // One value rather than a flag per kind, so two requests made before a
-        // resume cannot both fire: the later one replaces the earlier.
+        // What the UI has asked for, carried out by the next ev_resume. One
+        // value rather than a flag per kind, so of two requests made before a
+        // resume only the later fires.
         enum class Request
         {
             None,               // nothing queued: follow IDA's resume mode
@@ -92,8 +95,8 @@ namespace idattd
 
         // ---- UI helpers ----------------------------------------------------
         // Travel to 'p' at the next resume. Shows a wait box until the stop
-        // there is fully processed (end_travel_wait), which can take seconds:
-        // a backend may only rebuild the state there when it is first read.
+        // there is fully processed (end_travel_wait), which can take seconds
+        // because a backend may rebuild the state only when it is first read.
         void                       set_next_position(const Position &p);
         void                       end_travel_wait();
         void                       goto_position();
@@ -109,25 +112,22 @@ namespace idattd
         // breakpoint, which intermittently fails on a read-only recording.
         void                       request_run_to_cursor_forward(ea_t addr);
         Position                   current_position() const;
-        // The instruction the cursor is standing on. Bookmarks record this so the
-        // list can show where each mark is without seeking to every row.
+        // The instruction the cursor stands on. Bookmarks record it so the list
+        // shows where each mark is without seeking to every row.
         ea_t                       current_pc_ea() const;
 
         // Re-read [lo, hi) from the recording and re-analyze it.
         //
-        // The bytes IDA shows come from a cache that is filled the first time an
-        // address is displayed. A range read before its module was mapped, or
-        // before the write that produced its contents was replayed, keeps the
-        // answer it was first given. This throws that away, rebuilds the range
-        // from the recording's writes, and lets IDA disassemble it again.
+        // IDA's byte cache keeps the first answer for an address, so a range
+        // read before its module was mapped, or before the write that produced
+        // it was replayed, stays stale. This drops that answer, rebuilds the
+        // range from recorded writes and lets IDA disassemble it again.
         //
         // Returns the number of bytes recovered from recorded writes.
         size_t                     reread_range(ea_t lo, ea_t hi);
 
-        // What the plugin knows about the modules the recording loaded: where
-        // they are, what they are called, where their functions start, which of
-        // their addresses have names, and their on-disk images. This class only
-        // tells it when a session begins and ends.
+        // The modules the recording loaded (see ModuleRegistry). This class
+        // only tells the registry when a session begins and ends.
         ModuleRegistry       &modules()       { return m_modules; }
         const ModuleRegistry &modules() const { return m_modules; }
 
@@ -139,8 +139,7 @@ namespace idattd
         // reconstructed memory map behind it.
         SegmentLayout       &layout()       { return m_layout; }
         const SegmentLayout &layout() const { return m_layout; }
-        // Shorthands, because almost every caller wants the map rather than
-        // the layout machinery around it.
+        // Shorthands: almost every caller wants the map, not the layout.
         const MemoryMap &memmap() const        { return m_layout.map(); }
         MemoryMap       &memmap_for_update()   { return m_layout.map_for_update(); }
         // Last position of the loaded trace, or Position::none() without one.
@@ -158,10 +157,10 @@ namespace idattd
         // ---- a fork being prepared ------------------------------------------
         //
         // "Fork here" fixes a position. Registers and memory changed there
-        // through IDA -- the registers window, the hex view, patching -- are
-        // kept as the fork's changes, and shown instead of the recording's
-        // while the cursor stands there; elsewhere the recording is
-        // read-only. Recording the fork turns them into a ForkRequest.
+        // through IDA (registers window, hex view, patching) are kept as the
+        // fork's changes and shown instead of the recording's while the cursor
+        // stands there; elsewhere the recording is read-only. Recording the
+        // fork turns them into a ForkRequest.
         struct ForkDraft
         {
             bool     active = false;
@@ -180,9 +179,9 @@ namespace idattd
         ssize_t on_write_register(thid_t tid, int regidx, const regval_t *value, qstring *errbuf);
         ssize_t on_write_memory(size_t *nbytes, ea_t ea, const void *buffer, size_t size, qstring *errbuf);
 
-        // Called once per stop (from HT_DBG dbg_suspend_process), when the
-        // debugger memory cache is valid for the new position: name exports for
-        // any newly-seen module and disassemble a run of code around RIP.
+        // Called once per stop (HT_DBG dbg_suspend_process), when the debugger
+        // memory cache is valid for the new position: names exports of newly
+        // seen modules and disassembles code around RIP.
         void                       on_suspended();
 
         // Explicit, user-triggered deep analysis (CodeAnalyzer::analyze_whole_function).
@@ -208,10 +207,9 @@ namespace idattd
         bool  is_target_module(const ModuleInfo &m) const;
         void  emit_module_load(const ModuleInfo &m);
 
-        // One movement through the navigator, with everything around it:
-        // the thread and module events it caused, the boundary the user is
-        // told about, and any notice the navigator left. 'move' does the
-        // movement and says why it stopped.
+        // One movement through the navigator, behind a wait box, recording
+        // the boundary it hit and any notice the navigator left. 'move' does
+        // the movement and says why it stopped.
         StopReason navigate(bool forward, const std::function<StopReason()> &move);
         void  navigate_to(Position p);
         void  emit_stop(bool is_step);
@@ -233,14 +231,16 @@ namespace idattd
 
         uint32                          m_savedAf = 0;     // INF_AF saved over the session
         bool                            m_afSaved = false;
+        bool                            m_dinfoWasOn = false;  // DOPT_LOAD_DINFO before the session
+        bool                            m_dinfoSaved = false;
 
         EventQueue   m_events;
         bool         m_is64 = false;
 
         bool          m_isForward = true;
         resume_mode_t m_resumeMode = RESMOD_NONE;
-        // What the last ev_resume carried, for the script API's 'state': which
-        // movement IDA actually asked for is otherwise invisible.
+        // What the last ev_resume carried, for the script API's 'state'; it is
+        // otherwise invisible which movement IDA asked for.
         qstring       m_lastResume;
         qstring       m_tracePath;
         uint64        m_resumeSerial = 0;
@@ -250,18 +250,21 @@ namespace idattd
         int           m_eventOrder = 2;
         bool          m_stepMode   = false;   // this resume is one of IDA's step modes
         bool          m_travelWait = false;   // set_next_position's wait box is up
-        // A movement is being carried out. Its wait box pumps messages, so IDA
-        // can deliver another ev_resume in the middle of it; that one must not
-        // move the same navigator again.
+        // A movement is in progress. Its wait box pumps messages, so IDA can
+        // deliver another ev_resume meanwhile, which must not move the same
+        // navigator again.
         bool          m_navigating = false;
+        // IDA changed breakpoints during a movement; navigate() hands the new
+        // set to the navigator once it ends.
+        bool          m_bptsDeferred = false;
         // The last few events handed to IDA, resumes received and breakpoint
-        // updates, oldest first, for the same reason.
+        // updates, oldest first, for diagnosing what IDA asked for.
         static constexpr size_t EVENT_LOG_LINES = 48;
         std::deque<qstring> m_eventLog;
         void log_event(const qstring &line);
 
-        // The edge of the recording a movement ran into, reported once the
-        // stop is shown (a modal box inside ev_resume would be unsafe).
+        // The recording edge a movement ran into, reported once the stop is
+        // shown (a modal box inside ev_resume is unsafe).
         enum { BOUNDARY_NONE = 0, BOUNDARY_START, BOUNDARY_END };
         int          m_pendingBoundary = BOUNDARY_NONE;
         qstring      m_pendingNotice;

@@ -95,11 +95,21 @@ def main():
         files += [("ida-ttd-backends/ida-ttd-sogen-licenses/" + p.name, p) for p in found]
     elif args.require_sogen:
         raise SystemExit("no Sogen backend in the build (%s)" % sogen)
-    for folder in ("ida-ttd-data", "ida-ttd-python"):
-        found = sorted(p for p in (build / folder).glob("*") if p.is_file())
-        if not found:
-            raise SystemExit("nothing in %s" % (build / folder))
-        files += [(folder + "/" + p.name, p) for p in found]
+    # What the build copies into each folder (msbuild/ida-ttd.vcxproj:
+    # CopyApiMetadata and the Python copy step), named rather than globbed,
+    # so a stray file is not shipped and a missing one fails below.
+    expected = {
+        "ida-ttd-data": sorted(p.name for p in (REPO / "data").glob("*.bin")),
+        "ida-ttd-python": ["ida_ttd.py", "ida_ttd_runtime.py", "ida_ttd_settings.py"],
+    }
+    for folder, names in expected.items():
+        if not names:
+            raise SystemExit("nothing to ship in %s" % folder)
+        files += [(folder + "/" + n, build / folder / n) for n in names]
+        extra = sorted(p.name for p in (build / folder).glob("*") if p.name not in names)
+        if extra:
+            print("warning: not packaged, not something the build puts in %s: %s"
+                  % (build / folder, ", ".join(extra)))
     missing = [str(src) for _, src in files if not src.is_file()]
     if missing:
         raise SystemExit("missing from the build:\n  " + "\n  ".join(missing))

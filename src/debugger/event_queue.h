@@ -4,23 +4,22 @@
 
 namespace idattd
 {
-    // Thread-safe FIFO of debug events. The TraceManager fills it during
+    // Thread-safe FIFO of debug events. TraceManager fills it during
     // navigation; ev_get_debug_event drains it one event at a time.
     class EventQueue
     {
     public:
         void push(const debug_event_t &ev);
         bool empty();
-        // Atomically pop the next event. Returns false (leaving *out untouched)
-        // when the queue is empty. Prefer this over empty()+pop(): the two-call
-        // form is a check-then-act race, and popping an empty queue is UB.
+        // Atomically pop the next event; false (leaving *out untouched) when
+        // empty. Avoids the check-then-act race of empty() followed by a pop.
         bool try_pop(debug_event_t *out);
-        // Drop every queued event. Called when a trace session starts or ends:
-        // events left over from a previous trace describe modules and threads
-        // that do not exist in the new one, and IDA would happily act on them.
+        // Drop every queued event. Called when a session starts or ends:
+        // leftover events describe modules and threads of another trace, and
+        // IDA would act on them.
         void clear();
 
-        // Convenience builders matching the IDA event taxonomy.
+        // Builders, one per IDA event kind.
         void add_process_start(pid_t pid, thid_t tid, const std::string &module,
                                ea_t base, ea_t rebase_to, asize_t size);
         void add_process_exit(pid_t pid);

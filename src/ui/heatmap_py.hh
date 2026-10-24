@@ -1,18 +1,16 @@
 // heatmap_py.hh: the memory heatmap window, as IDAPython runs it.
 //
 // One row per page the recording touched, in address order; one column per
-// slice of the recording's time. A cell's colour is how often the page was
-// read, written or run from in that slice, on a log scale: in "All", writes
-// are red, reads green and executes blue, so a mix shows as its blend. The
-// plugin counts (ttd("ui.heat")); a double-click travels to the slice and
-// shows the page in the hex view (ttd("ui.showbytes POS EA")).
+// slice of time. A cell's colour is the page's access count in that slice, on
+// a log scale; in "All", writes are red, reads green and executes blue, so a
+// mix blends. The plugin counts (ttd("ui.heat")); a double-click travels to
+// the slice and shows the page in the hex view (ttd("ui.showbytes POS EA")).
 //
-// The span can be narrowed: drag across the columns, or type a start and an
-// end position. Each zoom is a fresh count over that span alone
-// (ttd("ui.heatzoom FROM TO")), so it has the full number of slices however
-// short the span; Back and Whole recording go out again. A vertical line marks
-// the slice the debugger is standing in (ttd("ui.heatnow"), polled on the UI
-// thread by a QTimer: never from another thread).
+// Drag across the columns, or type a start and end position, to zoom. Each
+// zoom recounts that span alone (ttd("ui.heatzoom FROM TO")), so it keeps the
+// full number of slices; Back and Whole recording zoom out. A vertical line
+// marks the debugger's slice (ttd("ui.heatnow"), polled by a QTimer on the UI
+// thread, never from another thread).
 #pragma once
 
 namespace idattd
@@ -21,19 +19,28 @@ namespace idattd
 def _ida_ttd_heatmap():
     import json
     import math
+    import re
     import ida_kernwin
     import idc
     from PySide6 import QtCore, QtGui, QtWidgets
 
     def ttd(cmd):
+        # cmd becomes an IDC string literal, so its quotes and backslashes
+        # are escaped: typed text must not end the literal early.
+        cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
         return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+
+    # What a typed span end may look like: Microsoft's Sequence:Steps in hex,
+    # Sogen's decimal instruction number, or "end". The backend parses it
+    # properly; this only keeps spaces and other words out of the command.
+    POSITION_RE = re.compile(r"[0-9A-Fa-f]+(?::[0-9A-Fa-f]+)?|end")
 
     data = ttd("ui.heat")
     if not data.get("ok"):
         raise RuntimeError(data.get("error", "no heatmap"))
 
-    # The counts being shown. Replaced whole by a zoom, so everything reads
-    # it from here rather than keeping its own copy.
+    # The counts shown. A zoom replaces them whole, so everything reads them
+    # from here instead of keeping a copy.
     H = {}
 
     def load(heat):
@@ -143,9 +150,9 @@ def _ida_ttd_heatmap():
                 src = QtCore.QRect(0, top, H["slices"], bottom - top)
                 dst = QtCore.QRect(GUTTER, top * ROW, w, (bottom - top) * ROW)
                 p.drawImage(dst, self.image, src)
-            # A rule above each run of neighbouring pages, and its label inside
-            # it when the run is tall enough to hold one: a label never runs
-            # over the next rule. Shorter runs are named by the tooltip.
+            # A rule above each run of neighbouring pages, labelled inside when
+            # the run is tall enough (a label never crosses the next rule);
+            # shorter runs are named by the tooltip.
             fg = self.palette().color(QtGui.QPalette.Text)
             rule = self.palette().color(QtGui.QPalette.Mid)
             font = p.font()
@@ -166,8 +173,8 @@ def _ida_ttd_heatmap():
                     p.drawText(QtCore.QRect(4, y0 + 1, GUTTER - 8, h - 1),
                                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextSingleLine,
                                "0x%X  %s" % (r["page"] << H["shift"], r["label"]))
-            # Where the debugger stands: a line down the middle of its slice,
-            # dark-edged so it shows on any cell colour.
+            # The debugger's slice: a line down its middle, dark-edged to show
+            # on any cell colour.
             if 0 <= self.now < H["slices"]:
                 x = GUTTER + (2 * self.now + 1) * w // (2 * H["slices"])
                 y0, y1 = ev.rect().top(), ev.rect().bottom()
@@ -200,8 +207,8 @@ def _ida_ttd_heatmap():
             a, b = sorted(self.drag)
             self.drag = None
             self.update()
-            # A click is not a span: a double-click travels, and the press
-            # and release of it land here first.
+            # A click is not a span: a double-click's press and release also
+            # land here before it travels.
             if b > a:
                 self.owner.zoom(H["starts"][a], slice_end(b))
 
@@ -326,8 +333,8 @@ def _ida_ttd_heatmap():
             self.whole_btn.setEnabled(zoomable and not H["whole"])
 
         def recount(self, cmd):
-            # A fresh count, behind the plugin's own wait box. On failure
-            # the counts shown stay as they were.
+            # A fresh count, behind the plugin's wait box. On failure the
+            # counts shown are kept.
             r = ttd(cmd)
             if not r.get("ok"):
                 ida_kernwin.warning("The heatmap could not be counted over that span: %s"
@@ -350,8 +357,13 @@ def _ida_ttd_heatmap():
         def apply_span(self):
             first = self.span_from.text().strip()
             last = self.span_to.text().strip()
-            if first and last:
-                self.zoom(first, last)
+            if not first or not last:
+                return
+            for text in (first, last):
+                if not POSITION_RE.fullmatch(text):
+                    ida_kernwin.warning("'%s' is not a position." % text)
+                    return
+            self.zoom(first, last)
 
         def back(self):
             if not self.history:

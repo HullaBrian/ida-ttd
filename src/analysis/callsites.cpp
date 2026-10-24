@@ -9,25 +9,27 @@
 
 namespace idattd
 {
-    // Where the annotations are recorded, so they can be taken back off again.
-    // An alt keyed by the call site marks it as ours; a blob at the same index
-    // holds that site's targets, which is what a cross-reference removal needs.
-    // Targets are capped at 16, so a site's blob always fits one supval and can
-    // never run into the next site's.
+    // A record of the annotations, so they can be removed. An alt keyed by the
+    // call site marks it as the plugin's; a blob at the same index holds its
+    // targets, for removing the cross-references. Targets are capped at 16,
+    // so a site's blob fits one supval and never runs into the next site's.
     static const char  CS_NODE[]  = "$ ida-ttd callsites";
     static const uchar CS_SITE_TAG = 'S';   // alt <site> -> 1
     static const uchar CS_TGTS_TAG = 'T';   // blob at <site> -> u64 targets
     static const uchar CS_TYPE_TAG = 'Y';   // alt <site> -> 1: its call type was set here
     // alt <site> -> the function pointer the call loads, plus one, whose type
-    // the annotation set (and, under CS_PNAME_TAG, whose name).
+    // was set here (and its name, when CS_PNAME_TAG is set).
     static const uchar CS_PTR_TAG   = 'P';
     static const uchar CS_PNAME_TAG = 'N';  // alt <site> -> 1: the pointer was renamed too
+    // How the note an annotation adds to a site's repeatable comment begins,
+    // so the note can be told from the user's own text there.
+    static const char  CS_NOTE_PREFIX[] = "TTD: calls ";
 
     static const size_t kMaxTargetsPerSite = 16;
     static const size_t kMaxSites          = 20000;
 
-    // Is this a call whose target is not written in the instruction? Direct
-    // calls already have a cross-reference and need nothing from a recording.
+    // A call whose target is not in the instruction. Direct calls already have
+    // a cross-reference.
     static bool is_indirect_call(const insn_t &insn)
     {
         if ( !is_call_insn(insn) )
@@ -36,10 +38,9 @@ namespace idattd
         return op.type != o_near && op.type != o_far;
     }
 
-    // "kernel32!VirtualAllocStub (0x7FF610DB1389)". The address is always there:
-    // a name can be missing, stale or shared, and the address is what you paste
-    // into a goto box. The module prefix is what tells two same-named exports
-    // from different DLLs apart.
+    // "kernel32!VirtualAllocStub (0x7FF610DB1389)". The address is always
+    // shown (a name can be missing, stale or shared); the module prefix tells
+    // same-named exports of different DLLs apart.
     static qstring target_name(TraceManager *mgr, ea_t ea)
     {
         qstring name;
@@ -63,16 +64,10 @@ namespace idattd
         return out;
     }
 
-    // The prototype of a called function: its own type when the database has
-    // one (from a PDB, or set by the user), else the type library's entry for
-    // its name -- an API export such as CreateFileW. IDA names a second
-    // export of a name already taken with a "_0"-style suffix, which is not
-    // part of the API's name.
-    // Make sure the database has the Windows SDK type library, which holds
-    // the prototypes of user-mode APIs. Databases made by ttd-loader before it
-    // added one have only whatever IDA guessed, often the kernel DDK's, where
-    // no user-mode API is found. Loaded once, the way IDA's PE loader would
-    // have; true when it was missing and is now there.
+    // Make sure the database has the Windows SDK type library (user-mode API
+    // prototypes). Databases made by older ttd-loader builds may have only
+    // what IDA guessed, often the kernel DDK's. True when it was missing and
+    // is now loaded.
     static bool add_sdk_til()
     {
         const til_t *ti = get_idati();
@@ -88,15 +83,18 @@ namespace idattd
         return true;
     }
 
+    // The prototype of a called function: its own type (from a PDB or the
+    // user), else the type library's entry for its name, as for an API export
+    // such as CreateFileW. A "_0"-style suffix IDA adds to a second export of
+    // a taken name is not part of the API's name and is dropped.
     static bool callee_type(TraceManager *mgr, ea_t target, tinfo_t *out)
     {
         if ( get_tinfo(out, target) && out->is_func() )
             return true;
-        // IDA's name for the target, or the export the recording names there
-        // ("WININET!InternetConnectA", module dropped). The second matters on
-        // recordings whose system DLLs are debugger segments: one not loaded
-        // where the user stands has no segment, so no name, and the call
-        // would go untyped although the recording knows exactly what it is.
+        // IDA's name for the target, else the export the recording names there
+        // ("WININET!InternetConnectA", module dropped). The latter matters when
+        // system DLLs are debugger segments: one not loaded at the playhead has
+        // no segment and so no IDA name.
         qstring name;
         if ( get_name(&name, target) <= 0 || name.empty() )
         {
@@ -139,14 +137,12 @@ namespace idattd
     }
 
     // The global function pointer an indirect call loads its target from:
-    // "call cs:off_X", or "mov reg, cs:off_X" a few instructions before a
-    // "call reg" with nothing in between writing reg. BADADDR for anything
-    // else (a register computed some other way, a vtable slot, the stack).
+    // "call cs:off_X", or "mov reg, cs:off_X" shortly before a "call reg" with
+    // nothing writing reg in between. BADADDR otherwise (computed register,
+    // vtable slot, stack).
     //
-    // That pointer is where an analyst puts the type by hand. The decompiler
-    // prints the call through it, so a pointer typed as the API types every
-    // call made through it, names the arguments, and survives re-decompiling
-    // the function; the call-instruction type covers one site only.
+    // Typing that pointer as the API types every call through it and survives
+    // re-decompiling; a call-instruction type covers one site only.
     static ea_t loaded_pointer(const insn_t &call)
     {
         const op_t &op = call.ops[0];
@@ -157,8 +153,8 @@ namespace idattd
         ea_t ea = call.ea;
         for ( int back = 0; back < 8; back++ )
         {
-            // Only straight-line code: a jump target in between could reach
-            // the call with something else in the register.
+            // Straight-line code only: a jump target in between could reach
+            // the call with another value in the register.
             if ( has_xref(get_flags(ea)) && back != 0 )
                 return BADADDR;
             insn_t prev;
@@ -181,12 +177,11 @@ namespace idattd
         return BADADDR;
     }
 
-    // Type the function pointer the call at 'site' loads as a pointer to
-    // 'proto', and give it the API's name when it only has a dummy one, so
-    // the pseudocode reads "pInternetConnectA(hInternet: ...)". Nothing is
-    // done to a pointer that already has a type (someone else's work), or
-    // that calls elsewhere in the recording reached a different target
-    // through ('ptr_targets': every pointer's targets, over every site).
+    // Type the function pointer loaded at 'site' as a pointer to 'proto', and
+    // give it the API's name when it has only a dummy one, so the pseudocode
+    // reads "pInternetConnectA(hInternet: ...)". Skipped when the pointer
+    // already has a type, or when calls through it reached several targets
+    // ('ptr_targets': each pointer's targets over every site).
     static bool type_pointer(ea_t site, const insn_t &call, ea_t target,
                              const tinfo_t &proto, TraceManager *mgr,
                              const std::map<ea_t, std::set<ea_t>> &ptr_targets)
@@ -218,10 +213,9 @@ namespace idattd
                 if ( bang != qstring::npos )
                     api.remove(0, bang + 1);
             }
-            // Without IDA's "_0"-style suffix, which it gives a second export
-            // of a name already taken (kernel32's VirtualAlloc_0 forwards to
-            // kernelbase's) and which is not part of the API's name. Kept
-            // only when the plain name is already used in the database.
+            // Drop IDA's "_0"-style suffix for a second export of a taken name
+            // (kernel32's VirtualAlloc_0 forwards to kernelbase's), unless the
+            // plain name is already used.
             qstring plain = api;
             ssize_t us = plain.rfind('_');
             if ( us > 0 && (size_t)us + 1 < plain.length() )
@@ -256,6 +250,21 @@ namespace idattd
             return;
         trace_store_stamp(nn);
         nn.altset((nodeidx_t)site, 1, CS_SITE_TAG);
+
+        // The blob is the only record of which cross-references the
+        // annotation added, so a target an earlier annotation of this site
+        // listed and this one does not (another scope's sweep, a re-run) has
+        // its cross-reference removed before the blob forgets it.
+        bytevec_t old;
+        if ( nn.getblob(&old, (nodeidx_t)site, CS_TGTS_TAG) > 0 )
+        {
+            size_t count = old.size() / sizeof(uint64_t);
+            const uint64_t *t = (const uint64_t *)old.begin();
+            for ( size_t k = 0; k < count; k++ )
+                if ( std::find(targets.begin(), targets.end(), (ea_t)t[k]) == targets.end() )
+                    del_cref(site, (ea_t)t[k], false);
+        }
+
         std::vector<uint64_t> raw;
         raw.reserve(targets.size());
         for ( ea_t t : targets )
@@ -263,10 +272,10 @@ namespace idattd
         nn.setblob(raw.data(), raw.size() * sizeof(uint64_t), (nodeidx_t)site, CS_TGTS_TAG);
     }
 
-    // Take off annotations a different recording of this program left. They
-    // cannot just be forgotten -- the comments and cross-references they wrote
-    // are in the database and the store is the only record of which ones were
-    // ours -- so they come off before a sweep writes its own.
+    // Remove annotations left by a different recording before a sweep writes
+    // its own. They cannot just be forgotten: their comments and
+    // cross-references stay in the database, and the store is the only record
+    // of which ones the plugin wrote.
     static void clear_stale_annotations()
     {
         netnode nn(CS_NODE);
@@ -300,8 +309,8 @@ namespace idattd
             return false;
         }
 
-        // A backend may report direct calls too (the decode below drops them),
-        // so the caps apply to what survives that.
+        // A backend may report direct calls too; the decode below drops them
+        // before the caps apply.
         for ( auto &kv : found )
         {
             if ( seen->size() >= kMaxSites )
@@ -312,8 +321,8 @@ namespace idattd
             insn_t insn;
             if ( decode_insn(&insn, kv.first) <= 0 || !is_indirect_call(insn) )
                 continue;
-            // A site that reaches a great many targets is a dispatcher, and
-            // listing hundreds of them helps nobody. Keep the most frequent few.
+            // A site with very many targets is a dispatcher: keep the most
+            // frequent few.
             std::vector<IndirectTarget> &v = kv.second;
             std::stable_sort(v.begin(), v.end(), [](const IndirectTarget &x, const IndirectTarget &y)
                              { return x.hits > y.hits; });
@@ -331,13 +340,64 @@ namespace idattd
         return true;
     }
 
+    // The repeatable comment's own text, without the note an annotation added.
+    // The note is the block starting at a line "TTD: calls" and running over
+    // the indented target lines after it; everything else is the user's and
+    // is kept.
+    static qstring without_ttd_note(const qstring &cmt)
+    {
+        qstring out;
+        bool in_note = false;
+        size_t start = 0;
+        while ( start <= cmt.length() )
+        {
+            size_t nl = cmt.find('\n', start);
+            if ( nl == qstring::npos )
+                nl = cmt.length();
+            qstring line = cmt.substr(start, nl);
+            if ( strncmp(line.c_str(), CS_NOTE_PREFIX, sizeof(CS_NOTE_PREFIX) - 1) == 0 )
+                in_note = true;
+            else if ( in_note && strncmp(line.c_str(), "  ", 2) != 0 )
+                in_note = false;
+            if ( !in_note )
+            {
+                if ( !out.empty() )
+                    out.append('\n');
+                out.append(line);
+            }
+            start = nl + 1;
+        }
+        // Blank lines left where the note was are not the user's.
+        while ( !out.empty() && (out[out.length() - 1] == '\n' || out[out.length() - 1] == ' ') )
+            out.remove_last();
+        return out;
+    }
+
+    // Put the annotation's note on 'site' after the user's own repeatable
+    // comment, replacing a note an earlier annotation left. An empty 'note'
+    // removes it and leaves the user's text alone.
+    static void set_ttd_note(ea_t site, const qstring &note)
+    {
+        qstring cur;
+        get_cmt(&cur, site, true);
+        qstring cmt = without_ttd_note(cur);
+        if ( !note.empty() )
+        {
+            if ( !cmt.empty() )
+                cmt.append('\n');
+            cmt.append(note);
+        }
+        if ( cmt != cur )
+            set_cmt(site, cmt.c_str(), true);
+    }
+
     // Write the answers for the sites in [lo, hi) into the database.
     static void write_annotations(TraceManager *mgr, const SiteTargets &seen,
                                   ea_t lo, ea_t hi, CallSiteResult *res)
     {
-        // Which targets were reached through each global function pointer,
-        // over every site seen, not just those in [lo, hi): a pointer is only
-        // typed as one API when every call through it went there.
+        // Targets reached through each global function pointer over every site
+        // seen, not just [lo, hi): a pointer is typed only when every call
+        // through it went to one API.
         std::map<ea_t, std::set<ea_t>> ptr_targets;
         for ( const auto &kv : seen )
         {
@@ -353,9 +413,7 @@ namespace idattd
         {
             ea_t site = it->first;
             insn_t insn;
-            // Only annotate an address that is still an indirect call: a direct
-            // call already names its target, and an address IDA no longer has
-            // code at is not a call site.
+            // Only an address that still decodes as an indirect call.
             if ( decode_insn(&insn, site) <= 0 || !is_indirect_call(insn) )
                 continue;
 
@@ -363,11 +421,9 @@ namespace idattd
             if ( targets.empty() )
                 continue;
 
-            // decode_insn() will happily decode bytes that are not a defined
-            // instruction, and a cross-reference from an address with no item at
-            // it is rejected outright ("bad call add_cref: no defined item at
-            // 'from'"). Define the instruction first, and if the address still
-            // will not become one, annotate nothing there.
+            // decode_insn() decodes undefined bytes too, but add_cref rejects a
+            // source with no item ("no defined item at 'from'"). Define the
+            // instruction first; if that fails, skip the site.
             if ( !is_code(get_flags(site)) || get_item_head(site) != site )
                 create_insn(site);
             if ( !is_code(get_flags(site)) || get_item_head(site) != site )
@@ -379,11 +435,11 @@ namespace idattd
             qstring cmt;
             if ( targets.size() == 1 )
             {
-                cmt.sprnt("TTD: calls %s", target_name(mgr, targets[0]).c_str());
+                cmt.sprnt("%s%s", CS_NOTE_PREFIX, target_name(mgr, targets[0]).c_str());
             }
             else
             {
-                cmt.sprnt("TTD: calls %d different targets:", (int)targets.size());
+                cmt.sprnt("%s%d different targets:", CS_NOTE_PREFIX, (int)targets.size());
                 for ( ea_t t : targets )
                 {
                     cmt.append("\n  ");
@@ -391,16 +447,15 @@ namespace idattd
                 }
                 res->polymorphic++;
             }
-            set_cmt(site, cmt.c_str(), true);
+            set_ttd_note(site, cmt);
 
-            // The cross-reference is the part that makes this more than a note:
-            // it puts the target in the xref list and joins the graph up.
+            // The cross-reference puts the target in the xref list and joins
+            // up the graph.
             for ( ea_t t : targets )
                 add_cref(site, t, fl_CN);
 
-            // The call type, for a site with one target: on the call
-            // instruction when nothing is set there, and on the function
-            // pointer it loads (see loaded_pointer).
+            // For a single-target site, the call type: on the instruction when
+            // it has none, and on the pointer it loads (see loaded_pointer).
             tinfo_t existing, proto;
             if ( targets.size() == 1 && callee_type(mgr, targets[0], &proto) )
             {
@@ -470,13 +525,12 @@ namespace idattd
     }
 
     //=======================================================================
-    // Automatic resolution in the function you stop in
+    // Automatic resolution in the function stopped in
     //=======================================================================
-    // The sweep cannot be narrowed (see annotate_indirect_calls), so one is
-    // paid per module rather than per function: the first stop in a module
-    // collects every indirect call made from it, and each function stopped in
-    // afterwards is annotated from that. Code in no module is one more scope:
-    // everything between the modules.
+    // The sweep cannot be narrowed (see annotate_indirect_calls), so it runs
+    // once per module: the first stop in a module collects all its indirect
+    // calls, and later functions there are annotated from that. Code in no
+    // module (everything between modules) is one more scope.
 
     struct AutoScope
     {
@@ -486,8 +540,8 @@ namespace idattd
     static std::map<ea_t, AutoScope> g_autoScopes;   // module base, or 0
     static std::set<ea_t>            g_autoDone;     // functions annotated
 
-    // The auto_callsites setting. Databases used to keep their own answer
-    // (alt 0, tag 'A', of CS_NODE); it is no longer read.
+    // The auto_callsites setting. The old per-database answer (alt 0, tag 'A',
+    // of CS_NODE) is no longer read.
     bool callsites_auto_enabled()
     {
         return settings().auto_callsites;
@@ -521,8 +575,8 @@ namespace idattd
         }
         else
         {
-            // User space between the modules: from the lowest address
-            // Windows maps (64 KiB) to the top of user space.
+            // User space between modules, from 64 KiB (the lowest address
+            // Windows maps) to the top of user space.
             const ea_t HI = mgr->is64() ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
             ea_t cur = 0x10000;
             for ( const ModuleRegistry::Span &sp : mods.spans() )
@@ -572,8 +626,7 @@ namespace idattd
             nodeidx_t next = nn.altnext(i, CS_SITE_TAG);
             ea_t site = (ea_t)i;
 
-            // Only the cross-references the annotation added come off; anything
-            // else at this site belongs to the user or to IDA.
+            // Only the cross-references the annotation added come off.
             bytevec_t blob;
             if ( nn.getblob(&blob, i, CS_TGTS_TAG) > 0 )
             {
@@ -582,15 +635,14 @@ namespace idattd
                 for ( size_t k = 0; k < count; k++ )
                     del_cref(site, (ea_t)t[k], false);
             }
-            set_cmt(site, "", true);
+            set_ttd_note(site, qstring());
             if ( nn.altval(i, CS_TYPE_TAG) != 0 )
             {
                 del_tinfo(site);
                 nn.altdel(i, CS_TYPE_TAG);
             }
-            // The pointer's type and name, when this site set them. Several
-            // sites can load one pointer; the first to be cleared undoes it,
-            // and the others find nothing left to undo.
+            // The pointer's type and name, when this site set them (only the
+            // site that set them records it).
             nodeidx_t ptr1 = nn.altval(i, CS_PTR_TAG);
             if ( ptr1 != 0 )
             {
@@ -607,8 +659,7 @@ namespace idattd
             i = next;
         }
         hide_wait_box();
-        // What was annotated automatically is gone, so stopping there again
-        // should put it back.
+        // Let the automatic pass annotate those functions again.
         g_autoDone.clear();
         return n;
     }

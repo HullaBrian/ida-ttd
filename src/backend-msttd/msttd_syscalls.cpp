@@ -1,9 +1,9 @@
 // The Microsoft backend's syscalls (see msttd_syscalls.h): the listing, and
 // the census the memory map is reconstructed from.
 //
-// Every callback below runs on the engine's replay thread and is noexcept:
-// it writes plain memory only, caps what it keeps, and guards its growth, so
-// an allocation failure stops the recording instead of terminating IDA.
+// Every callback runs on the engine's replay thread and is noexcept: it
+// writes plain memory only, caps what it keeps and guards its growth, so an
+// allocation failure stops collecting instead of terminating IDA.
 
 #include "backend-msttd/msttd_syscalls.h"
 #include "backend-msttd/msttd_backend.h"
@@ -33,22 +33,6 @@ namespace idattd
     // inside a noexcept callback is the shape of bug that takes the whole
     // process down with no message.
     static const size_t kMaxDepth = 256;
-
-    // Two replays reported as one percentage.
-    class ScaledProgress : public ProgressSink
-    {
-    public:
-        ScaledProgress(ProgressSink *to, uint32_t from, uint32_t span) : m_to(to), m_from(from), m_span(span) {}
-        void report(uint32_t pct) override
-        {
-            if ( m_to != nullptr )
-                m_to->report(m_from + pct * m_span / 100);
-        }
-        bool cancelled() override { return m_to != nullptr && m_to->cancelled(); }
-    private:
-        ProgressSink *m_to;
-        uint32_t      m_from, m_span;
-    };
 
     std::vector<uint32_t> SyscallTable::numbers_of(const char *name) const
     {
@@ -227,10 +211,10 @@ namespace idattd
     {
         if ( is64 )
         {
-            // The stub moved rcx to r10: the syscall instruction overwrites
-            // rcx with the return address. The fifth argument on is where the
-            // stub's caller put it, past the return address and the shadow
-            // space -- the stub has not touched the stack.
+            // The stub moved rcx to r10 (syscall overwrites rcx with the
+            // return address). Arguments 5 and on are where the stub's caller
+            // put them, past the return address and the shadow space; the
+            // stub has not touched the stack.
             const AMD64_CONTEXT &c = ctx.Amd64Context;
             const uint64_t regs[4] = { c.R10, c.Rdx, c.R8, c.R9 };
             for ( size_t i = 0; i < 4; i++ )
@@ -268,9 +252,9 @@ namespace idattd
             return r;
         const bool is64 = backend->is64();
 
-        // Which module an address belongs to, answered from a table built here
-        // before the replay starts: the callback runs on the replay worker, and
-        // nothing it reads may be built lazily from two threads.
+        // Which module an address belongs to, from a table built before the
+        // replay: the callback runs on the replay worker, so nothing it reads
+        // may be built lazily.
         const std::vector<std::pair<ea_t, ea_t>> mods = module_ranges(backend->modules());
         auto module_of = [&mods](ea_t ea) noexcept -> size_t
         {
@@ -294,10 +278,9 @@ namespace idattd
 
         // ---- the census: every transition into the kernel -------------------
         //
-        // The shadow call stacks, when chains are wanted: every call in the
-        // recording pushes a frame and every matching return pops it. The
-        // lookup is cached because this runs on every call in the trace and
-        // threads execute in bursts.
+        // The shadow call stacks, when chains are wanted: every call pushes a
+        // frame and every matching return pops it. The lookup is cached: it
+        // runs on every call, and threads execute in bursts.
         std::map<uint32_t, std::vector<ShadowFrame>> shadow;
         uint32_t                  lastTid   = 0xFFFFFFFF;
         std::vector<ShadowFrame> *lastStack = nullptr;
@@ -342,8 +325,8 @@ namespace idattd
                     return;
                 }
                 // A return: unwind to the frame that expected it, dropping
-                // anything above -- an exception or a longjmp leaves several
-                // frames at once.
+                // anything above (an exception or longjmp leaves several
+                // frames at once).
                 for ( size_t k = sh->size(); k-- > 0; )
                 {
                     if ( sh->at(k).ret_addr == (uint64_t)instr )
@@ -393,11 +376,10 @@ namespace idattd
                     read_kernel_call_args(t, ctx, is64, &k);
                     if ( chains )
                     {
-                        // From the call into the stub -- or the syscall
-                        // itself, when the program made its own -- then one
-                        // frame per module the chain crosses into: the
-                        // innermost one in each, which is the code that
-                        // called onward.
+                        // From the call into the stub (or the syscall itself,
+                        // when the program made its own), then one frame per
+                        // module crossed: the innermost in each, the code
+                        // that called onward.
                         const std::vector<ShadowFrame> *sh = stack_for(k.utid);
                         if ( !sh->empty() )
                             k.frame_ret = sh->back().ret_addr;
@@ -455,10 +437,10 @@ namespace idattd
 
         // ---- the returns: each one's result ----------------------------------
         //
-        // An execute watchpoint on every instruction the kernel returns to --
-        // the stubs' few, and those of any code that makes its own syscalls.
-        // A thread makes one syscall at a time, so a return belongs to that
-        // thread's oldest call still out before it.
+        // An execute watchpoint on every instruction the kernel returns to
+        // (the stubs' few, plus any code that makes its own syscalls). A
+        // thread makes one syscall at a time, so a return belongs to that
+        // thread's latest call before it.
         std::map<uint32_t, std::vector<size_t>> per_thread;
         std::set<uint64_t> ret_pcs;
         for ( size_t i = 0; i < calls.size(); i++ )
@@ -548,6 +530,7 @@ namespace idattd
             return r;
         r.ran = true;
         out->assign(positions.size(), ittd_regs{});
+        std::lock_guard<std::mutex> lock(m_regsMtx);
         for ( size_t i = 0; i < positions.size(); i++ )
         {
             if ( progress != nullptr && (i & 0xF) == 0 )
@@ -596,15 +579,20 @@ namespace idattd
         if ( !r.ran )
             return r;
         out->reserve(out->size() + calls.size());
-        m_syscallRegs.clear();
-        for ( const KernelCall &c : calls )
         {
-            if ( m_syscallRegs.size() < kMaxCachedRegs )
+            std::lock_guard<std::mutex> lock(m_regsMtx);
+            m_syscallRegs.clear();
+            for ( const KernelCall &c : calls )
             {
+                if ( m_syscallRegs.size() >= kMaxCachedRegs )
+                    break;
                 SyscallRegs &sr = m_syscallRegs[{ (uint64_t)c.pos.Sequence, (uint64_t)c.pos.Steps }];
                 memcpy(sr.gp, c.gp, sizeof(sr.gp));
                 sr.rflags = c.rflags;
             }
+        }
+        for ( const KernelCall &c : calls )
+        {
             SyscallEvent e;
             e.pos    = to_core(c.pos);
             e.result = c.result;

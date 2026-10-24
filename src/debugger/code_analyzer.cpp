@@ -2,11 +2,12 @@
 
 namespace idattd
 {
-    // Bounds that keep the per-stop work per-stop-safe.
+    // Bounds that keep the per-stop work cheap.
     static const int    MAX_LINEAR_ITEMS = 0x20000;   // items one linear layout pass creates
     static const ea_t   DYN_LAYOUT_SPAN  = 0x2000;    // bytes of dynamic code laid out past the head or pc
     static const size_t DYN_HASH_BYTES   = 64;        // bytes hashed to notice rewritten dynamic code
     static const ea_t   MAX_INSN_LEN     = 15;        // longest x86 instruction
+    static const size_t MAX_FAILED_DYN   = 4096;      // dynamic PCs remembered as not making a function
     void CodeAnalyzer::bind(ITraceBackend *backend, ModuleRegistry *modules,
                             MemoryReader *memory, bool is64)
     {
@@ -27,6 +28,7 @@ namespace idattd
         m_calleeScanFunc = BADADDR;
         m_pdataExtended.clear();
         m_dynFuncBytes.clear();
+        m_failedDyn.clear();
     }
 
     void CodeAnalyzer::on_stop(ITraceCursor *playhead, ea_t pc)
@@ -34,10 +36,9 @@ namespace idattd
         analyze_current_function(playhead, pc);
     }
 
-    // Define an instruction at the exact address 'ea'. Addresses passed here come
-    // from the trace (real executed PCs), so they are true instruction
-    // boundaries; any stale item overlapping ea is cleared first so RIP never
-    // points inside a wrongly-sized instruction.
+    // Define an instruction at exactly 'ea', an executed PC and so a true
+    // boundary. Any stale item overlapping it is cleared first so RIP never
+    // points inside a wrongly sized instruction.
     static void force_insn(ea_t ea)
     {
         flags64_t fl = get_flags(ea);
@@ -47,9 +48,9 @@ namespace idattd
         create_insn(ea);
     }
 
-    // Lay [lo, hi) out as code in one linear pass, skipping what already is
-    // code and stepping a byte over what does not decode (jump tables and
-    // other embedded data). Bounded by MAX_LINEAR_ITEMS.
+    // Lay [lo, hi) out as code in one linear pass, skipping existing code and
+    // stepping a byte over what does not decode (jump tables, other embedded
+    // data). Bounded by MAX_LINEAR_ITEMS.
     static void lay_out_linear(ea_t lo, ea_t hi)
     {
         ea_t ip = lo;
@@ -94,26 +95,22 @@ namespace idattd
         if ( op.type == o_near || op.type == o_far )
             return op.addr;
 
-        // Indirect through a memory slot: "call [rip+disp]" (x64, where IDA
-        // resolves the rip-relative operand into an absolute o_mem address) or
-        // "call ds:xxx" (x86). That slot is an import table entry, and in a
-        // replay rather than a file it already holds the address the loader
-        // wrote there. Follow it.
+        // Indirect through a memory slot: "call [rip+disp]" (x64; IDA makes
+        // it an absolute o_mem address) or "call ds:xxx" (x86). The slot is an
+        // import entry, and in a replay it holds what the loader wrote there.
         if ( op.type == o_mem && op.addr != BADADDR && is_loaded(op.addr) )
         {
             slot_out = op.addr;
             ea_t tgt = m_is64 ? (ea_t)get_qword(op.addr) : (ea_t)get_dword(op.addr);
-            // Only trust the value if it lands inside a module the trace has
-            // loaded. The slot may hold something else entirely -- it is read at
-            // the current position, which can be before the loader filled the
-            // import table in, and a stale or unreadable slot would otherwise send
-            // add_func() off to carve a function out of garbage.
+            // Trusted only if it lands in a recorded module: read before the
+            // loader filled the import table, the slot holds something else,
+            // and add_func() would carve a function out of garbage.
             if ( tgt != 0 && tgt != BADADDR && m_modules->index_at(tgt) != (size_t)-1 )
                 return tgt;
         }
 
-        // call rax / call [rax+8]: only the trace knows where this went, and the
-        // per-stop path must not replay. Left for when execution reaches it.
+        // call rax / call [rax+8]: only the trace knows the target, and the
+        // per-stop path must not replay. Left until execution reaches it.
         return BADADDR;
     }
 
@@ -129,17 +126,16 @@ namespace idattd
         ea_t fstart, fend;
         if ( m_modules->function_range_at(ea, fstart, fend) && fstart == ea && fstart < fend )
         {
-            // The module's .pdata gives exact bounds: lay the whole body out in one
-            // linear pass, the same way analyze_current_function does for PC.
+            // .pdata gives exact bounds: lay the body out in one linear pass,
+            // as analyze_current_function does for the PC.
             lay_out_linear(fstart, fend);
             add_func(fstart, fend);
         }
         else
         {
-            // No .pdata (x86, dynamic code, or an address that is not a recorded
-            // function head). Seed one instruction and let IDA's recursive descent
-            // find the extent. AF_PROC is off, so this does not cascade into the
-            // callee's own callees -- which is the whole point of doing it here.
+            // No .pdata (x86, dynamic code, or not a recorded function head).
+            // Seed one instruction and let IDA's recursive descent find the
+            // extent; with AF_PROC off it does not cascade into the callees.
             force_insn(ea);
             add_func(ea);
         }
@@ -157,20 +153,17 @@ namespace idattd
     {
         if ( lo == BADADDR || hi <= lo )
             return;
-        // Stepping inside one function re-enters this on every single stop and
-        // there is nothing new to find until the function changes, so remember the
-        // last one scanned. (Reset explicitly wherever a function is torn down and
-        // rebuilt, so self-modifying code is rescanned.)
+        // Stepping inside one function finds nothing new until it changes, so
+        // the last one scanned is remembered (and reset wherever a function is
+        // rebuilt, so self-modifying code is rescanned).
         if ( lo == m_calleeScanFunc )
             return;
-        // Remembered only when every target got defined: at the first stop of
-        // a session a callee's module may not have a segment yet, and a scan
-        // remembered then would leave the call undefined until the function
-        // changed.
+        // Remembered only when every target was defined: at a session's first
+        // stop a callee's module may have no segment yet.
         bool complete = true;
 
-        // Bounded on both axes so this stays a per-stop-safe cost: a cap on how
-        // far the walk goes, and a cap on how many targets it defines.
+        // Caps on how far the walk goes and how many targets it defines keep
+        // this cheap enough for every stop.
         const int MAX_ITEMS   = 0x4000;
         const int MAX_TARGETS = 64;   // more direct calls than any real function has
 
@@ -198,11 +191,10 @@ namespace idattd
                     defined++;
                 }
 
-                // Now the slot the call reads through. Turning it into a
-                // pointer-sized offset stops it rendering as "call cs:unk_X", and
-                // naming it after its target turns it into the import name the
-                // reader actually wants: "call cs:__imp_CreateFileW". Only touch a
-                // slot that has no name and no type of its own yet.
+                // The slot the call reads through: as a pointer-sized offset
+                // named after its target it renders "call cs:__imp_CreateFileW"
+                // instead of "call cs:unk_X". Only a slot with no name or type
+                // of its own is touched.
                 if ( slot != BADADDR
                   && !has_any_name(get_flags(slot)) && !is_data(get_flags(slot)) )
                 {
@@ -223,10 +215,9 @@ namespace idattd
             m_calleeScanFunc = lo;
     }
 
-    // Only ever grows, and only into address space nothing else claims: a
-    // shorter definition is IDA having lost the flow, but a longer one may be
-    // deliberate (the user joined chunks by hand), and a range another
-    // function already owns is not this one's to take.
+    // Only grows, and only into space nothing else claims: a shorter
+    // definition is IDA losing the flow, but a longer one may be deliberate
+    // (chunks joined by hand), and another function's range is not this one's.
     void CodeAnalyzer::extend_to_pdata_bounds(ea_t pc, const func_entry_info_t &fi)
     {
         if ( m_pdataExtended.find(fi.start_ea) != m_pdataExtended.end() )
@@ -237,9 +228,9 @@ namespace idattd
             return;                          // x86, or no .pdata for this module
         m_pdataExtended.insert(fi.start_ea);
 
-        // The .pdata entry must describe this function's own chunk. When it starts
-        // elsewhere, pc is inside a tail chunk, and joining chunks is a different
-        // decision than extending one.
+        // The .pdata entry must describe this function's own chunk. If it
+        // starts elsewhere, pc is in a tail chunk, and joining chunks is a
+        // different decision.
         if ( ps != fi.start_ea || pe <= fi.end_ea )
             return;
 
@@ -247,15 +238,15 @@ namespace idattd
         if ( !get_segment_info(&seg, pc) || pe > seg.end_ea )
             return;
 
-        // Refuse if anything else already lives in the space it would absorb.
+        // Refuse if another function lives in the space it would absorb.
         for ( ea_t a = fi.end_ea; a < pe; a++ )
         {
             if ( get_func_start(a) != BADADDR )
                 return;
         }
 
-        // Lay the tail out before moving the end: set_func_end over undefined
-        // bytes leaves the function containing raw data.
+        // Lay the tail out first: set_func_end over undefined bytes leaves raw
+        // data in the function.
         lay_out_linear(fi.end_ea, pe);
         if ( set_func_end(fi.start_ea, pe) )
         {
@@ -274,25 +265,22 @@ namespace idattd
         func_entry_info_t cur_fi;
         if ( get_func_entry_info(&cur_fi, pc) )
         {
-            // A function IDA already defined can still be defined short. Its
-            // static analysis stops where it loses the flow -- at a noreturn call,
-            // an opaque tail jump, embedded data -- and the tail then renders as
-            // a JUMPOUT to an address outside the function. The module's exception
-            // table says exactly where the function ends.
+            // An existing function may be defined short: static analysis stops
+            // where it loses the flow (a noreturn call, an opaque tail jump,
+            // embedded data) and the tail renders as a JUMPOUT. The exception
+            // table says where it really ends.
             extend_to_pdata_bounds(pc, cur_fi);
 
             // A function this class defined in dynamic memory is checked for a
-            // rewrite (self-modifying or reused region, or a travel to a
-            // position where the same address holds different code) by hashing
-            // its bytes against definition time. Any other, or an unchanged
-            // one, is kept.
+            // rewrite (self-modifying or reused region, or a travel to where
+            // the address holds different code) by hashing its bytes. Any
+            // other, or an unchanged one, is kept.
             auto it = m_dynFuncBytes.find(cur_fi.start_ea);
             if ( it == m_dynFuncBytes.end() )
             {
-                // Nothing to re-disassemble, but its call targets may still be
-                // undefined -- the function could have been defined by the PDB
-                // plugin, or on a previous visit before a callee's module was
-                // mapped. Cheap thanks to define_callees' memo.
+                // Its call targets may still be undefined (defined by the PDB
+                // plugin, or on an earlier visit before a callee's module was
+                // mapped). Cheap thanks to define_callees' memo.
                 define_callees(playhead, cur_fi.start_ea, cur_fi.end_ea);
                 return;
             }
@@ -313,14 +301,12 @@ namespace idattd
         ea_t fstart, fend;
         if ( m_modules->function_range_at(pc, fstart, fend) && fstart < fend && fend <= seg.end_ea )
         {
-            // Module function with authoritative .pdata bounds: disassemble the
-            // whole range.
+            // Module function with .pdata bounds: disassemble the whole range.
             lay_out_linear(fstart, fend);
             add_func(fstart, fend);
-            // Library (non-target) module code: mark it FUNC_LIB so it renders as
-            // <name>+offset and is de-emphasized. The analyzed binary is the
-            // user's own code, so its functions stay normal. (A .pdata range
-            // means pc is in some module, so "not a library" is the main one.)
+            // Library code is marked FUNC_LIB so it renders as <name>+offset
+            // and is de-emphasized; the analysed binary's functions stay
+            // normal.
             if ( m_modules->is_library_address(pc) && get_func_start(fstart) == fstart
               && (get_func_flags(fstart) & FUNC_LIB) == 0 )
             {
@@ -330,31 +316,44 @@ namespace idattd
             return;
         }
 
-        // ---- runtime-allocated code (no module, no .pdata): shellcode,
-        // unpacked code, JIT. As Binary Ninja's debugger does, define a function
-        // and let IDA's recursive descent disassemble the whole thing, seeded at
-        // the function head so the prologue and the body above PC are laid out
-        // too, and backward stepping finds code already there.
+        // ---- dynamic code (no module, no .pdata): shellcode, unpacked code,
+        // JIT. As Binary Ninja's debugger does, define a function and let IDA's
+        // recursive descent disassemble it, seeded at the head so the prologue
+        // and the body above PC are laid out and backward steps find code.
         //
-        // The head is preferably the one recovered from the trace's call/return
-        // structure (the call that entered this frame), else the
-        // executed-address contiguity heuristic -- for a frame entered by a jmp
-        // or a thread start, or by a call older than the look-back window.
+        // The head is the one recovered from the call that entered this frame,
+        // else the executed-address contiguity heuristic (a frame entered by a
+        // jmp or a thread start, or by a call older than the bound).
+        //
+        // A PC where this already failed to make a function, with the same
+        // bytes, would fail again after the same bounded frame query and
+        // rebuild; only the cheap window layout is repeated.
+        auto failed = m_failedDyn.find(pc);
+        if ( failed != m_failedDyn.end() )
+        {
+            if ( failed->second == hash_mem(pc, DYN_HASH_BYTES) )
+            {
+                lay_out_window(playhead, pc);
+                define_callees(playhead, m_winLo, m_winHi);
+                return;
+            }
+            m_failedDyn.erase(failed);      // the code there changed: try again
+        }
+
         ea_t start = find_dynamic_function_entry(playhead, pc);
         if ( start == BADADDR || start > pc || get_segment_ea(start) != seg.start_ea )
             start = find_dynamic_start(playhead, pc);
 
-        // The position-based memory query returns zero-fill for this region's
-        // never-executed bytes. Rebuilding them from the trace's recorded writes
-        // lets the whole function, not just the executed path, disassemble --
-        // what WinDbg shows. Bounded to a window from the head and served
-        // thereafter by on_read_memory; IDA's cache for the range is
-        // invalidated so the create_insn below reads the real bytes.
+        // The position query zero-fills this region's never-executed bytes.
+        // Rebuilding them from recorded writes lets the whole function
+        // disassemble, not just the executed path, as in WinDbg. Bounded to a
+        // window from the head; IDA's cache for it is invalidated so
+        // create_insn below reads the real bytes.
         ea_t rlo  = start;
         ea_t aend = (pc > start ? pc : start) + DYN_LAYOUT_SPAN;
         ea_t rhi  = aend;
-        // Clamp to the enclosing segment, never widen to it: for dynamic code that
-        // segment is the synthetic range covering all of user space.
+        // Clamp to the segment, never widen to it: for dynamic code it can be
+        // the filler covering all of user space.
         if ( rhi > seg.end_ea )
             rhi = seg.end_ea;
         if ( rhi > rlo && m_memory->reconstruct(playhead, rlo, rhi) )
@@ -368,18 +367,16 @@ namespace idattd
         if ( nfs != BADADDR )
         {
             m_dynFuncBytes[nfs] = hash_mem(nfs, DYN_HASH_BYTES);
-            // Give dynamic (non-module) code its own debug name. Debugger views
-            // resolve names via the global "nearest debug name <= address" rule, so
-            // without an entry here a far-below module symbol (kernel32/ntdll/the exe)
-            // bleeds onto shellcode/JIT as "<unrelated>+huge_offset". A local name
-            // breaks that bleed for this function's range.
+            // Give dynamic code its own debug name. Debugger views use the
+            // nearest debug name at or below an address, so otherwise a far
+            // lower module symbol shows as "<unrelated>+huge_offset".
             qstring nm;
             if ( get_func_name(&nm, nfs) > 0 && !nm.empty() )
                 set_debug_name(nfs, nm.c_str());
 
-            // Shellcode and unpacked code call into the real modules constantly
-            // (LoadLibrary, VirtualProtect, ...). Defining those targets is what
-            // turns "call unk_7FF8xxxx" into a named import.
+            // Shellcode calls into real modules constantly (LoadLibrary,
+            // VirtualProtect); defining the targets turns "call unk_7FF8xxxx"
+            // into a named import.
             func_entry_info_t nfi;
             ea_t nfe = get_func_entry_info(&nfi, nfs) && nfi.end_ea > nfs
                      ? nfi.end_ea : aend;
@@ -387,6 +384,16 @@ namespace idattd
         }
         else
         {
+            // Remembered with a hash of the bytes, so a rewrite is retried. An
+            // unreadable PC (hash 0) is not remembered; the set is bounded by
+            // starting over when it fills.
+            uint64_t h = hash_mem(pc, DYN_HASH_BYTES);
+            if ( h != 0 )
+            {
+                if ( m_failedDyn.size() >= MAX_FAILED_DYN )
+                    m_failedDyn.clear();
+                m_failedDyn[pc] = h;
+            }
             lay_out_window(playhead, pc);             // PC reachable only via an indirect edge
             define_callees(playhead, m_winLo, m_winHi);
         }
@@ -402,9 +409,8 @@ namespace idattd
         const size_t  AFTER  = 192;     // ...and after
         const ea_t    W      = 0x2000;  // only collect addresses within +/-W of PC
 
-        // From a little before the current position, this thread's instruction
-        // stream forward: a window, read by the backend without moving the
-        // playhead.
+        // This thread's instruction stream from a little before the current
+        // position, read without moving the playhead.
         Position from = m_backend->position_add(playhead->position(), -BEFORE);
         std::vector<Access> v;
         m_backend->query_instructions(PositionRange{ from, Position::end() }, playhead->thread_id(),
@@ -429,9 +435,9 @@ namespace idattd
             return pc;                  // none <= pc
         --it;                           // largest executed address <= pc
 
-        // Walk down through executed addresses while they chain by instruction
-        // (gap <= max x86 insn length). A larger gap means the lower address is a
-        // different basic block reached by a jump, not the linear prologue.
+        // Walk down while executed addresses chain by instruction (gap at most
+        // the longest x86 instruction). A larger gap means a different block
+        // reached by a jump, not the linear prologue.
         ea_t lo = *it;
         while ( it != pcs.begin() )
         {
@@ -444,10 +450,9 @@ namespace idattd
         return lo;
     }
 
-    // Recover the head of the current frame's function from the trace itself:
-    // the call that entered this frame went to it. This is the "change in the
-    // callstack" boundary, the dynamic-code analogue of the .pdata bounds used
-    // for module code. Bounded, because it runs on every stop in such code.
+    // The head of the current frame's function is where the call that entered
+    // the frame went: the dynamic-code analogue of .pdata bounds. Bounded,
+    // since it can run on every stop in such code.
     ea_t CodeAnalyzer::find_dynamic_function_entry(ITraceCursor *playhead, ea_t pc)
     {
         // The head comes from the cursor's own position, not from 'pc'.
@@ -466,11 +471,10 @@ namespace idattd
         if ( m_backend == nullptr || playhead == nullptr )
             return;
 
-        // Already have a laid-out window comfortably surrounding PC? Skip the
-        // replay (cheap path while stepping inside the same region). The explicit
-        // validity test matters: m_winLo == BADADDR means "no window", and without
-        // it the +0x40 wraps to 0x3F and this test passes for every code address,
-        // permanently disabling the layout pass.
+        // A laid-out window already surrounds PC: skip the query. The validity
+        // test matters: m_winLo == BADADDR means "no window", and without it
+        // +0x40 wraps to 0x3F and the test passes for every code address,
+        // disabling the layout for good.
         if ( m_winLo != BADADDR && m_winLo < m_winHi
           && pc >= m_winLo + 0x40 && pc + 0x40 <= m_winHi
           && is_code(get_flags(pc)) )
@@ -479,20 +483,20 @@ namespace idattd
         std::set<ea_t> pcs;
         collect_window_pcs(playhead, pc, pcs);
 
-        // Realize the exact executed instructions (these are real boundaries).
+        // Define the executed instructions (real boundaries).
         for ( ea_t a : pcs )
             force_insn(a);
 
         if ( pcs.empty() )
         {
             force_insn(pc);             // at least the current instruction
-            m_winLo = BADADDR;          // "no window" -- matches the initial state
+            m_winLo = BADADDR;          // "no window", as initially
             m_winHi = 0;
             return;
         }
 
-        // Extend forward by linear decode from the furthest laid-out instruction
-        // (exact: it starts on a real boundary) so the user can scroll ahead.
+        // Decode linearly on from the furthest executed instruction (a real
+        // boundary) so the user can scroll ahead.
         ea_t ip = *pcs.rbegin();
         ea_t flimit = pc + 0x200;
         for ( int g = 0; ip < flimit && g < 4096; g++ )
@@ -528,11 +532,10 @@ namespace idattd
         const char *m_what;
     };
 
-    // Deep, on-demand analysis: find the call that entered the current frame,
-    // then lay out every instruction this frame executed from there to here --
-    // the frame's own, not those of the calls it made -- and define the
-    // function. The expensive path the per-stop handler avoids, so it runs
-    // behind a cancellable wait box.
+    // On-demand analysis: find the call that entered the current frame, lay
+    // out every instruction the frame itself executed since (not those of its
+    // calls), and define the function. Expensive, so behind a cancellable wait
+    // box.
     void CodeAnalyzer::analyze_whole_function(ITraceCursor *playhead)
     {
         if ( playhead == nullptr || m_backend == nullptr )
@@ -558,9 +561,9 @@ namespace idattd
         ea_t     entry = BADADDR;
         bool found = m_backend->query_frame_entry(here, tid, MAX_INSN, &call_pos, &entry);
 
-        // This thread's instructions from the call to here, at depth zero:
-        // a call nested in between is counted in and its return out, so only
-        // the frame's own instructions are laid out.
+        // This thread's instructions from the call to here at depth zero:
+        // nested calls count in and returns out, so only the frame's own
+        // instructions are laid out.
         std::vector<ea_t> frame_pcs;
         std::set<ea_t>    seen;
         frame_pcs.push_back(pc);

@@ -7,22 +7,18 @@ namespace idattd
 {
     class TraceManager;
 
-    // Where a value came from: "where did the current value of rax come
-    // from?", "where did the bytes at this address come from?".
+    // Where a value came from: the current rax, or the bytes at an address.
     //
-    // Each hop finds the instruction that last set a register or wrote some
-    // memory before a position. When that instruction only moved the value --
-    // a mov, a push or pop, a string move, an SSE load or store -- the next hop
-    // asks the same of its source, as it stood just before that instruction
-    // ran. The chain ends at an instruction that computed the value, at the
-    // system (a syscall's result, or memory the system wrote), at a constant
-    // in the code, or where nothing in the recording changed it.
+    // Each hop finds the instruction that last set a register or wrote memory
+    // before a position. When it only moved the value (mov, push or pop, a
+    // string move, an SSE load or store), the next hop asks the same of its
+    // source as it stood just before. The chain ends at a computation, at the
+    // system (a syscall's result, or memory it wrote), at a constant in the
+    // code, or where nothing in the recording changed the value.
     //
-    // A computation made from one value (lea rax, [rdi+0Dh]; inc rdi) is
-    // gone through as well, following that value. Where it ends at a
-    // computation of several, the walk goes on by hand: the values the
-    // instruction read (origin_inputs) are each a chain of their own, from
-    // just before it ran.
+    // A computation from one value (lea rax, [rdi+0Dh]; inc rdi) is followed
+    // through that value. One from several ends the chain; each value it read
+    // (origin_inputs) starts a chain of its own, from just before it ran.
 
     // A register or a range of memory, as of some position.
     struct OriginTarget
@@ -63,15 +59,15 @@ namespace idattd
         uint32_t     by_tid = 0;
         qstring      insn;              // that instruction's disassembly
         qstring      note;              // in words: "copied from rsi", "written by NtReadFile"
-        // The instruction made the value from several others: the chain ends
-        // here, and origin_inputs(by_pos) is where it goes on.
+        // The instruction combined several values: the chain ends here and
+        // continues from origin_inputs(by_pos).
         bool         combined = false;
     };
 
-    // Follow 'what' back from the playhead, at most 'max_hops' hops. Each hop's
-    // search runs behind a cancellable wait box. False when there is no
-    // session. 'through_computations' false stops at every computation, even
-    // of a single value.
+    // Follow 'what' back from the playhead, at most 'max_hops' hops, each
+    // search behind a cancellable wait box. False when there is no session.
+    // 'through_computations' false stops at every computation, even of a
+    // single value.
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
                             std::vector<OriginHop> *out, bool through_computations = true);
     // The same from 'at' instead of the playhead, on the thread running there.
@@ -85,19 +81,17 @@ namespace idattd
         bytevec_t    value;
         bool         address = false;   // a register that only formed an address
     };
-    // What the instruction about to run at 'at' read: the registers and
-    // memory it took operands from (the implicit ones of mul, div, cdq and
-    // the like included), then the registers that formed an address it read
-    // or wrote (for lea, those are its operands). Memory is the read the
-    // recording has. Empty for a syscall, or an instruction that reads
+    // What the instruction about to run at 'at' read: its operand registers
+    // and memory (including implicit ones of mul, div, cdq, ...), then the
+    // registers that formed an address (for lea, its operands). Memory is the
+    // read the recording has. Empty for a syscall, an instruction that reads
     // nothing, or one that cannot be decoded. False when there is no session.
     bool origin_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out);
 
-    // Every chain at once: from 'what' as of 'at', and at each instruction
-    // that combined several values, from each value it read (the registers
-    // that only formed an address, and the stack pointer, left out), breadth
-    // first, until 'max_nodes' hops. A value reached twice -- the same
-    // register or memory, seen at the same position -- is one node.
+    // Every chain at once, breadth first up to 'max_nodes' hops: from 'what'
+    // as of 'at', and from each value read by an instruction that combined
+    // several (address-only registers and the stack pointer left out). The
+    // same register or memory at the same position is one node.
     struct OriginGraph
     {
         std::vector<OriginHop> nodes;   // [0] is the value asked about

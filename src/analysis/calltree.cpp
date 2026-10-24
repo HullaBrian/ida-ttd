@@ -4,12 +4,11 @@
 
 namespace idattd
 {
-    // A run longer than this many rows is cut: a tree that size is not read
-    // row by row, and the chooser would take a long time to build.
+    // Row cap: a bigger tree is not read row by row and is slow to build.
     static const size_t kMaxRows = 100000;
 
-    // How far back to look for the call that entered the frame. A function
-    // that has been running for longer is shown from the cursor.
+    // How far back to look for the call that entered the frame; a function
+    // running longer is shown from the cursor.
     static const uint64_t kMaxBack = 50000000;
 
     void nest_calls(const std::vector<CallEvent> &calls, std::vector<CallTreeRow> *rows, size_t max_rows,
@@ -24,13 +23,24 @@ namespace idattd
         std::stable_sort(order.begin(), order.end(),
                          [](const CallEvent *a, const CallEvent *b) { return a->pos < b->pos; });
 
-        // The calls still running at the current row, innermost last. A call
+        // Return positions of the calls still running, innermost last. A call
         // that never returned stays open to the end.
         std::vector<Position> open;
         for ( const CallEvent *c : order )
         {
-            while ( !open.empty() && open.back().is_valid() && open.back() <= c->pos )
-                open.pop_back();
+            // The outermost call that has returned by now closes itself and
+            // everything opened inside it, including calls with no recorded
+            // return (left by an exception or longjmp): stopping at the first
+            // of those would keep the returned callers beneath it open and
+            // nest every later call too deep.
+            for ( size_t k = 0; k < open.size(); k++ )
+            {
+                if ( open[k].is_valid() && open[k] <= c->pos )
+                {
+                    open.resize(k);
+                    break;
+                }
+            }
             if ( rows->size() >= max_rows )
             {
                 if ( truncated != nullptr )
@@ -45,8 +55,8 @@ namespace idattd
             r.is_call = c->is_call;
             r.depth   = (int)open.size();
             rows->push_back(r);
-            // A jump has no return of its own: what it reached returns for
-            // the call that is already open.
+            // A jump has no return of its own: its target returns for the
+            // call already open.
             if ( c->is_call )
                 open.push_back(c->ret_pos);
         }
@@ -106,9 +116,9 @@ namespace idattd
                 out->root = fi.start_ea;
         }
 
-        // Every call in the window, then this thread's, nested. The entering
-        // call itself is the root, not a row.
-        // One past the return: a ret is recognised where it lands.
+        // Every call in the window, then this thread's, nested; the entering
+        // call is the root, not a row. The window ends one past the return,
+        // since a ret is recognised where it lands.
         std::vector<CallEvent> all;
         PositionRange when{ out->from, backend->position_add(out->to, 1) };
         qr = run_query("Listing the calls this function made", [&](ProgressSink *p)

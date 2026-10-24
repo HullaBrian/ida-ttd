@@ -1,12 +1,11 @@
 // calltree_py.hh: the call tree window, as IDAPython runs it.
 //
-// A real tree control -- columns, expand arrows, the theme's own colours --
-// is a Qt widget, and Hex-Rays steer plugins away from Qt in C++ (it ties the
-// binary to IDA's exact Qt build) and towards PySide6 in IDAPython. So the
-// plugin builds the tree and this draws it: it asks the plugin for the tree
-// with ttd("ui.calltree") and travels with ttd("ui.travel POS"), the same
-// script commands a test uses. ui_calltree.cpp falls back to a text view
-// when IDAPython is not there.
+// A real tree control (columns, expand arrows, theme colours) is a Qt widget,
+// and Hex-Rays steer plugins away from Qt in C++ (it ties the binary to IDA's
+// exact Qt build) towards PySide6 in IDAPython. The plugin builds the tree;
+// this draws it, fetching it with ttd("ui.calltree") and travelling with
+// ttd("ui.travel POS"), the same commands a test uses. Without IDAPython,
+// ui_calltree.cpp falls back to a text view.
 #pragma once
 
 namespace idattd
@@ -19,6 +18,8 @@ def _ida_ttd_call_tree():
     from PySide6 import QtCore, QtGui, QtWidgets
 
     def ttd(cmd):
+        # cmd becomes an IDC string literal: escape what would end it early.
+        cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
         return json.loads(idc.eval_idc('ttd("%s")' % cmd))
 
     data = ttd("ui.calltree")
@@ -38,8 +39,8 @@ def _ida_ttd_call_tree():
             self.view.setColumnCount(len(COLUMNS))
             self.view.setHeaderLabels(COLUMNS)
             self.view.setUniformRowHeights(True)
-            # Alternate rows a shade off the view's own background. IDA's
-            # dark theme leaves AlternateBase near white, under light text.
+            # Alternate rows a shade off the background: IDA's dark theme
+            # leaves AlternateBase near white, under light text.
             pal = self.view.palette()
             base = pal.color(QtGui.QPalette.Base)
             alt = base.lighter(118) if base.lightness() < 128 else base.darker(104)
@@ -77,9 +78,8 @@ def _ida_ttd_call_tree():
             root.setData(0, POS_ROLE, tree["from"])
             root.setData(0, TARGET_ROLE, tree["root"])
             self.view.addTopLevelItem(root)
-            # Rows come in the order the calls were made, each one deeper than
-            # the call it was made in, so the parent of a row is the nearest
-            # row above it that is one level up.
+            # Rows are in call order, each one level deeper than its caller,
+            # so a row's parent is the nearest row above it one level up.
             stack = [root]
             items = [root]
             depths = [0]
@@ -117,10 +117,10 @@ def _ida_ttd_call_tree():
             self.status.setText(note + ".  Double-click or Enter to go there.")
 
         def count_below(self, items, depths):
-            # The calls below each one, from the items in tree order: what
-            # follows an item deeper than it is below it. From the end, so
-            # each subtree's size is known when its parent skips over it; no
-            # recursion, which a deep tree would take past Python's limit.
+            # Subtree sizes from the items in tree order (what follows an item
+            # at greater depth is below it). Walked from the end so a child's
+            # size is known when its parent skips over it; no recursion, which
+            # a deep tree would take past Python's limit.
             below = [0] * len(items)
             for i in range(len(items) - 1, -1, -1):
                 end = i + 1
@@ -165,9 +165,9 @@ def _ida_ttd_call_tree():
 
         def apply_filter(self, text):
             text = text.strip().lower()
-            # Every item with its parent's index, parents first; then from the
-            # end, so an item's children are settled before it. A row stays
-            # when it matches or something below it does.
+            # Every item with its parent's index, parents first; then walked
+            # from the end so children are settled first. A row stays when it
+            # or something below it matches.
             order = []
             todo = [(self.view.topLevelItem(i), -1) for i in range(self.view.topLevelItemCount())]
             while todo:

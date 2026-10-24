@@ -5,11 +5,10 @@
 
 namespace idattd
 {
-    // Just enough x86 decoding for the navigator: is the instruction at hand a
-    // call, and how long is it (its return address is just past it), or a
-    // return. A backend runs outside IDA's database, so IDA's decoder is not
-    // available -- and these two questions need only the opcode, ModRM, SIB
-    // and displacement, never the operands' meaning.
+    // Just enough x86 decoding for the navigator: is the instruction a call
+    // (and how long, since its return address is just past it) or a return.
+    // A backend has no IDA decoder, and these questions need only the opcode,
+    // ModRM, SIB and displacement.
     struct X86Branch
     {
         bool is_call = false;   // E8, FF /2, FF /3, 9A

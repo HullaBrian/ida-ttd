@@ -1,26 +1,23 @@
 // ---------------------------------------------------------------------------
 // ida-ttd trace loader
 //
-// Lets IDA open a time travel recording -- a Microsoft TTD .run, or any kind a
-// backend in plugins/ida-ttd-backends reads -- as a file in its own right,
-// with no copy of the recorded binary on disk. The recorded
-// program's image is read back out of the recording itself -- its PE headers and
-// section bytes, at the position where the loader mapped it -- and laid down as
-// ordinary IDA segments at the address it really occupied.
+// Lets IDA open a recording (a Microsoft TTD .run, or anything an installed
+// backend reads) as a file, with no copy of the recorded binary on disk. The
+// program's PE headers and section bytes are read from the recording, at the
+// position where it was mapped, and laid down as IDA segments at the address
+// it really occupied.
 //
-// This is a separate binary from the plugin: IDA finds loaders by looking for an
-// exported LDSC in DLLs under loaders/, and plugins by looking for PLUGIN under
-// plugins/. One file cannot sit in both places without being loaded twice, with
-// two copies of every global fighting over the debugger pointer.
+// A separate binary from the plugin: IDA finds loaders (LDSC) under loaders/
+// and plugins (PLUGIN) under plugins/, and one file in both places would be
+// loaded twice, with two copies of every global.
 //
-// What the loader leaves behind is a database plus a small record (trace_link)
-// naming the recording, so the plugin can offer to start replaying it. The
-// loader itself never touches the debugger.
+// The loader leaves a database plus a trace_link record naming the
+// recording, so the plugin can offer to replay it. It never touches the
+// debugger.
 // ---------------------------------------------------------------------------
 #include "common/pch.h"
-// idaldr.h's validate_array_count template trips C4018/C4267 at this project's
-// warning level. It is SDK code, so the warnings are silenced around the
-// include only; the loader's own code still compiles at Level3.
+// idaldr.h's validate_array_count trips C4018/C4267; silenced around the SDK
+// include only.
 #pragma warning(push)
 #pragma warning(disable: 4018 4267)
 #include <idaldr.h>
@@ -37,20 +34,34 @@
 
 using namespace idattd;
 
-// The path accept_file was shown, kept as a fallback for load_file.
-//
-// accept_file is given the file name; load_file is not. The database's input
-// path is the primary source there, and this is the belt to its braces: IDA
-// calls accept_file for every loader while building the format list, then
-// load_file for the one the user picked, so the last value stashed here is ours.
+// The path accept_file was given, as load_file's fallback (load_file gets no
+// file name; the database's input path comes first). IDA calls accept_file
+// while building the format list, then load_file, so the last value is right.
 static qstring g_accepted_path;
 
-// Which backend reads the file at 'path', loading the backend modules the
-// first time something other than a .run is offered.
+// The backend that reads 'path'. Loads the backend modules on first use,
+// without installing a log callback: IDA unloads this DLL after loading, and
+// the backend DLLs (shared with the plugin) stay. load_file attaches the log
+// only for its own work and detaches it before returning.
 static ITraceBackend *backend_for(const char *path)
 {
-    load_backend_modules();
+    load_backend_modules(false);
     return BackendRegistry::instance().for_file(path);
+}
+
+// Whether a file could be a recording some backend reads, judged without
+// loading any backend: accept_file sees every file IDA opens, and loading the
+// backend DLLs (Sogen's is large) for each .exe would be slow and would map
+// code nobody asked for. The ABI has no way to learn a backend's signature
+// before loading it, so the known formats are listed here: Sogen's .sogttd,
+// whose header starts "SOGTTD" followed by a version digit and a NUL. A new
+// backend's format needs a line here to be opened through File > Open.
+static bool may_be_backend_recording(const char *filename, const char *head, size_t n)
+{
+    if ( n >= 6 && memcmp(head, "SOGTTD", 6) == 0 )
+        return true;
+    const char *ext = filename != nullptr ? strrchr(filename, '.') : nullptr;
+    return ext != nullptr && _stricmp(ext, ".sogttd") == 0;
 }
 
 static int idaapi accept_file(
@@ -59,19 +70,21 @@ static int idaapi accept_file(
         linput_t *li,
         const char *filename)
 {
-    // This runs for every file IDA is asked to open, so it must stay cheap.
-    // A .run is recognised from its six magic bytes without loading anything
-    // -- certainly not TTDReplay.dll. Anything else is offered to the
-    // backends, each of which only reads a signature (ITraceBackend::can_open).
-    char magic[6] = { 0 };
+    // Runs for every file IDA opens, so it must stay cheap. A .run is known
+    // by its six magic bytes without loading anything (least of all
+    // TTDReplay.dll); anything else whose name or header looks like a known
+    // backend format goes to the backends' can_open, which only reads a
+    // signature.
+    char magic[8] = { 0 };
     qlseek(li, 0, SEEK_SET);
-    bool is_run = qlread(li, magic, sizeof(magic)) == sizeof(magic)
-               && memcmp(magic, "TTDLog", sizeof(magic)) == 0;
+    ssize_t got = qlread(li, magic, sizeof(magic));
+    bool is_run = got >= 6 && memcmp(magic, "TTDLog", 6) == 0;
 
     ITraceBackend *b = nullptr;
     if ( !is_run )
     {
-        if ( filename == nullptr || !qfileexist(filename) )
+        if ( filename == nullptr || !qfileexist(filename)
+          || !may_be_backend_recording(filename, magic, got > 0 ? (size_t)got : 0) )
             return 0;
         b = backend_for(filename);
         if ( b == nullptr )
@@ -86,14 +99,13 @@ static int idaapi accept_file(
     else
         fileformatname->sprnt("%s recording", b->display_name());
     *processor      = "metapc";
-    // ACCEPT_FIRST puts this above IDA's always-present "Binary file" entry in
-    // the load dialog, which is the only other thing that will claim a trace.
+    // ACCEPT_FIRST puts this above IDA's "Binary file" entry, the only other
+    // format that claims a trace.
     return 1 | ACCEPT_FIRST;
 }
 
-// Where the trace actually is. INF_INPUT_FILE_PATH is set before load_file runs;
-// the stashed name covers the case where it is not (an archive member name, for
-// instance, which names a file that does not exist).
+// Where the trace is: the input file path, or the stashed name when that path
+// does not exist (an archive member name, for instance).
 static qstring trace_file_path()
 {
     char buf[QMAXPATH];
@@ -109,8 +121,7 @@ static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const c
     if ( (chars & IMAGE_SCN_MEM_EXECUTE) != 0 ) p |= SEGPERM_EXEC;
     if ( (chars & IMAGE_SCN_MEM_READ)    != 0 ) p |= SEGPERM_READ;
     if ( (chars & IMAGE_SCN_MEM_WRITE)   != 0 ) p |= SEGPERM_WRITE;
-    // A section that claims none of the three is malformed rather than
-    // inaccessible; treat it as readable so its bytes are still browsable.
+    // A section with none of the three is malformed; keep it readable.
     if ( p == 0 )
         p = SEGPERM_READ;
     *perm = p;
@@ -125,13 +136,9 @@ static void section_attrs(uint32_t chars, uint32_t rawsize, uchar *perm, const c
         *sclass = CLASS_DATA;
 }
 
-// Copy [lo, hi) out of the recording into the database: every byte the
-// recording really has, and nothing else.
-//
-// The backend says which bytes those are. A placeholder -- memory the
-// recording knows is mapped but has no value for -- is not copied: zeros in
-// the database would claim a value nobody saw, and IDA shows an unloaded byte
-// as exactly what it is.
+// Copy the bytes of [lo, hi) the recording really has into the database.
+// Placeholders (mapped memory with no recorded value) are skipped: zeros would
+// claim a value nobody saw, while an unloaded byte shows as what it is.
 static size_t fill_from_trace(ITraceCursor *cur, ea_t lo, ea_t hi)
 {
     static const size_t PAGE = 0x1000;
@@ -144,6 +151,12 @@ static size_t fill_from_trace(ITraceCursor *cur, ea_t lo, ea_t hi)
         size_t want = (size_t)qmin((uint64_t)PAGE - (a & (PAGE - 1)), (uint64_t)(hi - a));
         memset(buf, 0, want);
         cur->read_memory(a, buf, want, &known);
+        // A backend that cannot read memory leaves 'known' as it was.
+        if ( known.size() < want )
+        {
+            a += want;
+            continue;
+        }
         for ( size_t i = 0; i < want; )
         {
             if ( known[i] != ITTD_KNOWN_YES )
@@ -163,14 +176,15 @@ static size_t fill_from_trace(ITraceCursor *cur, ea_t lo, ea_t hi)
     return total;
 }
 
-// Does the recording actually have this address's bytes at the cursor's
-// position? Used to choose where to read the image from. Real code is never
-// 64 zero bytes, so a placeholder page does not count.
+// Whether the recording has this address's bytes at the cursor's position.
+// Real code is never 64 zero bytes, so a placeholder page does not count.
 static bool image_readable_here(ITraceCursor *cur, ea_t ea)
 {
     uint8_t b[64] = { 0 };
     std::vector<uint8_t> known;
     cur->read_memory(ea, b, sizeof(b), &known);
+    if ( known.size() < sizeof(b) )
+        return false;
     for ( size_t i = 0; i < sizeof(b); i++ )
         if ( known[i] == ITTD_KNOWN_YES && b[i] != 0 )
             return true;
@@ -183,12 +197,9 @@ static bool is_exe(const qstring &name)
     return n > 4 && _stricmp(name.c_str() + n - 4, ".exe") == 0;
 }
 
-// The module the recording is of.
-//
-// The whole database hangs off this choice. The first executable image mapped
-// is the program being recorded: earlier in a recording come only the system
-// DLLs the process starts with (a Sogen recording, for one, maps win32u
-// before the program). Then the backend's own answer, then anything at all.
+// The recorded program: the first .exe mapped (only system DLLs come earlier;
+// a Sogen recording maps win32u first), else the backend's main module, else
+// the first module.
 static const ModuleInfo *pick_main_module(ITraceBackend *backend,
                                           const std::vector<ModuleInfo> &mods)
 {
@@ -210,13 +221,9 @@ static const ModuleInfo *pick_main_module(ITraceBackend *backend,
     return mods.empty() ? nullptr : &mods.front();
 }
 
-// loader_failure() does not return -- it longjmps -- so no destructor between
-// here and IDA's handler runs. That matters for the recording in particular:
-// leaving it open keeps the file locked for the rest of the session, so a
-// user who fixes the problem and tries again cannot even move the file. This
-// releases what load_file holds, then fails. Both live here rather than on
-// load_file's stack so that what is released is owned, not a pointer into a
-// frame the longjmp abandons.
+// loader_failure() longjmps, so no destructor runs. A recording left open stays
+// locked for the session, so fail() releases it first. The handles live here,
+// not on load_file's stack, so they are not in a frame the longjmp abandons.
 static ITraceBackend *g_backend = nullptr;
 static CursorPtr      g_cursor;
 
@@ -226,6 +233,9 @@ static void release_trace()
     if ( g_backend != nullptr )
         g_backend->close();
     g_backend = nullptr;
+    // Nothing of the backend runs on after this, so its log can be taken
+    // back and what it queued printed while this DLL is still loaded.
+    detach_backend_log();
 }
 
 AS_PRINTF(1, 2) static void fail(const char *format, ...)
@@ -242,9 +252,8 @@ AS_PRINTF(1, 2) static void fail(const char *format, ...)
 
 void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatname)
 {
-    // The processor module owns the segment defaults, so it has to be chosen
-    // before any segment or byte is created. With SETPROC_LOADER this reports
-    // its own failure and does not return.
+    // The processor owns segment defaults, so it is set before any segment.
+    // With SETPROC_LOADER a failure does not return.
     set_processor_type("metapc", SETPROC_LOADER);
 
     qstring path = trace_file_path();
@@ -254,9 +263,15 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     ITraceBackend *backend = backend_for(path.c_str());
     if ( backend == nullptr )
         loader_failure("No installed backend reads %s.", path.c_str());
+    // The backend's diagnostics (index building can take minutes) reach the
+    // output window during the load. Lines from other threads are only
+    // queued, never posted as UI requests, which could run after IDA unloads
+    // this DLL; release_trace() detaches the log and prints them, on every
+    // way out (fail() calls it too).
+    attach_backend_log(false);
     qstring err;
     if ( !backend->open(path.c_str(), &err) )
-        loader_failure("%s", err.c_str());
+        fail("%s", err.c_str());
     g_backend = backend;
 
     std::vector<ModuleInfo> mods = backend->modules();
@@ -271,12 +286,10 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
 
     // ---- preparation ----------------------------------------------------
     //
-    // For a Microsoft trace, the memory index. Reading the image out of the
-    // recording needs one, and building it is uninterruptible and can run for
-    // minutes. That is not something to start without asking during a File >
-    // Open. Declining still produces a useful database -- correct addresses,
-    // names and permissions, no bytes -- and the plugin will build the index
-    // when the user starts the replay.
+    // A Microsoft trace needs its memory index to read the image, and building
+    // it is uninterruptible and can take minutes, so ask. Declining still gives
+    // correct addresses, names and permissions (no bytes); the plugin builds
+    // the index when the replay starts.
     bool haveIndex = backend->prepared();
     if ( !haveIndex && (neflags & NEF_MINI) == 0 )
     {
@@ -293,9 +306,8 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
             fail("Loading the trace was cancelled.");
         if ( r == ASKBTN_YES )
         {
-            // loader_failure() longjmps, so nothing here may fail while a wait
-            // box is up or a worker thread is alive; prepare_backend()
-            // returns with both gone.
+            // Nothing may longjmp while a wait box or worker is alive;
+            // prepare_backend() returns with both gone.
             haveIndex = prepare_backend(backend);
         }
     }
@@ -310,10 +322,9 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     GuestPeInfo pe;
     bool havePe = read_guest_pe_info(guest_read(cur.get()), mainBase, &pe);
 
-    // Bitness comes from the optional header magic. It must not come from what
-    // the recording says of the machine: a 32-bit program recorded on an x64
-    // box would report itself as 64-bit and every register read afterwards
-    // would use the wrong register table.
+    // Bitness from the optional header magic, not the recording machine: a
+    // 32-bit program recorded on x64 would otherwise get the wrong register
+    // table.
     bool is64 = havePe ? pe.is64 : ((uint64_t)mainBase > 0xFFFFFFFFull);
     if ( !havePe )
     {
@@ -321,14 +332,10 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
             "assuming %d-bit from its load address.\n", mainName.c_str(), is64 ? 64 : 32);
     }
 
-    // Where to read the image from.
-    //
-    // The natural answer is the position at which the loader mapped it, and that
-    // is the right static baseline. But a recording may only hold memory as it
-    // is accessed, and at the instant a module appears nothing in it has been
-    // touched. When the entry point reads back as nothing, take the end of the
-    // recording instead, by which point everything the program executed has
-    // been seen.
+    // Read the image where it was mapped, the right static baseline. But a
+    // recording may hold memory only once accessed, and nothing is touched
+    // yet when a module appears; if the entry point reads back empty, use the
+    // end of the recording, by which time all executed code has been seen.
     if ( havePe && pe.entry_rva != 0 && haveIndex
       && !image_readable_here(cur.get(), mainBase + pe.entry_rva) )
     {
@@ -346,27 +353,30 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     }
 
     inf_set_app_bitness(is64 ? 64 : 32);
-    // f_PE rather than f_LOADER: the PDB plugin and the x86 module both gate
-    // real behaviour on it (symbol loading, MS calling conventions), and the
-    // debugger backend copies it into debugger_t::filetype.
+    // f_PE, not f_LOADER: the PDB plugin and the x86 module gate behaviour on
+    // it (symbols, MS calling conventions), and the debugger copies it into
+    // debugger_t::filetype.
     inf_set_filetype(f_PE);
     inf_set_baseaddr(0);
     inf_set_dll(false);
     set_imagebase(mainBase);
     set_compiler_id(COMP_MS);
-    // The Windows SDK type library, as IDA's own PE loader would choose. Left
-    // to itself IDA guessed the kernel DDK's (ntddk64_win7 on a beacon), which
-    // has no user-mode API at all: no CreateFileW, no InternetConnectA, so no
-    // prototype for a resolved call and no typed arguments in the decompiler.
-    // A TTD recording is always of a user-mode process.
+    // The Windows SDK type library, as IDA's PE loader would choose. Left alone
+    // IDA picked the kernel DDK's (ntddk64_win7), which has no user-mode API,
+    // so resolved calls got no prototypes. A recording is always user mode.
     add_til(is64 ? "mssdk64_win10" : "mssdk_win10", ADDTIL_DEFAULT);
 
     // ---- segments --------------------------------------------------------
-    // One flat selector for the whole image: this is a 32/64-bit PC program,
-    // not a segmented one.
+    // One flat selector for the whole image.
     sel_t sel      = setup_selector(0);
-    ea_t  imageEnd = mainBase + (ea_t)(havePe && pe.size_of_image != 0
-                                     ? pe.size_of_image : main->size);
+    // The smaller of the PE's SizeOfImage and the engine's module size: a
+    // corrupt or hostile header must not stretch the segments past what the
+    // recording mapped.
+    uint64_t imageSize = main->size;
+    if ( havePe && pe.size_of_image != 0 )
+        imageSize = imageSize != 0 ? qmin((uint64_t)pe.size_of_image, (uint64_t)imageSize)
+                                   : (uint64_t)pe.size_of_image;
+    ea_t  imageEnd = mainBase + (ea_t)imageSize;
     int   nsegs    = 0;
 
     uint64_t loaded = 0;
@@ -389,13 +399,11 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
         si.set_perm(perm);
         si.set_name(name);
         si.set_sclass(sclass);
-        // SFL_LOADER: these segments came from the file, not from a debugger.
-        // The plugin relies on that distinction to tell code that survives the
-        // session from code that only exists while a trace is loaded.
+        // SFL_LOADER: the plugin uses it to tell segments that survive the
+        // session from debugger segments.
         si.set_loader_segm(true);
-        // Sparse storage only where nothing was loaded. Where bytes were, the
-        // ranges mem2base enabled are already dense and mixing the two buys
-        // nothing.
+        // Sparse only where nothing was loaded; mem2base already made the
+        // loaded ranges dense.
         int flags = ADDSEG_NOSREG | ADDSEG_QUIET;
         if ( got == 0 )
             flags |= ADDSEG_SPARSE;
@@ -407,9 +415,8 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     {
         if ( pe.size_of_headers != 0 )
         {
-            // Clamp to the first section. A malformed SizeOfHeaders that runs
-            // past it would otherwise make that section truncate or destroy the
-            // header segment when it is added.
+            // Clamp to the first section, which would otherwise truncate or
+            // destroy the header segment on a malformed SizeOfHeaders.
             ea_t hdrEnd = mainBase + pe.size_of_headers;
             ea_t first  = mainBase + pe.sections[0].va;
             if ( hdrEnd > first )
@@ -425,8 +432,8 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
                 continue;
             ea_t lo = mainBase + s.va;
             ea_t hi = lo + span;
-            // Sections are given in ascending order; clamp a section that runs
-            // into the next one so add_segment_ex is never asked to overlap.
+            // Clamp a section running into the next so segments never
+            // overlap (sections are normally in ascending order).
             if ( i + 1 < pe.sections.size() )
             {
                 ea_t next = mainBase + pe.sections[i + 1].va;
@@ -444,8 +451,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     }
     else
     {
-        // No readable section table: one segment over the module's recorded
-        // extent is still far better than nothing.
+        // No readable section table: one segment over the recorded extent.
         add_one(mainBase, imageEnd, mainName.c_str(), CLASS_CODE,
                 SEGPERM_READ | SEGPERM_WRITE | SEGPERM_EXEC);
     }
@@ -461,9 +467,8 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
         add_entry(entry, entry, "start", true);
     }
 
-    // Names and function bounds that come for free, since a cursor is already
-    // open at a position where the module is mapped. Without this the database
-    // is bytes with no structure until the debugger attaches.
+    // Export names come for free while a cursor is open where the module is
+    // mapped; without them the database has no structure until a replay.
     if ( haveIndex && (neflags & NEF_MINI) == 0 )
     {
         size_t named = apply_module_exports(guest_read(cur.get()), mainBase, is64);
@@ -474,11 +479,9 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
 
     // ---- provenance -------------------------------------------------------
     //
-    // The database's input path becomes the RECORDED module's path rather than
-    // the .run. That is what the title bar should say, and it also makes the
-    // debugger backend's "is this the module the database is of?" test work
-    // unchanged: IDA passes this path to ev_start_process, and TraceManager
-    // compares its base name against each module the trace loads.
+    // The input path becomes the recorded module's path, not the recording's:
+    // the title bar shows it, and IDA passes it to ev_start_process, where
+    // TraceManager matches its base name against the trace's modules.
     set_root_filename(mainPath.c_str());
     create_filename_cmt();
     add_pgm_cmt("Trace:           %s (%s)", path.c_str(), backend->display_name());
@@ -509,10 +512,9 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     release_trace();
 }
 
-// Nothing in this database was relocated: the bytes came from recorded memory
-// at the address they really occupied, so there are no fixups to patch when a
-// segment moves. Saying so explicitly beats a null, which IDA has to treat as
-// "this loader cannot move segments at all".
+// The bytes came from recorded memory at their real address, so there are no
+// fixups to patch when a segment moves. A null here would tell IDA this loader
+// cannot move segments at all.
 static int idaapi move_segm(ea_t, ea_t, asize_t, const char *)
 {
     return 1;

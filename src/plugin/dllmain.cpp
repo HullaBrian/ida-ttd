@@ -1,17 +1,16 @@
-// dllmain.cpp : Defines the entry point for the DLL application.
+// DLL entry point.
 #include "common/pch.h"
 
-// The plugin's own module handle, kept so the plugin can work out the file name IDA
-// knows it by. That is not a cosmetic question: load_debugger() selects a
-// debugger by the file name of the plugin that provides it, not by
-// debugger_t::name, so switching to ourselves programmatically needs it. The
-// SDK's own win32 debugger shows this -- it calls load_debugger("win32_stub")
-// while its debugger_t::name is "win32".
+// The plugin's module handle, for the file name IDA knows it by.
+// load_debugger() selects a debugger by its plugin's file name, not by
+// debugger_t::name, so switching to this debugger programmatically needs it
+// (the SDK's win32 debugger calls load_debugger("win32_stub") while its
+// debugger_t::name is "win32").
 static HMODULE g_module = nullptr;
 
-// Base name of this DLL without its extension ("ida-ttd"), or an empty string
-// if it cannot be determined. Derived at runtime rather than hard-coded so a
-// renamed plugin still finds itself.
+// Base name of this DLL without its extension ("ida-ttd"), or empty if it
+// cannot be determined. Derived at runtime so a renamed plugin still finds
+// itself.
 qstring plugin_module_name()
 {
     qstring out;

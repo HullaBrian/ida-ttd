@@ -7,46 +7,40 @@ namespace idattd
 {
     class TraceManager;
 
-    // The syscalls the recording made, for a backend that can list them
-    // (capabilities().syscalls: Sogen records them, Microsoft TTD's are its
-    // transitions into the kernel). Runs behind a cancellable wait box.
-    //
-    // Returns false when it could not run at all; 'cancelled' leaves 'out'
-    // holding what was gathered so far.
+    // The recording's syscalls (capabilities().syscalls: Sogen records them;
+    // on Microsoft TTD they are the transitions into the kernel). Behind a
+    // cancellable wait box. False when it could not run; when cancelled,
+    // 'out' holds what was gathered.
     bool list_syscalls(TraceManager *mgr, std::vector<SyscallEvent> *out, bool *cancelled);
 
-    // ITTD_REG_* of the registers holding an x64 syscall's first four
-    // arguments at the syscall instruction: r10, rdx, r8, r9. The stub copies
-    // rcx to r10 because the instruction overwrites rcx with the return
-    // address; the fifth argument on is at [rsp+0x28], past that return
-    // address and the 32-byte home area.
+    // ITTD_REG_* of an x64 syscall's first four arguments at the syscall
+    // instruction: r10, rdx, r8, r9 (the stub copies rcx to r10, since the
+    // instruction overwrites rcx). The fifth on is at [rsp+0x28], past the
+    // return address and the 32-byte home area.
     constexpr int SYSCALL_ARG_REGS[4] = { ITTD_REG_R8 + 2, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 };
 
-    // The first four arguments of each syscall in [first, first + count): the
-    // registers at its position (SYSCALL_ARG_REGS). An entry is empty when the
-    // registers could not be reconstructed.
+    // The first four arguments (SYSCALL_ARG_REGS) of each syscall in
+    // [first, first + count); empty where the registers were not recovered.
     using SyscallArgs = std::array<uint64_t, 4>;
     void syscall_arguments(ITraceBackend *backend, const std::vector<SyscallEvent> &calls,
                            size_t first, size_t count,
                            std::vector<std::optional<SyscallArgs>> *out);
 
     // Every syscall's arguments decoded from the native API metadata (phnt):
-    // decoded[i] is "name=value, ..." for calls[i], empty where there is no
-    // signature. Each call's arguments are read at it, and what the kernel
-    // wrote back after it. Runs behind a cancellable wait box; 'cancelled'
-    // leaves 'decoded' empty.
+    // decoded[i] is "name=value, ..." for calls[i], empty without a
+    // signature. Arguments are read at the call, out values after it. Behind
+    // a cancellable wait box; cancelling leaves 'decoded' empty.
     bool decode_syscalls(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
                          std::vector<qstring> *decoded, bool *cancelled);
     // The list and its decoding, kept in the database against the recording.
     void save_syscalls(const std::vector<SyscallEvent> &calls, const std::vector<qstring> &decoded);
     bool load_syscalls(std::vector<SyscallEvent> *calls, std::vector<qstring> *decoded);
 
-    // Every instruction the program wrote before running it, for a backend
-    // that can look (capabilities().self_modifying). One pass over the whole
-    // recording behind a cancellable wait box.
+    // Every instruction the program wrote before running it
+    // (capabilities().self_modifying). One pass over the recording behind a
+    // cancellable wait box.
     bool find_self_modifying(TraceManager *mgr, std::vector<SelfModHit> *out, bool *cancelled);
 
-    // "STATUS_SUCCESS"-style text for the common NTSTATUS values a syscall
-    // returns, else nullptr.
+    // "STATUS_SUCCESS"-style name of a common NTSTATUS, else nullptr.
     const char *ntstatus_name(uint32_t status);
 }

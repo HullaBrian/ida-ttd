@@ -20,11 +20,10 @@ namespace idattd
         bool                  has_ret = false;
     };
 
-    // Records every call to a user-selected set of functions over the entire
-    // execution. A single sweep (run_sweep) replays the whole trace once with a
-    // call/return callback, then resolves arguments/return values in a second
-    // pass. Robust to import thunks: the picked address is resolved to the real
-    // runtime callee address(es) before matching.
+    // Records every call to a user-selected set of functions over the whole
+    // recording. run_sweep finds the calls in one backend query, then reads
+    // arguments and return values in a second pass. Picked addresses are
+    // resolved through import thunks to the real runtime callees first.
     class FunctionTracer
     {
     public:
@@ -45,17 +44,17 @@ namespace idattd
         FunctionInvocation event_at(size_t n);
         void               remove_event(size_t n);
         void               clear_events();
-        // A stable copy of all recorded events (for an independent chooser tab
-        // whose contents won't change when a later sweep replaces the live set).
+        // A copy of all events, for a chooser tab that a later sweep must not
+        // change.
         std::vector<FunctionInvocation> snapshot_events();
 
-        // Replay the whole trace and (re)build the event list for the currently
-        // traced functions. Shows a wait box; safe to call from a UI action.
+        // Rebuild the event list for the traced functions from the whole
+        // recording. Shows a wait box; safe from a UI action.
         void run_sweep();
 
     private:
-        // Resolve a picked address to the set of real runtime callee addresses
-        // (follows import thunks and reads the live IAT pointer).
+        // The runtime callee addresses for a picked address (through import
+        // thunks and the live IAT pointer).
         std::vector<ea_t> resolve_targets(ea_t func_ea) const;
 
         TraceManager      *m_mgr  = nullptr;

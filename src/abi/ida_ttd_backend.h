@@ -1,46 +1,45 @@
 /*
  * ida-ttd backend ABI
  *
- * The boundary between the ida-ttd core plugin and a backend module that knows
- * how to read one kind of recording. A backend is a separate DLL: the core
- * loads it, asks it whether it handles a file, and then talks to it only
- * through the function table below.
+ * The boundary between the ida-ttd core plugin and a backend DLL that reads
+ * one kind of recording. The core loads the DLL, asks whether it handles a
+ * file, and then talks to it only through the function table below.
  *
  * ---------------------------------------------------------------------------
  * This file is placed in the public domain (CC0-1.0), separately from the rest
- * of ida-ttd, which is Apache-2.0. A backend has to include it in order to
- * exist, and the licence of the interface must not constrain the licence of an
- * implementation. See docs/modular-backends.md.
+ * of ida-ttd, which is Apache-2.0 OR GPL-2.0-only. A backend has to include it
+ * in order to exist, and the licence of the interface must not constrain the
+ * licence of an implementation. See docs/modular-backends.md.
  * ---------------------------------------------------------------------------
  *
- * Why C, and why so plain:
+ * Why plain C:
  *
- *  - A backend may be built by a different toolchain than the core. Across a
- *    DLL boundary that rules out std:: types, exceptions, RTTI and anything
- *    that depends on a shared CRT. Nothing here is C++.
- *  - Nothing here comes from the IDA SDK. A backend never links the IDA SDK,
- *    never sees an ea_t, a qstring or a regval_t, and never calls into IDA.
- *    That keeps every IDA dependency in the core, and it is what lets a
- *    backend be licensed independently of both ida-ttd and the IDA SDK.
- *  - Bulk results are written into caller-provided arrays of fixed-layout
- *    structs, so there is no allocator shared across the boundary and no
- *    marshalling on the hot paths.
+ *  - A backend may be built by a different toolchain than the core, which
+ *    rules out std:: types, exceptions, RTTI and a shared CRT across the
+ *    boundary.
+ *  - Nothing here comes from the IDA SDK. A backend never links it, never sees
+ *    an ea_t, qstring or regval_t, and never calls into IDA. That keeps every
+ *    IDA dependency in the core and lets a backend be licensed independently
+ *    of ida-ttd and the IDA SDK.
+ *  - Bulk results go into caller-provided arrays of fixed-layout structs: no
+ *    allocator shared across the boundary, no marshalling on hot paths.
  *
  * Conventions:
  *
  *  - Every call returns ITTD_OK or a negative ITTD_E* code. On error,
- *    ittd_last_error() gives a human-readable reason for that handle.
- *  - A backend must not let an exception escape any entry point.
- *  - Addresses are guest virtual addresses as uint64_t. ITTD_BADADDR is the
- *    "no address" value.
- *  - A "count query" is called twice: once with buf == NULL to learn the
- *    count, once with an array that large. A backend must give the same answer
- *    both times for an unchanged recording. If the caller's array is smaller
- *    than the count, the backend fills what fits, writes the full count to
- *    *out_count, and returns ITTD_OK -- the caller can tell it was short.
- *  - Strings are inline, NUL-terminated, fixed-size char arrays in UTF-8.
- *    Fixed sizes rather than pointers so a result array is one memcpy and the
- *    caller owns all of the memory.
+ *    ittd_last_error() gives a readable reason for that handle.
+ *  - No exception may escape an entry point.
+ *  - Addresses are guest virtual addresses as uint64_t; ITTD_BADADDR means
+ *    "no address".
+ *  - A "count query" is called twice: with buf == NULL to learn the count,
+ *    then with an array that large. Both calls must agree for an unchanged
+ *    recording. If the array is smaller than the count, the backend fills what
+ *    fits, writes the full count to *out_count and returns ITTD_OK, so the
+ *    caller can tell it was short. When the count is zero the core does not
+ *    make the second call, so a backend that keeps an answer between the two
+ *    calls must not rely on the fill to release it.
+ *  - Strings are inline, NUL-terminated, fixed-size UTF-8 char arrays, so a
+ *    result array is one memcpy and the caller owns all the memory.
  *  - Handles are opaque. A cursor belongs to the backend handle that made it
  *    and must be closed before it.
  */
@@ -59,14 +58,13 @@ extern "C" {
 
 /*
  * Bumped for any change that is not purely additive. The core passes the
- * version it was built against to the entry point; a backend returns NULL if
- * it cannot speak that version, and the core then says so by name rather than
- * crashing on a mismatched table.
+ * version it was built against to the entry point; a backend that cannot speak
+ * it returns NULL, and the core names the mismatch instead of reading a table
+ * it does not understand.
  *
- * Not published yet, so a change still bumps it rather than keeping an old
- * layout alive: a backend DLL from before a change is refused by name, not
- * read with the wrong structures. 2: ittd_module gained timestamp and
- * checksum, and the table its size and the entries after query_frame_entry.
+ * Not published yet, so every change still bumps it rather than keeping an old
+ * layout alive. 2: ittd_module gained timestamp and checksum; the table gained
+ * 'size' and the entries after query_frame_entry.
  */
 #define ITTD_ABI_VERSION 2u
 
@@ -96,25 +94,22 @@ extern "C" {
 /*
  * A point in a recording, as the backend means it.
  *
- * Two 64-bit words and no interpretation by the core: Microsoft TTD numbers a
- * position (sequence, steps) and Sogen's is a single instruction counter.
- * Ordering is lexicographic on (hi, lo) and must be the recording's own
- * chronology, which both of those satisfy.
+ * Two 64-bit words the core does not interpret: Microsoft TTD uses (sequence,
+ * steps), Sogen a single instruction counter. Lexicographic order on (hi, lo)
+ * must be the recording's own chronology; both satisfy that.
  *
- * Three values are reserved as sentinels, chosen outside the range of any real
- * position. A backend translates them to whatever its engine uses; it must not
- * assume the bit patterns mean anything there.
+ * Three values are reserved as sentinels. A backend translates them to its
+ * engine's terms and must not assume the bit patterns mean anything there.
  *
  *   NONE  = { UINT64_MAX, UINT64_MAX }      "no position"
  *   BEGIN = { 0, 0 }                        "the start of the recording"
  *   END   = { UINT64_MAX, UINT64_MAX - 1 }  "the end of the recording"
  *
- * What a position shows is fixed, whatever the engine counts: a cursor at a
- * position shows the state *before* the instruction at its program counter
- * runs. That is Microsoft's own meaning. Sogen's position N is the state
+ * A cursor at a position shows the state *before* the instruction at its
+ * program counter runs (Microsoft's meaning). Sogen's position N is the state
  * *after* instruction N, so its backend hands out N - 1 for "at instruction
- * N" -- an off-by-one the backend owns so that no position the core holds
- * ever means two different things.
+ * N". The backend owns that off-by-one, so no position the core holds means
+ * two different things.
  */
 typedef struct ittd_position
 {
@@ -130,8 +125,8 @@ typedef struct ittd_position_range
 
 /* --------------------------------------------------------------- the trace */
 
-/* Capability bits. The core checks these before offering a command, so an
- * action is never registered that would only apologise for not working. */
+/* Capability bits. The core checks these before offering a command, so no
+ * action is registered that could only report that it does not work. */
 #define ITTD_CAP_ACCESS_QUERIES   0x0001u  /* accesses to a range can be listed */
 #define ITTD_CAP_CALL_QUERIES     0x0002u  /* calls and returns can be listed */
 /* The recording says where memory was mapped, unmapped and reprotected, with
@@ -145,8 +140,8 @@ typedef struct ittd_position_range
 #define ITTD_CAP_PREPARE          0x0080u  /* prepare() has something to do */
 #define ITTD_CAP_EXCEPTIONS       0x0100u  /* dispatched exceptions can be listed */
 /* Reading a page of memory costs about a copy, so the core can let IDA
- * analyse a whole module -- which reads all of its code -- when symbols for
- * it load. Without it the core keeps the names and drops that analysis. */
+ * analyse a whole module (reading all of its code) when its symbols load.
+ * Without it the core applies the names and skips that analysis. */
 #define ITTD_CAP_CHEAP_READS      0x0200u
 /* query_self_modifying answers: the recording has the write and execute
  * events to find code the program wrote before running it. */
@@ -158,11 +153,10 @@ typedef struct ittd_position_range
  * start to end with a scanner watching memory. Needs what a fork needs. */
 #define ITTD_CAP_REPLAY_SCANS     0x1000u
 /* regs_at answers many positions for much less than a seek and a register
- * read at each: the registers are what is expensive to rebuild (Sogen replays
- * from a snapshot), and a batch rebuilds each stretch once for all the
- * positions in it. The core then reads registers for a whole listing up
- * front. Without it the core reads them through the cursor it already has
- * at each position, rather than paying for every one twice. */
+ * read at each: registers are expensive to rebuild (Sogen replays from a
+ * snapshot), and a batch rebuilds each stretch once for all its positions.
+ * The core then reads registers for a whole listing up front; without the
+ * bit it reads them through the cursor it already has at each position. */
 #define ITTD_CAP_BATCH_REGS       0x2000u
 
 #define ITTD_NAME_MAX  256
@@ -172,14 +166,14 @@ typedef struct ittd_trace_info
 {
     uint32_t      is64;             /* bitness of the recorded program, not the host */
     uint32_t      capabilities;     /* ITTD_CAP_* */
-    /* Identity of this recording. Stable across opens of the same file, and
-     * different for a re-recording of the same program. The core writes it into
-     * the database so results cached against one recording are not shown
-     * against another. Zero means "the backend cannot tell", and the core then
-     * caches nothing that would be wrong if the recording changed.
+    /* Identity of this recording: stable across opens of the same file,
+     * different for a re-recording of the same program. The core stores it in
+     * the database so results cached for one recording are not shown for
+     * another. Zero means unknown, and the core then caches nothing that a
+     * changed recording would make wrong.
      *
-     * A backend whose engine has a wider id folds it to 64 bits; Sogen's
-     * trace::id() is 128 random bits, so any 64 of them will do. */
+     * A wider engine id is folded to 64 bits; Sogen's trace::id() is 128
+     * random bits, so any 64 of them will do. */
     uint64_t      fingerprint;
     ittd_position first;            /* first recorded position */
     ittd_position last;             /* last recorded position */
@@ -197,9 +191,9 @@ typedef struct ittd_module
      * WoW64 process, where both kinds sit side by side. 0 when the recording
      * does not say, and the core then reads the PE header itself. */
     uint32_t      machine;
-    /* The image's TimeDateStamp and CheckSum as the recording saw them: how a
-     * file on this machine is told apart from another build of the same DLL.
-     * 0 when the recording does not say; the core reads the headers. */
+    /* The image's TimeDateStamp and CheckSum as recorded, which tell a file
+     * on this machine apart from another build of the same DLL. 0 when the
+     * recording does not say; the core then reads the headers. */
     uint32_t      timestamp;
     uint32_t      checksum;
     uint32_t      reserved;
@@ -213,11 +207,10 @@ typedef struct ittd_thread
     uint32_t      reserved;
     ittd_position created;
     ittd_position exited;           /* NONE if it was alive at the end */
-    /* 0 for any of these the recording does not say. teb32 is the 32-bit TEB
-     * of a WoW64 thread, whose 32-bit stack is a separate one. The stack
-     * bounds are those at creation (or at the start of the recording); a
-     * fiber switch rewrites them in the TEB, so the core reads the TEB when it
-     * wants them at a later position. */
+    /* 0 where the recording does not say. teb32 is the 32-bit TEB of a WoW64
+     * thread, which has a separate 32-bit stack. The stack bounds are those at
+     * creation (or at the start of the recording); a fiber switch rewrites
+     * them in the TEB, so the core reads the TEB for a later position. */
     uint64_t      teb;
     uint64_t      teb32;
     uint64_t      stack_base;       /* the top: NT_TIB.StackBase */
@@ -266,7 +259,7 @@ typedef struct ittd_access
 
 /*
  * One entry into a function. Three positions, because the three questions
- * asked of a call are answered at three different places:
+ * asked of a call are answered at three places:
  *
  *   pos        at the call instruction: who called, and from where.
  *              NONE when the thread began inside the callee.
@@ -303,18 +296,17 @@ typedef struct ittd_call_target
     uint32_t      reserved;
 } ittd_call_target;
 
-/* query_indirect: also report indirect jumps -- switch tables and import
- * thunks, which are where IDA's graph breaks as often as at a call. */
+/* query_indirect: also report indirect jumps (switch tables, import thunks),
+ * where IDA's graph breaks as often as at a call. */
 #define ITTD_INDIRECT_JUMPS  0x1u
 
 /*
  * An exception the system dispatched to the program: a fault, a breakpoint, a
  * single step, or one raised through the kernel.
  *
- * A software exception that never leaves user mode -- a C++ throw, most
- * RaiseException calls -- is not dispatched by the system on x64 and may be
- * missing. A backend says nothing about those here; the core finds them as
- * calls to ntdll!RtlRaiseException when it wants them.
+ * A software exception that never leaves user mode (a C++ throw, most
+ * RaiseException calls) is not dispatched by the system on x64 and may be
+ * missing here; the core finds those as calls to ntdll!RtlRaiseException.
  */
 typedef struct ittd_exception
 {
@@ -332,11 +324,10 @@ typedef struct ittd_exception
 
 /*
  * A syscall the program made, as the recording dispatched it. Only listed by
- * a backend with ITTD_CAP_SYSCALLS: an emulator that served the call records
- * it; a CPU-level recording does not know where one began.
+ * a backend with ITTD_CAP_SYSCALLS.
  *
- * The arguments are not here: they are the registers at 'pos' (r10, rdx, r8,
- * r9, then the stack), which regs_at reads in a batch.
+ * The arguments are the registers at 'pos' (r10, rdx, r8, r9, then the
+ * stack), which regs_at reads in a batch.
  */
 typedef struct ittd_syscall
 {
@@ -421,8 +412,7 @@ typedef struct ittd_range
 /* Not an operation but its outcome: [base, base + size) is now in 'state',
  * with 'protect', 'alloc_base' and 'region_type'. A backend that records the
  * region bookkeeping rather than the calls (Sogen) reports every change this
- * way; folding it is an overwrite, which needs no knowledge of what the call
- * was. */
+ * way; applying it is a plain overwrite. */
 #define ITTD_MAP_STATE      5u
 
 #define ITTD_MAP_F_EXACT          0x1u  /* base/size are the kernel's own answer */
@@ -434,11 +424,10 @@ typedef struct ittd_range
 #define ITTD_MAP_F_AT_START       0x8u
 
 /* ittd_mapping_change.state, .mem_type, .protect and .alloc_protect carry
- * Windows' own values, as MEMORY_BASIC_INFORMATION has them: MEM_COMMIT,
- * MEM_RESERVE or MEM_FREE; MEM_PRIVATE, MEM_MAPPED or MEM_IMAGE; PAGE_*
- * with PAGE_GUARD and the other modifiers kept. Both engines speak them
- * natively and so does the core's memory map, so a vocabulary of the ABI's
- * own would only be translated into and out of again. Zero is "unknown".
+ * Windows' own MEMORY_BASIC_INFORMATION values: MEM_COMMIT/RESERVE/FREE;
+ * MEM_PRIVATE/MAPPED/IMAGE; PAGE_* with PAGE_GUARD and the other modifiers
+ * kept. Both engines and the core's memory map use them natively, so an ABI
+ * vocabulary would only add translation. Zero is "unknown".
  *
  * region_type is finer than mem_type: it tells a file view from a view of a
  * pagefile-backed section, and names memory Windows has no type for. */
@@ -459,9 +448,9 @@ typedef struct ittd_mapping_change
     uint64_t      base;
     uint64_t      size;             /* 0 on a whole-region release */
     uint64_t      api;              /* the routine that was called; BADADDR if unknown */
-    /* The call chain that led here, innermost first: one frame per module
-     * boundary crossed, so a heap allocation twenty frames deep inside the
-     * allocator still reaches the code that wanted the memory. */
+    /* The call chain that led here, innermost first, one frame per module
+     * boundary crossed: a heap allocation twenty frames deep in the allocator
+     * still reaches the code that wanted the memory. */
     uint64_t      chain[ITTD_CHAIN_MAX];
     uint32_t      chain_n;
     uint32_t      kind;             /* ITTD_MAP_* */
@@ -478,10 +467,10 @@ typedef struct ittd_mapping_change
     uint32_t      mem_type;         /* MEM_PRIVATE / MEM_MAPPED / MEM_IMAGE */
     uint32_t      alloc_protect;    /* AllocationProtect */
     uint32_t      region_type;      /* ITTD_REGION_* */
-    /* The mapped file of a file view, as an index into query_mapping_files'
-     * list plus one; 0 for none. An index rather than a name inline, because
-     * the same file is mapped and unmapped many times and a path is 520 bytes.
-     * Images carry none: the module list names them. */
+    /* The mapped file of a file view: index into query_mapping_files' list
+     * plus one; 0 for none. An index rather than an inline name because the
+     * same file is mapped many times and a path is 520 bytes. Images carry
+     * none: the module list names them. */
     uint32_t      file;
     uint32_t      reserved2;
 } ittd_mapping_change;
@@ -497,11 +486,10 @@ typedef struct ittd_name
 /*
  * A canonical x86-64 register set.
  *
- * The core maps this onto IDA's register array. An earlier draft had the
- * backend fill IDA's regval_t directly, which is simpler but only works
- * in-process -- a backend DLL must not see IDA types at all. Both engines have
- * something close to this already (Microsoft's CROSS_PLATFORM_CONTEXT, Sogen's
- * save_registers blob), so neither pays much to produce it.
+ * The core maps this onto IDA's register array; a backend DLL must not see
+ * IDA's regval_t. Both engines have something close already (Microsoft's
+ * CROSS_PLATFORM_CONTEXT, Sogen's save_registers blob), so it is cheap to
+ * produce.
  */
 #define ITTD_REG_RAX  0
 #define ITTD_REG_RCX  1
@@ -546,15 +534,14 @@ typedef struct ittd_regs
 
 /*
  * A fork is the recorded program brought back to life at a position: an
- * emulator replayed to it, whose registers and memory can then be changed
- * before it runs on, recording, into a new trace of its own. The new trace
- * starts at the fork's position; the parent is not touched.
+ * emulator replayed to it, whose registers and memory can be changed before
+ * it runs on, recording into a new trace that starts at that position. The
+ * parent is not touched.
  *
  * Replaying needs what the recording ran against outside its checkpoints: the
  * registry hives, and for a recording made against the host (no emulation
- * root) the host's own system DLLs. A replay elsewhere may diverge from the
- * recording before reaching the position; fork_open then fails, naming what
- * differs.
+ * root) the host's system DLLs. A replay elsewhere may diverge before
+ * reaching the position; fork_open then fails, naming what differs.
  */
 typedef struct ittd_fork ittd_fork;   /* opaque */
 
@@ -562,9 +549,8 @@ typedef struct ittd_fork ittd_fork;   /* opaque */
  * divergence, instead of taking the recorded result. */
 #define ITTD_FORK_STRICT      0x1u
 /* Replay a recording made against the host (no emulation root). Its program
- * runs again with this machine's files and network: whatever it created,
- * renamed, deleted or sent, it does again. Without the flag a backend refuses
- * such a replay. */
+ * runs again against this machine's files and network, repeating whatever it
+ * created, renamed, deleted or sent. Without the flag a backend refuses. */
 #define ITTD_FORK_ALLOW_HOST  0x2u
 /* Replay with registry hives that are not the ones the recording was made
  * with (check_registry). The replay then diverges wherever the program reads
@@ -572,8 +558,7 @@ typedef struct ittd_fork ittd_fork;   /* opaque */
 #define ITTD_FORK_ANY_REGISTRY 0x4u
 
 /* What replaying a recording needs, as far as the recording says
- * (replay_env), so the core can look for it first and say plainly what is
- * missing. */
+ * (replay_env), so the core can look for it first and name what is missing. */
 typedef struct ittd_replay_env
 {
     uint32_t size;                  /* sizeof(ittd_replay_env), set by the caller */
@@ -615,13 +600,12 @@ typedef struct ittd_fork_settings
     uint32_t    size;               /* sizeof(ittd_fork_settings) */
     uint32_t    flags;              /* ITTD_FORK_* */
     /* The folder holding the registry hives (SYSTEM, SOFTWARE, SAM, SECURITY,
-     * HARDWARE, NTUSER.DAT). NULL or empty: the backend's default. Only for a
-     * recording made against the host: one made in an emulation root loads
-     * <emulation_root>\registry. */
+     * HARDWARE, NTUSER.DAT). NULL or empty: the backend's default. Only used
+     * for a recording made against the host; one made in an emulation root
+     * loads <emulation_root>\registry. */
     const char *registry_dir;
     /* The emulation root. NULL: the one the recording was made with (empty
-     * for a recording made against the host). Where that root is elsewhere
-     * on this machine, name it here. */
+     * for the host). Set it when that root lives elsewhere on this machine. */
     const char *emulation_root;
 } ittd_fork_settings;
 
@@ -656,13 +640,12 @@ typedef struct ittd_buffer_hit
 /* ------------------------------------------------------- progress and stop */
 
 /*
- * How a long query reports in and asks whether to stop. The core implements it
- * with a wait box on IDA's main thread.
+ * How a long query reports progress and asks whether to stop. The core
+ * implements it with a wait box on IDA's main thread.
  *
  * A backend may call these from any thread, but must not assume they are
- * cheap, and must not call them from inside a lock it also needs to make
- * progress. A query that answers from an index in microseconds ignores the
- * sink entirely; passing a null sink is allowed and means "no progress, never
+ * cheap or call them while holding a lock it needs to make progress. A fast
+ * query may ignore the sink. A null sink means "no progress, never
  * cancelled".
  */
 typedef struct ittd_progress
@@ -693,30 +676,29 @@ typedef struct ittd_cursor  ittd_cursor;    /* opaque */
  * One instance per backend module, returned by the entry point. The core keeps
  * the pointer for the life of the process, so the table must be static.
  *
- * Any function pointer may be NULL, which means the same as returning
- * ITTD_E_UNSUPPORTED -- the core checks before calling, so a backend only
- * fills in what it does.
+ * Any function pointer may be NULL, meaning ITTD_E_UNSUPPORTED; the core
+ * checks before calling, so a backend fills in only what it implements.
  */
 typedef struct ittd_backend_api
 {
     uint32_t    abi_version;        /* must equal the version asked for */
-    /* sizeof(ittd_backend_api) as the backend was built. Entries past it are
-     * absent: the table grows at its end, and the core checks this before
-     * reaching for anything added after the first table. */
+    /* sizeof(ittd_backend_api) as the backend was built. The table grows at
+     * its end; entries past 'size' are absent, and the core checks it before
+     * using anything added after the first table. */
     uint32_t    size;
 
     /* ---- identity, before anything is open ---------------------------- */
 
-    /* Short id, used in the database and in build switches: "msttd", "sogen".
-     * It is written into the trace-link record, so changing one orphans
-     * existing databases. */
+    /* Short id used in the database and in build switches: "msttd", "sogen".
+     * It is stored in the trace-link record, so changing it orphans existing
+     * databases. */
     const char *(*id)(void);
     const char *(*display_name)(void);
     /* The File > Open filter fragment, e.g. "Microsoft TTD trace (*.run)". */
     const char *(*file_filter)(void);
     /* Non-zero if this backend handles 'path'. Asked of every loaded backend
-     * in load order. Must be cheap: a signature read at most, and never a full
-     * open. */
+     * in load order, so it must be cheap: a signature read at most, never a
+     * full open. */
     int         (*can_open)(const char *path);
 
     /* ---- the session -------------------------------------------------- */
@@ -729,10 +711,10 @@ typedef struct ittd_backend_api
     const char   *(*last_error)(ittd_backend *b);
     int           (*info)(ittd_backend *b, ittd_trace_info *out);
 
-    /* Work the backend wants done once per recording before its seeks become
-     * fast: building Microsoft's memory index, filling Sogen's keyframes.
-     * Offered by the core when a session starts, and declinable. Only called
-     * when ITTD_CAP_PREPARE is set. */
+    /* One-off work per recording that makes seeks fast: building Microsoft's
+     * memory index, filling Sogen's keyframes. The core offers it when a
+     * session starts, and the user may decline. Only called when
+     * ITTD_CAP_PREPARE is set. */
     int (*prepare)(ittd_backend *b, const ittd_progress *progress);
 
     /* ---- positions ---------------------------------------------------- */
@@ -759,13 +741,12 @@ typedef struct ittd_backend_api
     /*
      * Bytes as the recording has them at this position.
      *
-     * 'known' is a byte per requested byte, ITTD_KNOWN_*: whether the recording
-     * can account for that byte. Unknown bytes are left untouched -- the core
-     * fills them from the module's on-disk image where there is one, which is
-     * the same job for every backend and so is not a backend's. A placeholder
-     * byte is written as zero, but the core still prefers the image for it:
-     * an engine that knows a page is mapped and has no value for it says
-     * "zero", and believing that is how a string literal lost its first bytes.
+     * 'known' gets one ITTD_KNOWN_* byte per requested byte. Unknown bytes are
+     * left untouched; the core fills them from the module's on-disk image,
+     * which is the same job for every backend. A placeholder byte is written
+     * as zero, but the core still prefers the image for it: an engine that
+     * knows a page is mapped but not its value says "zero", and believing
+     * that once cost a string literal its first bytes.
      *
      * *out_known receives the number of bytes marked known.
      */
@@ -781,15 +762,14 @@ typedef struct ittd_backend_api
     /* ---- navigation --------------------------------------------------- */
 
     /*
-     * Stepping is a strategy, not a primitive. "Step over backwards" to a
-     * replay engine is rewind, notice the cursor landed in a callee that had just
-     * returned, rewind out of it; to an indexed trace it is a read of the
-     * previous execute event at this frame's depth. So the whole family is the
-     * backend's, because each has a cheap route the other does not.
+     * Stepping is a strategy, not a primitive. "Step over backwards" for a
+     * replay engine is: rewind, notice the cursor landed in a callee that had
+     * just returned, rewind out of it. For an indexed trace it is a read of
+     * the previous execute event at this frame's depth. Each has a cheap route
+     * the other lacks, so the whole family belongs to the backend.
      *
-     * Each moves 'c' and writes an ITTD_STOP_* value to *out_stop. 'forward' is
-     * non-zero for forwards. Breakpoints set through nav_breakpoints are
-     * honoured by all of them.
+     * Each moves 'c' and writes an ITTD_STOP_* value to *out_stop. 'forward'
+     * is non-zero for forwards. All honour the nav_breakpoints set.
      */
     int (*nav_step)(ittd_cursor *c, int forward, int *out_stop);
     int (*nav_step_over)(ittd_cursor *c, int forward, int *out_stop);
@@ -797,11 +777,11 @@ typedef struct ittd_backend_api
     int (*nav_run)(ittd_cursor *c, int forward, int *out_stop);
     int (*nav_run_to)(ittd_cursor *c, uint64_t addr, int forward, int *out_stop);
 
-    /* Breakpoints as the whole set rather than one at a time: both engines
-     * key them by address, and replacing the set is cheaper and harder to get
-     * wrong than reconciling adds against deletes. An execute breakpoint stops
-     * with the program counter on 'addr'; a data breakpoint stops at the
-     * instruction that made the access. */
+    /* Breakpoints as the whole set: both engines key them by address, and
+     * replacing the set is cheaper and harder to get wrong than reconciling
+     * adds and deletes. An execute breakpoint stops with the program counter
+     * on 'addr'; a data breakpoint stops at the instruction that made the
+     * access. */
     int (*nav_breakpoints)(ittd_cursor *c, const ittd_breakpoint *bpts, size_t count);
 
     /* ---- enumeration -------------------------------------------------- */
@@ -813,15 +793,13 @@ typedef struct ittd_backend_api
     /* ---- whole-trace queries ------------------------------------------ */
 
     /*
-     * Each of these may take minutes on one backend and microseconds on
-     * another -- Microsoft answers them by replaying the recording with a
-     * watchpoint armed, Sogen by reading a page index. That is the whole
-     * reason this ABI asks questions instead of offering watchpoints and a
-     * replay loop.
+     * Each may take minutes on one backend and microseconds on another:
+     * Microsoft replays the recording with a watchpoint armed, Sogen reads a
+     * page index. That is why the ABI asks questions instead of offering
+     * watchpoints and a replay loop.
      *
-     * All are count queries, all take an optional progress sink, and all set
-     * *out_truncated when a cap or a cancellation means the answer is a prefix
-     * of the truth.
+     * All are count queries, take an optional progress sink, and set
+     * *out_truncated when a cap or a cancellation makes the answer a prefix.
      */
     int (*query_accesses)(ittd_backend *b, uint64_t lo, uint64_t hi, uint32_t kinds,
                           ittd_position_range when,
@@ -829,9 +807,8 @@ typedef struct ittd_backend_api
                           int *out_truncated, const ittd_progress *progress);
 
     /* The distinct addresses inside 'ranges' that the recording executed.
-     * Separate from query_accesses because coverage wants a set of addresses,
-     * not millions of individual events, and both backends have a much cheaper
-     * way to produce one. */
+     * Separate from query_accesses because coverage wants a set, not millions
+     * of events, and both backends produce one much more cheaply. */
     int (*query_executed)(ittd_backend *b, const ittd_range *ranges, size_t nranges,
                           uint64_t *buf, size_t cap, size_t *out_count,
                           int *out_truncated, const ittd_progress *progress);
@@ -843,19 +820,18 @@ typedef struct ittd_backend_api
                        ittd_call *buf, size_t cap, size_t *out_count,
                        int *out_truncated, const ittd_progress *progress);
 
-    /* Where every indirect call made from inside 'ranges' actually went, and
-     * with ITTD_INDIRECT_JUMPS in 'flags' every indirect jump too. Separate
-     * from query_calls because the question is about call sites and the
-     * answer is grouped by site, not by invocation. A branch that faulted
-     * instead of reaching its target is left out. */
+    /* Where every indirect call made from inside 'ranges' went, and with
+     * ITTD_INDIRECT_JUMPS in 'flags' every indirect jump too. Separate from
+     * query_calls because the answer is grouped by site, not by invocation.
+     * A branch that faulted instead of reaching its target is left out. */
     int (*query_indirect)(ittd_backend *b, const ittd_range *ranges, size_t nranges,
                           uint32_t flags,
                           ittd_call_target *buf, size_t cap, size_t *out_count,
                           int *out_truncated, const ittd_progress *progress);
 
-    /* Every mapping, protection change and unmapping. A backend with
-     * ITTD_CAP_MAPPING_CHANGES reads them out of the recording; one without
-     * reconstructs them, which is expensive and wants the progress sink. */
+    /* Every mapping, protection change and unmapping. With
+     * ITTD_CAP_MAPPING_CHANGES they are read from the recording; without, they
+     * are reconstructed, which is expensive and uses the progress sink. */
     int (*query_mapping_changes)(ittd_backend *b,
                                  ittd_mapping_change *buf, size_t cap, size_t *out_count,
                                  int *out_truncated, const ittd_progress *progress);
@@ -863,12 +839,12 @@ typedef struct ittd_backend_api
     /* ---- symbols ------------------------------------------------------ */
 
     /*
-     * Named addresses the recording itself knows about, and function bounds.
+     * Named addresses the recording knows about, and function bounds.
      *
-     * Microsoft TTD records neither and parses the module's export directory
-     * and .pdata out of guest memory to produce them; Sogen stores every
-     * module's export directory in the trace. Either way the core gets a list
-     * and applies IDA names, so only one of the two ever deals with PE parsing.
+     * Microsoft TTD records neither, so its backend parses the export
+     * directory and .pdata out of guest memory; Sogen stores every module's
+     * export directory in the trace. Either way the core gets a list and
+     * applies IDA names.
      */
     int (*module_symbols)(ittd_backend *b, uint64_t base,
                           ittd_symbol *buf, size_t cap, size_t *out_count);
@@ -884,15 +860,13 @@ typedef struct ittd_backend_api
                             int *out_truncated, const ittd_progress *progress);
 
     /*
-     * The registers at each of 'count' positions, into out[0..count). For
-     * argument and return values down a call listing, which wants two
-     * positions per call and thousands of calls.
+     * The registers at each of 'count' positions, into out[0..count): for
+     * argument and return values down a call listing (two positions per call,
+     * thousands of calls).
      *
-     * A batch, rather than a cursor seek per position, because the work
-     * behind neighbouring positions is shared: Sogen measures half the time
-     * for positions in order against the same positions shuffled. So the
-     * positions may come in any order and a backend that cares sorts a copy;
-     * the core does not have to know which backends care.
+     * A batch because neighbouring positions share work: Sogen measured half
+     * the time for positions in order against the same ones shuffled.
+     * Positions may come in any order; a backend that cares sorts a copy.
      *
      * out[i].have is 0 for a position the backend could not reconstruct; that
      * is not an error. NULL means the core seeks a scratch cursor instead.
@@ -907,9 +881,9 @@ typedef struct ittd_backend_api
 
     /*
      * The instructions executed within 'when', in order, as ITTD_ACCESS_EXEC
-     * accesses whose pc is the instruction: on thread 'tid', or on every
-     * thread when 'tid' is 0. What the core walks to lay out code that only
-     * exists at runtime, and to find where a function began.
+     * accesses whose pc is the instruction, on thread 'tid' (0: every
+     * thread). The core walks them to lay out runtime-only code and to find
+     * where a function began.
      *
      * Not a count query, because a replay engine cannot count without doing
      * all the work: the backend fills at most 'cap' entries, writes how many
@@ -922,18 +896,18 @@ typedef struct ittd_backend_api
 
     /* A position about 'delta' instructions from 'p' (negative: earlier),
      * worked out without seeking and clamped to the recording. "About"
-     * because instructions of every thread count. For opening a window of
+     * because every thread's instructions count. Used to open a window of
      * context around the playhead. */
     int (*position_add)(ittd_backend *b, ittd_position p, int64_t delta, ittd_position *out);
 
     /*
-     * The call that entered the frame thread 'tid' is in at 'at': the position
-     * of that call instruction, and the address it went to (the function's
-     * entry). Searches back at most about 'max_back' instructions and returns
-     * ITTD_E_FAILED when the call is further back, or the thread is in its
-     * outermost frame. A call is matched with returns, so a frame entered and
-     * left in between does not count. Runs on every stop in code without a
-     * module, so a backend keeps it cheap for small 'max_back'.
+     * The call that entered thread 'tid''s frame at 'at': the call
+     * instruction's position and its target (the function's entry). Searches
+     * back about 'max_back' instructions at most; ITTD_E_FAILED when the call
+     * is further back or the thread is in its outermost frame. Calls are
+     * matched with returns, so a frame entered and left in between does not
+     * count. Runs on every stop in code outside any module, so it must be
+     * cheap for small 'max_back'.
      */
     int (*query_frame_entry)(ittd_backend *b, ittd_position at, uint32_t tid, uint64_t max_back,
                              ittd_position *out_call, uint64_t *out_entry);
@@ -941,12 +915,12 @@ typedef struct ittd_backend_api
     /* ---- added to the first table: the core checks 'size' first --------- */
 
     /* The host's log, for diagnostics a backend would otherwise drop: one
-     * line per call, the newline included. Called once, before anything is
-     * opened, and possibly from any thread afterwards. */
+     * line per call, newline included. set_log is called before anything is
+     * opened; the callback may then be called from any thread. */
     void (*set_log)(void (*log)(void *ud, const char *line), void *ud);
 
-    /* Non-zero when prepare() has nothing left to do for the open recording:
-     * the core asks before offering a long preparation. */
+    /* Non-zero when prepare() has nothing left to do for the open recording;
+     * asked before offering a long preparation. */
     int (*prepared)(ittd_backend *b);
 
     /* The registers of thread 'tid' at the cursor's position, for the host's
@@ -956,20 +930,20 @@ typedef struct ittd_backend_api
 
     /* Rebuild [lo, hi) as of the cursor's position from the recording's own
      * writes, for memory a position read cannot answer (an unpacker's output
-     * before it runs), and serve it from then on. With 'replace', anything
-     * rebuilt for the range before is thrown away first. *out_bytes is the
-     * number recovered; a backend whose reads are complete has none. */
+     * before it runs), and serve it from then on. 'replace' discards anything
+     * rebuilt for the range before. *out_bytes is the number recovered (0 for
+     * a backend whose reads are complete). */
     int (*cursor_rebuild_range)(ittd_cursor *c, uint64_t lo, uint64_t hi, int replace,
                                 uint64_t *out_bytes);
 
-    /* Something the last movement on 'c' wants the user told once the stop is
-     * shown ("this frame does not return anywhere"), NUL-terminated into
-     * 'buf'; an empty string when there is nothing. Taking it clears it. */
+    /* A message for the user about the last movement on 'c', shown after the
+     * stop ("this frame does not return anywhere"), NUL-terminated into 'buf';
+     * empty when there is none. Taking it clears it. */
     int (*nav_take_notice)(ittd_cursor *c, char *buf, size_t buf_size);
 
-    /* Progress and Cancel for the movements on 'c' from now on; NULL clears
-     * it. The core sets one around each movement and clears it after, so the
-     * pointer is valid until then. Movements run on the host's main thread. */
+    /* Progress and Cancel for later movements on 'c'; NULL clears it. The
+     * core sets one around each movement and clears it after, and the pointer
+     * stays valid until then. Movements run on the host's main thread. */
     int (*nav_set_progress)(ittd_cursor *c, const ittd_progress *progress);
 
     /* Every syscall the program made, in order. A count query. Only called
@@ -988,7 +962,7 @@ typedef struct ittd_backend_api
     /* ---- forks (ITTD_CAP_FORK) ---------------------------------------- */
 
     /* Replay to 'at' and hold the program there. Expensive: a checkpoint
-     * restore and up to a checkpoint interval of verified replay. */
+     * restore plus up to a checkpoint interval of verified replay. */
     int (*fork_open)(ittd_backend *b, ittd_position at, const ittd_fork_settings *settings,
                      const ittd_progress *progress, ittd_fork **out);
     /* The registers of the thread that runs next, which a set changes. */
@@ -1006,9 +980,9 @@ typedef struct ittd_backend_api
 
     /* ---- replay scans (ITTD_CAP_REPLAY_SCANS) ------------------------- */
 
-    /* Count queries over a full replay of the recording -- tens of seconds on
-     * a large one. 'settings' as for fork_open. A backend keeps the answer, so
-     * the second call of count-then-fill costs nothing. */
+    /* Count queries over a full replay of the recording (tens of seconds on a
+     * large one). 'settings' as for fork_open. A backend keeps the answer, so
+     * the fill call of count-then-fill costs nothing. */
     int (*query_strings)(ittd_backend *b, const ittd_fork_settings *settings, uint32_t min_length,
                          ittd_string_hit *buf, size_t cap, size_t *out_count,
                          int *out_truncated, const ittd_progress *progress);
@@ -1017,17 +991,16 @@ typedef struct ittd_backend_api
                          int *out_truncated, const ittd_progress *progress);
 
     /* What the last query_strings or query_buffers could not cover, in words,
-     * or "" when it covered the whole recording. A replay that diverges from
-     * the recording (this machine's files differ from the ones it ran
-     * against) goes on from the next checkpoint, whose state is the
-     * recording's own; this names the stretches it skipped. */
+     * or "" when it covered the whole recording. A replay that diverges (this
+     * machine's files differ from the recorded ones) resumes at the next
+     * checkpoint; this names the stretches it skipped. */
     const char *(*scan_notice)(ittd_backend *b);
 
     /* ---- value origins ------------------------------------------------ */
 
-    /* The last instruction of thread 'tid' before position 'at' that changed
-     * register 'reg' (ITTD_REG_*, or ITTD_ORIGIN_XMM0 + n for xmm n), looking
-     * back at most about 'max_back' of the thread's steps. *out_pos is that
+    /* The last instruction of thread 'tid' before 'at' that changed register
+     * 'reg' (ITTD_REG_*, or ITTD_ORIGIN_XMM0 + n for xmm n), looking back
+     * about 'max_back' of the thread's steps at most. *out_pos is that
      * instruction's position, before it ran; *out_found is zero when nothing
      * in the window changed the register. Optional: without it the core steps
      * back one instruction at a time. */
@@ -1038,9 +1011,9 @@ typedef struct ittd_backend_api
     /* ---- the memory heatmap ------------------------------------------- */
 
     /* Every access the recording made, counted by page (1 << page_shift
-     * bytes) and by slice of time: 'slices' equal stretches of the recording
-     * on the backend's own clock. Cells with no access are left out. A count
-     * query over the whole recording; expect seconds. Optional. */
+     * bytes) and by slice of time ('slices' equal stretches on the backend's
+     * own clock). Empty cells are left out. A count query over the whole
+     * recording; expect seconds. Optional. */
     int (*query_access_heat)(ittd_backend *b, uint32_t page_shift, uint32_t slices,
                              ittd_heat_cell *buf, size_t cap, size_t *out_count,
                              int *out_truncated, const ittd_progress *progress);
@@ -1050,19 +1023,19 @@ typedef struct ittd_backend_api
     /* ---- syscall out parameters ---------------------------------------- */
 
     /* What each syscall wrote through an out parameter: values[i] and
-     * known[i] (non-zero when found) for slots[i]. For a recording that holds
-     * the kernel's writes where they happen; Microsoft TTD does not, and finds
-     * the value where the program first reads it. Optional: without it the
-     * core reads each slot one position after the call. */
+     * known[i] (non-zero when found) for slots[i]. Microsoft TTD does not
+     * record the kernel's writes where they happen, so its backend finds the
+     * value where the program first reads it. Optional: without it the core
+     * reads each slot one position after the call. */
     int (*query_out_values)(ittd_backend *b, const ittd_out_slot *slots, size_t count,
                             uint64_t *values, uint8_t *known, const ittd_progress *progress);
 
     /* ---- the memory heatmap, over part of the recording ---------------- */
 
-    /* query_access_heat and heat_slice_position for the stretch 'when' only:
-     * 'slices' equal stretches of it, on the same clock. The heatmap window
-     * uses them to zoom in. Optional (both or neither): without them the
-     * heatmap covers the whole recording only. */
+    /* query_access_heat and heat_slice_position for the stretch 'when' only,
+     * cut into 'slices' on the same clock: how the heatmap zooms in. Optional
+     * (both or neither); without them the heatmap shows the whole recording
+     * only. */
     int (*query_access_heat_window)(ittd_backend *b, uint32_t page_shift, uint32_t slices,
                                     ittd_position_range when,
                                     ittd_heat_cell *buf, size_t cap, size_t *out_count,
@@ -1073,8 +1046,8 @@ typedef struct ittd_backend_api
     /* ---- the replay environment ---------------------------------------- */
 
     /* What a replay of this recording needs (ittd_replay_env). Optional
-     * (both or neither), and only for a backend with ITTD_CAP_FORK or replay
-     * scans: without them the core takes any folder holding hives. */
+     * (both or neither), and only meaningful with ITTD_CAP_FORK or replay
+     * scans; without them the core accepts any folder holding hives. */
     int (*replay_env)(ittd_backend *b, ittd_replay_env *out);
     /* Whether 'dir' holds the registry hives this recording was made with:
      * ITTD_OK when it does, ITTD_REGISTRY_UNVERIFIED when it holds hives and
@@ -1095,9 +1068,9 @@ typedef struct ittd_backend_api
  *
  *   const ittd_backend_api *ida_ttd_backend(uint32_t abi_version);
  *
- * Returns a static table, or NULL when 'abi_version' is one the backend cannot
- * speak -- the core then reports the mismatch by name instead of calling
- * through a table it does not understand.
+ * Returns a static table, or NULL when the backend cannot speak 'abi_version';
+ * the core then names the mismatch instead of calling through a table it does
+ * not understand.
  */
 #define ITTD_ENTRY_POINT_NAME "ida_ttd_backend"
 

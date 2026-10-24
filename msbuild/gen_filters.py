@@ -24,7 +24,7 @@ def gen(proj_path):
             folders.append(folder)
         rows.append((tag, rel, folder))
 
-    # every intermediate folder needs its own <Filter> entry
+    # Every intermediate folder needs its own <Filter> entry.
     all_folders = []
     for f in folders:
         parts = f.split("\\")

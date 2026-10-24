@@ -4,15 +4,12 @@
 
 namespace idattd
 {
-    // Storing plugin data in the database.
+    // Plugin data in the database (bookmarks, coverage, resolved call sites,
+    // the memory map), with one shared encoding.
     //
-    // Four features keep state in the IDB: bookmarks, execution coverage,
-    // resolved call sites and the memory map. They all need the same things, so
-    // the encoding lives here rather than being re-invented per feature.
-    //
-    // Everything read back is untrusted. A blob can be stale, truncated, or
-    // written by a different version of the plugin, so the reader bounds-checks
-    // every field and one failure abandons the whole parse.
+    // Everything read back is untrusted: a blob can be stale, truncated, or
+    // from another plugin version. The reader bounds-checks every field and
+    // one failure abandons the whole parse.
 
     // Little-endian writer. Values are appended in the order the reader expects.
     class BlobWriter
@@ -58,13 +55,12 @@ namespace idattd
     // Longest string any feature will write or believe.
     static const uint32_t DB_MAX_STR = 4096;
 
-    // A netnode owned by this plugin, addressed by a name that starts with "$ "
-    // so it can never collide with a program byte name.
+    // A plugin netnode, named "$ ..." so it cannot collide with a program byte
+    // name.
     //
-    // Data written through here is stamped with the identity of the trace it was
-    // derived from. Reading it back against a different recording is refused:
-    // addresses and positions from one execution mean nothing in another, and
-    // silently showing them is worse than showing nothing.
+    // Blobs are stamped with the recording they came from, and reading one
+    // back against another recording is refused: addresses and positions from
+    // one execution mean nothing in another.
     class PluginNode
     {
     public:
@@ -93,11 +89,9 @@ namespace idattd
         // Iterate the alt slots under 'tag', in index order.
         void      each_alt(uchar tag, const std::function<void(nodeidx_t idx, nodeidx_t val)> &fn) const;
 
-        // Which recording this node's contents were derived from, for state
-        // that is not one blob and so cannot carry the header below. Zero when
-        // nothing has been stamped. A caller stamps on write and compares on
-        // session start; a mismatch means the data describes a different
-        // execution of the program.
+        // Which recording this node's non-blob state came from (blobs carry
+        // the header below instead); zero when unstamped. Callers stamp on
+        // write and compare at session start.
         uint64_t trace_stamp() const;
         void     set_trace_stamp(uint64_t fingerprint);
 

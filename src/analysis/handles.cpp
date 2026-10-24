@@ -8,9 +8,8 @@ namespace idattd
 {
     namespace
     {
-        // What a syscall that makes a handle takes: the argument holding the
-        // PHANDLE it writes back, the one holding its OBJECT_ATTRIBUTES (-1
-        // for none), and the kind of object.
+        // A handle-making syscall's argument indexes (PHANDLE written back,
+        // OBJECT_ATTRIBUTES, ACCESS_MASK; -1 for none) and object kind.
         struct Maker
         {
             const char *name;
@@ -243,8 +242,8 @@ namespace idattd
         p += 8;
         if ( ver != HD_VERSION )
             return false;
-        // Built aside, so a truncated blob yields nothing rather than the
-        // part before the damage, which would read as the whole list.
+        // Built aside, so a truncated blob yields nothing rather than a
+        // prefix that would look complete.
         std::vector<HandleRecord> v;
         for ( uint32_t i = 0; i < n; i++ )
         {
@@ -284,10 +283,9 @@ namespace idattd
         if ( !list_syscalls(mgr, &calls, cancelled) || *cancelled )
             return false;
 
-        // Arguments follow the x64 kernel convention wherever the syscalls
-        // were made from 64-bit code: always on Sogen, which runs WoW64's
-        // 64-bit side itself. A Microsoft x86 recording holds the 32-bit
-        // side only: its arguments are on the stack.
+        // x64 syscall convention wherever syscalls came from 64-bit code:
+        // always on Sogen, which runs WoW64's 64-bit side itself. A Microsoft
+        // x86 recording has only the 32-bit side, with arguments on the stack.
         const bool wide = b->info().is64 || qstrcmp(b->id(), "sogen") == 0;
 
         QueryResult qr = run_query("Following the handles the program opened", [&](ProgressSink *sink)
@@ -330,9 +328,9 @@ namespace idattd
 
             // ---- 1: what each call names, and where its handles go -----------
             //
-            // Names and arguments are read at the call. The handles themselves
-            // are out parameters, resolved together below: on Microsoft TTD the
-            // kernel's write only surfaces where the program reads it.
+            // Names and arguments are read at the call. The handles are out
+            // parameters, resolved together below: on Microsoft TTD the
+            // kernel's write surfaces only where the program reads it.
             struct Pending
             {
                 enum Kind { Close, Open, Dup } kind = Open;
@@ -406,8 +404,8 @@ namespace idattd
                 }
                 else if ( sc.name == "NtCreateUserProcess" )
                 {
-                    // Two handles: the process and its first thread, named
-                    // after the image (RTL_USER_PROCESS_PARAMETERS ImagePathName).
+                    // Two handles, process and first thread, named after the
+                    // image (RTL_USER_PROCESS_PARAMETERS.ImagePathName).
                     const uint64_t params = arg(g, 8);
                     const qstring image = rd.ustr(params != 0 ? params + (wide ? 0x60 : 0x38) : 0);
                     p.rec.type   = "Process";
@@ -463,7 +461,7 @@ namespace idattd
             StageSink outs_stage(sink, 60, 100);
             if ( !b->query_out_values(slots, &values, &outs_stage) )
             {
-                // A recording that holds the kernel's writes where they happen:
+                // The backend has the kernel's writes where they happen: read
                 // the slot one position after the call.
                 values.assign(slots.size(), std::nullopt);
                 for ( size_t i = 0; i < slots.size(); i++ )
@@ -505,8 +503,8 @@ namespace idattd
                     live.erase(it);
                     return;
                 }
-                // Never seen opened: from before the recording, or opened by
-                // a call whose handle could not be recovered.
+                // Never seen opened: from before the recording, or its handle
+                // could not be recovered.
                 HandleRecord hr;
                 hr.handle = h;
                 hr.type   = "(opened before the recording)";
@@ -517,8 +515,7 @@ namespace idattd
             {
                 if ( hr.handle == 0 )
                     return;
-                // A value already live was reused without its close being
-                // seen: the newer handle replaces it.
+                // A live value reused without a seen close: the newer wins.
                 live[hr.handle] = recs.size();
                 recs.push_back(std::move(hr));
             };

@@ -15,13 +15,13 @@ namespace idattd
     // Number of registers in each architecture's register table.
     int register_count(bool is64);
 
-    // Fill the debugger_t metadata that describes registers/classes for the
-    // given architecture (selected from the IDB bitness). Also sets the
-    // processor, breakpoint bytes, page size, flags and resume modes.
+    // Fill the debugger_t fields for the architecture (from the database's
+    // bitness): registers and classes, processor, breakpoint bytes, page
+    // size, flags and resume modes.
     void configure_debugger(debugger_t &dbg, bool is64);
 
-    // The same table filled from the ABI's canonical register set, which is
-    // what every backend produces. 'values' has register_count(is64) entries.
+    // Fill the register table's values from the ABI's register set, which
+    // every backend produces. 'values' has register_count(is64) entries.
     void fill_regvals(const ittd_regs &regs, bool is64, regval_t *values);
 
     // What a fork calls the table's register 'regidx': an ITTD_REG_* index,

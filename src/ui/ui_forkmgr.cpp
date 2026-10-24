@@ -1,19 +1,16 @@
-// The Fork manager: the recording this database came from and every fork
-// recorded from it (and from its forks), drawn as a graph. A node is a
-// recording; double-clicking one switches this IDA to it or opens it in
-// another.
+// The Fork manager: the database's recording and every fork recorded from it
+// (and from its forks), as a graph. A node is a recording; double-clicking one
+// switches this IDA to it or opens it in another.
 //
 // Drawn by the plugin's graph window (graph_view.h) where IDAPython is
-// there, else by IDA's own graph viewer, which is what the rest of this file
-// is about.
+// available, else by IDA's graph viewer, which most of this file handles.
 //
-// IDA 9.4 bug, worked around in guard_graph() below: after a step or a
-// register change, IDA updates the current instruction in every graph view
-// as if each one showed a disassembly graph, calling virtual functions that
-// only a disassembly graph has (slots 35 and 39, "the node at this address"
-// and "the line in it"). A plugin's graph (IDA's user_graph_t, the SDK's
-// interactive_graph_t) has 33, so the calls ran off the end of its virtual
-// table into another class's, and IDA crashed.
+// IDA 9.4 bug, worked around in guard_graph(): after a step or register
+// change, IDA updates the current instruction in every graph view as if it
+// were a disassembly graph, calling virtual slots 35 and 39 ("node at this
+// address", "line in it"). A plugin graph (IDA's user_graph_t, the SDK's
+// interactive_graph_t) has 33 slots, so the calls ran into another class's
+// table and crashed IDA.
 #include "ui/ui.h"
 #include "analysis/fork.h"
 #include "analysis/fork_registry.h"
@@ -80,8 +77,8 @@ namespace idattd
         nodes.clear();
         edges.clear();
 
-        // The database's own recording first, so it is the root even when
-        // nothing has been forked from it yet.
+        // The database's own recording first, so it is the root even with
+        // no forks yet.
         TraceLink link;
         if ( trace_link_read(&link) && !link.trace_path.empty() )
             add(link.trace_path);
@@ -127,12 +124,11 @@ namespace idattd
     //-----------------------------------------------------------------------
     // The graph's extra virtual table
     //-----------------------------------------------------------------------
-    // Give the plugin's graph object a copy of its class's virtual table that goes on
-    // past the class's own functions with harmless ones: "no node" for the
-    // address lookup IDA's current-instruction update makes, nothing for the
-    // rest. Only code that wrongly takes the graph for a disassembly graph
-    // calls past the class's own functions, so nothing else changes. The
-    // copy keeps the run-time type information entry in front of the table.
+    // Give the plugin's graph object a copy of its class's virtual table,
+    // extended past the class's own slots with harmless functions: "no node"
+    // (-1) for slot 39 of IDA's current-instruction update, zero for the
+    // rest. Only code that wrongly treats the graph as a disassembly graph
+    // calls past the real slots. The copy keeps the RTTI entry in front.
     namespace
     {
         constexpr size_t EXTRA_SLOTS = 64;      // beyond the class's own
@@ -191,7 +187,7 @@ namespace idattd
         void *const *vtbl = *vptr;
         for ( const GuardedTable *t : g_tables )
             if ( vtbl == t->slots.data() + 1 )
-                return;                             // already ours
+                return;                             // already guarded
         // Only IDA's own graph class, whose layout this is about.
         if ( class_of(vtbl) != ".?AVuser_graph_t@@" )
         {
@@ -493,9 +489,9 @@ namespace idattd
              ? AST_ENABLE : AST_DISABLE;
     }
 
-    // Redrawn from a timer, never on the spot: the callers include IDA's
-    // process start and exit notifications, and refreshing a graph viewer
-    // from inside the exit one stopped IDA with internal error 40183.
+    // Redrawn from a timer: callers include IDA's process start and exit
+    // notifications, and refreshing a graph viewer inside the exit one
+    // stopped IDA with internal error 40183.
     static qtimer_t g_refreshTimer = nullptr;
 
     static int idaapi refresh_cb(void *)

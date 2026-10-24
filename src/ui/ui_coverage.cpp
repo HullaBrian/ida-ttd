@@ -1,4 +1,4 @@
-// Execution coverage: the scope/colour prompt and the three coverage actions.
+// Execution coverage: the scope/colour prompt and the two coverage actions.
 #include "ui/ui.h"
 #include "ui/decompiler.h"
 #include "ui/scope.h"
@@ -6,13 +6,12 @@
 
 namespace idattd
 {
-    // Which addresses should the sweep watch? A narrower answer is not just
-    // tidier: the watchpoints are what let the engine skip parts of the
-    // recording, so the scope is the difference between seconds and minutes.
+    // Which addresses the sweep watches. The watchpoints let the engine skip
+    // parts of the recording, so a narrow scope means seconds, not minutes.
     //
-    // The colour has to be asked for too. IDA has no API for "is the theme
-    // dark", and a shade that reads on a light theme is nearly invisible on a
-    // dark one, so the only honest default is the last one this database used.
+    // The colour is asked for too: IDA cannot say whether the theme is dark,
+    // and a shade that reads on a light theme is nearly invisible on a dark
+    // one, so the default is the last one this database used.
     static bool ask_coverage_options(TraceManager *mgr, ea_t ea,
                                      int &scope, bgcolor_t &color)
     {
@@ -68,6 +67,8 @@ namespace idattd
         else if ( r.executed == 0 )
             info("Nothing in that range executed anywhere in the recording.");
         refresh_idaview_anyway();
+        // Pseudocode paints the coverage too (decompiler.cpp).
+        refresh_pseudocode_views();
         return 1;
     }
 

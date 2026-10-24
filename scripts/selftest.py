@@ -1,15 +1,14 @@
 """End-to-end self-test of ida-ttd, run inside IDA (GUI or an idalib worker).
 
-Drives a real debugger session over the reference sample -- the program in
-the ttd-traces folder that stores 0x2222222222222222 over 0x1111111111111111
-in a global -- and checks every movement and analysis against what that
-program is known to do. The same checks hold for a Microsoft recording and a
-Sogen one of it.
+Drives a real debugger session over the reference sample (the program in the
+ttd-traces folder that stores 0x2222222222222222 over 0x1111111111111111 in a
+global) and checks every movement and analysis against what it is known to
+do. The same checks hold for Microsoft and Sogen recordings of it.
 
-The addresses are found in the database rather than written in, because the
-sample has been rebuilt and recordings of more than one build are about: the
-store is the instruction that writes the register loaded with the constant,
-main is the function holding it, and so on (sample_addresses).
+The addresses are found in the database, not hard-coded, because recordings
+of more than one build exist: the store is the instruction that writes the
+register loaded with the constant, main is the function holding it, and so
+on (sample_addresses).
 
 Open the trace (File > Open, or the MCP's open_database), then:
 
@@ -181,11 +180,11 @@ def run_sogen(registry=None, host=False, fork_path=None):
     """The Sogen-only commands, on a Sogen recording of the same sample.
 
     registry: a folder of registry hives (SYSTEM, SOFTWARE, ...) for the checks
-    that replay the program -- recovered strings and a fork; without it those
-    are skipped. host: allow replaying a recording made against the host,
-    which runs the program's file and network operations on this machine
-    again (the reference recordings were made that way). fork_path: where the
-    fork goes (default: next to the database).
+    that replay the program (recovered strings, forks); without it they are
+    skipped. host: allow replaying a recording made against the host, which
+    reruns the program's file and network operations on this machine (the
+    reference recordings were made that way). fork_path: where the fork goes
+    (default: next to the database).
     """
     A = sample_addresses()
     res, fails = [], []

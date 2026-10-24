@@ -43,6 +43,9 @@
     <ClInclude Include="$(SrcDir)\common\symbols.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\local_path.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\guest_pe.h">
       <Filter>common</Filter>
     </ClInclude>

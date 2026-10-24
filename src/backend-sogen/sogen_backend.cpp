@@ -2,32 +2,33 @@
 //
 // ida-ttd backend for Sogen time-travel traces (.sogttd).
 //
-// A separate DLL, loaded by the ida-ttd core through the flat C ABI in
+// A separate DLL, loaded by the ida-ttd core through the C ABI in
 // abi/ida_ttd_backend.h. It links Sogen's trace reader and cpu_view
-// (windows-ttd-reader, windows-ttd-view) and nothing of ida-ttd's, and it never
-// sees an IDA type. See docs/modular-backends.md section 6 for how each entry
-// point maps onto Sogen.
+// (windows-ttd-reader, windows-ttd-view) and nothing of ida-ttd's, and never
+// sees an IDA type. docs/modular-backends.md section 6 maps each entry point
+// onto Sogen.
 //
 // Sogen is GPL-2.0-only, so a built ida-ttd-sogen.dll is a GPL-2.0 binary, and
 // this file, which is only ever built into it, is GPL-2.0-only too
 // (LICENSES/GPL-2.0-only.txt), unlike the rest of ida-ttd (Apache-2.0).
 //
-// Conventions that run through the whole file:
+// Conventions used throughout:
 //
-//  - Positions. A Sogen position N is the state after instruction N, which is
-//    also the state before instruction N + 1 -- exactly the ABI's meaning. So
-//    a cursor position is a Sogen position, unchanged, with hi = 0. What needs
-//    translating is an event's step: the 1-based number of the instruction
-//    that did it, whose ABI position is step - 1 (the state just before it).
-//  - No exception leaves an entry point. Each one runs its body through
-//    guarded(), which turns operation_cancelled into ITTD_E_CANCELLED and
-//    anything else into ITTD_E_FAILED with the reason in last_error.
+//  - Positions. Sogen position N is the state after instruction N, which is
+//    the state before instruction N + 1: the ABI's meaning. A cursor position
+//    is therefore a Sogen position with hi = 0. An event's step is the
+//    1-based number of the instruction that did it, so its ABI position is
+//    step - 1 (the state just before it).
+//  - No exception leaves an entry point. Bodies run through guarded(), which
+//    maps operation_cancelled to ITTD_E_CANCELLED and anything else to
+//    ITTD_E_FAILED with the reason in last_error.
 //  - One sogen::ttd::trace per handle and per cursor, plus one for the long
 //    queries (query_reader). A trace is not thread-safe (one ifstream,
-//    mutable caches, a lazily built CPU), and a second one costs about 25 ms
-//    to open, so nothing is shared.
+//    mutable caches, a lazily built CPU), and opening another costs about
+//    25 ms, so none is shared.
 
 #include <abi/ida_ttd_backend.h>
+#include <common/local_path.h>
 #include <common/write_scans.h>
 
 #include <ttd_trace.hpp>
@@ -44,6 +45,7 @@
 #include <ttd_buffer_scan.hpp>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <exception>
@@ -72,16 +74,12 @@ namespace
 
     // A message the core reads back through last_error or scan_notice.
     //
-    // Written by whichever thread failed -- a query on the core's worker, a
-    // cursor call on IDA's main thread -- and read by another: the core reads
-    // a worker's failure on the main thread after the worker is done, while
-    // the main thread may be failing calls of its own. A bare std::string
-    // written by one and read by the other is a data race, so the text is
-    // only touched under its mutex, and the reader is handed a copy in a
-    // buffer of its own thread's: the pointer then stays valid until that
-    // thread asks again, whatever the other threads write meanwhile, which
-    // is what the ABI promises ("valid until the next call on the same
-    // handle").
+    // Written by whichever thread failed (a query on the core's worker, a
+    // cursor call on IDA's main thread) and often read by another, so the
+    // text is only touched under the mutex. The reader gets a copy in a
+    // thread_local buffer, which stays valid until that thread asks again,
+    // whatever other threads write meanwhile: the ABI's "valid until the next
+    // call on the same handle".
     class text_slot
     {
       public:
@@ -108,12 +106,12 @@ namespace
 
     // One page as memory_at showed it, and the positions it holds for.
     //
-    // memory_at walks every recorded access to the page until each byte is
-    // accounted for, which on a hot code page -- ntdll's, executed millions
-    // of times -- costs tens of milliseconds. IDA reads a module's code page
-    // by page, and again after every stop, so uncached that froze it for
-    // minutes. A page only changes at a write to it or a change to its
-    // mapping, so one read answers every position between the two.
+    // memory_at walks the page's recorded accesses until every byte is
+    // accounted for, which on a hot code page (ntdll's, executed millions of
+    // times) costs tens of milliseconds. IDA reads a module's code page by
+    // page after every stop, so uncached reads froze it for minutes. A page
+    // only changes at a write to it or a change to its mapping, so one read
+    // answers every position in between.
     struct cached_page
     {
         uint64_t from = 0, to = 0;      // positions [from, to] it holds for
@@ -145,23 +143,35 @@ namespace
         std::mutex mtx;                      // guards 'trace'
         text_slot error;
         // The reader the long queries run on (query_reader), opened on first
-        // use and guarded by its own mutex, so a query that takes seconds
-        // never holds 'mtx' and with it the module and thread lists IDA asks
-        // for at every stop.
+        // use. Its own mutex means a query that takes seconds never holds
+        // 'mtx', which the module and thread lists asked for at every stop
+        // need.
         std::unique_ptr<ttd::trace> query_trace;
         std::mutex query_mtx;                // guards 'query_trace'
         page_cache pages;                    // shared by this backend's cursors
-        // Every thread's span, worked out once at open: the switch table does
-        // not change, and the thread list is asked for at every stop.
+        // Every thread's span, computed once at open: the switch table is
+        // fixed, and the thread list is asked for at every stop.
         std::vector<thread_span> spans;
-        // Replay scan results: each is a full replay, and count-then-fill
-        // asks twice. Guarded by their own mutex, not 'mtx', so a scan does
-        // not hold up the other queries.
+        // Cached scan results: each scan is a full pass and count-then-fill
+        // asks twice. A separate mutex keeps a scan from holding up the other
+        // queries.
         std::mutex scan_mtx;
-        // Keyed by what the replay ran with (scan_key), and for strings the
-        // minimum length too: a strict run must not be answered by a lenient one.
+        // Keyed by what the replay ran with (scan_key), and for strings also
+        // the minimum length, so a strict run is never answered by a lenient one.
         std::map<std::string, std::vector<ittd_string_hit>> strings;
         std::map<std::string, std::vector<ittd_buffer_hit>> buffers;
+        // Whether a cached scan stopped keeping results at a scanner's own
+        // limit, by the same keys, so a later fill still reports it.
+        std::map<std::string, bool> strings_truncated, buffers_truncated;
+        // query_executed's answer, kept between its count and fill calls,
+        // and the ranges it was for.
+        std::vector<std::pair<uint64_t, uint64_t>> executed_ranges;
+        std::vector<uint64_t> executed;
+        bool executed_valid = false;
+        // Address ranges recorded as MMIO at any time (region kind 5), whose
+        // pages are never cached: memory_at reads them from their accesses,
+        // so they change at reads too, not only at writes.
+        std::vector<std::pair<uint64_t, uint64_t>> mmio;
         // query_access_heat's answers, by page shift and slice count.
         std::map<std::string, std::vector<ittd_heat_cell>> heat;
         // What each cached scan skipped (scan_notice), by the same keys, and
@@ -178,6 +188,9 @@ namespace
         std::vector<ittd_breakpoint> breakpoints;
         // The CPU at 'position', built on first use and dropped on every move.
         std::unique_ptr<ttd::cpu_view> view;
+        // Cancel for the movements that walk (nav_set_progress); the core
+        // keeps it valid until it clears it.
+        const ittd_progress *progress = nullptr;
     };
 
     // A recording replayed to a position and held there (fork_open).
@@ -254,9 +267,9 @@ namespace
         return slash == std::string::npos ? path : path.substr(slash + 1);
     }
 
-    // The thread that will run the instruction after 'position' -- whose
-    // registers cpu_view shows there, since a snapshot taken at a thread switch
-    // already holds the incoming thread.
+    // The thread that runs the instruction after 'position'. cpu_view shows
+    // its registers there, since a snapshot taken at a thread switch already
+    // holds the incoming thread.
     uint32_t thread_after(const ttd::trace &t, uint64_t position)
     {
         if ( auto tid = t.thread_at(position + 1) )
@@ -332,8 +345,8 @@ namespace
         return ITTD_OK;
     }
 
-    // Which ittd_access kind a Sogen event is. A host write -- a syscall
-    // writing guest memory -- is a write as far as "who wrote this" goes.
+    // The ittd_access kind of a Sogen event. A host write (a syscall writing
+    // guest memory) counts as a write for "who wrote this".
     uint32_t access_kind_of(ttd::access_kind k)
     {
         switch ( k )
@@ -364,9 +377,9 @@ namespace
     }
 
     // Decoded checkpoints each reader keeps (Sogen's default is four). Each is
-    // about the size of the program's committed memory, and there is a
-    // reader per cursor: four each took a session on a large recording past
-    // half a gigabyte. Two cover a pass between a call and its return.
+    // about the size of the program's committed memory, and every cursor has
+    // a reader: with four, a session on a large recording passed half a
+    // gigabyte. Two cover moving between a call and its return.
     constexpr size_t kCheckpointsPerReader = 2;
 
     std::unique_ptr<ttd::trace> open_trace(const std::filesystem::path &path)
@@ -385,18 +398,26 @@ namespace
         return std::make_unique<ttd::trace>(path);
     }
 
+    // A reader for one pass that only moves forward (a scan, the heatmap, a
+    // replay): it never returns to a checkpoint it has left, so keeping more
+    // than the one decoded checkpoint would only hold memory.
+    std::unique_ptr<ttd::trace> open_forward_trace(const std::filesystem::path &path)
+    {
+        std::unique_ptr<ttd::trace> t = open_trace(path);
+        t->set_checkpoint_cache_size(1);
+        return t;
+    }
+
     // The backend's reader for one long query, held for the query's whole run.
     //
-    // calls, accesses, regs_at, exceptions and their like run for seconds on
-    // the core's worker thread. On the shared reader under 'mtx' they held up
-    // every main-thread call that takes it -- the module and thread lists
-    // asked for at every stop, the timeline -- so IDA waited on a query it
-    // was only showing a wait box for. They run here instead, on a reader of
-    // their own under 'query_mtx', the way the self-modifying code scan does.
-    // One reader, opened on first use and kept, not one per query: a count
-    // query's second call then finds the chunks its first decoded still
-    // cached, and a reader is too large (decoded checkpoints) to keep several.
-    // Two long queries still run one after the other.
+    // Calls, accesses, regs_at, exceptions and the like run for seconds on
+    // the core's worker thread. On the shared reader under 'mtx' they blocked
+    // every main-thread call that takes it (the module and thread lists at
+    // every stop, the timeline), so IDA hung behind its own wait box. They
+    // use this reader under 'query_mtx' instead. It is opened once and kept:
+    // a count query's second call then finds the chunks the first decoded
+    // still cached, and a reader (with its decoded checkpoints) is too large
+    // to keep several. Long queries therefore run one at a time.
     class query_reader
     {
       public:
@@ -420,7 +441,8 @@ namespace
     uint64_t fold_id(const std::string &id)
     {
         // At most 33 ASCII characters: 32 hex digits, or "h" and 32 hex digits
-        // for traces older than the stored id. Any 64 of the bits will do.
+        // for traces older than the stored id. Any 64 of the bits will do;
+        // this takes the first 16 digits.
         size_t start = !id.empty() && id[0] == 'h' ? 1 : 0;
         uint64_t v = 0;
         for ( size_t i = start; i < id.size() && i < start + 16; i++ )
@@ -436,8 +458,8 @@ namespace
 
     const ttd::module_entry *main_module(const ttd::trace &t)
     {
-        // The program is the first executable mapped. Not simply the first
-        // module: Sogen maps some system DLLs (win32u) before the executable.
+        // The program is the first .exe mapped, not the first module: Sogen
+        // maps some system DLLs (win32u) before the executable.
         auto mods = t.modules();
         for ( const ttd::module_entry &m : mods )
         {
@@ -495,7 +517,7 @@ namespace
 
     int can_open(const char *path)
     {
-        // Any version: an unreadable one should reach open() and be told why,
+        // Any version: an unsupported one should reach open() and say why,
         // rather than fall through to "IDA does not know this file".
         try
         {
@@ -516,18 +538,25 @@ namespace
             g_module_error.set("no path");
             return nullptr;
         }
-        auto b = std::make_unique<backend_t>();
-        int rc = guarded(g_module_error, [&]()
+        backend_t *opened = nullptr;
+        guarded(g_module_error, [&]()
         {
+            auto b = std::make_unique<backend_t>();
             b->path  = utf8_path(path);
             b->trace = open_trace(b->path);
             b->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             b->spans = thread_spans(*b->trace);
+            if ( b->trace->has_memory_regions() )
+            {
+                constexpr uint32_t kMmioKind = 5;
+                for ( const ttd::memory_region &r : b->trace->memory_regions().regions )
+                    if ( r.kind == kMmioKind && r.size != 0 )
+                        b->mmio.emplace_back(r.address, r.address + r.size);
+            }
+            opened = b.release();
             return ITTD_OK;
         });
-        if ( rc != ITTD_OK )
-            return nullptr;
-        return reinterpret_cast<ittd_backend *>(b.release());
+        return reinterpret_cast<ittd_backend *>(opened);
     }
 
     backend_t *B(ittd_backend *b) { return reinterpret_cast<backend_t *>(b); }
@@ -539,14 +568,30 @@ namespace
         delete B(b);
     }
 
+    // Both copy the text, which can throw (out of memory); nothing may cross
+    // the C ABI, so a failed copy reads as no message.
     const char *last_error(ittd_backend *b)
     {
-        return b == nullptr ? g_module_error.get() : B(b)->error.get();
+        try
+        {
+            return b == nullptr ? g_module_error.get() : B(b)->error.get();
+        }
+        catch ( ... )
+        {
+            return "";
+        }
     }
 
     const char *scan_notice(ittd_backend *b)
     {
-        return b == nullptr ? "" : B(b)->scan_note.get();
+        try
+        {
+            return b == nullptr ? "" : B(b)->scan_note.get();
+        }
+        catch ( ... )
+        {
+            return "";
+        }
     }
 
     int info(ittd_backend *hb, ittd_trace_info *out)
@@ -563,25 +608,42 @@ namespace
             out->is64 = is64(t) ? 1 : 0;
             out->capabilities = ITTD_CAP_ACCESS_QUERIES | ITTD_CAP_CALL_QUERIES
                               | ITTD_CAP_RECORDED_EXPORTS | ITTD_CAP_CHEAP_SEEK
-                              | ITTD_CAP_REVERSE_STEP | ITTD_CAP_EXCEPTIONS
-                              | ITTD_CAP_BATCH_REGS;
+                              | ITTD_CAP_REVERSE_STEP | ITTD_CAP_BATCH_REGS;
             if ( t.has_syscalls() )
                 out->capabilities |= ITTD_CAP_SYSCALLS;
-            // Every Sogen recording can be asked; one recorded without write
-            // or execute events answers with an error that says so.
-            out->capabilities |= ITTD_CAP_SELF_MODIFYING;
-            // Any recording can be replayed to a position; whether the
-            // replay holds on this machine is fork_open's to find out.
+            // Only offered when the recording holds the events the query
+            // needs. A chunked recording names its event kinds in its
+            // header; an older one would need a walk over every event to
+            // find out (access_mask), too slow here, so self-modifying code
+            // stays offered and answers with an error that says what is
+            // missing, while exceptions, which need chunked data, are not.
+            const uint64_t X  = (uint64_t)ttd::access_kind::execute;
+            const uint64_t W  = (uint64_t)ttd::access_kind::write;
+            const uint64_t HW = (uint64_t)ttd::access_kind::host_write;
+            if ( t.has_access_data() )
+            {
+                const uint64_t mask = b->trace->access_mask();
+                if ( (mask & (W | X)) == (W | X) )
+                    out->capabilities |= ITTD_CAP_SELF_MODIFYING;
+                if ( (mask & (X | HW)) == (X | HW) )
+                    out->capabilities |= ITTD_CAP_EXCEPTIONS;
+            }
+            else
+            {
+                out->capabilities |= ITTD_CAP_SELF_MODIFYING;
+            }
+            // Any recording can be replayed to a position; fork_open finds
+            // out whether the replay holds on this machine.
             out->capabilities |= ITTD_CAP_FORK | ITTD_CAP_REPLAY_SCANS;
-            // The memory map with protections, for traces recorded since
-            // Sogen kept it (section 17). Older ones only say that a range was
-            // mapped or unmapped, which is not enough to draw a map from.
+            // The memory map with protections (section 17), in traces
+            // recorded since Sogen kept it. Older ones only say that a range
+            // was mapped or unmapped, which is not enough to draw a map.
             if ( t.has_memory_regions() )
                 out->capabilities |= ITTD_CAP_MAPPING_CHANGES;
             // With checkpoint memory, memory_at starts from the checkpoint and
-            // applies the writes since (ttd/next ada569b0): a page is tens of
-            // microseconds once its checkpoint is decoded. Without it, a page
-            // walks every access to it, and is not cheap.
+            // applies the writes since (ttd/next ada569b0): tens of
+            // microseconds a page once the checkpoint is decoded. Without it,
+            // a page read walks every access to the page.
             if ( t.has_checkpoint_memory() )
                 out->capabilities |= ITTD_CAP_CHEAP_READS;
             out->fingerprint = fold_id(t.id());
@@ -616,6 +678,21 @@ namespace
             text++;
         if ( *text == '\0' )
             return ITTD_E_BAD_ARG;
+        // What format_position prints for END reads back as END.
+        if ( std::strncmp(text, "end", 3) == 0 )
+        {
+            const char *rest = text + 3;
+            while ( *rest == ' ' || *rest == '\t' )
+                rest++;
+            if ( *rest == '\0' )
+            {
+                *out = END;
+                return ITTD_OK;
+            }
+        }
+        // strtoull accepts a sign and wraps "-1" round to UINT64_MAX.
+        if ( *text < '0' || *text > '9' )
+            return ITTD_E_BAD_ARG;
         char *end = nullptr;
         unsigned long long v = std::strtoull(text, &end, 10);
         while ( end != nullptr && (*end == ' ' || *end == '\t') )
@@ -635,16 +712,18 @@ namespace
         backend_t *b = B(hb);
         if ( b == nullptr )
             return nullptr;
-        auto c = std::make_unique<cursor_t>();
-        int rc = guarded(b->error, [&]()
+        cursor_t *opened = nullptr;
+        guarded(b->error, [&]()
         {
+            auto c = std::make_unique<cursor_t>();
             c->owner    = b;
             c->trace    = open_trace(b->path);
             c->trace->set_checkpoint_cache_size(kCheckpointsPerReader);
             c->position = first_position(*c->trace);
+            opened = c.release();
             return ITTD_OK;
         });
-        return rc == ITTD_OK ? reinterpret_cast<ittd_cursor *>(c.release()) : nullptr;
+        return reinterpret_cast<ittd_cursor *>(opened);
     }
 
     void cursor_close(ittd_cursor *c)
@@ -692,7 +771,7 @@ namespace
     }
 
     // Through cpu_view::read_register, which decodes the saved register state
-    // on one CPU per thread: view.cpu() would build an emulator per view.
+    // on one CPU per thread; view.cpu() would build an emulator per view.
     void read_regs(const ttd::cpu_view &view, ittd_regs *out)
     {
         static const x86_register seg[ITTD_SEG_COUNT] = {
@@ -729,13 +808,16 @@ namespace
     constexpr uint64_t kPage = 0x1000;
     constexpr size_t   kMaxCachedPages = 8192;      // 64 MiB of bytes and flags
 
-    // The positions around 'position' over which the page at 'page' cannot
-    // change: from the last write to it at or before the position to just
-    // before the next one, narrowed by any change to its mapping in between
-    // (memory freed and allocated again reads as zeros with no write).
-    void stable_span(ttd::trace &t, uint64_t page, uint64_t position, uint64_t *from, uint64_t *to)
+    // The positions around 'position' over which the page cannot change: from
+    // the last write to it at or before the position to just before the next,
+    // narrowed by any mapping change in between (memory freed and allocated
+    // again reads as zeros with no write). MMIO is read from its accesses,
+    // reads included, so for an MMIO page ('mmio') reads bound the span too.
+    void stable_span(ttd::trace &t, uint64_t page, uint64_t position, bool mmio, uint64_t *from, uint64_t *to)
     {
-        const uint64_t W = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+        uint64_t W = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+        if ( mmio )
+            W |= (uint64_t)ttd::access_kind::read;
         std::optional<ttd::access_event> before = t.previous_access(page, kPage, position + 1, W);
         std::optional<ttd::access_event> after  = t.next_access(page, kPage, position, W);
         *from = before ? before->step : 0;
@@ -804,9 +886,20 @@ namespace
                 e.bytes[i] = *v[i];
                 e.known[i] = 1;
             }
-        stable_span(*c->trace, page, c->position, &e.from, &e.to);
         memcpy(dst, e.bytes.data(), kPage);
         memcpy(kn, e.known.data(), kPage);
+        // Never caching MMIO pages made every read of KUSER_SHARED_DATA (MMIO
+        // in Sogen recordings, and read constantly by IDA's analysis of
+        // ntdll) cost over a second, freezing IDA. They are cached over the
+        // shorter span between accesses instead.
+        bool mmio = false;
+        for ( const auto &[lo, hi] : c->owner->mmio )
+            if ( lo < page + kPage && page < hi )
+            {
+                mmio = true;
+                break;
+            }
+        stable_span(*c->trace, page, c->position, mmio, &e.from, &e.to);
 
         std::lock_guard<std::mutex> lock(pc.mtx);
         e.used = ++pc.clock;
@@ -825,9 +918,9 @@ namespace
         {
             uint8_t page[kPage], kn[kPage];
             uint8_t *dst = static_cast<uint8_t *>(buf);
-            // A request that runs past the top of the address space reads up
-            // to it; the rest is unknown. Comparing against ea + size instead
-            // wrapped, read nothing and left 'known' unwritten.
+            // A request past the top of the address space reads up to it and
+            // marks the rest unknown. (Comparing against ea + size wrapped,
+            // read nothing and left 'known' unwritten.)
             const uint64_t room = ea == 0 ? UINT64_MAX : 0ull - ea;
             const size_t   span = (size_t)std::min<uint64_t>(size, room);
             size_t n = 0;
@@ -865,8 +958,8 @@ namespace
         ittd_thread th{};
         th.tid     = s.tid;
         th.created = before_step(s.first_step);
-        // Sogen records when a thread last ran, not when it exited; a thread
-        // that is still the running one at the end is taken to be alive.
+        // Sogen records when a thread last ran, not when it exited; the thread
+        // running at the end is taken to be alive.
         th.exited  = s.running_at_end ? NONE : at(s.end_step - 1);
         auto name = t.threads().names.find(s.tid);
         copy_str(th.name, sizeof(th.name), name != t.threads().names.end() ? name->second : std::string());
@@ -913,8 +1006,8 @@ namespace
 
     // ------------------------------------------------------------ navigation
 
-    // Single steps move one position, on whatever thread runs next: that is
-    // what a position is in Sogen, and it matches "step into" on a recording.
+    // A single step moves one position, on whichever thread runs next: that
+    // is what a Sogen position is, and it matches "step into" on a recording.
     int nav_step(ittd_cursor *hc, int forward, int *out_stop)
     {
         cursor_t *c = C(hc);
@@ -945,13 +1038,13 @@ namespace
     //
     // Covering, not starting at: that is what an execute breakpoint means to
     // Microsoft's engine, and IDA relies on it. Its backward step-over puts
-    // the temporary breakpoint on the return address minus one -- the last
-    // byte of the call -- and runs backward to it.
+    // the temporary breakpoint on the return address minus one (the call's
+    // last byte) and runs backward to it.
     //
-    // next_access(s) answers steps above s and previous_access(s) steps below
-    // s. At cursor position p the instruction about to run is step p + 1: run
-    // forward looks at steps after it, run backward at steps up to p, the last
-    // one that already ran.
+    // next_access(s) answers steps above s, previous_access(s) steps below s.
+    // At cursor position p the instruction about to run is step p + 1, so a
+    // forward run looks at steps after it and a backward run at steps up to
+    // p, the last one that already ran.
     std::optional<uint64_t> execution_of(ttd::trace &t, uint64_t a, uint64_t position, bool forward)
     {
         const uint64_t X = (uint64_t)ttd::access_kind::execute;
@@ -963,9 +1056,8 @@ namespace
     }
 
     // The next (or previous) read or write of any byte of [a, a + size), by
-    // step, with the same "after the instruction about to run" convention as
-    // execution_of. A host write -- a syscall writing guest memory -- is a
-    // write as far as a breakpoint on "who wrote this" is concerned.
+    // step, with the same convention as execution_of. A host write (a syscall
+    // writing guest memory) counts as a write.
     std::optional<uint64_t> access_of(ttd::trace &t, const ittd_breakpoint &b, uint64_t position,
                                       bool forward)
     {
@@ -982,8 +1074,7 @@ namespace
 
     // The nearest hit of any of 'bpts' after (or before) the cursor, as the
     // position just before the instruction that hit it, and which breakpoint
-    // it was. Each breakpoint is a page-index lookup, so a breakpoint set is
-    // answered without replaying.
+    // it was. Each breakpoint is a page-index lookup; nothing is replayed.
     bool nearest_hit(cursor_t *c, const std::vector<ittd_breakpoint> &bpts, bool forward,
                      uint64_t *out_pos, size_t *out_index)
     {
@@ -1057,10 +1148,10 @@ namespace
         return op == 0xC3 || op == 0xC2 || op == 0xCB || op == 0xCA;
     }
 
-    // The navigator's tests, which do not know the program's bitness: decoded
-    // as 64-bit, where 32-bit code differs only in far calls (9A) and in
-    // 40-4F, which there are whole one-byte instructions and so never precede
-    // an opcode within one instruction's bytes anyway.
+    // The navigator's tests, which do not know the program's bitness, decode
+    // as 64-bit. 32-bit code differs only in far calls (9A) and in 40-4F,
+    // which there are one-byte instructions and so never precede an opcode
+    // within one instruction's bytes.
     bool is_call_insn(const ttd::access_event &e)
     {
         uint8_t op = 0, modrm = 0;
@@ -1083,7 +1174,11 @@ namespace
             return ITTD_E_NO_POSITION;
         uint64_t lo = first_position(*b->trace), hi = last_position(*b->trace);
         if ( delta < 0 )
-            pos = pos - lo > (uint64_t)(-delta) ? pos - (uint64_t)(-delta) : lo;
+        {
+            // In unsigned arithmetic: -delta overflows for INT64_MIN.
+            const uint64_t back = 0ull - (uint64_t)delta;
+            pos = pos - lo > back ? pos - back : lo;
+        }
         else
             pos = hi - pos > (uint64_t)delta ? pos + (uint64_t)delta : hi;
         *out = at(pos);
@@ -1105,32 +1200,39 @@ namespace
         }
     }
 
-    // The call that entered the frame thread 'tid' stands in at cursor
-    // position 'pos'. Walk the thread's instructions backward from the one
-    // about to run, counting returns in and calls out: the first call met at
-    // depth zero entered this frame. Each step is a lookup in the thread's
-    // runs, so a short walk is cheap enough for every stop.
+    // The call that entered the frame thread 'tid' is in at cursor position
+    // 'pos'. Walks the thread's instructions backward from the one about to
+    // run, counting returns in and calls out: the first call met at depth
+    // zero entered this frame. Each step is a lookup in the thread's runs, so
+    // a short walk is cheap enough for every stop.
     //
-    // Not every call is matched by a ret: one whose callee leaves by a
-    // syscall, a context switch or an exception looks, walking back, exactly
-    // like the call that entered this frame. The difference is the stack: the
-    // entering call was made from a shallower frame, above the stack pointer
-    // here, and one of those is below it. So a call at depth zero is accepted
-    // only if its stack pointer was higher -- read just before it, where the
-    // thread about to run is certainly this one. That costs a cpu_view per
-    // candidate, and there is rarely more than one.
+    // Not every call is matched by a ret: one whose callee left by a syscall,
+    // a context switch or an exception looks, walking back, just like the
+    // entering call. The stack tells them apart: the entering call was made
+    // from a shallower frame, with a stack pointer above the one here, and
+    // the others below it. So a call at depth zero is accepted only if its
+    // stack pointer (read just before it, where the running thread is
+    // certainly this one) was higher. That costs a cpu_view per candidate,
+    // and there is rarely more than one.
     //
-    // 'check_sp' false skips that check, for a caller walking many frames that
-    // cannot afford a cpu_view per candidate and takes the small risk instead.
+    // 'check_sp' false skips the check, for callers walking many frames that
+    // cannot afford a cpu_view per candidate and accept the small risk.
+    //
+    // 'progress', when given, can cancel the walk (operation_cancelled), which
+    // over kNavFrameWalk instructions takes long enough to want a Cancel.
     std::optional<ttd::access_event> entering_call(ttd::trace &t, uint64_t pos, uint32_t tid,
-                                                   uint64_t max_back, bool check_sp = true)
+                                                   uint64_t max_back, bool check_sp = true,
+                                                   const ittd_progress *progress = nullptr)
     {
+        const ttd::operation_control ctl = control(progress);
         std::optional<uint64_t> here_sp = check_sp && thread_after(t, pos) == tid ? sp_at(t, pos)
                                                                                   : std::nullopt;
         uint64_t s = pos + 1;               // the instruction about to run
         int64_t depth = 0;
         for ( uint64_t n = 0; n < max_back; n++ )
         {
+            if ( (n & 0x3FFF) == 0x3FFF )
+                ctl.check();
             std::optional<ttd::access_event> ev = t.previous_instruction(s, tid);
             if ( !ev )
                 break;
@@ -1183,13 +1285,13 @@ namespace
     }
 
     // How far back the navigator looks for the call that entered a frame.
-    // Stepping out of a frame that has run for longer than this (main, say)
-    // reports that no entering call was found rather than walking forever.
+    // Stepping out of a frame that has run longer than this (main, say)
+    // reports that no entering call was found instead of walking forever.
     static const uint64_t kNavFrameWalk = 1ull << 22;
 
-    // The return of the call made at step 'call_step' on 'tid', as the step of
-    // its ret, from calls_to -- which pairs a call with its ret through the
-    // stack slot the return address went to, exact under recursion.
+    // The step of the ret that returned from the call at 'call_step' on 'tid'.
+    // From calls_to, which pairs a call with its ret through the stack slot
+    // of the return address, so it is exact under recursion.
     std::optional<uint64_t> return_of(ttd::trace &t, uint64_t call_step, uint32_t tid)
     {
         std::optional<ttd::access_event> entry = t.next_instruction(call_step, tid);
@@ -1217,10 +1319,9 @@ namespace
     }
 
     // Forward step over: run the instruction about to execute on this thread,
-    // and if it is a call, the whole call. The return comes from calls_to,
-    // which pairs a call with its ret through the stack slot the return
-    // address was pushed to -- exact under recursion, where "the next time
-    // this thread reaches the return address" is not.
+    // and if it is a call, the whole call. The return comes from return_of,
+    // which is exact under recursion, unlike "the next time this thread
+    // reaches the return address".
     //
     // Backward: step back one instruction on this thread, and if that was a
     // ret, on back to just before the call it returned from.
@@ -1264,7 +1365,8 @@ namespace
                 if ( is_ret_insn(*prev) )
                 {
                     // Standing just before the ret is standing in the callee.
-                    std::optional<ttd::access_event> call = entering_call(t, prev->step - 1, tid, kNavFrameWalk);
+                    std::optional<ttd::access_event> call =
+                        entering_call(t, prev->step - 1, tid, kNavFrameWalk, true, c->progress);
                     if ( call )
                         dest = call->step - 1;
                 }
@@ -1278,10 +1380,10 @@ namespace
         });
     }
 
-    // Step out: find the call that entered this frame. Backward, stand just
-    // before it; forward, just after its ret. A frame with no entering call
-    // in reach (a thread's outermost, or one older than the walk) or whose
-    // call never returns stays put and says why.
+    // Step out: find the call that entered this frame; backward, stop just
+    // before it, forward, just after its ret. With no entering call in reach
+    // (a thread's outermost frame, or one older than the walk), or a call
+    // that never returns, the cursor stays put and the error says why.
     int nav_step_out(ittd_cursor *hc, int forward, int *out_stop)
     {
         cursor_t *c = C(hc);
@@ -1291,7 +1393,7 @@ namespace
         {
             ttd::trace &t = *c->trace;
             uint32_t tid = thread_after(t, c->position);
-            std::optional<ttd::access_event> call = entering_call(t, c->position, tid, kNavFrameWalk);
+            std::optional<ttd::access_event> call = entering_call(t, c->position, tid, kNavFrameWalk, true, c->progress);
             if ( !call )
             {
                 c->owner->error.set("no call entering this frame was found");
@@ -1372,13 +1474,25 @@ namespace
         });
     }
 
+    int nav_set_progress(ittd_cursor *hc, const ittd_progress *progress)
+    {
+        cursor_t *c = C(hc);
+        if ( c == nullptr )
+            return ITTD_E_BAD_ARG;
+        c->progress = progress;
+        return ITTD_OK;
+    }
+
     int nav_breakpoints(ittd_cursor *hc, const ittd_breakpoint *bpts, size_t count)
     {
         cursor_t *c = C(hc);
         if ( c == nullptr || (bpts == nullptr && count != 0) )
             return ITTD_E_BAD_ARG;
-        c->breakpoints.assign(bpts, bpts + count);
-        return ITTD_OK;
+        return guarded(c->owner->error, [&]()
+        {
+            c->breakpoints.assign(bpts, bpts + count);
+            return ITTD_OK;
+        });
     }
 
     // ------------------------------------------------------------ enumeration
@@ -1453,10 +1567,10 @@ namespace
 
     // ------------------------------------------------------------ queries
     //
-    // Each runs the Sogen query, holds the whole answer, and copies out what
-    // fits. A count query's two calls therefore run the query twice; the
-    // second is cheap because the decoded chunks are cached in the reader.
-    // The long ones run on the query reader (query_reader), not under 'mtx'.
+    // Each runs the Sogen query, holds the whole answer and copies out what
+    // fits, so a count query's two calls run it twice; the second is cheaper
+    // because the reader keeps the decoded chunks. The long ones run on
+    // query_reader, not under 'mtx'.
 
     void set_truncated(int *out_truncated, size_t have, size_t cap, bool buf_given)
     {
@@ -1504,35 +1618,64 @@ namespace
         {
             query_reader reader(b);
             ttd::trace &t = reader.trace();
-            std::set<uint64_t> seen;
-            ttd::operation_control ctl = control(progress);
+            std::vector<std::pair<uint64_t, uint64_t>> want;
             for ( size_t i = 0; i < nranges; i++ )
+                if ( ranges[i].end > ranges[i].start )
+                    want.emplace_back(ranges[i].start, ranges[i].end);
+            // The fill call of a count query asks the same as the count call
+            // did: answer it from the set the first one built. The cache is
+            // guarded by query_mtx, which 'reader' holds.
+            if ( !b->executed_valid || b->executed_ranges != want )
             {
-                if ( ranges[i].end <= ranges[i].start )
-                    continue;
-                for ( const ttd::access_event &e :
-                      t.accesses(ranges[i].start, ranges[i].end - ranges[i].start, 0, UINT64_MAX,
-                                 (uint64_t)ttd::access_kind::execute, ctl) )
+                b->executed_valid = false;
+                b->executed.clear();
+                std::set<uint64_t> seen;
+                const ttd::operation_control ctl = control(progress);
+                // Only cancellation reaches each accesses() call; progress is
+                // reported here, over the whole request (report also checks
+                // for cancellation).
+                ttd::operation_control inner;
+                inner.interrupted = ctl.interrupted;
+                // The events are fetched a stretch of steps at a time, so a
+                // hot range never holds every execution of the recording at
+                // once, only those of one stretch. Each call decodes only the
+                // chunks of its own stretch, so the stretches add little.
+                constexpr uint64_t kSlice = 1ull << 21;
+                const uint64_t last = last_position(t);
+                const uint64_t slices = last / kSlice + 1;
+                const uint64_t X = (uint64_t)ttd::access_kind::execute;
+                for ( size_t i = 0; i < want.size(); i++ )
                 {
-                    if ( e.ip >= ranges[i].start && e.ip < ranges[i].end )
-                        seen.insert(e.ip);
+                    const uint64_t lo = want[i].first, hi = want[i].second;
+                    for ( uint64_t k = 0; k < slices; k++ )
+                    {
+                        ctl.report(i * slices + k, want.size() * slices);
+                        const uint64_t s0 = k * kSlice;
+                        const uint64_t s1 = k + 1 == slices ? UINT64_MAX : s0 + kSlice - 1;
+                        for ( const ttd::access_event &e : t.accesses(lo, hi - lo, s0, s1, X, inner) )
+                            if ( e.ip >= lo && e.ip < hi )
+                                seen.insert(e.ip);
+                    }
                 }
+                b->executed.assign(seen.begin(), seen.end());
+                b->executed_ranges = std::move(want);
+                b->executed_valid  = true;
             }
-            std::vector<uint64_t> v(seen.begin(), seen.end());
+            const std::vector<uint64_t> &v = b->executed;
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [](uint64_t a) { return a; });
         });
     }
 
-    // The return of a function entered by a jump -- a tail call, an import
-    // thunk, the CFG dispatcher's 'jmp rax' -- which calls_to cannot pair,
-    // having no call of its own to pair with. The call that led to the jump
-    // is found walking back; its return address is that call's address plus
-    // its length, and the function returned at the ret that the next
-    // execution of that address on this thread follows. Index lookups only:
-    // no CPU state is rebuilt, which on a reader that rebuilds it from a
-    // checkpoint costs tens of milliseconds an entry. UINT64_MAX when there is
-    // no such return (the thread ended in it, or it unwound past it).
+    // The return of a function entered by a jump (a tail call, an import
+    // thunk, the CFG dispatcher's 'jmp rax'), which calls_to cannot pair
+    // because there is no call of its own. Walking back finds the call that
+    // led to the jump; its return address is that call's address plus its
+    // length, and the function returned at the ret just before the next
+    // execution of that address on this thread. Index lookups only: rebuilding
+    // CPU state from a checkpoint would cost tens of milliseconds an entry.
+    // UINT64_MAX when there is no such return (the thread ended in it, or
+    // unwound past it).
     uint64_t return_of_jump_entry(ttd::trace &t, uint64_t entry_step, uint32_t tid)
     {
         if ( entry_step == 0 || entry_step == UINT64_MAX )
@@ -1558,12 +1701,12 @@ namespace
         return UINT64_MAX;
     }
 
-    // Every call made in steps [s0, s1]. The reader lists calls by target, so
-    // this walks the execute events: a call is recognised by its bytes, its
-    // callee is the thread's next instruction, and its return is the first
-    // ret on the thread that lands on its return address -- calls above it
-    // on the thread's stack then left without returning (an exception, a
-    // longjmp). A call that has not returned by s1 has no return.
+    // Every call made in steps [s0, s1]. The reader lists calls by target
+    // only, so this walks the execute events: a call is recognised by its
+    // bytes, its callee is the thread's next instruction, and its return is
+    // the first ret on the thread that lands on its return address (calls
+    // opened after it then left without returning: an exception, a longjmp).
+    // A call that has not returned by s1 has no return.
     std::vector<ttd::call_event> every_call(ttd::trace &t, uint64_t s0, uint64_t s1, bool is64,
                                             const ttd::operation_control &ctl)
     {
@@ -1665,15 +1808,15 @@ namespace
             uint64_t s0 = 0, s1 = 0;
             step_range(t, when, &s0, &s1);
             std::vector<ttd::call_event> all;
-            // No targets: every call in the range -- for a short one, such as
-            // the run of one function a call tree shows.
+            // No targets: every call in the range. Meant for a short range,
+            // such as the run of one function a call tree shows.
             if ( ntargets == 0 )
                 all = every_call(t, s0, s1, is64(t), control(progress));
             for ( size_t i = 0; i < ntargets; i++ )
             {
-                // Each target's share of the whole: a pattern can name
-                // thousands, and reported one by one the bar ran 0 to 100%
-                // over and over.
+                // Each target reports its share of the whole: a pattern can
+                // name thousands, and per-target progress ran the bar from 0
+                // to 100% over and over.
                 ttd::operation_control ctl = control(progress);
                 if ( ctl.progress )
                 {
@@ -1689,9 +1832,8 @@ namespace
             }
             std::sort(all.begin(), all.end(), [](const ttd::call_event &a, const ttd::call_event &b)
                       { return a.entry_step < b.entry_step; });
-            // In entry order, after the sort: neighbouring entries walk the
-            // same stretch of the event stream, whose decoded chunks the
-            // reader keeps.
+            // In entry order: neighbouring entries walk the same stretch of
+            // the event stream, whose decoded chunks the reader keeps.
             for ( ttd::call_event &e : all )
                 if ( !e.is_call && e.return_step == UINT64_MAX )
                     e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
@@ -1701,8 +1843,8 @@ namespace
                 ittd_call c{};
                 c.pos       = before_step(e.step);
                 c.entry_pos = before_step(e.entry_step);
-                // cpu_view at the ret's own step is the state after it: back at
-                // the return address with the result in RAX.
+                // Position = the ret's step is the state after it: back at the
+                // return address with the result in RAX.
                 c.ret_pos   = e.return_step == UINT64_MAX ? NONE : at(e.return_step);
                 c.site      = e.step == UINT64_MAX ? ITTD_BADADDR : e.site;
                 c.target    = e.target;
@@ -1770,9 +1912,9 @@ namespace
         });
     }
 
-    // The syscall table is decoded when the trace opens, so this is a copy. The
-    // thread comes from the thread-switch table; the arguments are left to
-    // regs_at, since the table does not hold them.
+    // The syscall table is decoded when the trace opens, so this is a copy.
+    // The thread comes from the switch table; the arguments, which the table
+    // lacks, are left to regs_at.
     int query_syscalls(ittd_backend *hb, ittd_syscall *buf, size_t cap, size_t *out_count,
                        int *out_truncated, const ittd_progress *)
     {
@@ -1802,8 +1944,8 @@ namespace
         });
     }
 
-    // One pass over every write and execute event in the recording, in the
-    // reader: seconds on a large trace, and progress counts events.
+    // One pass over every write and execute event, in the reader: seconds on
+    // a large trace. Progress counts events.
     int query_self_modifying(ittd_backend *hb, ittd_selfmod *buf, size_t cap, size_t *out_count,
                              int *out_truncated, const ittd_progress *progress)
     {
@@ -1812,10 +1954,10 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            // Its own reader under scan_mtx: seconds of scanning must not
-            // hold up the cursors' reads, which take 'mtx'.
+            // A reader of its own under scan_mtx, so seconds of scanning hold
+            // neither 'mtx' nor the query reader.
             std::lock_guard<std::mutex> lock(b->scan_mtx);
-            std::unique_ptr<ttd::trace> own = open_trace(b->path);
+            std::unique_ptr<ttd::trace> own = open_forward_trace(b->path);
             ttd::trace &t = *own;
             const uint64_t need = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::execute;
             if ( (t.access_mask() & need) != need )
@@ -1842,8 +1984,8 @@ namespace
 
     // ------------------------------------------------------------ forks
 
-    // The folder this DLL was loaded from: the default registry folder is a
-    // "registry" folder next to it.
+    // The folder this DLL was loaded from; the default registry folder is
+    // "registry" beside it.
     std::filesystem::path module_dir()
     {
         HMODULE self = nullptr;
@@ -1865,7 +2007,7 @@ namespace
     }
 
     // For messages: the ABI's text is UTF-8, and path::string() throws on a
-    // character the ANSI code page lacks.
+    // character missing from the ANSI code page.
     std::string path_utf8(const std::filesystem::path &p)
     {
         const std::u8string s = p.u8string();
@@ -1878,8 +2020,8 @@ namespace
     constexpr const char *kHives[] = { "SYSTEM", "SECURITY", "SAM", "SOFTWARE", "HARDWARE", "NTUSER.DAT" };
 
     // ttd::registry_fingerprint (the manifest's "registry" value for a folder
-    // of hives), remembered until a hive changes size or time: the hives are
-    // well over 100 MB, and the core checks a folder before every replay.
+    // of hives), cached until a hive changes size or time: the hives are well
+    // over 100 MB, and the core checks a folder before every replay.
     std::string hive_fingerprint(const std::filesystem::path &dir)
     {
         std::wstring key = dir.native();
@@ -1903,12 +2045,12 @@ namespace
         return cache.emplace(key, std::move(fp)).first->second;
     }
 
-    // The manifest's "system_dlls" value for the System32 a replay would
-    // load from: the emulation root's filesys\c\windows\system32, or this
-    // machine's own for a recording made against the host. Assumes the
-    // guest's Windows lives in C:\Windows (environment_differences reads the
-    // real system root from the hives, which a recording carrying its hives
-    // may not have here), so a difference is a warning only.
+    // The manifest's "system_dlls" value for the System32 a replay would load
+    // from: the emulation root's filesys\c\windows\system32, or this machine's
+    // own for a recording made against the host. Assumes the guest's Windows
+    // is C:\Windows (environment_differences reads the real system root from
+    // the hives, which may be absent here when the recording carries them),
+    // so a difference is only a warning.
     std::string system_dll_fingerprint(const std::string &root)
     {
         std::filesystem::path sys;
@@ -1922,6 +2064,10 @@ namespace
         }
         else
         {
+            // The root comes from the recording: never reach out to a share
+            // it names, only to say whether the DLLs match.
+            if ( !idattd::is_local_drive_path(root.c_str()) )
+                return std::string();
             sys = utf8_path(root.c_str()) / L"filesys" / L"c" / L"windows" / L"system32";
         }
         return ttd::system_dll_fingerprint(sys);
@@ -1949,14 +2095,30 @@ namespace
         return ITTD_E_REGISTRY_MISMATCH;
     }
 
-    // The setting if the caller's struct is new enough to carry it.
+    // The setting at 'offset' (offsetof the field), if the caller's struct is
+    // new enough to carry it. An offset, not &s->field, which is undefined
+    // for a null 's'.
     template <typename T>
-    const T *setting(const ittd_fork_settings *s, const T *field)
+    const T *setting(const ittd_fork_settings *s, size_t offset)
     {
-        if ( s == nullptr )
+        if ( s == nullptr || offset + sizeof(T) > s->size )
             return nullptr;
-        size_t end = reinterpret_cast<const char *>(field) - reinterpret_cast<const char *>(s) + sizeof(T);
-        return end <= s->size ? field : nullptr;
+        return reinterpret_cast<const T *>(reinterpret_cast<const char *>(s) + offset);
+    }
+
+    const char *const *setting_registry_dir(const ittd_fork_settings *s)
+    {
+        return setting<const char *>(s, offsetof(ittd_fork_settings, registry_dir));
+    }
+
+    const char *const *setting_emulation_root(const ittd_fork_settings *s)
+    {
+        return setting<const char *>(s, offsetof(ittd_fork_settings, emulation_root));
+    }
+
+    const uint32_t *setting_flags(const ittd_fork_settings *s)
+    {
+        return setting<uint32_t>(s, offsetof(ittd_fork_settings, flags));
     }
 
     // An emulator set up to replay 't' the way Sogen records: Unicorn, the
@@ -1966,25 +2128,37 @@ namespace
                                                              bool *strict)
     {
         std::filesystem::path registry = module_dir() / "registry";
-        std::filesystem::path root = utf8_path(manifest_value(t, "emulation_root").c_str());
+        const std::string recorded_root = manifest_value(t, "emulation_root");
+        std::filesystem::path root = utf8_path(recorded_root.c_str());
         *strict = false;
-        if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr && **v != '\0' )
+        if ( const char *const *v = setting_registry_dir(settings); v != nullptr && *v != nullptr && **v != '\0' )
             registry = utf8_path(*v);
-        if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
+        if ( const char *const *v = setting_emulation_root(settings); v != nullptr && *v != nullptr )
+        {
             root = utf8_path(*v);
+        }
+        else if ( !recorded_root.empty() && !idattd::is_local_drive_path(recorded_root.c_str()) )
+        {
+            // The root comes from the recording, which anyone may have made:
+            // a UNC path would have Windows connect to that host (and offer
+            // the user's credentials) as soon as the replay looked there.
+            throw coded_error(ITTD_E_FAILED, "this recording names the emulation root \"" + recorded_root
+                                             + "\", which is not a folder on a local drive. Give the emulation "
+                                               "root explicitly to replay it");
+        }
         // windows_emulator loads <root>\registry whenever there is a root and
         // ignores registry_directory, so that is the folder to check.
         if ( !root.empty() )
             registry = root / "registry";
         bool allow_host = false, any_registry = false;
-        if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
+        if ( const uint32_t *v = setting_flags(settings); v != nullptr )
         {
             *strict      = (*v & ITTD_FORK_STRICT) != 0;
             allow_host   = (*v & ITTD_FORK_ALLOW_HOST) != 0;
             any_registry = (*v & ITTD_FORK_ANY_REGISTRY) != 0;
         }
         // Against the host, the program's file and network operations reach
-        // this machine for real. Only on request.
+        // this machine for real, so only on request.
         if ( root.empty() && !allow_host )
             throw coded_error(ITTD_E_HOST_REPLAY, "this recording was made against the host, not an emulation root: "
                                      "replaying it runs the program's file and network operations on this "
@@ -1993,13 +2167,13 @@ namespace
         const int hives = check_hives(manifest_value(t, "registry"), registry, &why);
         // A recording that carries what it read of its hives replays without
         // hive files (Sogen serves the registry from it in seek, run_to and
-        // replay_to_end). The recording's own files are still loaded when
-        // they are here, so a fork can read further than the recording did;
-        // other files would answer differently, so they are left out.
+        // replay_to_end). The recording's own hive files are still loaded
+        // when present, so a fork can read further than the recording did;
+        // other hives would answer differently and are left out.
         const bool carried = t.has_registry_hives();
         const bool load = !carried || hives == ITTD_OK;
-        // Otherwise other hives than the recording's are refused before the
-        // replay spends minutes getting to where it diverges, unless asked for.
+        // Without carried hives, wrong ones are refused (unless asked for)
+        // before the replay spends minutes reaching the divergence.
         if ( !carried && (hives == ITTD_E_NO_REGISTRY || (hives == ITTD_E_REGISTRY_MISMATCH && !any_registry)) )
             throw coded_error(hives, why);
 
@@ -2140,7 +2314,7 @@ namespace
             ttd::record(*f->emu, rs, interrupted);
             if ( out_instructions != nullptr )
                 *out_instructions = f->emu->get_executed_instructions() - before;
-            // A cancelled recording is still a finished, readable trace of
+            // A cancelled recording is still a complete, readable trace of
             // what ran before the stop.
             return ITTD_OK;
         });
@@ -2154,24 +2328,24 @@ namespace
     // ------------------------------------------------------------ replay scans
 
     // The position of text that appeared at 'step'. A step at or before the
-    // recording's start means there from the start: for a fork's recording,
-    // which starts at the fork position, before_step would name a position
+    // recording's start means "there from the start"; for a fork's recording,
+    // which starts at the fork position, before_step would give a position
     // before its first.
     ittd_position appeared_at(const ttd::trace &t, uint64_t step)
     {
         return step <= first_position(t) ? at(first_position(t)) : before_step(step);
     }
 
-    // Replay the whole recording with a scanner attached. Where the replay
-    // diverges from the recording -- typically because this machine's files
-    // are not the ones a host recording ran against -- it is not the end: the
-    // next checkpoint holds the recording's own state, so the scan restores
-    // it and goes on. 'leaving' runs before the restore and 'restored' after
-    // it: a scanner that cannot watch a restore (the buffer scanner owns the
-    // emulator's one mapping-change callback, which seek needs) is put away
-    // and a new one attached; one that can is shown the restored memory.
-    // Returns what was skipped, in words; empty when nothing was. Strict
-    // replays still fail at the first divergence.
+    // Replay the whole recording with a scanner attached. A divergence
+    // (typically this machine's files differing from those a host recording
+    // ran against) does not end the scan: the next checkpoint holds the
+    // recording's own state, so the scan restores it and goes on. 'leaving'
+    // runs before the restore and 'restored' after it. A scanner that cannot
+    // watch a restore (the buffer scanner owns the emulator's only
+    // mapping-change callback, which seek needs) is put away and a new one
+    // attached; one that can is shown the restored memory. Returns what was
+    // skipped, in words, or "" when nothing was. Strict replays still fail at
+    // the first divergence.
     std::string replay_scan(sogen::windows_emulator &emu, ttd::trace &t, const std::function<void()> &attach,
                             const std::function<void()> &leaving, const std::function<void()> &restored,
                             bool strict, const ittd_progress *progress)
@@ -2228,21 +2402,21 @@ namespace
 
     // ------------------------------------------------------------ scans of the recorded writes
     //
-    // A recording made with write events and their bytes (the chunked formats,
-    // 7 on) already holds everything a string or buffer scan looks at: every
+    // A recording with write events and their bytes (the chunked formats, 7
+    // on) already holds everything a string or buffer scan looks at: every
     // write, its step, the instruction that made it and what it stored. Read
-    // from there, the scans run nothing -- no registry, no emulation root, no
-    // program re-run on this machine -- and cannot diverge. The scanners
+    // from there, the scans run nothing (no registry, no emulation root, no
+    // program re-run on this machine) and cannot diverge. The scanners
     // (common/write_scans.h) apply Sogen's rules, fed what its emulator hooks
     // would see:
     //
-    //   - buffers: every guest write with its bytes, each execution, and each
+    //   - buffers: every guest write with its bytes, each execution and each
     //     mapping change, in recording order;
-    //   - strings: after each instruction that wrote, the bytes around what it
-    //     wrote, read from memory as it stood then; and at the start, all
-    //     committed memory.
+    //   - strings: after each instruction that wrote, the bytes around the
+    //     write as memory then held them; and at the start, all committed
+    //     memory.
     //
-    // A recording without write data still gets the replay.
+    // A recording without write data falls back to the replay.
 
     bool scans_from_recording(ttd::trace &t)
     {
@@ -2250,16 +2424,16 @@ namespace
         return t.has_access_data() && (t.access_mask() & W) == W;
     }
 
-    // Guest memory as it stood after some step, for the string scan's reads:
-    // a page is fetched from the recording the first time it is read, then
-    // kept current by every write after.
+    // Guest memory as it stood after some step, for the string scan's reads.
+    // A page is fetched from the recording when first read, then kept current
+    // by every later write.
     class ShadowMemory
     {
     public:
         explicit ShadowMemory(ttd::trace &t) : m_t(t) {}
 
         // [addr, addr + n) as of 'position'. False when any of it is not
-        // mapped, as the emulator's read would fail; those bytes read as 0xFF.
+        // mapped (the emulator's read would fail); those bytes read as 0xFF.
         bool read(uint64_t addr, size_t n, uint8_t *out, uint64_t position)
         {
             bool all = true;
@@ -2270,8 +2444,7 @@ namespace
                 const size_t   take = std::min<size_t>(n, kPage - off);
                 const Page &p = fetch(page, position);
                 memcpy(out, p.bytes.data() + off, take);
-                if ( all && std::find(p.mapped.begin() + off, p.mapped.begin() + off + take, uint8_t(0))
-                            != p.mapped.begin() + off + take )
+                if ( all && !p.all_mapped(off, take) )
                     all = false;
                 out += take;
                 addr += take;
@@ -2280,8 +2453,8 @@ namespace
             return all;
         }
 
-        // A write: applied to the pages held, the rest are fetched later
-        // with it already in them.
+        // A write, applied to the pages held; pages not held already have it
+        // when fetched later.
         void apply(uint64_t addr, const uint8_t *b, size_t n)
         {
             while ( n != 0 )
@@ -2293,7 +2466,7 @@ namespace
                 if ( it != m_pages.end() )
                 {
                     memcpy(it->second.bytes.data() + off, b, take);
-                    std::fill_n(it->second.mapped.begin() + off, take, uint8_t(1));
+                    it->second.set_mapped(off, take);
                 }
                 b += take;
                 addr += take;
@@ -2313,9 +2486,43 @@ namespace
         }
 
     private:
+        // Every page read stays held for the rest of the pass (the scan of
+        // the start reads all committed memory), so which bytes are mapped
+        // is a bitmap: an eighth of the size of a flag per byte.
         struct Page
         {
-            std::vector<uint8_t> bytes, mapped;
+            std::vector<uint8_t> bytes;
+            uint64_t mapped[kPage / 64] = {};
+
+            // The bits of word 'w' that [off, off + n) covers.
+            static uint64_t word_mask(size_t w, size_t off, size_t n)
+            {
+                const size_t lo = std::max(off, w * 64) - w * 64;
+                const size_t hi = std::min(off + n, w * 64 + 64) - w * 64;
+                const uint64_t upto = hi == 64 ? ~0ull : (1ull << hi) - 1;
+                return upto & ~((1ull << lo) - 1);
+            }
+
+            void set_mapped(size_t off, size_t n)
+            {
+                if ( n == 0 )
+                    return;
+                for ( size_t w = off / 64; w <= (off + n - 1) / 64; w++ )
+                    mapped[w] |= word_mask(w, off, n);
+            }
+
+            bool all_mapped(size_t off, size_t n) const
+            {
+                if ( n == 0 )
+                    return true;
+                for ( size_t w = off / 64; w <= (off + n - 1) / 64; w++ )
+                {
+                    const uint64_t m = word_mask(w, off, n);
+                    if ( (mapped[w] & m) != m )
+                        return false;
+                }
+                return true;
+            }
         };
         ttd::trace &m_t;
         std::map<uint64_t, Page> m_pages;
@@ -2327,14 +2534,13 @@ namespace
                 return it->second;
             Page p;
             p.bytes.assign(kPage, 0xFF);
-            p.mapped.assign(kPage, 0);
             std::vector<std::optional<uint8_t>> got = m_t.memory_at(position, page * kPage, kPage);
             for ( size_t i = 0; i < got.size() && i < kPage; i++ )
             {
                 if ( got[i] )
                 {
-                    p.bytes[i]  = *got[i];
-                    p.mapped[i] = 1;
+                    p.bytes[i] = *got[i];
+                    p.set_mapped(i, 1);
                 }
             }
             return m_pages.emplace(page, std::move(p)).first->second;
@@ -2343,16 +2549,19 @@ namespace
 
     // One pass over the recording for both answers. 'string_minimum' is the
     // shortest string kept.
+    // '*strings_truncated' and '*buffers_truncated' say whether a scanner hit
+    // its own limit on results, so the answer is a prefix.
     void scan_recorded_writes(const std::filesystem::path &path, size_t string_minimum,
                               const ittd_progress *progress,
                               std::vector<ittd_string_hit> *strings_out,
-                              std::vector<ittd_buffer_hit> *buffers_out)
+                              std::vector<ittd_buffer_hit> *buffers_out,
+                              bool *strings_truncated, bool *buffers_truncated)
     {
-        std::unique_ptr<ttd::trace> own = open_trace(path);
+        std::unique_ptr<ttd::trace> own = open_forward_trace(path);
         ttd::trace &t = *own;
-        // The shadow's page reads go to a reader of their own, so they never
+        // The shadow's page reads use a reader of their own, so they never
         // disturb the event stream's.
-        std::unique_ptr<ttd::trace> mem_trace = open_trace(path);
+        std::unique_ptr<ttd::trace> mem_trace = open_forward_trace(path);
         ShadowMemory shadow(*mem_trace);
 
         using namespace idattd::scans;
@@ -2362,8 +2571,8 @@ namespace
         const uint64_t start = t.start_position();
         const uint64_t last  = last_position(t);
 
-        // One buffer for every read: this runs after each instruction that
-        // wrote, and shadow.read fills all of what it is given.
+        // One buffer reused for every read: this runs after each instruction
+        // that wrote, and shadow.read fills all of what it is given.
         std::vector<uint8_t> window;
         auto scan_range = [&](uint64_t address, uint64_t size, uint64_t read_at, uint64_t step)
         {
@@ -2405,7 +2614,7 @@ namespace
             t.has_mapping_changes() ? t.mapping_changes() : std::span<const ttd::mapping_change>();
         size_t next_map = 0;
 
-        // The guest writes of the instruction being read, scanned for strings
+        // The guest writes of the current instruction, scanned for strings
         // once it is done, as Sogen does at the next instruction.
         std::vector<std::pair<uint64_t, uint64_t>> pending;
         uint64_t pending_step = 0;
@@ -2457,7 +2666,7 @@ namespace
                 continue;
             const uint8_t *bytes = reinterpret_cast<const uint8_t *>(data.data());
             shadow.apply(ev->address, bytes, data.size());
-            // Sogen's scanners hook the guest CPU's writes, not the ones Sogen
+            // Sogen's scanners hook the guest CPU's writes, not those Sogen
             // makes for the program (a syscall filling a buffer).
             if ( ev->kind != ttd::access_kind::write )
                 continue;
@@ -2470,6 +2679,10 @@ namespace
         }
         flush();
         buffers.finish();
+        if ( strings_truncated != nullptr )
+            *strings_truncated = strings.truncated;
+        if ( buffers_truncated != nullptr )
+            *buffers_truncated = buffers.truncated;
 
         if ( strings_out != nullptr )
         {
@@ -2506,13 +2719,13 @@ namespace
     std::string scan_key(const ittd_fork_settings *settings)
     {
         std::string key;
-        if ( const uint32_t *v = setting(settings, &settings->flags); v != nullptr )
+        if ( const uint32_t *v = setting_flags(settings); v != nullptr )
             key += std::to_string(*v);
         key += '|';
-        if ( const auto *const *v = setting(settings, &settings->registry_dir); v != nullptr && *v != nullptr )
+        if ( const char *const *v = setting_registry_dir(settings); v != nullptr && *v != nullptr )
             key += *v;
         key += '|';
-        if ( const auto *const *v = setting(settings, &settings->emulation_root); v != nullptr && *v != nullptr )
+        if ( const char *const *v = setting_emulation_root(settings); v != nullptr && *v != nullptr )
             key += *v;
         return key;
     }
@@ -2524,9 +2737,12 @@ namespace
         return scans_from_recording(*b->trace);
     }
 
-    // The scan of the recorded writes for 'scan_min', run once and kept: both
-    // answers come from the one pass.
-    const std::vector<ittd_string_hit> &recorded_strings(backend_t *b, size_t scan_min, const ittd_progress *progress)
+    // The scan of the recorded writes for 'scan_min', run once and kept. The
+    // same pass also fills the buffer answer.
+    // '*truncated', when given, says whether the scan hit the string scanner's
+    // own limit.
+    const std::vector<ittd_string_hit> &recorded_strings(backend_t *b, size_t scan_min, const ittd_progress *progress,
+                                                         bool *truncated = nullptr)
     {
         const std::string key = "recorded|" + std::to_string(scan_min);
         auto found = b->strings.find(key);
@@ -2534,11 +2750,25 @@ namespace
         {
             std::vector<ittd_string_hit> s;
             std::vector<ittd_buffer_hit> v;
-            scan_recorded_writes(b->path, scan_min, progress, &s, &v);
-            b->buffers.emplace("recorded", std::move(v));
+            bool s_cut = false, v_cut = false;
+            scan_recorded_writes(b->path, scan_min, progress, &s, &v, &s_cut, &v_cut);
+            // The first scan's buffers are kept, so is the first scan's flag.
+            if ( b->buffers.emplace("recorded", std::move(v)).second )
+                b->buffers_truncated["recorded"] = v_cut;
+            b->strings_truncated[key] = s_cut;
             found = b->strings.emplace(key, std::move(s)).first;
         }
+        if ( truncated != nullptr )
+            *truncated = b->strings_truncated[key];
         return found->second;
+    }
+
+    // set_truncated, also reporting a scanner that stopped at its own limit.
+    void set_scan_truncated(int *out_truncated, size_t have, size_t cap, bool buf_given, bool scanner_cut)
+    {
+        set_truncated(out_truncated, have, cap, buf_given);
+        if ( out_truncated != nullptr && scanner_cut )
+            *out_truncated = 1;
     }
 
     int query_strings(ittd_backend *hb, const ittd_fork_settings *settings, uint32_t min_length,
@@ -2555,23 +2785,24 @@ namespace
             std::lock_guard<std::mutex> lock(b->scan_mtx);
             if ( recorded_scans(b) )
             {
-                // Kept at the shortest length anyone is likely to ask for,
-                // and filtered for this request.
+                // Scanned at the shortest length likely to be asked for, and
+                // filtered for this request.
+                bool cut = false;
                 const std::vector<ittd_string_hit> &all =
-                    recorded_strings(b, std::min<size_t>(min_length, 4), progress);
+                    recorded_strings(b, std::min<size_t>(min_length, 4), progress, &cut);
                 std::vector<ittd_string_hit> v;
                 for ( const ittd_string_hit &h : all )
                     if ( h.length >= min_length )
                         v.push_back(h);
                 b->scan_note.clear();
-                set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+                set_scan_truncated(out_truncated, v.size(), cap, buf != nullptr, cut);
                 return fill(v, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
             }
             const std::string key = std::to_string(min_length) + "|" + scan_key(settings);
             auto found = b->strings.find(key);
             if ( found == b->strings.end() )
             {
-                std::unique_ptr<ttd::trace> t = open_trace(b->path);
+                std::unique_ptr<ttd::trace> t = open_forward_trace(b->path);
                 bool strict = false;
                 auto emu = replay_emulator(*t, settings, &strict);
                 std::optional<ttd::string_scanner> scanner;
@@ -2581,8 +2812,8 @@ namespace
                     scanner->scan_initial_memory();
                 }, []() {}, [&]()
                 {
-                    // Attached by now, unless the replay was refused before
-                    // it started.
+                    // Attached by now, unless the replay failed before it
+                    // started.
                     if ( !scanner )
                         scanner.emplace(*emu, min_length);
                     scanner->scan_initial_memory();
@@ -2628,23 +2859,24 @@ namespace
                     recorded_strings(b, 4, progress);
                 const std::vector<ittd_buffer_hit> &v = b->buffers["recorded"];
                 b->scan_note.clear();
-                set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+                set_scan_truncated(out_truncated, v.size(), cap, buf != nullptr, b->buffers_truncated["recorded"]);
                 return fill(v, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
             }
             const std::string key = scan_key(settings);
             auto found = b->buffers.find(key);
             if ( found == b->buffers.end() )
             {
-                std::unique_ptr<ttd::trace> t = open_trace(b->path);
+                std::unique_ptr<ttd::trace> t = open_forward_trace(b->path);
                 bool strict = false;
                 auto emu = replay_emulator(*t, settings, &strict);
                 std::optional<ttd::buffer_scanner> scanner;
-                // What scanners put away at a restore found, then the last one's.
+                // What each scanner put away at a restore found, then the
+                // last one's.
                 std::vector<ttd::recovered_buffer> found_before;
                 // A scanner checks every write against the recording and, at
                 // the end, that none is missing. One put away at a divergence
-                // fails both by definition; what it found before is kept
-                // (finish hands out its results before it throws).
+                // fails both checks by definition; its results are kept
+                // (finish hands them out before it throws).
                 auto put_away = [&](bool diverged)
                 {
                     if ( !scanner )
@@ -2692,16 +2924,15 @@ namespace
     // ------------------------------------------------------------ the memory heatmap
     //
     // Every recorded access, counted by page and by slice of the recording's
-    // steps: one pass over the event stream. A window (the heatmap zoomed in)
-    // reads only its own stretch of events.
+    // steps, in one pass over the event stream. A window (the heatmap zoomed
+    // in) reads only its own stretch of events.
     bool whole_trace(ittd_position_range when)
     {
         return same(when.first, BEGIN) && same(when.last, END);
     }
 
-    // Where the slices of 'when' start counting from, and how many steps
-    // they share. The whole recording keeps the original reckoning (from
-    // start_position), so its answers are what they always were.
+    // Where the slices of 'when' count from, and how many steps they share.
+    // The whole recording counts from start_position, as it always has.
     void heat_span(const ttd::trace &t, ittd_position_range when, uint64_t *start, uint64_t *span)
     {
         if ( whole_trace(when) )
@@ -2710,10 +2941,9 @@ namespace
             *span  = std::max<uint64_t>(last_position(t) - std::min(last_position(t), *start), 1);
             return;
         }
-        // step_range gives the steps of the events inside the window: the
-        // ones after its first position, up to and including its last. The
-        // slices count from that first position, as the whole recording's
-        // count from its start, so slice 0 begins exactly where asked.
+        // step_range gives the steps of the events inside the window: after
+        // its first position, up to and including its last. The slices count
+        // from that first position, so slice 0 begins exactly where asked.
         uint64_t lo = 0, hi = 0;
         step_range(t, when, &lo, &hi);
         *start = lo - 1;
@@ -2739,13 +2969,13 @@ namespace
             auto found = b->heat.find(key);
             if ( found == b->heat.end() )
             {
-                // Zooming in and out again asks for the same few windows;
-                // anything older than the whole-recording answer and the
-                // last handful goes, so the cache cannot grow without bound.
+                // Zooming in and out asks for the same few windows. Past 16
+                // entries every cached window is dropped (the whole-recording
+                // answers stay), so the cache cannot grow without bound.
                 if ( !whole && b->heat.size() > 16 )
                     for ( auto it = b->heat.begin(); it != b->heat.end(); )
                         it = std::count(it->first.begin(), it->first.end(), '|') > 1 ? b->heat.erase(it) : std::next(it);
-                std::unique_ptr<ttd::trace> own = open_trace(b->path);
+                std::unique_ptr<ttd::trace> own = open_forward_trace(b->path);
                 ttd::trace &t = *own;
                 uint64_t start = 0, span = 1;
                 heat_span(t, when, &start, &span);
@@ -2753,7 +2983,7 @@ namespace
                 if ( !whole )
                     step_range(t, when, &lo, &hi);
                 const uint64_t total = std::max<uint64_t>(t.metadata().event_count, 1);
-                // Keyed by page and slice. Not packed into one integer: a page
+                // Keyed by page and slice, not packed into one integer: a page
                 // number at the smallest shift takes 56 bits, the slice 12.
                 struct cell_key
                 {
@@ -2840,8 +3070,8 @@ namespace
     }
 
     // The instruction stream of one thread (or all) over a range of positions,
-    // straight from the execute events: no replay, so a long window costs only
-    // the events it reads. Stops after 'cap'.
+    // straight from the execute events: no replay, so a window costs only the
+    // events it reads. Stops after 'cap'.
     int query_instructions(ittd_backend *hb, ittd_position_range when, uint32_t tid,
                            ittd_access *buf, size_t cap, size_t *out_count,
                            int *out_truncated, const ittd_progress *progress)
@@ -2910,12 +3140,12 @@ namespace
         }
     }
 
-    // Who asked for a change the map records: the routine whose system call
-    // made it (the call that entered the syscall's stub, so ntdll's
+    // Who asked for a recorded map change: the routine whose syscall made it
+    // (the target of the call into the syscall stub, such as ntdll's
     // NtAllocateVirtualMemory) and the call sites that led there, innermost
-    // first and one per module crossed -- what the Microsoft backend reports
-    // from the calls it watches. Sogen records the outcome, not the call, so
-    // the chain is walked back from the syscall instruction.
+    // first and one per module crossed, as the Microsoft backend reports from
+    // the calls it watches. Sogen records the outcome, not the call, so the
+    // chain is walked back from the syscall instruction.
     void syscall_chain(ttd::trace &t, uint64_t sys_step, uint32_t tid,
                        const std::vector<std::pair<uint64_t, uint64_t>> &mods, ittd_mapping_change *m)
     {
@@ -2948,9 +3178,9 @@ namespace
 
     // The memory map at the start and every change to it, from the trace's
     // memory regions section (format section 17). Each entry is what
-    // NtQueryVirtualMemory showed for its range from its position on, which is
-    // ITTD_MAP_STATE: the core folds it by overwriting the range. The values
-    // are already Windows' own.
+    // NtQueryVirtualMemory showed for its range from its position on, i.e.
+    // ITTD_MAP_STATE, which the core folds by overwriting the range. The
+    // values are already Windows' own.
     int query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
                               size_t *out_count, int *out_truncated, const ittd_progress *)
     {
@@ -2996,8 +3226,8 @@ namespace
                     return m;
                 }
                 m.tid = t.thread_at(r.step).value_or(0);
-                // The syscall that made the change, when one did: the listing
-                // travels to where the memory was asked for.
+                // The syscall that made the change, if any, so the listing
+                // can travel to where the memory was asked for.
                 auto it = std::lower_bound(sys.begin(), sys.end(), r.step,
                                            [](const ttd::syscall_entry &e, uint64_t s) { return e.step < s; });
                 if ( it != sys.end() && it->step == r.step )
@@ -3052,13 +3282,12 @@ namespace
             std::sort(want.begin(), want.end());
 
             // cpu_views_at replays each register snapshot interval once for
-            // every position in it (Sogen measured 4-6x over a cpu_view each,
-            // on both ends of every call to a function). It is given the
-            // positions a chunk at a time so that progress and Cancel are
-            // heard; a chunk boundary inside an interval costs that interval
-            // one more replay. One position that diverges fails its whole
-            // chunk, which is then rebuilt a position at a time so the others
-            // are not lost with it.
+            // all its positions (Sogen measured 4-6x over a cpu_view each, on
+            // both ends of every call to a function). Positions go in chunks
+            // so progress and Cancel are heard; a chunk boundary inside an
+            // interval costs that interval one more replay. A position that
+            // diverges fails its whole chunk, which is then rebuilt one
+            // position at a time so the others survive.
             constexpr size_t kChunk = 1024;
             std::vector<uint64_t> steps;
             steps.reserve(std::min(want.size(), kChunk));
@@ -3111,7 +3340,7 @@ namespace
                     continue;
                 for ( const ttd::module_export &e : *m.exports )
                 {
-                    // A forwarder's RVA points at the forwarder string, not at
+                    // A forwarder's RVA points at the forwarder string, not
                     // code; the name belongs to the module it forwards to.
                     if ( !e.forwarder.empty() || e.name.empty() || e.name[0] == '#' )
                         continue;
@@ -3152,7 +3381,7 @@ namespace
                                  : here == dlls ? ITTD_DLLS_SAME : ITTD_DLLS_DIFFER;
             }
             copy_str(out->emulation_root, sizeof(out->emulation_root), root);
-            // The folder a replay in the root loads its hives from (whatever
+            // Where a replay in the root loads its hives from (whatever
             // registry_dir says), and where create-root.bat puts them.
             if ( !root.empty() )
                 copy_str(out->registry_hint, sizeof(out->registry_hint),
@@ -3215,6 +3444,7 @@ namespace
         a.nav_run            = nav_run;
         a.nav_run_to         = nav_run_to;
         a.nav_breakpoints    = nav_breakpoints;
+        a.nav_set_progress   = nav_set_progress;
         a.modules            = modules;
         a.threads            = threads;
         a.timeline           = timeline;

@@ -1,8 +1,8 @@
 // pch.h: precompiled header for the ida-ttd plugin.
 //
-// Include ordering matters here: Windows first (with lean/nominmax so it does
-// not clobber the IDA SDK or the STL), then the IDA SDK. The Microsoft TTD
-// Replay SDK is the Microsoft backend's alone: backend-msttd/msttd_pch.h.
+// Order matters: Windows first (lean, NOMINMAX, so it does not clobber the IDA
+// SDK or the STL), then the IDA SDK. The TTD Replay SDK belongs to the
+// Microsoft backend alone (backend-msttd/msttd_pch.h).
 #ifndef PCH_H
 #define PCH_H
 
@@ -17,9 +17,8 @@
 // ---------------------------------------------------------------------------
 // IDA SDK
 //
-// These macros must be defined before including the SDK: they stop pro.h from
-// "poisoning" the standard file/string functions (otherwise <fstream> etc. fail
-// to compile because fgetc/fputc get redefined to dont_use_*).
+// Defined before the SDK so pro.h does not "poison" the standard file and
+// string functions (fgetc/fputc redefined to dont_use_* breaks <fstream>).
 // ---------------------------------------------------------------------------
 #ifndef USE_DANGEROUS_FUNCTIONS
 #define USE_DANGEROUS_FUNCTIONS 1

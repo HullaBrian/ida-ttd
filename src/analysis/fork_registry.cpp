@@ -16,12 +16,12 @@ namespace idattd
             *ok = true;
         PluginNode node(FR_NODE);
         std::vector<uchar> blob;
-        // Not tied to one recording: the records span several.
+        // Fingerprint 0: the records span several recordings.
         if ( !node.exists() )
             return out;
         if ( !node.get(FR_TAG, FR_MAGIC, FR_VERSION, 0, &blob) )
         {
-            // Absent is fine; present and unreadable is not.
+            // Absent is fine; present but unreadable is not.
             netnode nn(FR_NODE);
             if ( nn != BADNODE && nn.blobsize(0, FR_TAG) > 0 && ok != nullptr )
                 *ok = false;
@@ -63,10 +63,15 @@ namespace idattd
             node.erase(FR_TAG);
             return;
         }
+        // At most FR_MAX, as the reader refuses more and would then lose the
+        // whole list. Records are appended (add_fork_record), so the oldest
+        // are at the front and are the ones dropped.
+        const size_t first = v.size() > FR_MAX ? v.size() - FR_MAX : 0;
         BlobWriter w;
-        w.u32((uint32_t)v.size());
-        for ( const ForkRecord &f : v )
+        w.u32((uint32_t)(v.size() - first));
+        for ( size_t i = first; i < v.size(); i++ )
         {
+            const ForkRecord &f = v[i];
             w.str(f.path);
             w.str(f.parent);
             w.str(f.at);

@@ -1,6 +1,7 @@
-// The call tree of the function at the cursor: a folding text view, one line
-// per call, each opened and closed from the arrow in the gutter (or Left /
-// Right), the way IDA's own trees are.
+// The call tree of the function at the cursor. Opens the PySide6 tree
+// (calltree_py.hh) where IDAPython is available; otherwise a folding text
+// view, one line per call, folded from the gutter arrow (or Left / Right) as
+// IDA's own trees are.
 #include "ui/ui.h"
 #include "ui/names.h"
 #include "ui/graph_view.h"
@@ -10,12 +11,11 @@
 namespace idattd
 {
     // Trees up to this many calls open fully; a bigger one opens one level
-    // deep, so the first thing shown is what the function itself called.
+    // deep, showing what the function itself called.
     static const size_t kOpenAllRows = 300;
 
-    // "name+0x12" when IDA knows a function there; outside one, the name IDA
-    // has for the address (an export it has not made a function of), else
-    // the address.
+    // "name+0x12" inside a function IDA knows; outside one, IDA's name for
+    // the address (e.g. an export not made a function), else the address.
     static qstring code_name(ea_t ea)
     {
         qstring s;
@@ -33,11 +33,10 @@ namespace idattd
         out->append(char(tag));
     }
 
-    // One open call tree window. Lives until its window closes.
+    // One open text call tree; deleted when its window closes.
     //
-    // Node 0 is the function itself; node i+1 is row i of the tree. A node's
-    // children are the rows after it that are deeper than it, up to the next
-    // one that is not.
+    // Node 0 is the function itself; node i+1 is row i. A node's descendants
+    // are the following rows deeper than it, up to the next one that is not.
     class CallTreeView
     {
     public:
@@ -245,8 +244,7 @@ namespace idattd
         }
     };
 
-    // The last call tree built, as the window script asks for it
-    // (ttd("ui.calltree")).
+    // The last call tree built, for the window script (ttd("ui.calltree")).
     static qstring g_callTreeJson;
 
     const qstring &call_tree_json()
@@ -259,7 +257,7 @@ namespace idattd
         qstring j;
         j.append("{\"name\":");
         json_str(&j, t.root != BADADDR ? code_name(t.root).c_str() : "(this function)");
-        // "" for no root, which the window takes as nothing to show.
+        // "" for no root: the window then offers no "show the function".
         if ( t.root != BADADDR )
             j.cat_sprnt(",\"root\":\"0x%llX\",\"from\":", (uint64_t)t.root);
         else
@@ -290,8 +288,8 @@ namespace idattd
         return j;
     }
 
-    // Open the tree control (calltree_py.hh). False when IDAPython is not
-    // there or the script failed, which the output window is told.
+    // Open the tree control (calltree_py.hh). False when IDAPython is absent
+    // or the script failed (reported in the output window).
     static bool open_call_tree_window()
     {
         extlang_object_t py = find_extlang_by_name("Python");

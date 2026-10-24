@@ -11,19 +11,19 @@ namespace idattd
 
     namespace
     {
-        // Python's GIL, let go while run_query sleeps. A script that runs a
-        // query (ttd() from IDAPython, an MCP server's Python) holds it on
-        // this thread for the whole call; if anything on the worker needs
-        // Python meanwhile, it would wait until the UI happened to run Python
-        // code -- a click -- and a query of a fraction of a second took 108
-        // minutes. Found at run time: IDA without IDAPython has no python3*.dll.
+        // Python's GIL, released while run_query sleeps. A script that runs a
+        // query (ttd() from IDAPython, an MCP server's Python) holds it on this
+        // thread for the whole call, so anything else needing Python waited
+        // for the UI to run Python code (a click): a sub-second query once took
+        // 108 minutes. Looked up at run time, since IDA without IDAPython has
+        // no python3*.dll.
         class PythonGil
         {
         public:
             PythonGil()
             {
                 // Grown until every module fits: IDA with its plugins and Qt
-                // can load hundreds, and Python may be among the last.
+                // loads hundreds, and Python may come late.
                 std::vector<HMODULE> mods(512);
                 DWORD need = 0;
                 for ( ;; )
@@ -77,8 +77,8 @@ namespace idattd
             void  (*m_restore)(void *)  = nullptr;
         };
 
-        // Two atomics: the percentage the query reports, and the Cancel the
-        // main thread passes in. Safe from any thread.
+        // The reported percentage and the main thread's Cancel, as atomics:
+        // safe from any thread.
         class AtomicSink : public ProgressSink
         {
         public:
@@ -94,10 +94,46 @@ namespace idattd
         };
     }
 
+    // Main-thread state only: run_query and movements both run there.
+    static bool g_queryRunning = false;
+    static bool g_traceMoving  = false;
+
+    void set_trace_moving(bool moving)
+    {
+        g_traceMoving = moving;
+    }
+
+    bool query_in_progress()
+    {
+        return g_queryRunning;
+    }
+
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
                           bool cancellable)
     {
         DiagTimer diag_timer("query", qstring(what));
+
+        // The wait loop below pumps the UI and releases the GIL, so a UI
+        // action, a script's ttd() call or an execute_sync request can start
+        // another query (or one can start during a movement's wait box) while
+        // the backend is busy. A backend is not built to be driven by two
+        // replays at once, so the nested one is refused without calling it,
+        // reported as not run and cancelled so callers keep nothing from it.
+        if ( g_queryRunning || g_traceMoving )
+        {
+            msg("[ida-ttd] %s: not started, %s.\n", what,
+                g_queryRunning ? "another trace query is running"
+                               : "a movement through the recording is in progress");
+            QueryResult refused;
+            refused.cancelled = true;
+            return refused;
+        }
+        struct RunningFlag
+        {
+            RunningFlag()  { g_queryRunning = true; }
+            ~RunningFlag() { g_queryRunning = false; }
+        } running;
+
         static const PythonGil gil;
         const char *hide = cancellable ? "" : "HIDECANCEL\n";
         const char *ask  = cancellable ? " (Cancel to stop)" : "";
@@ -107,8 +143,8 @@ namespace idattd
 
         std::thread worker([&]()
         {
-            // 'done' is set on every exit path: the main thread spins on it and
-            // would otherwise wait forever behind a wait box.
+            // 'done' is set on every exit path, or the main thread would spin
+            // forever behind the wait box.
             try
             {
                 result = query(&sink);
@@ -125,7 +161,13 @@ namespace idattd
         bool cancelled = false;
         while ( !done.load(std::memory_order_acquire) )
         {
-            if ( cancellable && !cancelled && user_cancelled() )
+            // user_cancelled() is also what pumps the UI, without which the
+            // wait box never appears (it shows only after a grace period while
+            // messages run). So it is called every time, and its answer is
+            // ignored for a box without Cancel (HIDECANCEL offers no way to
+            // ask, so it reports false anyway).
+            const bool asked = user_cancelled();
+            if ( cancellable && !cancelled && asked )
             {
                 cancelled = true;
                 sink.cancel();
@@ -153,9 +195,9 @@ namespace idattd
         return result;
     }
 
-    // Visible top-level windows of the calling thread. Only ever asked about
-    // the main thread's own windows, from the main thread: asking another
-    // thread's would be a cross-thread message.
+    // Visible top-level windows of the calling thread. Called only on the main
+    // thread for its own windows; asking about another thread's would send
+    // cross-thread messages.
     static int visible_thread_windows()
     {
         int n = 0;

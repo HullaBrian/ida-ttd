@@ -12,8 +12,8 @@ namespace idattd
     void MemoryReader::reset()
     {
         m_modules = nullptr;
-        // The scratch buffer keeps its capacity on purpose: it is sized by the
-        // largest read so far.
+        // The scratch buffer keeps its capacity: it is sized by the largest
+        // read so far.
         m_known.clear();
     }
 
@@ -29,8 +29,8 @@ namespace idattd
 
         // ---- 1: the recording, as the backend has it ----
         // Cleared first (capacity kept): a backend that bails out early may
-        // leave 'known' untouched, and the previous read's marks, or too few
-        // of them, must not be taken for this one's.
+        // leave 'known' untouched or short, and the previous read's marks must
+        // not be taken for this one's.
         m_known.clear();
         playhead->read_memory(ea, out, size, &m_known);
         if ( m_known.size() < size )
@@ -47,8 +47,13 @@ namespace idattd
 
         // ---- 2: the on-disk image fills the gaps ----
         //
-        // Placeholders are a gap here: the whole point is to give the image a
-        // chance to supply what the engine could not.
+        // Placeholders count as gaps, so the image can supply what the engine
+        // could not.
+        // Only a module mapped at the playhead's position supplies bytes:
+        // before its load or after its unload the range is not that file.
+        // The position is asked for once, and only when there is a gap.
+        Position pos;
+        bool     have_pos = false;
         size_t o = 0;
         while ( o < size )
         {
@@ -57,14 +62,18 @@ namespace idattd
                 o++;
                 continue;
             }
-            // Measure the contiguous gap so an image run cannot clobber recorded
-            // bytes.
+            // Measure the gap so an image run cannot overwrite recorded bytes.
             size_t gap = 0;
             while ( o + gap < size && known[o + gap] != ITTD_KNOWN_YES )
                 gap++;
 
+            if ( !have_pos && m_modules != nullptr )
+            {
+                pos      = playhead->position();
+                have_pos = true;
+            }
             ea_t              base = BADADDR;
-            const ModuleImage *img = m_modules != nullptr ? m_modules->image_for(ea + o, base) : nullptr;
+            const ModuleImage *img = m_modules != nullptr ? m_modules->image_for(ea + o, pos, base) : nullptr;
             if ( img == nullptr )
             {
                 o += gap;            // not image-backed: the gap stays as it is
@@ -90,19 +99,17 @@ namespace idattd
             o += gap;
         }
 
-        // ---- 3: the backend's placeholder zeros, now that nothing better did ----
+        // ---- 3: the backend's placeholder zeros, where nothing better did ----
         //
-        // What the engine says about memory it knows is mapped: heap and stack
-        // pages with no value at this position must still read as zeros rather
-        // than as a failed read.
+        // Mapped heap and stack pages with no value at this position read as
+        // zeros, not as a failed read.
         for ( size_t i = 0; i < size; i++ )
             if ( known[i] == ITTD_KNOWN_PLACEHOLDER && i + 1 > resolved_end )
                 resolved_end = i + 1;
 
         *nbytes = resolved_end;
-        // Nothing at this address is recorded, rebuilt or image-backed: it is
-        // unmapped or unknown memory. Report a read failure rather than a
-        // silent zero-fill (see the header).
+        // Nothing here is recorded, rebuilt or image-backed: report a failure
+        // rather than a silent zero-fill (see the header).
         return resolved_end == 0 ? DRC_FAILED : DRC_OK;
     }
 
@@ -110,8 +117,8 @@ namespace idattd
     {
         if ( playhead == nullptr || hi <= lo )
             return false;
-        // A replay from the start of the recording on a replay engine: it can
-        // take a while, and it cannot be interrupted.
+        // On a replay engine this replays from the start of the recording: it
+        // can take a while and cannot be interrupted.
         show_wait_box("HIDECANCEL\nReconstructing memory from recorded writes...");
         bool got = playhead->rebuild_range(lo, hi, false) > 0;
         hide_wait_box();

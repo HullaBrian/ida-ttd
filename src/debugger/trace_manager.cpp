@@ -14,10 +14,9 @@ namespace idattd
     //=======================================================================
     // Startup failure reporting
     //=======================================================================
-    // Report a start_process failure through errbuf (IDA shows that to the user)
-    // and the output window, then hand back the drc code to return. Returning a
-    // bare DRC_* with an untouched errbuf leaves IDA to print a generic "cannot
-    // start process" while the actual reason is buried in the log.
+    // Report a start_process failure through errbuf (which IDA shows) and the
+    // output window, and return 'drc'. A bare DRC_* with an empty errbuf makes
+    // IDA print a generic "cannot start process" and hides the real reason.
     AS_PRINTF(3, 4) static ssize_t start_failed(qstring *errbuf, ssize_t drc,
                                                 const char *format, ...)
     {
@@ -80,16 +79,15 @@ namespace idattd
 
     ssize_t TraceManager::on_init()
     {
-        // Nothing to show yet: the backend has merely been selected. The TTD
-        // actions/toolbar appear in on_start_process, once a trace is really
-        // loaded.
+        // Nothing to show yet: the debugger has only been selected. The TTD
+        // actions appear in on_start_process, once a trace is loaded.
         return DRC_OK;
     }
 
     ssize_t TraceManager::on_term()
     {
-        // Before anything else: the download workers hold no IDA state, but
-        // they must not outlive the session that asked for their work.
+        // First: the download workers hold no IDA state, but must not outlive
+        // the session that asked for their work.
         symsrv_shutdown();
         if ( m_hooks.on_end )
             m_hooks.on_end();
@@ -99,7 +97,19 @@ namespace idattd
             inf_set_af(m_savedAf);   // the analysis flags on_start_process changed
             m_afSaved = false;
         }
-        // Also drops queued events: they describe this trace's modules and
+        if ( m_dinfoSaved )
+        {
+            // The same swap as in on_start_process: there is no getter, so the
+            // options are read by replacing them and go straight back with
+            // only this bit changed.
+            if ( m_dinfoWasOn )
+            {
+                uint dopts = set_debugger_options(0);
+                set_debugger_options(dopts | DOPT_LOAD_DINFO);
+            }
+            m_dinfoSaved = false;
+        }
+        // Also drops queued events, which describe this trace's modules and
         // threads.
         reset_session_state();
         return DRC_OK;
@@ -155,26 +165,25 @@ namespace idattd
         diag_rotate();
         diag("session start: %s", path != nullptr ? path : "(null)");
         DiagTimer diag_timer("session start", 0);
-        // A session can be torn down without its events being drained, and the
-        // caches below describe the previous recording's addresses.
+        // A session can end without its events being drained, and the caches
+        // describe the previous recording's addresses.
         reset_session_state();
         m_is64 = inf_is_64bit();
 
-        // Stop the analysis cascade: each on-stop add_func() traces the current
-        // function, and AF_PROC ("create functions if call is present") would make
-        // IDA recursively create and analyze every callee, fanning out across
-        // whole modules. CodeAnalyzer defines the function the user is looking
-        // at, and its direct callees, explicitly; the auto-create-from-calls
-        // features stay off for the session (restored in on_term).
+        // Stop the analysis cascade: with AF_PROC ("create functions if call
+        // is present") each on-stop add_func() would make IDA create and
+        // analyze every callee recursively, across whole modules. CodeAnalyzer
+        // defines the current function and its direct callees itself; these
+        // flags stay off for the session (restored in on_term).
         if ( !m_afSaved )
         {
             m_savedAf = inf_get_af();
             m_afSaved = true;
         }
         inf_set_af(m_savedAf & ~(uint32)(AF_PROC | AF_PROCPTR));
-        // Which module the database is of, so a load of it can trigger a
-        // rebase. A database created by the loader states this outright;
-        // otherwise it is the name of the file IDA thinks it opened.
+        // The module the database is of, so its load can trigger a rebase. A
+        // loader-created database records it; otherwise it is the name of the
+        // file IDA opened.
         {
             TraceLink link;
             if ( trace_link_read(&link) && !link.module_name.empty() )
@@ -183,13 +192,20 @@ namespace idattd
                 m_targetName = base_name(input_path != nullptr ? input_path : "");
         }
 
-        // Module PDBs are loaded silently by ModuleRegistry::load_pdb, so IDA's
-        // automatic debug-file loading is turned off: it would ask "load
-        // symbols?" for every module. set_debugger_options replaces the option
-        // set and returns the old one, and there is no getter, so the old set
-        // is put straight back with just this bit cleared.
+        // ModuleRegistry::load_pdb loads module PDBs silently, so IDA's
+        // automatic debug-file loading (which asks "load symbols?" per module)
+        // is turned off. set_debugger_options replaces the options and returns
+        // the old ones, with no getter, so the old set goes straight back with
+        // only this bit cleared. Whether it was set is remembered (once per
+        // session, as a failed start leaves it cleared) so on_term can put the
+        // user's choice back.
         uint dopts = set_debugger_options(0);
         set_debugger_options(dopts & ~(uint)DOPT_LOAD_DINFO);
+        if ( !m_dinfoSaved )
+        {
+            m_dinfoWasOn = (dopts & DOPT_LOAD_DINFO) != 0;
+            m_dinfoSaved = true;
+        }
 
         if ( path == nullptr || !std::filesystem::exists(std::filesystem::u8path(path)) )
         {
@@ -199,8 +215,8 @@ namespace idattd
                        "debugger dialog.", path != nullptr ? path : "(null)");
         }
 
-        // Whichever backend reads this kind of recording: Microsoft TTD, built
-        // in, for a .run; one the user installed (load_backend_modules) for others.
+        // The backend for this kind of recording: the bundled Microsoft one for
+        // a .run, a user-installed one (load_backend_modules) for others.
         load_backend_modules();
         m_tracePath = path;
         ITraceBackend *backend = BackendRegistry::instance().for_file(path);
@@ -238,17 +254,16 @@ namespace idattd
         }
         m_cursor->seek(m_backend->info().first);
 
-        // Tell the analysis stores which recording they are being read against,
-        // so results saved for a different one are not shown against this one.
+        // Tell the analysis stores which recording is open, so results saved
+        // for another one are not shown.
         set_current_trace(trace_fingerprint());
 
-        // Put the plugin's symbol store ahead of whatever IDA would reach for, so
-        // the PDB plugin only ever resolves files that are already local.
+        // Put the plugin's symbol store first in the symbol path, so the PDB
+        // plugin only resolves files that are already local.
         symsrv_install_path();
 
-        // A memory map costs a full replay, so one saved against this recording
-        // is reused rather than rebuilt. A map saved against a different trace
-        // fails the fingerprint check and is ignored.
+        // A memory map costs a full replay, so one saved for this recording is
+        // reused; one saved for another trace fails the fingerprint check.
         if ( m_layout.map_for_update().load(trace_fingerprint()) )
             msg("[ida-ttd] loaded a saved memory map: %d recorded change(s).\n",
                 (int)m_layout.map().size());
@@ -272,9 +287,8 @@ namespace idattd
             m_events.add_process_start(m_pid, current_tid(), "trace", BADADDR, BADADDR, 0);
         }
 
-        // Threads currently alive (other than the current one), and modules
-        // currently loaded (other than the main one already reported), which
-        // is then what IDA has been told.
+        // Live threads other than the current one, and loaded modules other
+        // than the main one; this becomes what IDA has been told.
         m_toldThreads = snapshot_threads();
         m_toldMods    = snapshot_modules();
         thid_t cur_tid = current_tid();
@@ -314,18 +328,35 @@ namespace idattd
 
     ssize_t TraceManager::on_read_memory(size_t *nbytes, ea_t ea, void *buffer, size_t size)
     {
-        if ( !m_cursor )
+        // During a movement the navigator is replaying m_cursor, and the wait
+        // box's message pump can deliver this read; reading the cursor then
+        // would re-enter the backend. The stop flushes IDA's memory cache
+        // (on_suspended), so the failed read is not kept.
+        if ( !m_cursor || m_navigating )
         {
             *nbytes = 0;
             return DRC_FAILED;
         }
         ssize_t rc = m_memory.read(m_cursor.get(), nbytes, ea, buffer, size);
-        if ( rc == DRC_OK && at_fork_draft() && !m_draft.bytes.empty() )
+        if ( at_fork_draft() && !m_draft.bytes.empty() )
         {
+            // A read is a prefix of the range (MemoryReader zero-fills past
+            // it). Fork bytes written right after that prefix, or where the
+            // recording has nothing at all, are readable too, so the prefix is
+            // extended over consecutive draft bytes; the user sees what was
+            // written rather than unreadable memory.
+            size_t n = rc == DRC_OK ? *nbytes : 0;
+            while ( n < size && m_draft.bytes.count(ea + n) != 0 )
+                n++;
             uchar *out = (uchar *)buffer;
             for ( auto it = m_draft.bytes.lower_bound(ea);
-                  it != m_draft.bytes.end() && it->first < ea + *nbytes; ++it )
+                  it != m_draft.bytes.end() && it->first < ea + n; ++it )
                 out[it->first - ea] = it->second;
+            if ( n > 0 )
+            {
+                *nbytes = n;
+                rc = DRC_OK;
+            }
         }
         return rc;
     }
@@ -335,8 +366,8 @@ namespace idattd
         if ( !m_cursor || lo >= hi )
             return 0;
 
-        // A range this large is a mis-click, not a request: reconstruction
-        // allocates a buffer of the whole span.
+        // A range this large is a mis-click; reconstruction allocates a buffer
+        // of the whole span.
         static const uint64_t kMaxReread = 64u * 1024 * 1024;
         if ( (uint64_t)(hi - lo) > kMaxReread )
         {
@@ -348,7 +379,7 @@ namespace idattd
         size_t recovered = m_memory.reread(m_cursor.get(), lo, hi);
 
         // Flush IDA's cache for the range so the next read goes through
-        // on_read_memory again, then re-analyze what came back.
+        // on_read_memory, then re-analyze it.
         invalidate_dbgmem_contents(lo, hi - lo);
         del_items(lo, DELIT_SIMPLE, (asize_t)(hi - lo));
         plan_range(lo, hi);
@@ -358,14 +389,17 @@ namespace idattd
 
     ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
     {
-        if ( !m_cursor )
+        // Not mid-movement: the cursor's position is in flux (see on_read_memory).
+        if ( !m_cursor || m_navigating )
             return DRC_FAILED;
         return m_layout.on_get_memory_info(m_cursor->position(), ranges);
     }
 
     ssize_t TraceManager::on_read_registers(thid_t tid, int /*clsmask*/, regval_t *values)
     {
-        if ( !m_cursor )
+        // Not mid-movement (see on_read_memory); IDA re-reads the registers
+        // after the stop.
+        if ( !m_cursor || m_navigating )
             return DRC_FAILED;
         ittd_regs r{};
         bool ok = tid == NO_THREAD || tid == current_tid()
@@ -393,13 +427,15 @@ namespace idattd
         return m_draft.active && m_cursor && m_cursor->position() == m_draft.at;
     }
 
-    // Changes only at the draft's position: anywhere else the recording says
-    // what the program did, and that cannot be edited.
+    // Changes are allowed only at the draft's position; elsewhere the
+    // recording is what the program did and cannot be edited.
     static const char NOT_FORKING[] =
         "a recording cannot be changed. TTD > Fork here makes the current position a fork, "
         "whose registers and memory can be changed before it is recorded";
     static const char FORK_ELSEWHERE[] =
         "the fork is at another position; go back to it to change it";
+    static const char MOVING[] =
+        "a movement through the recording is in progress; try again once it stops";
 
     // Refuse a write through IDA: say why in the output window and to IDA.
     static ssize_t refuse_write(const qstring &err, qstring *errbuf)
@@ -414,7 +450,9 @@ namespace idattd
     {
         qstring err;
         int fidx = fork_register_index(regidx, m_is64);
-        if ( !at_fork_draft() )
+        if ( m_navigating )
+            err = MOVING;
+        else if ( !at_fork_draft() )
             err = m_draft.active ? FORK_ELSEWHERE : NOT_FORKING;
         else if ( (tid == NO_THREAD ? current_tid() : tid) != m_draft.tid )
             err.sprnt("only the registers of the thread that runs next (%X) can be changed", (uint)m_draft.tid);
@@ -429,6 +467,8 @@ namespace idattd
     ssize_t TraceManager::on_write_memory(size_t *nbytes, ea_t ea, const void *buffer, size_t size, qstring *errbuf)
     {
         *nbytes = 0;
+        if ( m_navigating )
+            return refuse_write(MOVING, errbuf);
         if ( !at_fork_draft() )
             return refuse_write(m_draft.active ? FORK_ELSEWHERE : NOT_FORKING, errbuf);
         const uchar *in = (const uchar *)buffer;
@@ -459,10 +499,10 @@ namespace idattd
 
     ssize_t TraceManager::on_rebase_if_required_to(ea_t new_base)
     {
-        // A database the loader created already has the main image at its
-        // recorded base, so the delta is zero. rebase_program(0) is not free --
-        // it runs the whole segment-move machinery, shows its own progress box
-        // and dirties the database -- so say no rather than doing nothing slowly.
+        // A loader-created database already has the main image at its recorded
+        // base, so the delta is zero. rebase_program(0) is not free (it runs
+        // the segment-move machinery, shows a progress box and dirties the
+        // database), so it is skipped.
         ea_t delta = new_base - get_imagebase();
         if ( delta == 0 )
             return DRC_OK;
@@ -509,9 +549,21 @@ namespace idattd
         for ( int i = 0; i < nadd; i++ )
             m_bpts.push_back(breakpoint_of(bpts[i]));
 
-        // The navigator takes the whole set, and says which it could arm:
-        // claiming BPT_OK for one the engine refused would leave IDA showing a
-        // breakpoint that silently never fires.
+        // Mid-movement (the wait box pumps messages) the navigator is running
+        // with its breakpoint set, so the new set is handed over once the
+        // movement ends (navigate). Until then every change is reported as
+        // accepted; one the navigator refuses later is dropped there.
+        if ( m_navigating )
+        {
+            m_bptsDeferred = true;
+            for ( int i = 0; i < nadd + ndel; i++ )
+                bpts[i].code = BPT_OK;
+            *nbpts = nadd + ndel;
+            return DRC_OK;
+        }
+
+        // The navigator takes the whole set and says which it could arm.
+        // BPT_OK for a refused one would show a breakpoint that never fires.
         std::vector<bool> accepted;
         m_nav->set_breakpoints(m_bpts, &accepted);
         for ( int i = 0; i < nadd; i++ )
@@ -545,9 +597,8 @@ namespace idattd
     ssize_t TraceManager::on_set_resume_mode(thid_t /*tid*/, resume_mode_t resmod)
     {
         m_resumeMode = resmod;
-        // Logged when it arrives in the middle of a movement: that is the
-        // case where it belongs to a later resume, and the event log is how
-        // to tell what IDA asked for when a step goes somewhere unexpected.
+        // Logged when it arrives mid-movement, where it belongs to a later
+        // resume; the log explains a step that goes somewhere unexpected.
         if ( m_navigating )
             log_event(qstring().sprnt("resume mode %d set during a movement", (int)resmod));
         return DRC_OK;
@@ -555,16 +606,34 @@ namespace idattd
 
     StopReason TraceManager::navigate(bool forward, const std::function<StopReason()> &move)
     {
-        // The thread and module changes are reported with the stop, against
-        // what IDA was last told (emit_stop). A movement can replay a long
-        // stretch of the recording, so it gets a wait box with Cancel.
+        // Thread and module changes are reported with the stop (emit_stop). A
+        // movement can replay a long stretch, so it gets a wait box with
+        // Cancel.
         StopReason sr;
         {
             WaitBoxSink sink(forward ? "Moving forward through the recording"
                                      : "Moving back through the recording");
             m_nav->set_progress(&sink);
+            set_trace_moving(true);     // no query may start from the box's pump
             sr = move();
+            set_trace_moving(false);
             m_nav->set_progress(nullptr);
+        }
+
+        // Breakpoints IDA changed during the movement (on_update_bpts).
+        if ( m_bptsDeferred )
+        {
+            m_bptsDeferred = false;
+            std::vector<bool> accepted;
+            m_nav->set_breakpoints(m_bpts, &accepted);
+            for ( size_t k = m_bpts.size(); k-- > 0; )
+            {
+                if ( k < accepted.size() && accepted[k] )
+                    continue;
+                msg("[ida-ttd] the breakpoint at %a cannot be set in this recording.\n",
+                    (ea_t)m_bpts[k].addr);
+                m_bpts.erase(m_bpts.begin() + (ptrdiff_t)k);
+            }
         }
 
         if ( sr == StopReason::TraceBoundary )
@@ -599,44 +668,42 @@ namespace idattd
         if ( !m_cursor )
             return;
 
-        // Time travel breaks IDA's "process memory only changes going forward"
-        // assumption: the same address can hold different bytes at different
-        // positions. After a travel IDA keeps the previous position's cached
-        // bytes for everything it does not re-read.
+        // Time travel breaks IDA's assumption that memory only changes going
+        // forward: after a travel IDA keeps the previous position's cached
+        // bytes for whatever it does not re-read.
         //
         // invalidate_dbgmem_contents() flushes and refreshes, so the listing
         // re-reads through on_read_memory. invalidate_dbg_state(DBGINV_MEMORY)
-        // only marks the cache dirty and would leave the first bytes IDA cached
-        // on screen.
+        // only marks the cache dirty and leaves the old bytes on screen.
         //
-        // Like IDA's own post-stop handling, this brings the disassembly view to
-        // the front. Plugin::keep_decompiler_focused() puts the user back in the
+        // This brings the disassembly view to the front, like IDA's own
+        // post-stop handling; Plugin::keep_decompiler_focused() restores the
         // decompiler afterwards.
         invalidate_dbgmem_contents(BADADDR, 0);
 
-        // A travel can cross an allocation, a protection change or a free, so
-        // the regions in force here may not be the ones IDA was last given.
-        // Without a memory map nothing changes.
+        // A travel can cross an allocation, protection change or free, so the
+        // regions here may differ from what IDA was given. Without a memory map
+        // nothing changes.
         {
             DiagTimer t("stop: memory layout");
             m_layout.refresh(m_cursor->position());
         }
 
-        // A slice of PDB naming (downloads and reads run on their own threads;
-        // only set_name is left for the main thread). Kept short: the rest is
-        // set from the plugin's poll timer while the user looks at the stop.
+        // A short slice of PDB naming (downloads and reads run on worker
+        // threads; only set_name runs here). The plugin's poll timer sets the
+        // rest while the user looks at the stop.
         {
             DiagTimer t("stop: PDB names");
             m_modules.advance_pdbs(10);
         }
 
-        // Name exports of any module loaded at this position first, so a call to a
-        // freshly-revealed export renders with its name rather than loc_/sub_.
+        // Name exports of modules loaded here first, so a call to a newly
+        // mapped export renders with its name rather than loc_/sub_.
         {
             DiagTimer t("stop: module symbols");
             m_modules.resolve_loaded(m_cursor->position());
             // The module stopped in gets its PDB now if it did not at load
-            // (a backend whose reads are not cheap; see load_pdb).
+            // (backends without cheap reads; see load_pdb).
             ea_t lo = 0, hi = 0;
             if ( m_modules.range_at(program_counter(), lo, hi) )
                 m_modules.load_pdb(lo, true);
@@ -646,9 +713,9 @@ namespace idattd
             m_code.on_stop(m_cursor.get(), program_counter());
         }
 
-        // If the last navigation came to rest on the very first/last position of
-        // the trace, tell the user. Done here (after the stop is fully processed)
-        // rather than inside on_resume, where a modal popup would be unsafe.
+        // Tell the user when the movement ended at the first or last position.
+        // Done here, after the stop, because a modal box inside on_resume is
+        // unsafe.
         if ( m_pendingBoundary == BOUNDARY_START )
             info("Reached the start of the trace.");
         else if ( m_pendingBoundary == BOUNDARY_END )
@@ -664,9 +731,9 @@ namespace idattd
 
     void TraceManager::emit_stop(bool is_step)
     {
-        // Just queue the stop event here (during ev_resume). The memory-cache
-        // invalidation and disassembly/symbol work happen in on_suspended(), once
-        // the process is actually in the stopped state.
+        // Only queues the stop (this runs inside ev_resume). Cache invalidation
+        // and disassembly/symbol work happen in on_suspended(), once IDA has
+        // the process stopped.
         ea_t pc = program_counter();
         auto stop = [&]()
         {
@@ -730,19 +797,18 @@ namespace idattd
                            (int)event->eid(), (int)m_resumeMode,
                            m_isForward ? "forward" : "backward", (int)m_pending.kind);
         log_event(qstring("resume: ") + m_lastResume);
-        // Only act when continuing from a stop (breakpoint or single step).
+        // Act only when continuing from a stop (breakpoint or step).
         if ( event->eid() != BREAKPOINT && event->eid() != STEP )
             return DRC_OK;
         if ( !m_nav )
             return DRC_OK;
 
-        // A resume that arrives while a movement is still being carried out
-        // (its wait box pumps messages, and IDA's own step actions stay
-        // enabled until ev_resume returns) is dropped. Carrying it out would
-        // move the navigator from inside its own progress callback. The stop
-        // the outer movement reports answers both resumes as far as IDA is
-        // concerned: it only waits for the process to stop again. A request
-        // queued for it is dropped too rather than left to surprise the next
+        // A resume that arrives during a movement (its wait box pumps
+        // messages, and IDA's step actions stay enabled until ev_resume
+        // returns) is dropped: carrying it out would move the navigator from
+        // inside its own progress callback. The outer movement's stop answers
+        // both resumes, since IDA only waits for the process to stop again. A
+        // request queued for it is dropped too, so it cannot surprise the next
         // step.
         if ( m_navigating )
         {
@@ -752,6 +818,18 @@ namespace idattd
             m_resumeMode = RESMOD_NONE;
             return DRC_OK;
         }
+        // Likewise during a whole-recording query (its wait box pumps too):
+        // the backend is busy with the query's replay. Nothing outer will
+        // stop, so the stop is reported where the cursor already is.
+        if ( query_in_progress() )
+        {
+            msg("[ida-ttd] a trace query is running; staying at the current position.\n");
+            log_event("resume ignored: a query is in progress");
+            m_pending    = PendingRequest{};
+            m_resumeMode = RESMOD_NONE;
+            emit_stop(false);
+            return DRC_OK;
+        }
         struct NavigatingFlag
         {
             bool &f;
@@ -759,27 +837,24 @@ namespace idattd
             ~NavigatingFlag() { f = false; }
         } navigating(m_navigating);
 
-        // The resume mode is this resume's, so it is taken now and cleared
-        // before moving, not after. IDA can set the next resume's mode while
-        // this movement's wait box pumps messages (a second step pressed
-        // while a long backward step replays); cleared afterwards, that mode
-        // was lost, the next resume read RESMOD_NONE, and with the direction
-        // still backwards a step became "continue backwards" -- all the way
-        // to the start of the trace.
+        // Take this resume's mode and clear it before moving, not after. IDA
+        // can set the next resume's mode while the wait box pumps messages (a
+        // second step pressed during a long backward step). Cleared afterwards,
+        // that mode was lost, the next resume read RESMOD_NONE, and with the
+        // direction still backwards the step ran to the start of the trace.
         const resume_mode_t mode = m_resumeMode;
         m_resumeMode = RESMOD_NONE;
 
         // IDA's own step modes, as opposed to a run or a queued request.
         m_stepMode = m_pending.kind == Request::None && mode != RESMOD_NONE;
 
-        // A queued request wins over IDA's resume mode: it is the user asking
-        // for a movement IDA has no action of its own for.
+        // A queued request wins over IDA's resume mode: it is a movement IDA
+        // has no action of its own for.
         if ( m_pending.kind != Request::None )
         {
-            // Taken and cleared before it is carried out, not after: the
-            // navigation shows a wait box, which pumps the message loop, so a
-            // second ev_resume can arrive in the middle of it, and a request
-            // still set would be performed twice.
+            // Taken and cleared before it is carried out: the wait box pumps
+            // messages, so a second ev_resume can arrive meanwhile and would
+            // perform a request still set a second time.
             const PendingRequest req = m_pending;
             m_pending = PendingRequest{};
 
@@ -832,8 +907,8 @@ namespace idattd
             }
             case RESMOD_OVER:
             {
-                // In backward mode this is a real backward step-over, not a
-                // plain backward single step. A backend without one steps once.
+                // Backwards this is a real backward step-over, not a single
+                // step. A backend without one steps once.
                 bool fwd = m_isForward;
                 StopReason sr = navigate(fwd, [&]()
                 {
@@ -855,8 +930,8 @@ namespace idattd
             }
             case RESMOD_NONE:
             {
-                // Run/continue in the currently selected direction until a
-                // breakpoint hits or the trace boundary is reached.
+                // Run in the selected direction to a breakpoint or the trace
+                // edge.
                 bool fwd = m_isForward;
                 navigate(fwd, [&]() { return m_nav->run(fwd); });
                 emit_stop(false);
@@ -864,11 +939,10 @@ namespace idattd
             }
             default:
             {
-                // A resume mode this backend does not implement: source-level
-                // stepping, RESMOD_USER, RESMOD_HANDLE, or anything IDA adds
-                // later. None is advertised in dbg.resume_modes, so none should
-                // arrive. Step once rather than falling through to RESMOD_NONE,
-                // which would run to the end of the trace.
+                // A resume mode not implemented here (source-level stepping,
+                // RESMOD_USER, RESMOD_HANDLE, later additions). None is
+                // advertised in dbg.resume_modes. Step once rather than fall
+                // through to RESMOD_NONE, which would run to the trace's end.
                 msg("[ida-ttd] unsupported resume mode %d; stepping once instead.\n",
                     (int)mode);
                 bool fwd = m_isForward;
@@ -894,8 +968,8 @@ namespace idattd
         m_pending          = PendingRequest{};
         m_pending.kind     = Request::GotoPosition;
         m_pending.position = p;
-        // Only when a resume will follow to take it down again, and not for
-        // scripts in batch mode.
+        // Only when a resume will follow to take it down, and not in batch
+        // mode.
         if ( !m_travelWait && !batch && get_process_state() == DSTATE_SUSP )
         {
             show_wait_box("HIDECANCEL\nGoing to position %s...", format_position(p).c_str());

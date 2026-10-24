@@ -2,6 +2,7 @@
 
     python scripts/sogen_dist.py --sogen <Sogen tree> [--git <Sogen checkout>]
                                  [--build build/Release] [--out dist] [--no-source]
+                                 [--allow-dirty]
 
 ida-ttd-sogen.dll is GPL-2.0-only (it links Sogen and Unicorn), so it goes out
 with the GPL text, the notices of what it contains, and its complete source
@@ -31,6 +32,7 @@ from, when --sogen is a snapshot without .git; it is only read.
 import argparse
 import io
 import pathlib
+import shutil
 import subprocess
 import tarfile
 import zipfile
@@ -144,7 +146,10 @@ def readme(pin, commits, urls):
 def write_licenses(sogen, dest, pin, commits, urls):
     dest.mkdir(parents=True, exist_ok=True)
     for old in dest.iterdir():
-        old.unlink()
+        if old.is_dir() and not old.is_symlink():
+            shutil.rmtree(old)
+        else:
+            old.unlink()
     (dest / "COPYING.txt").write_bytes((REPO / "LICENSES" / "GPL-2.0-only.txt").read_bytes())
     for component, folder, names in NOTICES:
         for name in names:
@@ -153,6 +158,16 @@ def write_licenses(sogen, dest, pin, commits, urls):
                 raise SystemExit("missing %s: is %s a full Sogen tree?" % (src, sogen))
             (dest / ("%s-%s" % (component, pathlib.PurePath(name).name))).write_bytes(src.read_bytes())
     (dest / "README.txt").write_text(readme(pin, commits, urls), encoding="utf-8", newline="\r\n")
+
+
+def uncommitted_changes():
+    """Tracked files under src/ or msbuild/ that differ from HEAD. The
+    archive is HEAD, so with any of these the DLL may not be built from the
+    source that ships with it. Untracked files (TODO.txt, scratch) do not
+    count: git archive leaves them out, and the build does not use them."""
+    out = subprocess.run(["git", "-C", str(REPO), "status", "--porcelain", "--untracked-files=no",
+                          "--", "src", "msbuild"], capture_output=True, text=True, check=True)
+    return [line for line in out.stdout.splitlines() if line.strip()]
 
 
 def write_source(sogen, out):
@@ -187,7 +202,16 @@ def main():
     ap.add_argument("--build", default=str(REPO / "build" / "Release"))
     ap.add_argument("--out", default=str(REPO / "dist"))
     ap.add_argument("--no-source", action="store_true")
+    ap.add_argument("--allow-dirty", action="store_true",
+                    help="write the source archive even though src/ or msbuild/ has uncommitted changes")
     args = ap.parse_args()
+    if not args.no_source and not args.allow_dirty:
+        dirty = uncommitted_changes()
+        if dirty:
+            raise SystemExit("src/ or msbuild/ has uncommitted changes, so the source archive "
+                             "(ida-ttd at HEAD) may not match the DLL:\n  %s\n"
+                             "Commit them and rebuild, or pass --allow-dirty (or --no-source)."
+                             % "\n  ".join(dirty))
     sogen = pathlib.Path(args.sogen)
     pin = read_pin()
     commits = submodule_commits(pathlib.Path(args.git) if args.git else sogen, pin["commit"])

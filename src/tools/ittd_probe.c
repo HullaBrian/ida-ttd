@@ -4,9 +4,9 @@
  *
  *   ittd-probe BACKEND.dll TRACE [EXPORT]
  *
- * Prints what the backend reports, and checks the promises the ABI makes about
- * positions -- the part a wrong answer to is silent in the UI (a register view
- * one instruction off):
+ * Prints what the backend reports and checks the ABI's promises about
+ * positions, where a wrong answer is silent in the UI (a register view one
+ * instruction off):
  *
  *   - at an access's position, the program counter is the instruction that did
  *     it;
@@ -16,8 +16,7 @@
  *
  * EXPORT (default RtlAllocateHeap) is the function whose calls are listed.
  *
- * Written in C on purpose: it is also the check that abi/ida_ttd_backend.h is
- * the plain C it says it is.
+ * Written in C on purpose, to check that abi/ida_ttd_backend.h is plain C.
  */
 
 #include <abi/ida_ttd_backend.h>
@@ -31,6 +30,10 @@
 
 static const ittd_backend_api *api;
 static ittd_backend *B;
+
+/* Whether the table has entry 'f' and fills it, as the core checks: an entry
+ * past the backend's 'size' is not there, whatever the memory beyond holds. */
+#define HAS(f) (offsetof(ittd_backend_api, f) + sizeof(api->f) <= api->size && api->f != NULL)
 static int failures;
 
 static double now_ms(void)
@@ -82,15 +85,24 @@ static uint64_t rip_at(ittd_cursor *c, ittd_position p)
 static void *query_all(int (*count_fill)(void *buf, size_t cap, size_t *n), size_t size, size_t *n)
 {
     void *buf;
+    size_t cap;
     *n = 0;
     if ( count_fill(NULL, 0, n) != ITTD_OK )
-        return NULL;
-    buf = calloc(*n ? *n : 1, size);
-    if ( buf != NULL && count_fill(buf, *n, n) != ITTD_OK )
     {
-        free(buf);
+        *n = 0;         /* callers loop over *n even when the result is NULL */
         return NULL;
     }
+    cap = *n;
+    buf = calloc(cap ? cap : 1, size);
+    if ( buf == NULL || count_fill(buf, cap, n) != ITTD_OK )
+    {
+        free(buf);
+        *n = 0;
+        return NULL;
+    }
+    /* A count that grew between the calls filled only what fit. */
+    if ( *n > cap )
+        *n = cap;
     return buf;
 }
 
@@ -173,9 +185,8 @@ int main(int argc, char **argv)
     for ( i = 0; i < ntl && i < 5; i++ )
         printf("  %s  %s\n", pos_text(tl[i].pos), tl[i].text);
 
-    /* ---- the export whose calls we list --------------------------------- */
-    /* Or an address: a backend that records no exports (Microsoft TTD) is
-       given the function to list calls to. */
+    /* ---- the export whose calls are listed ------------------------------ */
+    /* Or an address, for a backend that records no exports (Microsoft TTD). */
     if ( want[0] == '0' && (want[1] == 'x' || want[1] == 'X') )
     {
         target = strtoull(want + 2, NULL, 16);
@@ -254,7 +265,7 @@ int main(int argc, char **argv)
         }
 
         /* The instruction stream from here starts with the instruction at rip. */
-        if ( api->query_instructions != NULL )
+        if ( HAS(query_instructions) )
         {
             ittd_access ins[16];
             ittd_position_range w;
@@ -391,7 +402,7 @@ int main(int argc, char **argv)
             check(at_entry == e->target, "  rip at entry_pos is the target");
             /* At the callee's first instruction, the frame was entered by this
                very call. */
-            if ( k == 0 && !is_none(e->pos) && is_call && api->query_frame_entry != NULL )
+            if ( k == 0 && !is_none(e->pos) && is_call && HAS(query_frame_entry) )
             {
                 ittd_position fc;
                 uint64_t fe = 0;
@@ -477,7 +488,7 @@ int main(int argc, char **argv)
                     }
                 }
             }
-            if ( !is_none(e->pos) && !is_none(e->ret_pos) && is_call && api->nav_step_over != NULL )
+            if ( !is_none(e->pos) && !is_none(e->ret_pos) && is_call && HAS(nav_step_over) )
             {
                 ittd_position landed;
                 int stop = -1;
@@ -519,8 +530,8 @@ int main(int argc, char **argv)
                     check(landed.lo == e->pos.lo, "  stepping out backwards lands on pos");
                 }
                 /* IDA's own backward step over: an execute breakpoint on the
-                   return address minus one -- the call's last byte, not its
-                   first -- and a run backward from just after the return. */
+                   return address minus one (the call's last byte, not its
+                   first) and a run backward from just after the return. */
                 {
                     uint64_t ret_ip = rip_at(c, e->ret_pos);
                     ittd_breakpoint bp;
@@ -550,7 +561,7 @@ int main(int argc, char **argv)
         }
 
         /* the batch form, against the cursor's answers */
-        if ( api->regs_at != NULL && n > 0 )
+        if ( HAS(regs_at) && n > 0 )
         {
             size_t m = n < 200 ? n : 200, ok = 0;
             ittd_position *ps = (ittd_position *)calloc(m, sizeof(ittd_position));
@@ -924,7 +935,7 @@ int main(int argc, char **argv)
                            (unsigned long long)sc[k].result, (unsigned long long)r1.gp[ITTD_REG_RAX]);
             }
             printf("  %zu of %zu sampled returned to the next instruction\n", came_back, sampled);
-            if ( api->regs_at != NULL )
+            if ( HAS(regs_at) )
             {
                 /* A backend may answer regs_at for syscall positions from what it
                    saw listing them; it must agree with a seek. */
@@ -1042,11 +1053,10 @@ int main(int argc, char **argv)
     }
 
     /* ---- the replay environment -------------------------------------------------
-       What the recording says a replay needs, and whether ITTD_PROBE_FORK_REGISTRY
-       holds its own hives. ITTD_PROBE_OTHER_REGISTRY can name a folder of other
-       hives, which must then be told apart, and refused by a replay. A
-       recording that carries its hives, or was made in an emulation root, takes
-       no hive folder, so nothing is refused for it. */
+       What a replay needs, and whether ITTD_PROBE_FORK_REGISTRY holds the
+       recording's hives. ITTD_PROBE_OTHER_REGISTRY names other hives, which
+       must be told apart and refused by a replay. A recording that carries its
+       hives, or was made in an emulation root, takes no hive folder. */
     int hive_folder_used = 1;
     if ( offsetof(ittd_backend_api, check_registry) + sizeof(api->check_registry) <= api->size
       && api->replay_env != NULL && api->check_registry != NULL )
@@ -1101,11 +1111,10 @@ int main(int argc, char **argv)
     }
 
     /* ---- a fork ------------------------------------------------------------------
-       Needs the registry hives the recording ran against, so it only runs when
-       ITTD_PROBE_FORK_REGISTRY names their folder. Replays to the middle of the
-       recording, changes r11, records a few thousand instructions into
-       ITTD_PROBE_FORK_OUT (default fork.sogttd) and opens that: it must start at
-       the fork's position, with the parent's RIP and the changed r11. */
+       Runs only when ITTD_PROBE_FORK_REGISTRY names the recording's hives.
+       Replays to the middle, changes r11, records a few thousand instructions
+       into ITTD_PROBE_FORK_OUT (default fork.sogttd) and opens that: it must
+       start at the fork's position with the parent's RIP and the new r11. */
     if ( (info.capabilities & ITTD_CAP_FORK) != 0 && getenv("ITTD_PROBE_FORK_REGISTRY") != NULL
       && offsetof(ittd_backend_api, fork_close) + sizeof(api->fork_close) <= api->size
       && api->fork_open != NULL )
@@ -1191,8 +1200,8 @@ int main(int argc, char **argv)
 
     /* ---- replay scans: strings and buffers --------------------------------------
        A full replay each, so also gated on ITTD_PROBE_FORK_REGISTRY. A string
-       recovered after the start must be in memory just after the position it
-       is reported at (the write that completed it). */
+       recovered after the start must be in memory just after its reported
+       position (the write that completed it). */
     if ( (info.capabilities & ITTD_CAP_REPLAY_SCANS) != 0 && getenv("ITTD_PROBE_FORK_REGISTRY") != NULL
       && offsetof(ittd_backend_api, query_buffers) + sizeof(api->query_buffers) <= api->size
       && api->query_strings != NULL )

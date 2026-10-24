@@ -1,10 +1,10 @@
 #include "ui/decompiler.h"
 #include "analysis/coverage.h"
 
-// hexrays.hpp is the one SDK header that does not compile warning-free at this
-// project's level (narrowing conversions and a signed/unsigned compare, all in
-// inline code the plugin does not call). Silence them around the include only, so the
-// plugin's own code keeps being held to a clean build.
+// hexrays.hpp is the one SDK header that warns at this project's level
+// (narrowing and a signed/unsigned compare, in inline code the plugin never
+// calls). Silence it around the include only, so the plugin's own code stays
+// held to a clean build.
 #pragma warning(push)
 #pragma warning(disable: 4018)  // signed/unsigned mismatch
 #pragma warning(disable: 4244)  // conversion, possible loss of data
@@ -20,23 +20,20 @@ namespace idattd
     // Every address a pseudocode line was decompiled from.
     //
     // Generated pseudocode carries invisible COLOR_ADDR tags holding ctree
-    // anchors: an index into cfunc_t::treeitems, each of which knows its own
-    // address. That is the mechanism hxe_func_printed documents, and it is what
-    // this reads. The obvious alternative, get_line_item(), answers about one
-    // column of the line, and column zero is indentation, which belongs to no
-    // item: asked there, every line answers nothing.
+    // anchors (indices into cfunc_t::treeitems, each of which knows its
+    // address); hxe_func_printed documents this. get_line_item() is no
+    // substitute: it answers for one column, and column zero is indentation,
+    // which belongs to no item.
     //
-    // All of them, not just the first. One line is many ctree items: the
-    // statement, the variable assigned, the call, each argument -- and they come
-    // from different instructions. In "v11 = v7(...)" the first anchor is the
-    // assignment, while the call's annotation lives on the call instruction a
-    // few bytes earlier.
+    // All anchors, not just the first: one line holds many items (statement,
+    // assigned variable, call, arguments) from different instructions. In
+    // "v11 = v7(...)" the first anchor is the assignment, while the call's
+    // annotation is on the call instruction a few bytes earlier.
     static void line_addresses(const cfunc_t *cf, const char *line,
                                std::vector<ea_t> &out)
     {
         out.clear();
-        // A line has a handful of items; the cap is only here so a pathological
-        // one cannot make this loop expensive on every repaint.
+        // Caps a pathological line, since this runs on every repaint.
         static const size_t kMaxPerLine = 32;
 
         for ( const char *p = line; p[0] != '\0' && out.size() < kMaxPerLine; )
@@ -47,8 +44,7 @@ namespace idattd
                 continue;
             }
             // COLOR_ON, the tag byte, then COLOR_ADDR_SIZE hex digits, with no
-            // closing COLOR_OFF. A truncated tag ends the scan rather than
-            // reading past the end of the line.
+            // closing COLOR_OFF. A truncated tag ends the scan.
             uval_t v  = 0;
             bool   ok = true;
             for ( size_t i = 0; i < COLOR_ADDR_SIZE; i++ )
@@ -75,8 +71,8 @@ namespace idattd
             const citem_t *it = cf->treeitems[idx];
             if ( it == nullptr || it->ea == BADADDR )
                 continue;
-            // Colours and comments live on item HEADS, and an item's address
-            // need not be one. Normalise here so callers compare like with like.
+            // Colours and comments live on item heads, and an item's address
+            // need not be one.
             ea_t ea = it->ea;
             ea_t head = get_item_head(ea);
             if ( head != BADADDR )
@@ -86,38 +82,55 @@ namespace idattd
         }
     }
 
-    // Marker that says a line already carries the plugin's note, so repainting the same
-    // text twice does not append it twice.
+    // Marks a line that already carries the plugin's note, so repainting the
+    // same text does not append it again.
     static const char TTD_CMT_MARK[] = "// TTD: ";
 
+    // Whether 'joined' (notes separated by "; ") already holds 'note' as a
+    // whole entry. A substring test would drop "-> foo" next to
+    // "-> foo_impl". A note may itself contain "; " (a flattened
+    // multi-target note), so it is matched as one unit at entry boundaries
+    // rather than by splitting.
+    static bool has_note(const qstring &joined, const char *note)
+    {
+        const size_t n = strlen(note);
+        if ( n == 0 )
+            return true;
+        for ( size_t at = joined.find(note); at != qstring::npos; at = joined.find(note, at + 1) )
+        {
+            const bool starts = at == 0 || (at >= 2 && joined[at - 2] == ';' && joined[at - 1] == ' ');
+            const size_t end = at + n;
+            const bool ends = end == joined.length()
+                           || (end + 1 < joined.length() && joined[end] == ';' && joined[end + 1] == ' ');
+            if ( starts && ends )
+                return true;
+        }
+        return false;
+    }
+
     // Show the annotation an indirect call site carries on its pseudocode line.
-    //
     // The decompiler does not surface a repeatable comment on an arbitrary
-    // instruction, so the note is appended to the line here. Multi-line comments
-    // are flattened: a newline inside a simpleline_t would corrupt the view.
+    // instruction, so the note is appended here.
     static void append_ttd_comments(simpleline_t &sl, const std::vector<ea_t> &eas,
                                     std::set<ea_t> &already)
     {
-        // Already on this line, painted by an earlier pass over the same text
-        // (every open or refresh of a cached view paints again). Its call
-        // sites still count as annotated: left out of `already`, the next
-        // line naming the same call -- an argument printed on its own line --
-        // would take the note too, one more line down the call per repaint.
+        // Painted by an earlier pass (every open or refresh of a cached view
+        // paints again). Its call sites still count as annotated; otherwise
+        // the next line naming the same call (an argument on its own line)
+        // would take the note too, one line further down per repaint.
         if ( strstr(sl.line.c_str(), TTD_CMT_MARK) != nullptr )
         {
             already.insert(eas.begin(), eas.end());
             return;
         }
 
-        // Every address on the line can carry one, and a line with two indirect
-        // calls in it wants both. Identical notes are shown once.
+        // A line with two indirect calls shows both notes; identical notes
+        // are shown once.
         qstring joined;
         for ( ea_t ea : eas )
         {
-            // A call whose arguments print one per line puts the same call
-            // instruction on every one of those lines, so the note would repeat
-            // down the whole call. It belongs on the first line that mentions
-            // the call and nowhere else.
+            // A call with one argument per line names the same instruction on
+            // each of those lines; the note goes on the first only.
             if ( already.find(ea) != already.end() )
                 continue;
 
@@ -133,9 +146,9 @@ namespace idattd
                 char c = cmt[i];
                 if ( c == '\n' || c == '\r' )
                 {
-                    // A newline inside a simpleline_t would corrupt the view, so
-                    // a multi-target note is flattened; collapse the run and the
-                    // indentation that follows it.
+                    // A newline inside a simpleline_t corrupts the view, so a
+                    // multi-target note is flattened: collapse the run of line
+                    // breaks and the indentation after it.
                     if ( !flat.empty() && !flat.ends_with("; ") )
                         flat.append("; ");
                     while ( i + 1 < cmt.length() && (cmt[i + 1] == ' ' || cmt[i + 1] == '\n'
@@ -147,7 +160,7 @@ namespace idattd
             }
             const char *body = flat.c_str() + 5;   // past the "TTD: " prefix
             already.insert(ea);
-            if ( strstr(joined.c_str(), body) != nullptr )
+            if ( has_note(joined, body) )
                 continue;                          // same note twice on one line
             if ( !joined.empty() )
                 joined.append("; ");
@@ -166,29 +179,25 @@ namespace idattd
     }
 
     // Paint one function's pseudocode from the colours already in the database.
-    //
-    // Each ctree item knows the address it was decompiled from, so a line is
-    // covered exactly when that address carries one of the plugin's coverage colours.
-    // The line keeps the colour it was painted with, so a database highlighted
-    // in two shades reads the same in the decompiler as in the disassembly.
+    // A line is covered when an address it came from carries one of the
+    // plugin's coverage colours, and takes that colour, so a database
+    // highlighted in two shades reads the same here as in the disassembly.
     static void paint(cfunc_t *cf)
     {
         if ( cf == nullptr )
             return;
         std::set<bgcolor_t> ours = coverage_colors();
         std::vector<ea_t>   eas;              // reused; no per-line allocation
-        // Call sites whose note has already been placed, so a call printed
-        // across several lines is annotated once rather than on every one.
+        // Call sites whose note is already placed (see append_ttd_comments).
         std::set<ea_t>      annotated;
 
         for ( size_t i = 0; i < cf->sv.size(); i++ )
         {
             simpleline_t &sl = cf->sv[i];
 
-            // Only ever repaint the plugin's colour. Clearing it first means a line that
-            // stops being covered (the sweep was cleared, the shade changed)
-            // loses the highlight instead of keeping a stale one, and a colour
-            // something else set is left alone.
+            // Clear only the plugin's colours first: a line no longer covered
+            // (sweep cleared, shade changed) loses a stale highlight, and a
+            // colour set by something else is left alone.
             if ( ours.find(sl.bgcolor) != ours.end() )
                 sl.bgcolor = DEFCOLOR;
 
@@ -196,10 +205,8 @@ namespace idattd
             if ( eas.empty() )
                 continue;
 
-            // A line is covered if ANY instruction it came from ran. A statement
-            // that spans several instructions is not half-executed in any sense
-            // the reader cares about. This recording's shade wins over another
-            // recording's (a fork's parent, or a fork).
+            // Covered if any instruction it came from ran. This recording's
+            // shade wins over another recording's (a fork's parent, or a fork).
             for ( ea_t ea : eas )
             {
                 bgcolor_t c = get_item_color(ea);
@@ -220,16 +227,15 @@ namespace idattd
         switch ( ev )
         {
             case hxe_func_printed:
-                // The text has just been generated; sv is ours to colour now.
+                // The text has just been generated; sv may be coloured now.
                 paint(va_arg(va, cfunc_t *));
                 break;
 
             case hxe_open_pseudocode:
             case hxe_refresh_pseudocode:
             {
-                // A view showing a cached decompilation gets text printed
-                // before the function was highlighted, with no
-                // hxe_func_printed this time: paint what it shows.
+                // A cached decompilation was printed before the function was
+                // highlighted, and raises no hxe_func_printed: paint it here.
                 vdui_t *vu = va_arg(va, vdui_t *);
                 if ( vu != nullptr && vu->cfunc != nullptr )
                     paint(vu->cfunc);
@@ -242,20 +248,17 @@ namespace idattd
         return 0;
     }
 
-    // Safe and cheap to call repeatedly, and it is called repeatedly on purpose.
-    // Hex-Rays is itself a plugin: asking for it while this plugin's plugmod is being
-    // constructed can be too early, init_hexrays_plugin() then says there is no
-    // decompiler, and if that were the only attempt nothing would ever be hooked.
-    // The SDK's own samples call it at each point of use for the same reason, so
-    // this runs again at session start, when the UI is ready, and on every stop.
+    // Cheap, and called repeatedly on purpose. Hex-Rays is itself a plugin, and
+    // while this plugmod is being constructed init_hexrays_plugin() can still
+    // report no decompiler. Like the SDK samples, this is retried at each
+    // point of use: session start and every stop.
     bool init_decompiler()
     {
         if ( g_hooked )
             return true;
         if ( !init_hexrays_plugin() )
         {
-            // Say so once. Silence here is indistinguishable from the painting
-            // being broken, which is exactly the confusion to avoid.
+            // Say so once: silence would look like broken painting.
             if ( !g_reported_missing )
             {
                 g_reported_missing = true;
@@ -283,10 +286,9 @@ namespace idattd
     {
         if ( !g_hooked )
             return;
-        // Find the open views by asking IDA for them rather than by remembering
-        // the ones seen opening. A view that already existed before the hook was
-        // installed was never seen, and that is precisely the view most in need of
-        // a repaint.
+        // Ask IDA for the open views rather than remember those seen opening:
+        // a view that predates the hook was never seen, and needs the repaint
+        // most.
         std::vector<TWidget *> views;
         list_pseudocode_views(views);
         for ( TWidget *w : views )
@@ -295,12 +297,10 @@ namespace idattd
             if ( vu == nullptr || vu->cfunc == nullptr )
                 continue;
 
-            // Repaint the text the view is ALREADY showing, then tell the widget
-            // to redraw it. Asking the decompiler to refresh instead only
-            // regenerates the text, which is why the highlight did not appear
-            // until something else forced the window to redraw. Nothing about
-            // the decompilation has changed here -- only line colours and notes
-            // -- so regenerating it would be wasted work as well as ineffective.
+            // Repaint the text the view already shows, then redraw the widget.
+            // A decompiler refresh only regenerates the text, so the highlight
+            // did not appear until something else redrew the window; and only
+            // colours and notes changed, so regenerating would be wasted work.
             paint(vu->cfunc);
             refresh_custom_viewer(vu->ct);
         }
@@ -347,9 +347,9 @@ namespace idattd
         if ( vu == nullptr || !get_func_entry_info(&fi, ea) )
             return false;
 
-        // Decompile first and switch only on success. open_pseudocode() would
-        // do both, but it chooses the window itself -- the very thing that
-        // went wrong -- and reports a failure with a dialog on every step.
+        // Decompile first and switch only on success. open_pseudocode() does
+        // both, but picks the window itself (the wrong one) and shows a
+        // failure dialog on every step.
         if ( vu->cfunc == nullptr || vu->cfunc->entry_ea != fi.start_ea )
         {
             hexrays_failure_t hf;
@@ -359,9 +359,8 @@ namespace idattd
             vu->switch_to(cf, false);
         }
 
-        // Caret on the statement ea belongs to. A statement rather than any
-        // item with that address: the expressions inside it carry the same
-        // one, and the statement is where the line starts.
+        // Caret on the statement at ea, not an expression inside it with the
+        // same address: the statement is where the line starts.
         const citem_t *best = nullptr;
         for ( const citem_t *it : vu->cfunc->treeitems )
         {
@@ -410,16 +409,14 @@ namespace idattd
             if ( vu == nullptr || vu->cfunc == nullptr )
                 continue;
 
-            // Keep anything backed by a segment that came from the file. The
-            // test is written this way on purpose so it gives the same answer
-            // whether the debugger segments have been torn down yet or not: an
-            // ephemeral segment and a vanished one are both "will not survive",
-            // and only a loader segment is "will".
+            // Keep views backed by a loader segment. Written so the answer is
+            // the same whether or not the debugger segments are torn down yet:
+            // ephemeral and vanished segments both fail to survive.
             segment_info_t si;
             if ( get_segment_info(&si, vu->cfunc->entry_ea) && !si.is_ephemeral_segm() )
                 continue;
 
-            // No WCLS_SAVE: the point is to keep it OUT of the saved desktop.
+            // No WCLS_SAVE: keep it out of the saved desktop.
             close_widget(w, WCLS_CLOSE_LATER);
             closed++;
         }

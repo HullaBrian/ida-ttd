@@ -5,14 +5,14 @@
 
 namespace idattd
 {
-    // Movement through a Microsoft recording. Stepping is a strategy here, not
-    // a primitive -- "step over backwards" is rewind, notice the step landed
-    // in a callee that had just returned, rewind out of it -- and each
-    // strategy is the engine's cheapest route: one replay with a watchpoint
-    // armed rather than a step loop.
+    // Movement through a Microsoft recording. Stepping is a strategy, not a
+    // primitive (a backward step-over steps back, notices it landed in a
+    // callee that just returned, and rewinds out of it), and each strategy
+    // takes the engine's cheapest route: one replay with a watchpoint armed
+    // rather than a step loop.
     //
-    // It moves the cursor it was made over and honours the breakpoints set on
-    // it, which it keeps as engine watchpoints on that cursor.
+    // It moves the cursor it was made over and keeps the breakpoints as
+    // engine watchpoints on that cursor.
     class MsTtdNavigator : public INavigator
     {
     public:
@@ -50,7 +50,10 @@ namespace idattd
         EventType navigate_backward_to(ea_t addr);
         EventType navigate_forward_to(ea_t addr);
         EventType rewind_to(const TTD::Replay::Position &p);
-        bool      find_frame_entry_position(TTD::Replay::Position &out, bool &cancelled);
+        bool      find_frame_entry_position(MsTtdBackend::FrameEntry &out, bool &cancelled);
+        // Forward step-out by the entering call: false when it cannot be
+        // found, for the step loop to go on.
+        bool      step_out_by_entry(EventType *result, const TTD::Replay::Position &origin);
         TTD::Replay::ICursorView *frame_cursor();
         RunStop   run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid);
         // The call or return at the playhead, decoded from recorded memory.
@@ -72,9 +75,9 @@ namespace idattd
         bool data_breakpoints_armed() const;
         bool data_hit_just_before();
         // A movement does not stop on an access made by the instruction it
-        // starts on -- that is where the last stop left it, and stopping
-        // there again would never move. Executes that one instruction when it
-        // makes such an access; true when it did.
+        // starts on (the last stop left it there; stopping again would never
+        // move). Executes that instruction when it makes such an access;
+        // true when it did.
         bool step_past_own_access();
         // Records, for every watchpoint that stops a replay, whether it was a
         // data access: the program counter alone cannot say, since an execute

@@ -3,10 +3,9 @@
 
 namespace idattd
 {
-    // Register class names. The order/index is irrelevant; the mask in each
-    // register_info_t::register_class_mask is what associates a register to a
-    // class. The default_regclasses mask below selects which classes IDA prints
-    // by default.
+    // Register class names. Each register_info_t's register_class_mask ties
+    // it to a class; default_regclasses selects which classes IDA shows by
+    // default.
     static const char *g_reg_classes[] =
     {
         "General registers",
@@ -73,16 +72,16 @@ namespace idattd
     {
         dbg.version   = IDD_INTERFACE_VERSION;
         dbg.name      = "ttd";
-        // NB: do not reuse DEBUGGER_ID_TRACE_REPLAYER (12) -- IDA's built-in
-        // replay_user.dll already claims it and IDA rejects duplicate IDs.
-        // Use a private value outside the known DEBUGGER_ID_ range.
+        // Not DEBUGGER_ID_TRACE_REPLAYER (12): IDA's replay_user.dll claims
+        // it and IDA rejects duplicate IDs. A private value outside the known
+        // DEBUGGER_ID_ range.
         dbg.id        = 0x100;
         dbg.processor = "metapc";
 
-        // No FAKE_MEMORY: that would make IDA read from the database only,
-        // and the recording's memory is served instead. SAFE: a replay never
+        // No FAKE_MEMORY: that would make IDA read only from the database,
+        // while the recording's memory is served here. SAFE: a replay never
         // runs code. TTD: enables backwards execution. No DEBTHREAD, so every
-        // callback runs on the main thread and UI and chooser calls are safe.
+        // callback runs on the main thread and UI calls are safe.
         dbg.flags = DBG_FLAG_CAN_CONT_BPT
                   | DBG_FLAG_SAFE
                   | DBG_FLAG_DEBUG_DLL
@@ -91,8 +90,8 @@ namespace idattd
                   | DBG_HAS_SET_RESUME_MODE
                   // Read and write breakpoints of any size and alignment:
                   // both backends watch a byte range, with no debug
-                  // registers to run out of. Without these IDA refused a
-                  // data breakpoint before ever passing it on.
+                  // registers to run out of. Without these IDA refused data
+                  // breakpoints before passing them on.
                   | DBG_FLAG_ANYSIZE_HWBPT
                   | DBG_HAS_CHECK_BPT;
 
@@ -106,16 +105,14 @@ namespace idattd
         dbg.bpt_size         = 1;
         dbg.filetype         = inf_get_filetype();
 
-        // Advertise the full forward step set plus backward single-step. With
-        // DBG_FLAG_TTD this makes IDA render its native debugger toolbar/menu
-        // buttons (step into/over/out, run, and their backward variants) using
-        // IDA's own icons -- no custom toolbar needed.
+        // The forward step set plus backward single-step. With DBG_FLAG_TTD,
+        // IDA then shows its own step and run buttons, backward variants
+        // included, so no custom toolbar is needed.
         //
-        // BACKINTO is the only backward resume mode the SDK defines (idd.hpp:
-        // RESMOD_BACKINTO is the last entry before RESMOD_MAX). Backward step-over
-        // and step-out are not separate modes: IDA signals the direction through
-        // ev_set_backwards and then sends the ordinary RESMOD_OVER / RESMOD_OUT,
-        // which TraceManager::on_resume dispatches on its stored direction.
+        // BACKINTO is the only backward resume mode the SDK defines (idd.hpp).
+        // For backward step-over and step-out IDA sends ev_set_backwards and
+        // then the ordinary RESMOD_OVER / RESMOD_OUT, which
+        // TraceManager::on_resume dispatches on the stored direction.
         dbg.resume_modes = DBG_RESMOD_STEP_INTO
                          | DBG_RESMOD_STEP_OVER
                          | DBG_RESMOD_STEP_OUT
@@ -131,8 +128,7 @@ namespace idattd
 
     void fill_regvals(const ittd_regs &r, bool is64, regval_t *values)
     {
-        // The table order above. A 32-bit target has its registers in the low
-        // halves.
+        // In table order. A 32-bit target's registers are the low halves.
         static const int seg_order[] = {
             ITTD_SEG_CS, ITTD_SEG_DS, ITTD_SEG_SS, ITTD_SEG_ES, ITTD_SEG_FS, ITTD_SEG_GS,
         };

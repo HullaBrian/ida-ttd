@@ -6,37 +6,32 @@
 
 namespace idattd
 {
-    // Ceiling on how much address space one sweep may cover. A backend keeps
-    // a bit per byte of scope while it sweeps, so the cap is really "do not
-    // quietly allocate 64 MiB".
+    // Ceiling on the address space one sweep may cover. A backend keeps a bit
+    // per byte of scope, so this caps that bitmap at 64 MiB.
     static const uint64_t kMaxCoverageBytes = 512ull << 20;
 
-    // Which colours has this database been painted with?
-    //
-    // Two things are stored, under separate tags on one netnode: the colour last
-    // chosen (so the form can offer it again), and the set of every colour used
-    // (so clearing removes highlighting applied with a colour the user has since
-    // changed away from). The set is keyed by the colour itself, which is what
-    // makes it a set rather than a list that could grow duplicates.
+    // Which colours this database has been painted with. One netnode holds
+    // the colour last chosen (offered again by the form) and the set of every
+    // colour used, keyed by colour (so clearing also removes paint in a colour
+    // the user has since changed away from).
     static const char  CV_NODE[]   = "$ ida-ttd coverage";
     static const uchar CV_LAST_TAG = 'L';   // alt 0 -> last colour, biased by 1
     static const uchar CV_USED_TAG = 'C';   // alt <colour> -> 1
     static const uchar CV_FUNC_TAG = 'F';   // alt <function start> -> 1
     static const uchar CV_PREV_TAG = 'P';   // alt <colour> -> 1: shows another recording's coverage
 
-    // Shade painted by builds that predate the configurable colour. Always
-    // cleared as well, so those databases can still be cleaned up.
+    // Shade painted by builds before the colour was configurable; always
+    // cleared too, so those databases can still be cleaned.
     static const bgcolor_t CV_LEGACY_COLOR = 0xD5F2D5;
 
-    // Which functions have been swept is the one thing here that belongs to a
-    // recording rather than to the database: re-record the program and the
-    // answer changes, so the marks from the old execution must not suppress a
-    // fresh sweep. The colours are a user preference and survive.
+    // Which functions were swept belongs to a recording: marks from an older
+    // execution must not suppress a fresh sweep. Colours are a user preference
+    // and survive.
     static const uchar CV_TRACE_TAGS[] = { CV_FUNC_TAG };
 
-    // The same shade turned to the opposite hue: each channel mirrored about
-    // the middle of the brightest and darkest, so the lightness stays and the
-    // colour reads as well on the theme the user picked the first one for.
+    // The same shade in the opposite hue: each channel mirrored about the
+    // midpoint of the brightest and darkest, which keeps the lightness (so it
+    // suits the same theme).
     static bgcolor_t complement(bgcolor_t c)
     {
         int ch[3] = { int(c & 0xFF), int((c >> 8) & 0xFF), int((c >> 16) & 0xFF) };
@@ -48,10 +43,10 @@ namespace idattd
         return out == c ? (c ^ 0x202000) : out;
     }
 
-    // Another recording is being replayed (a fork, or the recording a fork
-    // came from): what is painted now is the other one's coverage. Repaint
-    // it in the complementary shade, so this recording's sweeps, painted in
-    // the usual one, show where its path differs.
+    // Another recording is being replayed (a fork, or its parent), so the
+    // current paint is the other one's coverage. Repaint it in the
+    // complementary shade so this recording's sweeps, in the usual shade,
+    // show where the paths differ.
     static void repaint_as_previous(netnode &nn)
     {
         std::map<bgcolor_t, bgcolor_t> to;
@@ -92,12 +87,11 @@ namespace idattd
                 "complementary shade; this recording's are painted in the usual one.\n", (uint64_t)n);
     }
 
-    // The recording changed and its predecessor's painting is still to be
-    // turned to the complementary shade.
+    // The recording changed; the previous one's paint still needs repainting.
     static bool g_repaint_pending = false;
 
-    // The coverage node, with any marks left over from another recording
-    // dropped. Every access goes through here so the check cannot be skipped.
+    // The coverage node, with marks from another recording dropped. Every
+    // access goes through here so the check cannot be skipped.
     static netnode cv_node(bool create)
     {
         netnode nn(CV_NODE, 0, create);
@@ -107,11 +101,11 @@ namespace idattd
             msg("[ida-ttd] coverage: this database was last measured against a "
                 "different recording, so its per-function marks were dropped and "
                 "functions will be measured again.\n");
-            // Not here: this runs wherever coverage is first asked about,
-            // which includes the decompiler printing pseudocode and IDA's
-            // debugger notifications, and repainting the database there
-            // took IDA down (internal error 40183). The plugin settles it
-            // after the stop (coverage_settle_recording_change).
+            // Not repainted here: this runs wherever coverage is first asked
+            // about, including pseudocode printing and debugger notifications,
+            // and repainting there crashed IDA (internal error 40183). The
+            // plugin settles it after the stop
+            // (coverage_settle_recording_change).
             g_repaint_pending = true;
         }
         else if ( nn != BADNODE && create )
@@ -178,18 +172,16 @@ namespace idattd
         return nn != BADNODE && c != DEFCOLOR && nn.altval((nodeidx_t)c, CV_PREV_TAG) != 0;
     }
 
-    // The auto_coverage setting. Databases used to keep their own answer
-    // (alt 0, tag 'A', of the coverage node); it is no longer read.
+    // The auto_coverage setting. The old per-database answer (alt 0, tag 'A',
+    // of the coverage node) is no longer read.
     bool coverage_auto_enabled()
     {
         return settings().auto_coverage;
     }
 
-    // Functions swept this session in debugger segments. Those segments (the
-    // system DLLs of a Microsoft recording) and their colours go when the
-    // session ends, so a mark saved in the database would outlive the
-    // painting it stands for and keep the function from being painted in
-    // every later session.
+    // Functions swept this session in debugger segments. Those segments (a
+    // Microsoft recording's system DLLs) and their colours vanish when the
+    // session ends, so a saved mark would block repainting in later sessions.
     static std::set<ea_t> g_session_done;
 
     static bool in_debug_segment(ea_t ea)
@@ -231,15 +223,14 @@ namespace idattd
         CoverageResult r;
         if ( !run_coverage(mgr, one, coverage_color(), &r) || r.cancelled )
             return false;
-        // Record it even when nothing in the function ran: "measured, answer was
-        // none" is a result, and re-measuring it on every stop would not change it.
+        // Recorded even when nothing ran: "none" is a result, and re-measuring
+        // on every stop would not change it.
         mark_function_done(start);
         return true;
     }
 
-    // Sort and merge [lo,hi) spans, dropping empty ones. Overlapping watchpoints
-    // would double-report the same instruction and overlapping bins would make
-    // the lookup below ambiguous, so this is not just tidiness.
+    // Sort and merge [lo,hi) spans, dropping empty ones. Overlapping
+    // watchpoints would report an instruction twice.
     static std::vector<std::pair<ea_t, ea_t>> normalize(
             const std::vector<std::pair<ea_t, ea_t>> &in)
     {
@@ -274,8 +265,8 @@ namespace idattd
             return false;
         }
 
-        // Another recording's painting goes to its own shade first, or this
-        // sweep's would be turned to it too.
+        // Repaint another recording's coverage first, or this sweep's paint
+        // would be repainted with it.
         coverage_settle_recording_change();
 
         std::vector<std::pair<ea_t, ea_t>> spans = normalize(ranges);
@@ -310,8 +301,7 @@ namespace idattd
         }
         res.cancelled = qr.cancelled;
 
-        // A cancelled sweep measured only part of the trace, and a partial result
-        // painted into the database is indistinguishable from a complete one.
+        // A cancelled sweep is partial, and partial paint would look complete.
         if ( res.cancelled )
         {
             if ( out != nullptr )
@@ -319,9 +309,8 @@ namespace idattd
             return true;
         }
 
-        // Only instruction heads are coloured: an address inside an instruction,
-        // or one IDA has no code at, has no line to colour, and forcing code
-        // there from a sweep would claim more than "this ran".
+        // Only instruction heads are coloured. Elsewhere there is no line to
+        // colour, and creating code there would claim more than "this ran".
         show_wait_box("HIDECANCEL\nColouring executed instructions...");
         remember_color(color);
         // 'executed' is sorted and distinct, as query_executed promises.
@@ -347,12 +336,11 @@ namespace idattd
 
     size_t clear_coverage()
     {
-        // Every colour this database has ever been painted with, so changing the
-        // shade does not strand the instructions painted with the old one.
+        // Every colour ever used, so paint in an old shade is not stranded.
         std::set<bgcolor_t> ours = coverage_colors();
 
-        // Clearing also forgets which functions were measured, so the automatic
-        // pass will paint them again rather than treating an empty view as done.
+        // Also forget which functions were measured, so the automatic pass
+        // paints them again.
         g_session_done.clear();
         netnode nn = cv_node(true);
         if ( nn != BADNODE )

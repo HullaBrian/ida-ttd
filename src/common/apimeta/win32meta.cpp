@@ -92,9 +92,9 @@ namespace idattd::win32meta {
             return off < strtabSize ? strtab + off : "";
         };
 
-        // Enum tables are appended, so a later source's indices are shifted past the
-        // ones already loaded. Only the primary carries any today, but the offset
-        // costs nothing and stops a second table-bearing source being silently wrong.
+        // Enum tables are appended, so a later source's indices are shifted past
+        // those already loaded. Only the primary has any today; the offset keeps
+        // a second table-bearing source correct.
         uint32_t enumBase = static_cast<uint32_t>(enums_.size());
         if (withEnums && enumCount != 0) {
             uint32_t valueBase = static_cast<uint32_t>(enumValues_.size());
@@ -175,10 +175,9 @@ namespace idattd::win32meta {
             return false;
         }
 
-        // Everything after the primary fills gaps only. An index built from real
-        // metadata is richer than one recovered from headers or written by hand, so
-        // it wins wherever it has an answer -- but an entry it flagged unsupported is
-        // no answer at all, and gets replaced.
+        // Everything after the primary only fills gaps: an index built from real
+        // metadata is richer than one recovered from headers or written by hand.
+        // An entry the primary flagged unsupported is no answer, and is replaced.
         std::unordered_map<std::string_view, size_t> seen;
         seen.reserve(staged.size() * 2);
         for (size_t i = 0; i < staged.size(); ++i) {
@@ -220,8 +219,8 @@ namespace idattd::win32meta {
         for (const Staged& st : staged) {
             total += st.params.size();
         }
-        // One contiguous array, built once. FuncSig::params points into it, so it must
-        // never grow again -- which is why every source is staged before this runs.
+        // One contiguous array, built once. FuncSig::params points into it, so it
+        // must never grow again; that is why every source is staged first.
         params_.reserve(total);
         funcs_.reserve(staged.size());
         byName_.reserve(staged.size() * 2);

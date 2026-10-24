@@ -5,29 +5,22 @@
 #include "abi/ida_ttd_backend.h"
 #include <filesystem>
 
-// What the core plugin needs from a recording, and nothing about how any one
-// kind of recording provides it. See docs/modular-backends.md.
+// What the core plugin needs from a recording, independent of how any one kind
+// of recording provides it. See docs/modular-backends.md.
 //
-// Why the whole-trace work is expressed as queries rather than as "install a
-// watchpoint and replay": Microsoft TTD answers "every access to this range"
-// by replaying the recording with a watchpoint armed, and Sogen answers it by
-// reading a page index. An interface written in terms of watchpoints and
-// replays would make Sogen pretend to replay; one written in terms of
-// questions lets each backend answer the way it can.
+// Whole-trace work is expressed as queries rather than "install a watchpoint
+// and replay": Microsoft TTD answers "every access to this range" by replaying
+// with a watchpoint armed, Sogen by reading a page index. Questions let each
+// backend answer the way it can.
 //
 // ---------------------------------------------------------------------------
-// This is the CORE-SIDE view, in C++ and free to use IDA types. It is not the
-// boundary a backend module sees.
+// This is the CORE-SIDE view, in C++ and free to use IDA types. A backend DLL
+// sees the flat C ABI in abi/ida_ttd_backend.h instead; BackendModule adapts a
+// loaded module to this interface.
 //
-// A backend is a separate DLL, so the actual boundary is the flat C ABI in
-// abi/ida_ttd_backend.h: no C++ types, no IDA types, caller-provided buffers.
-// BackendModule adapts a loaded module to the interface below, and a backend
-// compiled into the core (if any ever is) implements the interface directly.
-//
-// The two are kept deliberately close in shape, so the adapter stays a
-// translation and never grows logic of its own. Where this file uses an ABI
-// type outright -- ittd_regs below -- that is on purpose: a third
-// representation of the same registers would only be translated twice.
+// The two are kept close in shape so the adapter stays a pure translation.
+// Where this file uses an ABI type outright (ittd_regs), that is deliberate: a
+// third representation of the registers would only be translated twice.
 // ---------------------------------------------------------------------------
 
 namespace idattd
@@ -35,11 +28,10 @@ namespace idattd
     // ---------------------------------------------------------------- queries
     //
     // What a backend can be asked. The core checks these before offering a
-    // command, so a backend is never asked a question it cannot answer and
-    // the user is never shown an action that would only apologise.
+    // command, so a backend is never asked a question it cannot answer.
     //
-    // The same set as the ITTD_CAP_* bits, as named booleans: core code reads
-    // these far more often than the adapter translates them.
+    // The ITTD_CAP_* bits as named booleans, which core code reads far more
+    // often than the adapter translates them.
     struct Capabilities
     {
         // Accesses to an address range can be listed (memory search, coverage).
@@ -47,29 +39,29 @@ namespace idattd
         // Calls and returns can be listed (the call tracer, indirect calls).
         bool call_queries     = false;
         // The recording says where memory was mapped, unmapped and
-        // reprotected, with the protection, so the memory map does not have to
-        // be reconstructed from syscalls. Knowing only *that* a range changed
+        // reprotected, with the protection, so the memory map need not be
+        // reconstructed from syscalls. Knowing only *that* a range changed
         // (all a Sogen recording older than its memory-region section says)
         // does not qualify.
         bool mapping_changes  = false;
         // Dispatched syscalls are recorded: which, where, and what they
-        // returned. (Not necessarily their arguments -- Sogen records the
-        // result and the host writes, not the registers going in.)
+        // returned. Not necessarily their arguments: Sogen records the result
+        // and the host writes, not the registers going in.
         bool syscalls         = false;
         // Module export tables come out of the recording, so the core does not
         // need to parse them out of guest memory.
         bool recorded_exports = false;
-        // Seeking is cheap enough to do on every row of a listing. False means
-        // the core should keep offering positions rather than values, and
-        // should run prepare() if the backend offers one.
+        // Seeking is cheap enough to do on every row of a listing. False: the
+        // core offers positions rather than values, and runs prepare() if the
+        // backend has one.
         bool cheap_seek       = false;
         // registers_at over many positions costs much less than a seek and a
         // register read at each (ITTD_CAP_BATCH_REGS), so a listing that
         // needs registers at thousands of positions asks for them up front.
         bool batch_regs       = false;
         // The recording can be stepped backwards instruction by instruction.
-        // (Both backends can; a future one reading an ETW-style trace could
-        // not, and the backward movement actions would then not be registered.)
+        // Both backends can; without it the backward actions are not
+        // registered.
         bool reverse_step     = true;
         // Exceptions the system dispatched can be listed (query_exceptions).
         bool exceptions       = false;
@@ -90,9 +82,9 @@ namespace idattd
     struct TraceInfo
     {
         bool     is64 = false;
-        // Identity of this recording, so results cached in the database against
-        // one are not shown against another. Stable across opens of the same
-        // file; different for a re-recording of the same program.
+        // Identity of this recording, so results cached in the database for
+        // one are not shown for another. Stable across opens of the same file;
+        // different for a re-recording of the same program.
         uint64_t fingerprint = 0;
         Position first, last;
         // Base name of the program that was recorded ("sample.exe").
@@ -107,17 +99,16 @@ namespace idattd
         uint64_t size = 0;
         qstring  name;            // base name, as recorded
         qstring  path;            // full path on the recording machine
-        // Where the recording saw it mapped. For Microsoft TTD this is also the
-        // only position at which the module's own headers can be read.
+        // Where the recording saw it mapped. For Microsoft TTD, also the only
+        // position at which the module's headers can be read.
         Position loaded;
         Position unloaded;        // none() while still mapped at the end
         // IMAGE_FILE_MACHINE_*: 0x8664, or 0x14c for 32-bit code in a WoW64
         // process. 0 when the recording does not say; read the PE header.
         uint16_t machine = 0;
-        // The image's TimeDateStamp and CheckSum as the recording saw them,
-        // which is how a file on this machine is told apart from a different
-        // build of the same DLL. 0 when the backend does not say; the core
-        // then reads them from the recorded headers.
+        // The image's TimeDateStamp and CheckSum as recorded, which tell a
+        // file on this machine apart from another build of the same DLL. 0
+        // when the backend does not say; the core then reads the headers.
         uint32_t timestamp = 0;
         uint32_t checksum  = 0;
     };
@@ -335,13 +326,10 @@ namespace idattd
         bool truncated = false;   // a record cap was hit; results are a prefix
     };
 
-    // How a long query reports in and asks whether to stop. The core implements
-    // this with a wait box; a backend only calls it, and must assume it may be
-    // called from a worker thread -- so an implementation touches no IDA API
-    // beyond what is thread-safe.
-    //
-    // A backend that answers from an index and never takes long simply ignores
-    // the sink it is handed.
+    // How a long query reports progress and asks whether to stop. The core
+    // implements it with a wait box. It may be called from a worker thread, so
+    // an implementation uses only thread-safe IDA APIs. A fast backend may
+    // ignore it.
     class ProgressSink
     {
     public:
@@ -353,8 +341,8 @@ namespace idattd
     // ------------------------------------------------------------- the cursor
     //
     // A movable viewpoint onto a recording. The core creates one for the
-    // debugger's playhead and one per concurrent query, because a query must
-    // not move the position the user is looking at.
+    // debugger's playhead and one per concurrent query, so a query never moves
+    // what the user is looking at.
     class ITraceCursor
     {
     public:
@@ -368,15 +356,9 @@ namespace idattd
         virtual uint32_t thread_id() const = 0;
         virtual ea_t     program_counter() const = 0;
         virtual uint64_t stack_pointer() const = 0;
-        // The canonical register set (abi/ida_ttd_backend.h). The core maps it
-        // onto IDA's register array for the table configure_debugger()
-        // installed.
-        //
-        // An earlier draft had the backend fill regval_t directly, which is
-        // simpler but only works in-process: a backend DLL must not see IDA
-        // types at all. Both engines have something close to ittd_regs already
-        // -- Microsoft's CROSS_PLATFORM_CONTEXT, Sogen's save_registers blob --
-        // so neither pays much to produce it.
+        // The canonical register set (abi/ida_ttd_backend.h), which the core
+        // maps onto the register table configure_debugger() installed. Not
+        // regval_t: a backend DLL must not see IDA types.
         virtual bool     read_registers(ittd_regs *out) const = 0;
 
         // The registers of another thread at this position, for IDA's thread
@@ -391,10 +373,9 @@ namespace idattd
         //
         // 'known' is resized to 'size' and marks each byte ITTD_KNOWN_*: the
         // recording's value, a placeholder zero (mapped, value unknown), or
-        // nothing. Unknown bytes are left as the caller found them: the core
-        // fills those -- and placeholders -- from the module's on-disk image
-        // where there is one, which is backend-independent and therefore not a
-        // backend's job.
+        // nothing. Unknown bytes are left as the caller found them; the core
+        // fills those and placeholders from the module's on-disk image, which
+        // is the same job for every backend.
         //
         // Returns the number of bytes marked known or placeholder.
         virtual size_t   read_memory(ea_t ea, void *buf, size_t size,
@@ -404,12 +385,11 @@ namespace idattd
         virtual std::vector<ThreadInfo> live_threads() const = 0;
 
         // Rebuild [lo, hi) as of this position from the recording's own
-        // writes, for memory the position query cannot answer (an unpacker's
-        // output before it runs), and serve it from then on. With 'replace',
-        // anything rebuilt for the range before is thrown away first (a
-        // re-read); without, a range already rebuilt is reused (the per-stop
-        // path). Returns the bytes recovered in the range. A backend whose
-        // reads are already complete has nothing to do: 0.
+        // writes, for memory a position read cannot answer (an unpacker's
+        // output before it runs), and serve it from then on. 'replace'
+        // discards an earlier rebuild of the range (a re-read); without it a
+        // rebuilt range is reused (the per-stop path). Returns the bytes
+        // recovered; 0 for a backend whose reads are complete.
         virtual size_t   rebuild_range(ea_t lo, ea_t hi, bool replace)
         {
             qnotused(lo); qnotused(hi); qnotused(replace);
@@ -438,15 +418,11 @@ namespace idattd
 
     // ---------------------------------------------------------- the navigator
     //
-    // Stepping is a strategy, not a primitive. "Step over backwards" means
-    // something quite different to a replay engine (rewind, then detect that the
-    // cursor landed in a callee that had just returned, then rewind out) than to an
-    // indexed trace (read the previous execute event at this frame's depth).
-    // Each backend implements the whole family, because each has a cheap route
-    // the other does not.
+    // Stepping is a strategy, not a primitive: see the navigation section of
+    // abi/ida_ttd_backend.h. Each backend implements the whole family.
     //
-    // Every call moves the cursor the backend was created with, honours the
-    // breakpoints set through set_breakpoints(), and says why it stopped.
+    // Every call moves the cursor the navigator was made for, honours the
+    // set_breakpoints() set, and says why it stopped.
     enum class StopReason
     {
         Stepped,        // the movement completed
@@ -467,26 +443,24 @@ namespace idattd
         virtual StopReason run_to(ea_t addr, bool forward) = 0;
         virtual StopReason seek_to(Position p) = 0;
 
-        // Breakpoints, as the whole set rather than one at a time: both
-        // backends key them by address and replacing the set is cheaper and
-        // harder to get wrong than reconciling adds and deletes. A data
-        // breakpoint stops at the instruction that made the access.
+        // Breakpoints as the whole set (see ittd_backend_api::nav_breakpoints).
+        // A data breakpoint stops at the instruction that made the access.
         //
         // 'accepted', when given, gets one entry per breakpoint: false for one
-        // the engine refused, so IDA can show it as bad instead of as a
-        // breakpoint that silently never fires.
+        // the engine refused, so IDA shows it as bad rather than as one that
+        // silently never fires.
         virtual bool set_breakpoints(const std::vector<Breakpoint> &bpts,
                                      std::vector<bool> *accepted = nullptr) = 0;
 
-        // Something the last movement wants the user told once the stop is
-        // shown ("this frame does not return anywhere"), or empty. Taking it
+        // A message for the user about the last movement, shown after the
+        // stop ("this frame does not return anywhere"), or empty. Taking it
         // clears it.
         virtual qstring take_notice() { return qstring(); }
 
-        // Where a long movement reports and asks whether to stop: the core
+        // Where a long movement reports and asks whether to stop; the core
         // sets one around every movement and clears it after. Movements run
         // on the main thread, so a sink's cancelled() may pump IDA's message
-        // loop. Null means no one is asking.
+        // loop. Null clears it.
         virtual void set_progress(ProgressSink *progress) { qnotused(progress); }
     };
 
@@ -499,14 +473,14 @@ namespace idattd
         // ---- identity, before anything is open -----------------------------
         //
         // Short id used in the database and when naming a module ("msttd",
-        // "sogen"). It is written into the trace-link record, so changing one
-        // orphans existing databases.
+        // "sogen"). Stored in the trace-link record, so changing it orphans
+        // existing databases.
         virtual const char *id() const = 0;
         virtual const char *display_name() const = 0;
-        // Does this backend handle the file at 'path'? Asked of every registered
-        // backend, in registration order, by the loader and by the debugger when
-        // a session starts. Must be cheap and must not open the recording: a
-        // signature read is the most it should do.
+        // Whether this backend handles the file at 'path'. Asked of every
+        // registered backend in order, by the loader and when a session
+        // starts, so it must be cheap: a signature read at most, never an
+        // open.
         virtual bool can_open(const char *path) const = 0;
         // The File > Open filter fragment this backend contributes, e.g.
         // "Microsoft TTD trace (*.run)".
@@ -523,11 +497,11 @@ namespace idattd
         virtual const TraceInfo     &info() const = 0;
         virtual const Capabilities  &capabilities() const = 0;
 
-        // Work the backend would like done once per recording before its seeks
-        // become fast or its reads complete -- building Microsoft's memory
-        // index, filling Sogen's keyframes. Nothing to do returns true
-        // immediately. Called on the main thread after open(): the debugger
-        // runs it when a session starts, the loader asks the user first.
+        // One-off work per recording that makes seeks fast or reads complete:
+        // building Microsoft's memory index, filling Sogen's keyframes.
+        // Returns true at once when there is nothing to do. Called on the main
+        // thread after open(): the debugger runs it when a session starts, the
+        // loader asks the user first.
         //
         // 'progress' may be null; a backend whose preparation cannot be
         // interrupted may show IDA's wait box itself.
@@ -555,8 +529,8 @@ namespace idattd
         // ---- whole-trace queries -------------------------------------------
         //
         // Each may take minutes on one backend and microseconds on another.
-        // They report through 'progress' (which may be null) and stop when it
-        // says to.
+        // They report through 'progress' (may be null) and stop when it says
+        // so.
 
         // Every access to [lo, hi) within 'when' matching 'kinds'. Appends to
         // 'out'. Requires capabilities().access_queries.
@@ -565,12 +539,10 @@ namespace idattd
                                            std::vector<Access> *out,
                                            ProgressSink *progress) = 0;
 
-        // The distinct addresses inside 'ranges' that the recording executed.
-        // A separate entry point from query_accesses because coverage wants a
-        // set of addresses, not millions of individual events, and both
-        // backends have a much cheaper way to produce one.
-        // Appends to 'out' in ascending order, each address once: a vector
-        // rather than a set, because a module's worth is millions of entries.
+        // The distinct addresses inside 'ranges' that the recording executed
+        // (see ittd_backend_api::query_executed). Appends to 'out' in
+        // ascending order, each address once: a vector rather than a set,
+        // because a module's worth is millions of entries.
         virtual QueryResult query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                            std::vector<ea_t> *out,
                                            ProgressSink *progress) = 0;
@@ -583,9 +555,8 @@ namespace idattd
                                         ProgressSink *progress) = 0;
 
         // Every indirect call made from inside 'ranges', with where it went,
-        // and every indirect jump too when 'jumps' is set. Separate from
-        // query_calls because the question is about call *sites* and the
-        // answer is grouped by site, not by invocation.
+        // and every indirect jump too when 'jumps' is set. Grouped by site,
+        // not by invocation.
         virtual QueryResult query_indirect_targets(
                 const std::vector<std::pair<ea_t, ea_t>> &ranges,
                 bool jumps,
@@ -598,10 +569,9 @@ namespace idattd
                                              ProgressSink *progress) = 0;
 
         // Every mapping change the recording holds, as the ABI's own structs
-        // (ittd_mapping_change carries Windows' MEM_* and PAGE_* values, which
-        // the memory map wants as they are), and the mapped-file names their
-        // 'file' fields index, one-based. Requires capabilities().
-        // mapping_changes; a backend without it answers not-ran.
+        // (Windows' MEM_* and PAGE_* values, which the memory map wants as
+        // they are), and the mapped-file names their one-based 'file' fields
+        // index. A backend without it answers not-ran.
         virtual QueryResult query_mapping_changes(std::vector<ittd_mapping_change> *out,
                                                   std::vector<qstring> *files,
                                                   ProgressSink *progress)
@@ -641,9 +611,9 @@ namespace idattd
         // Why the last call failed, when the backend says; empty otherwise.
         virtual qstring last_error() const { return qstring(); }
 
-        // What the last replay (record_fork, query_strings, query_buffers) was
-        // refused for, when it was something the user can give: consent to
-        // replay a recording made against the host, or the registry hives.
+        // Why the last replay (record_fork, query_strings, query_buffers) was
+        // refused, when the user can fix it: consent to replay a recording made
+        // against the host, or the registry hives.
         virtual ReplayBlock last_replay_block() const { return ReplayBlock::None; }
 
         // What a replay of the open recording needs. False when the backend
@@ -667,8 +637,8 @@ namespace idattd
         }
 
         // What the last query_strings or query_buffers skipped, in words: the
-        // stretches of the recording its replay could not follow on this
-        // machine. Empty when it covered all of it.
+        // stretches its replay could not follow on this machine. Empty when
+        // it covered everything.
         virtual qstring scan_notice() const { return qstring(); }
 
         // Fork the recording (see ForkRequest). Requires capabilities().fork.
@@ -693,8 +663,7 @@ namespace idattd
         // The instructions executed within 'when', in order, on thread 'tid'
         // (0: every thread): at most 'max' of them, as ACCESS_EXEC accesses
         // whose pc is the instruction. 'truncated' says the range held more.
-        // What lays out runtime-only code and finds where a function began, so
-        // callers keep 'when' short.
+        // Callers keep 'when' short.
         virtual QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
                                                std::vector<Access> *out, ProgressSink *progress)
         {
@@ -729,9 +698,9 @@ namespace idattd
             qnotused(page_shift); qnotused(slices); qnotused(out); qnotused(progress);
             return QueryResult{};
         }
-        // The same over the stretch 'when' only, its slices equal parts of
-        // it (the heatmap zoomed in). A whole-trace range is the query above;
-        // ran == false when the backend cannot count part of the recording.
+        // The same over the stretch 'when' only, cut into equal slices (the
+        // heatmap zoomed in). A whole-trace range is the query above; ran ==
+        // false when the backend cannot count part of the recording.
         virtual QueryResult query_access_heat_window(uint32_t page_shift, uint32_t slices,
                                                      PositionRange when, std::vector<HeatCell> *out,
                                                      ProgressSink *progress)
@@ -781,9 +750,8 @@ namespace idattd
 
         // The registers at each of 'positions', in the same order; an entry
         // whose 'have' is 0 could not be reconstructed. A batch because
-        // neighbouring positions share work -- see ittd_backend_api::regs_at.
-        // The default seeks a scratch cursor per position, which is what a
-        // backend without a cheaper route would do anyway.
+        // neighbouring positions share work (ittd_backend_api::regs_at). The
+        // default seeks a scratch cursor per position.
         virtual QueryResult registers_at(const std::vector<Position> &positions,
                                          std::vector<ittd_regs> *out,
                                          ProgressSink *progress)
@@ -813,11 +781,10 @@ namespace idattd
 
         // ---- symbols -------------------------------------------------------
         //
-        // Named addresses the recording itself knows about. Microsoft TTD has
-        // none and parses the export table out of guest memory to produce them;
+        // Named addresses the recording knows about. Microsoft TTD records
+        // none, so its backend parses the export table out of guest memory;
         // Sogen records every module's export directory. Either way the core
-        // gets a list and applies IDA names, so only one of the two has to deal
-        // with PE parsing.
+        // gets a list and applies IDA names.
         struct Symbol { ea_t ea = BADADDR; qstring name; bool is_export = true; };
         virtual std::vector<Symbol> module_symbols(ea_t base) = 0;
         // [start, end) of every function in the module at 'base', from whatever

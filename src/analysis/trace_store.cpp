@@ -2,14 +2,13 @@
 
 namespace idattd
 {
-    // The tag the fingerprint itself lives under. It must not collide with any
-    // tag a store uses for its own data; 'z' is unused by all of them.
+    // The fingerprint's tag. It must not collide with any store's own tags;
+    // none uses 'z'.
     static const uchar TS_FP_TAG = 'z';
     static const nodeidx_t TS_FP_VALUE   = 0;   // alt 0 -> the fingerprint
     static const nodeidx_t TS_FP_PRESENT = 1;   // alt 1 -> it has been written
 
-    // Not in the database: it describes the session, and a fresh plugin object
-    // is constructed on every open.
+    // Not in the database: it describes the session.
     static uint64_t g_current_trace = 0;
 
     void set_current_trace(uint64_t fingerprint)
@@ -48,8 +47,7 @@ namespace idattd
         for ( size_t t = 0; t < ntags; t++ )
         {
             const uchar tag = tags[t];
-            // altdel/supdel invalidate the iteration, so each next index is
-            // read before its entry goes.
+            // Deleting invalidates the iteration: read the next index first.
             for ( nodeidx_t i = node.altfirst(tag); i != BADNODE; )
             {
                 nodeidx_t next = node.altnext(i, tag);

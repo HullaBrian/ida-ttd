@@ -15,7 +15,7 @@ namespace idattd::win32meta {
         constexpr uint16_t kPtr = 8;
 
         // -------------------------------------------------------------------
-        // 1. win32u -- the win32k syscall stubs phnt's ntuser.h does not declare
+        // 1. win32u: the win32k syscall stubs phnt's ntuser.h does not declare
         // -------------------------------------------------------------------
         //
         // Only the ones whose prototypes are not in doubt. NtUserCreateWindowEx and
@@ -26,9 +26,9 @@ namespace idattd::win32meta {
 
         // SHORT NtUserGetAsyncKeyState(int Key)
         //
-        // 576,705 calls in one desktop trace -- the inner syscall of the
-        // GetAsyncKeyState polling loop, and on its own the largest single source of
-        // invented arguments in the whole report.
+        // 576,705 calls in one desktop trace: the inner syscall of the
+        // GetAsyncKeyState polling loop, and the largest single source of
+        // invented arguments in the report.
         constexpr BuiltinParam kNtUserGetAsyncKeyState[] = {
             { "Key", "int", ArgKind::Integer, kIn, 4 },
         };
@@ -210,8 +210,8 @@ namespace idattd::win32meta {
             { "Length",      "SIZE_T",      ArgKind::Integer,    kIn, 8 },
         };
 
-        // operator delete / operator delete[] -- one pointer each. Mangled names are
-        // what the export table carries, so that is what the index has to be keyed on.
+        // operator delete / operator delete[]: one pointer each. Keyed on the
+        // mangled names, which is what the export table carries.
         constexpr BuiltinParam kOperatorDelete[] = {
             { "Block", "void*", ArgKind::Pointer, kIn, 0 },
         };
@@ -227,7 +227,7 @@ namespace idattd::win32meta {
             fn("NtUserGetAtomName", "win32u.dll", kNtUserGetAtomName),
             fn("NtUserRegisterWindowMessage", "win32u.dll", kNtUserRegisterWindowMessage),
             fn("NtUserUnregisterClass", "win32u.dll", kNtUserUnregisterClass),
-            // HWND ABI_Get_ForegroundWindow(VOID) -- the win32u shim for
+            // HWND ABI_Get_ForegroundWindow(VOID): the win32u shim for
             // GetForegroundWindow, which takes no arguments.
             BuiltinFunc{ "ABI_Get_ForegroundWindow", "win32u.dll", nullptr, 0 },
 

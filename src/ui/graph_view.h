@@ -5,15 +5,15 @@
 namespace idattd
 {
     // A graph drawn by the plugin's own graph window (graph_py.hh): rounded
-    // cards joined by curved edges, in IDA's theme colours, panned and zoomed
-    // like IDA's graphs. The plugin builds the model; IDAPython draws it,
-    // asking for it with ttd("ui.graph KIND") and sending a node's actions
-    // back with ttd("ui.graphact KIND NODE ACTION"). Each kind ("forks",
-    // "origin") has one window.
+    // cards and curved edges in IDA's theme colours, panned and zoomed like
+    // IDA's graphs. The plugin builds the model; IDAPython fetches it with
+    // ttd("ui.graph KIND") and sends node actions back with
+    // ttd("ui.graphact KIND NODE ACTION"). One window per kind ("forks",
+    // "origin").
     //
-    // Not IDA's own graph viewer: a plugin can give its nodes only a
-    // background colour and one block of text there, and drawing them itself
-    // means building against IDA's exact Qt.
+    // Not IDA's graph viewer: there a plugin node gets only a background
+    // colour and one block of text, and custom drawing means building against
+    // IDA's exact Qt.
 
     struct GraphNode
     {
@@ -44,8 +44,8 @@ namespace idattd
     {
         qstring title;                  // the window's
         qstring status;                 // the line under the graph
-        // Arrowheads at the top end of each edge: the flow goes up the graph
-        // (a value's sources below it), not down (a recording's forks).
+        // Arrowheads at each edge's top end: flow goes up (a value's sources
+        // below it) rather than down (a recording's forks).
         bool    arrows_up = false;
         std::vector<GraphNode> nodes;
         std::vector<GraphEdge> edges;
@@ -63,6 +63,9 @@ namespace idattd
     void refresh_graph(const char *kind, GraphModel &&model);
     bool graph_is_open(const char *kind);
     void close_graph(const char *kind);
+    // Close the window and drop the model, so the window's commands find no
+    // graph (one whose positions belong to a recording no longer open).
+    void forget_graph(const char *kind);
     // TWidget of the window, or nullptr.
     TWidget *graph_widget(const char *kind);
 
@@ -70,7 +73,7 @@ namespace idattd
     bool graph_json(const char *kind, qstring *out);
     bool graph_act(const char *kind, int node, const qstring &action);
 
-    // Append 's' as a quoted JSON string: the models every IDAPython window
-    // asks for (this one, the call tree, the heatmap) are written with it.
+    // Append 's' as a quoted JSON string. Used for every model an IDAPython
+    // window asks for (graphs, the call tree, the heatmap).
     void json_str(qstring *out, const char *s);
 }

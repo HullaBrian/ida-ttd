@@ -1,7 +1,7 @@
 """Drive the ida-ttd plugin from Python inside IDA.
 
-Installed as plugins/ida-ttd-python/ida_ttd.py; the plugin puts that folder
-on sys.path when it loads, so in the IDAPython console, a script, or an MCP
+Installed in ida-ttd-python/ beside the plugin DLL, which the plugin puts on
+sys.path when it loads. In the IDAPython console, a script, or an MCP
 server's Python:
 
     import ida_ttd
@@ -20,12 +20,12 @@ server's Python:
     r = ida_ttd.Recording(r"C:\\traces\\run.sogttd")   # a recording, no debugger
     r.seek("first"); r.step(); r.regs(); r.read(0x401000, 16)
 
-Underneath is one IDC function, ttd("command args..."), which answers with
-JSON. call() sends one command and returns the answer as a dict; the classes
-above turn the answers into Python values: addresses and numbers as ints,
-bytes as bytes. Positions stay strings in the recording's own syntax
+Underneath is one IDC function, ttd("command args..."), which answers in
+JSON. call() sends a command and returns the answer as a dict; the classes
+turn answers into Python values (addresses and numbers as ints, bytes as
+bytes). Positions stay strings in the recording's own syntax
 ("Sequence:Steps" for Microsoft TTD, a step count for Sogen) and are passed
-back as they are. A failure raises TtdError with the plugin's reason.
+back unchanged. A failure raises TtdError with the plugin's reason.
 call("help") lists every command; docs/scripting.md describes them.
 
 It works the same in the GUI, in idat, and in an idalib worker. Without the
@@ -108,10 +108,23 @@ def h(value):
 _HEX = re.compile(r"^0x[0-9a-fA-F]+$")
 
 
+# Keys whose values are free text (recovered strings, names, paths, notes,
+# messages), kept as they are even when one reads "0x41": a string the
+# program wrote is not a number. Every other "0x..." value is an address or
+# a number the plugin wrote in hex.
+_TEXT_KEYS = frozenset((
+    "text", "preview", "name", "path", "file", "dir", "comment", "note", "notice",
+    "error", "why", "command", "commands", "trace", "main_module", "backend_name",
+    "label", "title", "status", "filter", "symbol_server", "emulation_root",
+    "registry_folder", "registry_hint", "chosen_root", "event_log", "windows_version",
+))
+
+
 def py(value):
-    """An answer with every "0x..." string turned into an int, recursively."""
+    """An answer with every "0x..." string turned into an int, recursively,
+    except under keys that hold free text (_TEXT_KEYS)."""
     if isinstance(value, dict):
-        return {k: py(v) for k, v in value.items()}
+        return {k: v if k in _TEXT_KEYS else py(v) for k, v in value.items()}
     if isinstance(value, list):
         return [py(v) for v in value]
     if isinstance(value, str) and _HEX.match(value):

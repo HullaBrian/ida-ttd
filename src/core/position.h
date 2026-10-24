@@ -6,21 +6,18 @@ namespace idattd
 {
     // A point in a recording, as the backend that loaded it means it.
     //
-    // Two 64-bit words, which is what the backends need and no more: Microsoft
-    // TTD numbers a position (sequence, steps); Sogen's is a single instruction
-    // counter. The core never interprets the words -- it compares them, stores
-    // them in the database, and asks the backend to render and parse them.
+    // Two 64-bit words: Microsoft TTD uses (sequence, steps), Sogen a single
+    // instruction counter in 'lo' with 'hi' zero. The core never interprets
+    // them; it compares them, stores them, and asks the backend to render and
+    // parse them.
     //
-    // Ordering is the recording's own chronology, so lexicographic order on
-    // (hi, lo) has to be the order the backend replays in. Both satisfy that:
-    // Microsoft's sequence/steps pair is already ordered that way, and Sogen's
-    // counter goes in 'lo' with 'hi' zero.
+    // Lexicographic order on (hi, lo) must be the recording's chronology,
+    // which both backends satisfy.
     //
-    // Two words rather than an opaque handle because a position has to be
-    // cheap to copy (every row of every listing holds one), trivially
-    // comparable, and storable in a netnode blob -- bookmarks and the memory
-    // map keep thousands of them in the database and must not grow a backend
-    // call to read one back.
+    // Two words rather than an opaque handle so a position is cheap to copy
+    // (every listing row holds one), trivially comparable, and storable in a
+    // netnode blob without a backend call to read it back (bookmarks and the
+    // memory map keep thousands).
     struct Position
     {
         uint64_t hi = SENTINEL_WORD;
@@ -38,13 +35,12 @@ namespace idattd
 
         // The three sentinels every backend has to be able to express.
         //
-        // 'none' is "no position", which is what a default-constructed Position
-        // is and what a query that found nothing returns. 'begin' and 'end' mean
-        // "the start/end of the recording, wherever that is" -- a seek resolves
-        // them, and they are not the same as the first and last recorded
-        // positions, which the backend reports in TraceInfo. A backend
-        // translates these three explicitly; it must not assume the bit
-        // patterns mean anything to its own engine.
+        // 'none' is "no position": a default-constructed Position, and what a
+        // query that found nothing returns. 'begin' and 'end' mean "the
+        // start/end of the recording, wherever that is"; a seek resolves them.
+        // They differ from the first and last recorded positions in
+        // TraceInfo. A backend translates all three explicitly and must not
+        // assume the bit patterns mean anything to its engine.
         static constexpr Position none()  { return { SENTINEL_WORD, SENTINEL_WORD }; }
         static constexpr Position begin() { return { 0, 0 }; }
         static constexpr Position end()   { return { SENTINEL_WORD, SENTINEL_WORD - 1 }; }
@@ -54,24 +50,21 @@ namespace idattd
         { return *this == none() || *this == begin() || *this == end(); }
 
     private:
-        // Out of the range of any real position in either backend: Microsoft's
-        // sequence ids stop well short of it, and Sogen would need 2^64
-        // instructions to reach it.
+        // Beyond any real position: Microsoft's sequence ids stop well short of
+        // it, and Sogen would need 2^64 instructions to reach it.
         static constexpr uint64_t SENTINEL_WORD = UINT64_MAX;
     };
 
     class ITraceBackend;
 
     // Render a position the way the recording's own tooling numbers it, and
-    // parse that rendering back: through the backend of the session that is
-    // running (set_position_backend), so a Sogen recording shows instruction
-    // numbers and a Microsoft one Sequence:Steps. With none set they use
-    // Microsoft's notation, which is what positions stored before backends
-    // existed are written in.
+    // parse it back, through the running session's backend
+    // (set_position_backend): instruction numbers for Sogen, Sequence:Steps
+    // for Microsoft. With none set, Microsoft's notation, in which positions
+    // stored before backends existed are written.
     //
-    // format_position() of an invalid position is the empty string, so a
-    // listing column for a position that was never recorded comes out blank
-    // rather than saying FFFFFFFFFFFFFFFF.
+    // An invalid position formats as "", so a listing column comes out blank
+    // rather than FFFFFFFFFFFFFFFF.
     qstring     format_position(Position p);
     bool        parse_position(const char *text, Position *out);
     // What to put next to an input box that takes one.
@@ -87,9 +80,8 @@ namespace idattd
     bool        parse_hex_position(const char *text, Position *out);
     const char *hex_position_syntax();
 
-    // A span of a recording, from 'first' to 'last'. 'first' as begin() and
-    // 'last' as end() is "the whole thing", which is what a query with no range
-    // given means.
+    // A span of a recording, from 'first' to 'last'. begin() to end() is the
+    // whole recording, the default for a query with no range.
     struct PositionRange
     {
         Position first = Position::begin();

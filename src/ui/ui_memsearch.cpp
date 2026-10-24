@@ -16,9 +16,8 @@ namespace idattd
         : chooser_t(CH_CAN_DEL, qnumber(g_ma_widths), g_ma_widths, g_ma_header, nullptr),
           m_mgr(mgr), m_hits(std::move(hits))
     {
-        // A unique title per search, so two searches open as two tabs instead of
-        // one replacing the other. The string is a member because chooser_base_t
-        // keeps the pointer it is given rather than copying it.
+        // A unique title per search, so two searches open as two tabs. A
+        // member: chooser_base_t keeps the pointer, not a copy.
         if ( hi - lo <= 1 )
             m_title.sprnt("TTD accesses: 0x%llX [%d]", (uint64_t)lo, (int)m_hits.size());
         else
@@ -43,8 +42,7 @@ namespace idattd
         cols->at(2) = access_name(a.kind);
         cols->at(3).sprnt("0x%llX", (uint64_t)a.addr);
         cols->at(4).sprnt("%u", a.size);
-        // Where the access came from, as a name plus offset when there is one --
-        // the raw address alone rarely says anything.
+        // Where the access came from, as name+offset when possible.
         cols->at(5) = func_offset_name(a.pc);
     }
 
@@ -92,12 +90,12 @@ namespace idattd
             "<E~x~ecute:C>>\n"
             "\n";
 
-        // Seed from wherever the user is, which is usually what they mean.
+        // Seeded from the cursor, usually what is meant.
         static sval_t  len  = 1;
         static ushort  bits = ACC_READ | ACC_WRITE;
         ea_t addr = ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
-        // A selection -- bytes highlighted in the hex view, or a range of
-        // instructions -- is the range to search.
+        // A selection (bytes in the hex view, or instructions) is the range
+        // to search.
         ea_t sel_lo = BADADDR, sel_hi = BADADDR;
         if ( ctx != nullptr && ctx->has_flag(ACF_HAS_SELECTION)
           && read_range_selection(ctx->widget, &sel_lo, &sel_hi) && sel_lo < sel_hi )

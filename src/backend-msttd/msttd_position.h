@@ -11,26 +11,22 @@ namespace idattd
 
     // Microsoft TTD positions in and out of the core's representation.
     //
-    // The core's Position is two 64-bit words with no meaning of its own, so
-    // for this backend the conversion is nearly the identity -- a TTD position
-    // *is* a (sequence, steps) pair. What needs care is the three sentinels,
-    // whose bit patterns differ on the two sides and must be translated by
-    // name rather than by reinterpretation.
+    // The core's Position is two opaque 64-bit words, so the conversion is
+    // nearly the identity: a TTD position is a (sequence, steps) pair. Only
+    // the three sentinels differ in bit pattern and are translated by name.
     //
     //   core none()  <-> Position::Invalid  = { TTD::SequenceId::Invalid, 0 }
     //   core begin() <-> Position::Min      = { 0, 0 }
     //   core end()   <-> Position::Max      = { SequenceId::Max, StepCount::Max }
     //
-    // That the round trip is lossless rests on one fact: SequenceId::Invalid is
-    // UINT64_MAX, so no real TTD position has a sequence of UINT64_MAX, and the
-    // core's two high sentinels (which both do) cannot collide with one.
-    // Position::Min is {0, 0}, which is both the first position and the core's
-    // begin() -- the same place either way, so mapping between them loses
-    // nothing.
+    // The round trip is lossless because SequenceId::Invalid is UINT64_MAX:
+    // no real position has that sequence, so the core's two high sentinels
+    // (which do) cannot collide with one. Position::Min {0, 0} is both the
+    // first position and begin(), the same place either way.
     //
-    // Order matters in to_core: Position::Max must be tested before IsValid(),
-    // because Max's sequence is UINT64_MAX - 1 but a future SDK could narrow
-    // that, and testing the named constant first is correct either way.
+    // to_core tests Position::Max before IsValid(): Max's sequence is
+    // UINT64_MAX - 1 today, and testing the named constant first stays
+    // correct if a future SDK changes that.
 
     inline Position to_core(const TTD::Replay::Position &p)
     {

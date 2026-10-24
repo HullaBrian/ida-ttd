@@ -69,8 +69,8 @@ namespace idattd
         return 1;
     }
 
-    // The address under the cursor, which works from the disassembly and the
-    // decompiler alike; the screen ea when the context did not carry one.
+    // The address under the cursor (disassembly or decompiler), else the
+    // screen ea.
     static ea_t context_ea(const action_activation_ctx_t *ctx)
     {
         return ctx != nullptr && ctx->cur_ea != BADADDR ? ctx->cur_ea : get_screen_ea();
@@ -156,11 +156,9 @@ namespace idattd
 
     action_state_t idaapi AttachTraceHandler::update(action_update_ctx_t *)
     {
-        // Only offer it when there is a recording to attach to and nothing is
-        // running yet -- otherwise it would restart a live session. Both
-        // answers are asked again on every update: an _ALWAYS state is never
-        // re-evaluated, so an item enabled before the replay started would
-        // have stayed enabled throughout it.
+        // Only with a recording to attach to and nothing running (else it
+        // would restart a live session). Not an _ALWAYS state, which is never
+        // re-evaluated and would stay enabled through the replay.
         if ( !trace_link_present() || get_process_state() != DSTATE_NOTASK )
             return AST_DISABLE;
         return AST_ENABLE;
@@ -183,8 +181,8 @@ namespace idattd
 
     int idaapi InstallRuntimeHandler::activate(action_activation_ctx_t *)
     {
-        // The work is Python's (HTTP, zip, a license dialog); the module is in
-        // ida-ttd-python\, which the plugin put on sys.path at load.
+        // Done in Python (HTTP, zip, a license dialog); the module is in
+        // ida-ttd-python\, put on sys.path at plugin load.
         extlang_object_t py = find_extlang_by_name("Python");
         if ( py == nullptr || py->eval_snippet == nullptr )
         {
@@ -221,9 +219,9 @@ namespace idattd
     //=======================================================================
     // Travel, then show memory in the hex view
     //=======================================================================
-    // IDA moves its views to the instruction pointer when the debugger stops,
-    // and a synchronized hex view goes with them, so the jump waits for the
-    // stop: show_pending_bytes() runs after IDA's own post-stop handling.
+    // IDA moves its views (a synchronized hex view too) to the instruction
+    // pointer on a stop, so the jump waits: show_pending_bytes() runs after
+    // IDA's own post-stop handling.
     static ea_t g_pendingBytes = BADADDR;
 
     static TWidget *open_hex_view()

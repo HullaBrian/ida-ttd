@@ -23,9 +23,9 @@ namespace idattd
         return c == ' ' || c == '\t' || c == ',' || c == ';' || c == '\r' || c == '\n';
     }
 
-    // Hex, as IDA shows addresses and registers ("140001000", "0x10"); "0n"
-    // or "#" in front for decimal. Never base 0: "140001000" read as decimal,
-    // or "0000000000401000" as octal, would change the wrong thing.
+    // Hex, as IDA shows values ("140001000", "0x10"); "0n" or "#" prefix for
+    // decimal. Never base 0, which would read "140001000" as decimal or
+    // "0000000000401000" as octal.
     static bool parse_u64(const qstring &s, uint64_t *out)
     {
         if ( s.empty() )
@@ -38,9 +38,8 @@ namespace idattd
             p += 2, base = 10;
         else if ( p[0] == '#' )
             p += 1, base = 10;
-        // A minus sign is two's complement ("-1" is all ones). strtoull would
-        // also take leading blanks and a plus sign, and saturate on overflow:
-        // none of those is a value anyone meant to write.
+        // A minus sign is two's complement ("-1" is all ones). Leading blanks,
+        // a plus sign and overflow, which strtoull would accept, are refused.
         const char d = *p == '-' ? p[1] : *p;
         if ( base == 16 ? !qisxdigit(d) : !qisdigit(d) )
             return false;
@@ -192,8 +191,7 @@ namespace idattd
         std::u8string base = p.stem().u8string();
         base += u8"-fork-";
         base += reinterpret_cast<const char8_t *>(pos.c_str());
-        // Another fork at the same position gets a name of its own rather
-        // than the earlier one's: -2, -3, ...
+        // Another fork at the same position gets -2, -3, ...
         for ( int n = 1; ; n++ )
         {
             std::u8string name = base;
@@ -241,9 +239,8 @@ namespace idattd
             result.error = "this recording's backend cannot fork it";
             return result;
         }
-        // The recording's hives wherever they are found (find_registry_dir),
-        // whoever built the request: the Fork dialog fills it in, a script
-        // may not.
+        // Fill in the hives and root when the request lacks them: the Fork
+        // dialog sets them, a script may not.
         ForkRequest full = req;
         if ( full.registry_dir.empty() )
             full.registry_dir = find_registry_dir(mgr);
@@ -257,15 +254,14 @@ namespace idattd
             q.cancelled = result.cancelled;
             return q;
         });
-        // A failure that left no words of its own (the backend threw, say)
-        // still has to say something.
+        // A failure without a message (the backend threw, say) still needs one.
         if ( !result.ok && !result.cancelled && result.error.empty() )
         {
             result.error = backend->last_error();
             if ( result.error.empty() )
                 result.error = "the fork did not complete";
         }
-        // Remembered for the Fork manager, whoever asked for it.
+        // Recorded for the Fork manager, whoever started the fork.
         if ( result.ok )
         {
             ForkRecord rec;

@@ -28,16 +28,16 @@ namespace idattd
         return s;
     }
 
-    // Locate a module's NT headers and say which flavour they are. Shared by every
-    // reader here so the DOS/NT walk, and its e_lfanew guard, is written once.
+    // Locate a module's NT headers and their flavour. Shared by every reader here
+    // so the DOS/NT walk and its e_lfanew guard exist once.
     static bool locate_nt_headers(const GuestRead &c, uint64_t base, uint64_t *nt_addr_out,
                                   bool *is64_out)
     {
         IMAGE_DOS_HEADER dos{};
         if ( !pe_read_val(c, base, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
             return false;
-        // e_lfanew is attacker-controlled (the image may be malware): a wild value would
-        // send every read that follows somewhere unrelated.
+        // e_lfanew is attacker-controlled (the image may be malware); a wild value
+        // would send every following read somewhere unrelated.
         if ( dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
             return false;
 
@@ -46,9 +46,9 @@ namespace idattd
         if ( !pe_read_val(c, ntAddr, &sig) || sig != IMAGE_NT_SIGNATURE )
             return false;
 
-        // The optional header magic sits after the signature and the file header,
-        // and it -- not the recording machine's architecture -- says whether this
-        // image is 32- or 64-bit.
+        // The optional header magic (after the signature and file header) says
+        // whether the image is 32- or 64-bit; the recording machine's
+        // architecture does not.
         uint16_t magic = 0;
         if ( !pe_read_val(c, ntAddr + 4 + sizeof(IMAGE_FILE_HEADER), &magic) )
             return false;
@@ -60,8 +60,8 @@ namespace idattd
         return true;
     }
 
-    // Data directory 'index' (IMAGE_DIRECTORY_ENTRY_*) of a module whose NT
-    // header is at 'ntAddr', or false when it is absent. Entries past
+    // Data directory 'index' (IMAGE_DIRECTORY_ENTRY_*) of the module whose NT
+    // header is at 'ntAddr'; false when absent. Entries past
     // NumberOfRvaAndSizes are not directories, whatever bytes sit there.
     static bool read_data_dir(const GuestRead &c, uint64_t ntAddr, bool is64, int index,
                               uint32_t *rva_out, uint32_t *size_out)
@@ -101,9 +101,9 @@ namespace idattd
 
         out->is64 = is64;
 
-        // The section table follows the optional header, whose SIZE the file
-        // header states -- it is not always sizeof(IMAGE_OPTIONAL_HEADER), and
-        // assuming so puts the table read a few bytes off on a hand-built image.
+        // The section table follows the optional header, whose size comes from
+        // the file header. It is not always sizeof(IMAGE_OPTIONAL_HEADER); a
+        // hand-built image would put the table a few bytes off.
         IMAGE_FILE_HEADER fh{};
         if ( !pe_read_val(cursor, ntAddr + 4, &fh) )
             return false;
@@ -134,12 +134,21 @@ namespace idattd
             out->checksum        = nt.OptionalHeader.CheckSum;
         }
 
-        // NumberOfSections is a 16-bit file field: 65535 would ask for a 2.5 MB
-        // read of a module that has three sections. The format caps a loadable
-        // image at 96.
-        static const uint16_t kMaxSections = 96;
-        if ( nsections > kMaxSections )
-            nsections = kMaxSections;
+        // NumberOfSections is untrusted: 65535 would ask for a 2.5 MB read of a
+        // module with three sections. The loader requires the section table
+        // to lie within SizeOfHeaders, so that bounds it (Windows loads images
+        // with more than the 96 sections the PE documentation names). An
+        // image whose SizeOfHeaders leaves no room for the table still gets
+        // the documented 96, in case the field alone is malformed.
+        static const uint64_t kFallbackSections = 96;
+        uint64_t tableOff = sectAddr - b;
+        uint64_t fit = out->size_of_headers > tableOff
+                     ? (out->size_of_headers - tableOff) / sizeof(IMAGE_SECTION_HEADER)
+                     : 0;
+        if ( fit < kFallbackSections )
+            fit = kFallbackSections;
+        if ( nsections > fit )
+            nsections = (uint16_t)fit;
         if ( nsections == 0 )
             return true;    // valid headers; a sectionless image is merely odd
 
@@ -179,9 +188,8 @@ namespace idattd
         if ( !read_data_dir(cursor, ntAddr, is64, IMAGE_DIRECTORY_ENTRY_DEBUG, &dbgRva, &dbgSize) )
             return false;
 
-        // The directory is an array of fixed-size entries. Cap the count the same
-        // way the section table is capped: the size field comes out of an untrusted
-        // image, and a wild value would ask for an enormous read.
+        // Cap the entry count like the section table: the size field is
+        // untrusted and a wild value would ask for an enormous read.
         static const uint32_t kMaxEntries = 64;
         uint32_t nentries = dbgSize / (uint32_t)sizeof(IMAGE_DEBUG_DIRECTORY);
         if ( nentries > kMaxEntries )
@@ -196,8 +204,7 @@ namespace idattd
                 continue;
 
             // The CodeView record: "RSDS", a GUID, an age, then the PDB path as
-            // the linker wrote it. Anything else is a format with no name for a
-            // symbol-server directory for.
+            // the linker wrote it. Other formats give no symbol-server name.
             struct RsdsHeader
             {
                 uint32_t signature;     // 'SDSR'
@@ -211,13 +218,12 @@ namespace idattd
             std::string path = pe_read_cstr(cursor, cv + sizeof(RsdsHeader), MAX_PATH);
             if ( path.empty() )
                 continue;
-            // The linker records a build-machine path; only the file name is
-            // meaningful anywhere else.
+            // The path is the build machine's; only the file name matters here.
             size_t slash = path.find_last_of("/" "\\");
             out->name = slash == std::string::npos ? path : path.substr(slash + 1);
 
-            // Symbol servers key on the GUID in registry order with no separators,
-            // followed by the age in hex. Both are upper case.
+            // Symbol-server key: the GUID in registry order without separators,
+            // then the age in hex, both upper case.
             char sig[64];
             qsnprintf(sig, sizeof(sig),
                       "%08X%04X%04X%02X%02X%02X%02X%02X%02X%02X%02X%X",
@@ -231,13 +237,12 @@ namespace idattd
         return false;
     }
 
-    // Walk the named, non-forwarded exports of the module mapped at 'base',
-    // calling 'visit(address, name)' for each until it returns false. Returns
-    // how many were visited.
+    // Call 'visit(address, name)' for each named, non-forwarded export of the
+    // module at 'base' until it returns false; returns how many were visited.
     //
-    // The image's own optional header decides PE32 versus PE32+, not the
-    // caller: a WoW64 recording has a 32-bit and a 64-bit ntdll, and a caller
-    // working from the process's bitness cannot know which one 'base' is.
+    // The image's own optional header decides PE32 versus PE32+: a WoW64
+    // recording has both a 32- and a 64-bit ntdll, and the caller's process
+    // bitness cannot tell which one 'base' is.
     template <typename Visit>
     static size_t walk_exports(const GuestRead &cursor, ea_t base, Visit visit)
     {
@@ -260,10 +265,9 @@ namespace idattd
         if ( exp.AddressOfNames == 0 || exp.AddressOfNameOrdinals == 0 || exp.AddressOfFunctions == 0 )
             return 0;
 
-        // Pull the three parallel arrays in one read each instead of three per
-        // export: ntdll alone exports ~2400 names, and this runs for every
-        // module in the trace. The counts are untrusted input, so they are
-        // clamped before sizing any buffer.
+        // One read per parallel array rather than three reads per export:
+        // ntdll alone exports ~2400 names and this runs for every module. The
+        // counts are untrusted, so they are clamped before sizing buffers.
         static const uint32_t kMaxExports = 1u << 20;
         uint32_t nNames = exp.NumberOfNames < kMaxExports ? exp.NumberOfNames : kMaxExports;
         uint32_t nFuncs = exp.NumberOfFunctions < kMaxExports ? exp.NumberOfFunctions : kMaxExports;
@@ -278,8 +282,8 @@ namespace idattd
         size_t mbO = cursor(b + exp.AddressOfNameOrdinals, ordinals.data(), (size_t)nNames * sizeof(uint16_t));
         size_t mbF = cursor(b + exp.AddressOfFunctions, funcRvas.data(), (size_t)nFuncs * sizeof(uint32_t));
 
-        // Each array may come back short (a recording holds only memory that
-        // was accessed); use whatever prefix actually resolved.
+        // An array may come back short (a recording holds only accessed
+        // memory); use the prefix that resolved.
         size_t gotNames = mbN / sizeof(uint32_t);
         size_t gotOrds  = mbO / sizeof(uint16_t);
         size_t gotFuncs = mbF / sizeof(uint32_t);
@@ -294,10 +298,9 @@ namespace idattd
             uint32_t funcRva = funcRvas[ordinal];
             if ( funcRva == 0 )
                 continue;
-            // A forwarder's "address" points back inside the export directory
-            // at a string; its real target lives in another module. Written as
-            // a difference so a directory at the top of the address space
-            // cannot wrap the bound.
+            // A forwarder's "address" points at a string inside the export
+            // directory; its target is in another module. Written as a
+            // difference so a directory near 4 GB cannot wrap the bound.
             if ( funcRva >= exportRva && funcRva - exportRva < exportSize )
                 continue;
             std::string name = pe_read_cstr(cursor, b + nameRvas[i]);
@@ -308,22 +311,6 @@ namespace idattd
                 break;
         }
         return visited;
-    }
-
-    ea_t resolve_export_va(const GuestRead &cursor, ea_t base, bool is64, const char *name)
-    {
-        qnotused(is64);   // the image's own header is the authority (walk_exports)
-        if ( name == nullptr || *name == '\0' )
-            return BADADDR;
-        ea_t found = BADADDR;
-        walk_exports(cursor, base, [&](ea_t ea, std::string &&n)
-        {
-            if ( n != name )
-                return true;
-            found = ea;
-            return false;
-        });
-        return found;
     }
 
     size_t read_guest_exports(const GuestRead &cursor, ea_t base, bool is64,

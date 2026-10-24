@@ -30,12 +30,12 @@ namespace idattd
 
     // ------------------------------------------------------- replay consent
 
-    // The recording this IDA was given consent to replay against the host,
-    // so the question is asked once per recording, not once per replay.
+    // The recording this IDA may replay against the host, so consent is asked
+    // once per recording rather than per replay.
     static qstring g_hostConsent;
 
-    // What a replay of this recording needs, and what each place the plugin
-    // looks in holds, for the Registry hives dialog.
+    // For the Registry hives dialog: what a replay needs, and what each
+    // searched folder holds.
     static qstring replay_needs_text(TraceManager *mgr)
     {
         ITraceBackend *b = mgr->backend();
@@ -123,8 +123,8 @@ namespace idattd
             case ReplayBlock::Registry:
             case ReplayBlock::RegistryMismatch:
             {
-                // A replay in an emulation root loads <root>\registry and
-                // nothing else, so there the question is where the root is.
+                // A replay in an emulation root loads only <root>\registry,
+                // so there the question is where the root is.
                 ReplayEnv env;
                 const bool in_root = b->replay_env(&env) && !env.host;
                 static const char form[] =
@@ -264,8 +264,8 @@ namespace idattd
         qstring changes = form_text(describe_changes(req));
         char path[QMAXPATH];
         qstrncpy(path, default_fork_path(m, req.at).c_str(), sizeof(path));
-        // The fork_instructions setting at first, then what was last asked
-        // for this session.
+        // The fork_instructions setting at first, then the last answer this
+        // session.
         static sval_t count = (sval_t)qmin(settings().fork_instructions, (uint64)INT64_MAX);
         for ( ;; )
         {
@@ -344,7 +344,7 @@ namespace idattd
     {
         if ( c != nullptr && c->refresh_position )
             c->refresh_position();
-        // The views showed the fork's changes; have IDA read the recording again.
+        // The views showed the fork's changes: have IDA reread the recording.
         if ( views_showed_changes )
         {
             invalidate_dbg_state(DBGINV_REGS);

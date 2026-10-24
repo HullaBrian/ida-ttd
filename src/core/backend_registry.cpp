@@ -33,10 +33,9 @@ namespace idattd
     {
         if ( !m_dirty )
             return m_all;
-        // Run any factory not yet run, then list everything: compiled-in
-        // backends first, so they win the can_open() tie-break against a
-        // loaded module that claims the same files. The two vectors own the
-        // backends; this list only orders them.
+        // Run any factory not yet run, then list everything, compiled-in
+        // backends first so they win the can_open() tie-break. The two
+        // vectors own the backends; this list only orders them.
         for ( size_t i = m_compiled.size(); i < m_factories.size(); i++ )
             m_compiled.push_back(m_factories[i]());
         m_all.clear();

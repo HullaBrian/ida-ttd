@@ -6,9 +6,9 @@
 
 namespace idattd
 {
-    // IDA's name for a traced function, or the export it is when IDA has no
-    // name there yet: a module that is not mapped where the user is has no
-    // names in the database, but its exports matched the pattern by name.
+    // IDA's name for a traced function, else its export name: a module not
+    // mapped at the current position has no names in the database, though
+    // its exports matched the pattern.
     static qstring traced_name(TraceManager *mgr, ea_t ea)
     {
         qstring n = func_display_name(ea);
@@ -29,9 +29,8 @@ namespace idattd
 
     EventColumns::EventColumns(FunctionTracer *tracer)
     {
-        // One column per parameter only makes sense when a single function is
-        // traced (all rows share its signature). Otherwise fall back to one
-        // combined "Arguments" column.
+        // One column per parameter only when a single function is traced
+        // (all rows share its signature); else one "Arguments" column.
         ea_t single = (tracer != nullptr && tracer->count_traced() == 1)
                     ? tracer->traced_at(0) : BADADDR;
 
@@ -92,13 +91,12 @@ namespace idattd
         }
         header_strs.push_back("Return");    widths.push_back(26);
 
-        // Build the pointer array only after header_strs is final (so the
-        // c_str() pointers stay valid for the chooser's lifetime).
+        // Only after header_strs is final, so the c_str() pointers stay valid.
         for ( const qstring &s : header_strs )
             header_ptrs.push_back(s.c_str());
 
-        // A unique, descriptive title so multiple events tabs can coexist (IDA
-        // keys widgets by title and would otherwise just re-focus the first).
+        // A unique title so several tabs can coexist (IDA keys widgets by
+        // title and would re-focus the first).
         static int seq = 0;
         qstring fname = single != BADADDR ? func_display_name(single) : qstring("calls");
         title_str.sprnt("TTD calls: %s [%d]", fname.c_str(), ++seq);
@@ -120,9 +118,8 @@ namespace idattd
             l.name = traced_name(m_mgr, ev.func_ea);
             if ( per_arg )
                 continue;
-            // Several functions share the Arguments column, so each value is
-            // labelled with its parameter's name: from the API metadata, else
-            // from the type IDA has for the function.
+            // Functions share the Arguments column, so each value is labelled
+            // with its parameter name: from the API metadata, else IDA's type.
             const win32meta::FuncSig *sig =
                 api_signature(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
             tinfo_t          t;
@@ -153,8 +150,7 @@ namespace idattd
         const FunctionInvocation &ev = m_events[n];
 
         cols->at(0) = format_position(ev.pos);
-        // A call with no return in the recording (a thread that exited in it,
-        // ExitProcess, an unwind) says so rather than leaving a gap.
+        // No return in the recording (thread exit, ExitProcess, an unwind).
         cols->at(1) = ev.has_ret ? format_position(ev.end_pos) : qstring("no return");
         cols->at(2).sprnt("%X", ev.tid);
         auto label = m_labels.find(ev.func_ea);
@@ -210,6 +206,20 @@ namespace idattd
     //=======================================================================
     // One click: trace the function under the cursor, sweep the whole trace,
     // and open the results.
+    // Open the calls just traced, unless there are none: a sweep that failed
+    // or was cancelled has said so already, and one that found nothing has
+    // logged "recorded 0 call(s)", so an empty tab would only add clutter.
+    static void show_trace_events(TraceManager *mgr, FunctionTracer *tracer)
+    {
+        TraceEventsChooser *ch = new TraceEventsChooser(mgr, tracer);
+        if ( ch->get_count() == 0 )
+        {
+            delete ch;
+            return;
+        }
+        ch->choose();
+    }
+
     int idaapi TraceFuncHandler::activate(action_activation_ctx_t *ctx)
     {
         if ( tracer() == nullptr )
@@ -223,29 +233,26 @@ namespace idattd
         ea_t fstart = get_func_start(ea);
         ea_t target = fstart != BADADDR ? fstart : ea;
 
-        // This is a focused "calls to this function" query: replace any prior
-        // traced set so results aren't polluted by earlier picks.
+        // A focused "calls to this function" query: drop earlier picks.
         tracer()->reset();
         tracer()->add_func(target);
         tracer()->run_sweep();
 
-        TraceEventsChooser *ch = new TraceEventsChooser(mgr(), tracer());
-        ch->choose();
+        show_trace_events(mgr(), tracer());
         return 1;
     }
 
     action_state_t idaapi TraceFuncHandler::update(action_update_ctx_t *ctx)
     {
-        // Meaningful over any address with code (the handler warns if no trace is
-        // being replayed when invoked).
+        // Enabled over any address; activate() warns when no trace is
+        // replayed.
         if ( ctx != nullptr && ctx->cur_ea != BADADDR )
             return AST_ENABLE;
         return AST_DISABLE;
     }
 
-    // Prompt for a "module!Glob*" pattern, trace every matching function in one
-    // sweep, and open the results. With more than one match the events chooser
-    // automatically condenses arguments into a single column.
+    // Prompt for a "module!Glob*" pattern, trace every match in one sweep,
+    // and open the results (one Arguments column for several matches).
     int idaapi TracePatternHandler::activate(action_activation_ctx_t *)
     {
         if ( tracer() == nullptr )
@@ -276,8 +283,7 @@ namespace idattd
             tracer()->add_func(ea);
         tracer()->run_sweep();
 
-        TraceEventsChooser *ch = new TraceEventsChooser(mgr(), tracer());
-        ch->choose();
+        show_trace_events(mgr(), tracer());
         return 1;
     }
 }

@@ -95,36 +95,39 @@ namespace idattd
     }
 
     // The replay runtime, tried in this order:
-    //  - wherever the process finds DLLs (next to ida.exe);
-    //  - copied by the user next to this backend, or into
-    //    plugins\ida-ttd-backends\ two levels up. That one is for a package
-    //    install (plugins\ida-ttd\ida-ttd-backends\ holds this backend):
-    //    hcli replaces the package folder on every upgrade, so DLLs copied
-    //    into it would vanish, while the shared folder is the user's;
-    //  - the WinDbg that TTD > Backends > Install the TTD runtime put in
-    //    $IDAUSR\ida-ttd\windbg\ (scripts/ida_ttd_runtime.py), or in
-    //    $IDAUSR\plugins\ida-ttd-backends\windbg\, where earlier versions
-    //    put it.
-    // An installed WinDbg is not used where it is: Windows refuses to load a
-    // DLL from a package folder (WindowsApps) into a process outside the
-    // package (ERROR_ACCESS_DENIED), though it lets one read it, so the
-    // installer copies the runtime out of it instead.
-    // Never shipped with the plugin: Microsoft's terms forbid that. Loaded by
-    // full path with its own folder searched, so TTDReplayCPU.dll beside it
-    // is found too.
+    //  - a TTDReplay.dll the process already loaded;
+    //  - next to the process's executable (ida.exe, or the probe);
+    //  - next to this backend, or in plugins\ida-ttd-backends\ two levels
+    //    up (for a package install, whose folder hcli replaces on upgrade);
+    //  - $IDAUSR\ida-ttd\windbg\, where TTD > Backends > Install the TTD
+    //    runtime puts it (scripts/ida_ttd_runtime.py), or the older
+    //    $IDAUSR\plugins\ida-ttd-backends\windbg\.
+    // Only by full path, never by bare name: the default search order
+    // includes the current directory and PATH, so a TTDReplay.dll planted
+    // beside a recording someone opens would run inside IDA.
+    // An installed WinDbg cannot be used in place: Windows refuses to load a
+    // DLL from a package folder (WindowsApps) into another process
+    // (ERROR_ACCESS_DENIED), so the installer copies the runtime out.
+    // Never shipped with the plugin: Microsoft's terms forbid that.
+    // TTDReplayCPU.dll is TTDReplay.dll's only non-system import, a static
+    // one (it is not loaded by name later), so LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
+    // resolves it from the same folder and from nowhere else.
     static bool load_ttd_runtime()
     {
-        if ( GetModuleHandleW(L"TTDReplay.dll") != nullptr || LoadLibraryW(L"TTDReplay.dll") != nullptr )
+        if ( GetModuleHandleW(L"TTDReplay.dll") != nullptr )
             return true;
         namespace fs = std::filesystem;
         std::vector<fs::path> candidates;
-        HMODULE self = nullptr;
         wchar_t buf[MAX_PATH] = { 0 };
+        DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        if ( n > 0 && n < MAX_PATH )
+            candidates.push_back(fs::path(std::wstring(buf, n)).parent_path() / L"TTDReplay.dll");
+        HMODULE self = nullptr;
         if ( GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                               | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                 (LPCWSTR)(void *)&load_ttd_runtime, &self) )
         {
-            DWORD n = GetModuleFileNameW(self, buf, MAX_PATH);
+            n = GetModuleFileNameW(self, buf, MAX_PATH);
             if ( n > 0 && n < MAX_PATH )
             {
                 fs::path dir = fs::path(std::wstring(buf, n)).parent_path();
@@ -142,8 +145,12 @@ namespace idattd
         for ( const fs::path &p : candidates )
         {
             std::error_code ec;
-            if ( fs::is_regular_file(p, ec)
-              && LoadLibraryExW(p.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr )
+            // A relative entry (an %IDAUSR% written that way) would resolve
+            // against the current directory, which is what this avoids.
+            if ( !p.is_absolute() || !fs::is_regular_file(p, ec) )
+                continue;
+            if ( LoadLibraryExW(p.c_str(), nullptr,
+                                LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) != nullptr )
                 return true;
         }
         return false;
@@ -179,7 +186,10 @@ namespace idattd
         {
             m_engine.reset();
             return fail("Failed to create the TTD replay engine (0x%08X).\n\n"
-                        "Are TTDReplay.dll / TTDReplayCPU.dll next to ida.exe?", made.second);
+                        "The TTD runtime may be incomplete (TTDReplayCPU.dll belongs beside "
+                        "TTDReplay.dll) or from an incompatible WinDbg. "
+                        "TTD > Backends > Install the TTD runtime (WinDbg)... installs it afresh.",
+                        made.second);
         }
         m_engine->RegisterDebugModeAndLogging(DebugModeType::None, &m_err);
 
@@ -195,11 +205,9 @@ namespace idattd
         m_info.last         = to_core(m_engine->GetLastPosition());
         m_info.backend_name = display_name();
 
-        // Process id, the extent of the recording and how many modules it saw.
-        // Not a hash of the file -- that would mean reading gigabytes -- but
-        // enough that two different recordings do not collide in practice. The
-        // formula is the one databases were stamped with before backends
-        // existed; changing it would orphan every saved result.
+        // Process id, the recording's extent and its module count: not a hash
+        // of the file (gigabytes), but enough to tell recordings apart. Saved
+        // results are stamped with this formula; changing it orphans them.
         const SystemInfo &si = m_engine->GetSystemInfo();
         uint64_t v = (uint64_t)si.ProcessId;
         v = v * 1099511628211ull ^ (uint64_t)m_engine->GetFirstPosition().Sequence;
@@ -208,11 +216,10 @@ namespace idattd
         v = v * 1099511628211ull ^ (uint64_t)m_engine->GetModuleCount();
         m_info.fingerprint = v;
 
-        // The program is the engine's first module; its bitness is the one the
-        // PE header states, read where that module is known to be mapped: at
-        // its own load event, or the start when it was mapped before the
-        // recording began (as modules() has it). The first load event can be
-        // another module's.
+        // The program is the engine's first module. Its bitness comes from its
+        // PE header, read at its own load event (the first load event can be
+        // another module's), or at the start if it was mapped before the
+        // recording began.
         m_info.is64 = true;
         if ( m_engine->GetModuleCount() > 0 )
         {
@@ -255,10 +262,19 @@ namespace idattd
     void MsTtdBackend::close()
     {
         // Cursors before the engine they belong to.
-        m_frameScratch.reset();
-        m_insnScratch.reset();
-        m_regsScratch.reset();
-        m_syscallRegs.clear();
+        {
+            std::lock_guard<std::mutex> lock(m_frameMtx);
+            m_frameScratch.reset();
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_insnMtx);
+            m_insnScratch.reset();
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_regsMtx);
+            m_regsScratch.reset();
+            m_syscallRegs.clear();
+        }
         m_scans.reset();
         m_engine.reset();
         m_info = TraceInfo{};
@@ -313,10 +329,9 @@ namespace idattd
         UniqueCursor read = new_engine_cursor();
         if ( !exec )
             return nullptr;
-        // Serve memory like WinDbg: the default policy only returns memory
-        // the current thread touched around the current position, so bytes
-        // written earlier read back as zeros. GloballyAggressive looks across
-        // the whole trace for the value.
+        // Serve memory like WinDbg: the default policy returns only memory the
+        // current thread touched near this position (earlier writes read as
+        // zeros); GloballyAggressive searches the whole trace.
         exec->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
         if ( read )
             read->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
@@ -335,9 +350,9 @@ namespace idattd
 
     std::vector<ModuleInfo> MsTtdBackend::modules() const
     {
-        // One entry per load, so a module loaded twice is listed twice with
-        // its own positions -- reading its headers needs a position where that
-        // load is mapped.
+        // One entry per load: a module loaded twice is listed twice, each with
+        // its own positions, because reading its headers needs a position
+        // where that load is mapped.
         std::vector<ModuleInfo> out;
         if ( !m_engine )
             return out;
@@ -534,6 +549,7 @@ namespace idattd
             return r;
         // One scratch cursor for every call: this runs on every stop in code
         // without a module, and making a cursor each time is not free.
+        std::lock_guard<std::mutex> lock(m_insnMtx);
         if ( !m_insnScratch )
         {
             m_insnScratch = new_engine_cursor();
@@ -607,14 +623,12 @@ namespace idattd
         return to_core(t);
     }
 
-    // The last instruction of a thread that changed a register, without
-    // stepping backward (each backward step re-seeks a keyframe: tens of
-    // milliseconds). Instead, a window of the thread's steps before 'at' is
-    // replayed forward with an execute watchpoint over the whole address
-    // space, which calls back before every instruction with the thread's
-    // registers: the last instruction after which the register differed from
-    // before is the answer. A window with no change is followed by one four
-    // times longer further back, until 'max_back' steps have been searched.
+    // The last instruction of a thread that changed a register, found without
+    // stepping backward (each backward step re-seeks a keyframe: tens of ms).
+    // A window of the thread's steps before 'at' is replayed forward with an
+    // execute watchpoint over all of user space, which calls back before
+    // every instruction with the thread's registers. A window with no change
+    // is followed by one four times longer further back, up to 'max_back'.
     bool MsTtdBackend::query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
                                              Position *where, bool *found, ProgressSink *progress)
     {
@@ -733,17 +747,187 @@ namespace idattd
         return true;
     }
 
-    // Replay forward from a little before 'at' up to it with the call/return
-    // callback: a CALL pushes its target, a RET pops, and at 'at' the top of
-    // the thread's stack is the call that entered the frame. The look-back
-    // widens until the call is captured, up to 'max_back' steps; each attempt
-    // is one SetPosition plus one forward replay. Never single-steps backward,
-    // which re-seeks a keyframe per step.
+    // Find the CALL that entered a frame without single-stepping backward (a
+    // keyframe re-seek per step, minutes in all): seek before 'here' and
+    // replay forward to it, tracking the thread's open calls, widening the
+    // window until the entering call is captured. One seek and one forward
+    // replay per window.
+    MsTtdBackend::FrameSearch MsTtdBackend::find_frame_entry(ICursorView *scratch, TtdPosition here,
+                                                             uint32_t utid, uint64_t here_sp,
+                                                             const FrameWindow *windows, size_t nwindows,
+                                                             ProgressSink *progress, bool log_miss,
+                                                             FrameEntry *out) const
+    {
+        if ( !m_engine || scratch == nullptr || out == nullptr || utid == 0 )
+            return FrameSearch::NotFound;
+
+        // Floor: nothing the thread did lies before its ActiveTime, so a
+        // window reaching it with no open call means the outermost frame.
+        // Work from a recorded position the thread reached: the end of the
+        // recording can belong to another thread.
+        TtdPosition first = m_engine->GetFirstPosition();
+        const TtdPosition last = m_engine->GetLastPosition();
+        {
+            size_t n = m_engine->GetThreadCount();
+            const TTD::Replay::ThreadInfo *list = m_engine->GetThreadList();
+            for ( size_t i = 0; i < n; i++ )
+            {
+                if ( (uint32_t)list[i].UniqueId != utid )
+                    continue;
+                if ( list[i].ActiveTime.Min.IsValid() && first < list[i].ActiveTime.Min )
+                    first = list[i].ActiveTime.Min;
+                if ( list[i].ActiveTime.Max.IsValid() && here > list[i].ActiveTime.Max )
+                    here = list[i].ActiveTime.Max;
+                break;
+            }
+        }
+        if ( last.IsValid() && here > last )
+            here = last;
+        if ( first.IsValid() && here < first )
+            here = first;
+
+        // A CALL pushes; a RET pops the innermost open call it returns to and
+        // drops the calls above it, which left without returning (a syscall,
+        // context switch, exception or longjmp). A RET matching no open call
+        // closes a frame opened before the window began; ignoring it keeps a
+        // partial window correct. Engine callbacks are noexcept: the depth is
+        // capped rather than let an allocation throw in here.
+        struct Open { TtdPosition pos; uint64_t sp; ea_t entry; uint64_t ret; };
+        std::vector<Open> stack;
+        uint64_t seen_all  = 0;
+        uint64_t seen_mine = 0;
+        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through, IThreadView const *t) noexcept
+        {
+            static const size_t kMaxDepth = 8192;
+            seen_all++;
+            if ( (uint32_t)t->GetThreadInfo().UniqueId != utid )
+                return;
+            seen_mine++;
+            try
+            {
+                // CALL: instr is the callee, fall_through the return address.
+                // RET: fall_through is 0 and instr the address returned to.
+                if ( (uint64_t)fall_through != 0 )
+                {
+                    if ( stack.size() < kMaxDepth )
+                        stack.push_back(Open{ t->GetPosition(), (uint64_t)t->GetStackPointer(),
+                                              (ea_t)(uint64_t)instr, (uint64_t)fall_through });
+                }
+                else
+                {
+                    for ( size_t k = stack.size(); k-- > 0; )
+                        if ( stack[k].ret == (uint64_t)instr )
+                        {
+                            stack.resize(k);
+                            break;
+                        }
+                }
+            }
+            catch ( ... )
+            {
+            }
+        };
+
+        bool        cancelled = false;
+        TtdPosition lastStart = TtdPosition::Invalid;
+        TtdPosition winStart  = TtdPosition::Invalid;
+        uint64_t    winInsns  = 0;
+        for ( size_t i = 0; i < nwindows; i++ )
+        {
+            if ( progress != nullptr )
+            {
+                if ( progress->cancelled() )
+                {
+                    cancelled = true;
+                    break;
+                }
+                progress->report((uint32_t)(i * 100 / nwindows));
+            }
+
+            TtdPosition s = here;
+            const uint64_t back = windows[i].back;
+            switch ( windows[i].kind )
+            {
+                case FrameWindowKind::InSequence:
+                    s.Steps = (StepCount)((uint64_t)here.Steps > back ? (uint64_t)here.Steps - back : 0);
+                    break;
+                case FrameWindowKind::ThreadSteps:
+                    // Within the sequence the steps are this thread's, so the
+                    // common case needs no seek. Past its start, the thread's
+                    // own steps back are counted by a backward replay, which
+                    // skips other threads' sequences in between.
+                    if ( (uint64_t)here.Steps >= back )
+                        s.Steps = (StepCount)((uint64_t)here.Steps - back);
+                    else
+                    {
+                        scratch->SetPositionOnThread((UniqueThreadId)utid, here);
+                        scratch->ReplayBackward(TtdPosition::Min, (StepCount)back);
+                        s = scratch->GetPosition();
+                    }
+                    break;
+                case FrameWindowKind::Sequences:
+                {
+                    uint64_t sq = (uint64_t)here.Sequence;
+                    s.Sequence = (SequenceId)(sq > back ? sq - back : 0);
+                    s.Steps    = StepCount::Min;
+                    break;
+                }
+            }
+            if ( s < first )
+                s = first;
+            if ( s == lastStart )
+                continue;           // the windows collapse near a sequence or thread start
+            lastStart = s;
+
+            stack.clear();
+            seen_all  = 0;
+            seen_mine = 0;
+            scratch->SetPosition(s);
+            scratch->SetCallReturnCallback(on_call_ret);
+            ICursorView::ReplayResult rr = scratch->ReplayForward(here);    // stop AT the position
+            scratch->SetCallReturnCallback(nullptr, 0);
+            winStart = s;
+            winInsns = (uint64_t)rr.InstructionsExecuted;
+
+            // The innermost open call made at or above the stack pointer
+            // here; equal is possible at the callee's first instruction,
+            // depending on whether the engine reports the stack before or
+            // after the push. Anything deeper never returned.
+            for ( auto o = stack.rbegin(); o != stack.rend(); ++o )
+                if ( o->sp >= here_sp )
+                {
+                    out->pos      = o->pos;
+                    out->entry    = o->entry;
+                    out->ret_addr = o->ret;
+                    return FrameSearch::Found;
+                }
+            if ( !(first < s) )
+                break;      // the window already reached the thread's start
+        }
+        if ( cancelled )
+            return FrameSearch::Cancelled;
+        if ( log_miss )
+        {
+            // An outermost frame and a window that replayed nothing look the
+            // same to the user; log which.
+            msttd_log("[ida-ttd] no entering call for thread %X searching back from "
+                "%llX:%llX. Last window %llX:%llX replayed %llu instructions, "
+                "%llu call/ret events, %llu of them on this thread.\n",
+                utid, (uint64_t)here.Sequence, (uint64_t)here.Steps,
+                (uint64_t)winStart.Sequence, (uint64_t)winStart.Steps,
+                winInsns, seen_all, seen_mine);
+        }
+        return FrameSearch::NotFound;
+    }
+
+    // Runs on every stop in code outside any module, so the look-back is
+    // short and grows only up to 'max_back' of the thread's instructions.
     bool MsTtdBackend::query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
                                          Position *call_pos, ea_t *entry)
     {
         if ( !m_engine || !at.is_valid() )
             return false;
+        std::lock_guard<std::mutex> lock(m_frameMtx);
         if ( !m_frameScratch )
         {
             m_frameScratch = new_engine_cursor();
@@ -753,71 +937,37 @@ namespace idattd
                                          | ReplayFlags::ReplaySegmentsSequentially);
         }
 
-        const TtdPosition cur = from_core(at);
-        struct Frame { ea_t entry; TtdPosition pos; uint64_t sp; };
-        std::map<uint32_t, std::vector<Frame>> stacks;
-        // CALL: instr == callee (the function head), fall_through == return
-        // address. RET: fall_through == 0; pop the innermost open frame.
-        auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through,
-                               IThreadView const *t) noexcept
-        {
-            uint32_t os_tid = (uint32_t)t->GetThreadInfo().Id;
-            try
-            {
-                if ( (uint64_t)fall_through != 0 )
-                {
-                    stacks[os_tid].push_back(Frame{ (ea_t)(uint64_t)instr, t->GetPosition(),
-                                                    (uint64_t)t->GetStackPointer() });
-                }
-                else
-                {
-                    auto it = stacks.find(os_tid);
-                    if ( it != stacks.end() && !it->second.empty() )
-                        it->second.pop_back();
-                }
-            }
-            catch ( ... )
-            {
-            }
-        };
+        // The thread by its unique id: an OS id can be reused. Only the
+        // thread standing at 'at' has its stack pointer known; for any other,
+        // the innermost open call is the best answer.
+        const TtdPosition here = from_core(at);
+        m_frameScratch->SetPosition(here);
+        const bool     standing = (uint32_t)m_frameScratch->GetThreadInfo().Id == tid;
+        const uint32_t utid     = standing ? (uint32_t)m_frameScratch->GetThreadInfo().UniqueId
+                                           : unique_thread_id(tid, at);
+        const uint64_t sp_at    = standing ? (uint64_t)m_frameScratch->GetStackPointer() : 0;
 
-        static const uint64_t kWindows[] = { 1024, 8192, 65536 };
-        for ( uint64_t back : kWindows )
+        // The first window always; the wider ones while within 'max_back'.
+        static const uint64_t kBacks[] = { 1024, 8192, 65536 };
+        FrameWindow windows[qnumber(kBacks)];
+        size_t n = 0;
+        for ( uint64_t back : kBacks )
         {
-            if ( back > max_back && back != kWindows[0] )
+            if ( back > max_back && n != 0 )
                 break;
-            stacks.clear();
-            TtdPosition s = cur;
-            s.Steps = (StepCount)((uint64_t)cur.Steps > back ? (uint64_t)cur.Steps - back : 0);
-            m_frameScratch->SetPosition(s);
-            m_frameScratch->SetCallReturnCallback(on_call_ret);
-            m_frameScratch->ReplayForward(cur);                 // stop AT the position
-            m_frameScratch->SetCallReturnCallback(nullptr, 0);
-
-            // The innermost open call made from a shallower frame than the
-            // one at 'at': a call that left by a syscall or a context switch
-            // never sees its RET and stays open below it. Only the thread
-            // standing at 'at' has its stack pointer to hand; for another
-            // the innermost open call is the best answer there is.
-            uint64_t sp_at = (uint32_t)m_frameScratch->GetThreadInfo().Id == tid
-                           ? (uint64_t)m_frameScratch->GetStackPointer() : 0;
-            auto it = stacks.find(tid);
-            if ( it != stacks.end() )
-                for ( auto f = it->second.rbegin(); f != it->second.rend(); ++f )
-                    if ( f->sp >= sp_at )
-                    {
-                        if ( entry != nullptr )
-                            *entry = f->entry;
-                        if ( call_pos != nullptr )
-                            *call_pos = to_core(f->pos);
-                        return true;
-                    }
-            if ( (uint64_t)cur.Steps <= back )
-                break;       // the window already reached the start of the sequence
+            windows[n++] = FrameWindow{ FrameWindowKind::ThreadSteps, back };
         }
-        return false;
-    }
 
+        FrameEntry fe;
+        if ( find_frame_entry(m_frameScratch.get(), here, utid, sp_at, windows, n,
+                              nullptr, false, &fe) != FrameSearch::Found )
+            return false;
+        if ( entry != nullptr )
+            *entry = fe.entry;
+        if ( call_pos != nullptr )
+            *call_pos = to_core(fe.pos);
+        return true;
+    }
 
     //=======================================================================
     // The cursor
@@ -972,18 +1122,14 @@ namespace idattd
             }
             if ( mb.Memory.Size == 0 )
             {
-                // A hole. Stepping over it a byte at a time costs two queries
-                // a byte, ~8K for one unreadable page. Holes need not run to a
-                // page boundary (a stack page can hold recorded stretches
-                // between unrecorded ones), so they cannot be skipped by page;
-                // but recorded memory comes in aligned blocks: every run that
-                // starts after a hole on the reference recordings holds a
-                // 32-byte-aligned address, most start on a page. So probe only
-                // the 8-byte-aligned addresses, a quarter of that granularity,
-                // and on a hit walk back to where its run starts. An eighth of
-                // the queries, and the same bytes known on those recordings;
-                // only a run shorter than 8 bytes that holds no aligned
-                // address could be missed.
+                // A hole. Probing byte by byte costs two queries a byte (~8K
+                // per page), and holes need not end on a page boundary (a
+                // stack page mixes recorded and unrecorded stretches). On the
+                // reference recordings every run after a hole holds a
+                // 32-byte-aligned address, so probe only 8-byte-aligned
+                // addresses and, on a hit, walk back to the run's start: an
+                // eighth of the queries for the same bytes. Only a run under
+                // 8 bytes holding no aligned address can be missed.
                 static const size_t kStride = 8;
                 size_t hi = size;    // the start of the next run, or the end
                 size_t at = (size_t)((((uint64_t)ea + off) | (kStride - 1)) + 1 - (uint64_t)ea);
@@ -1004,14 +1150,12 @@ namespace idattd
             // indexed by it below.
             size_t run = std::min<size_t>(mb.Memory.Size, size - off);
 
-            // A non-zero Size does not mean these bytes are real. For memory the
-            // engine knows is mapped but has no value for at this position, the
-            // aggressive policies answer "here is zero". ThreadLocal is the one
-            // policy honest about it, so an all-zero run is only believed if
-            // ThreadLocal confirms it; otherwise it is a placeholder, and the
-            // core gives the module image first refusal on it. The probe is
-            // skipped for any run with a non-zero byte, which keeps the extra
-            // query off the hot path.
+            // A non-zero Size does not mean the bytes are real: for mapped
+            // memory with no value at this position the aggressive policies
+            // return zeros. Only ThreadLocal is honest about that, so an
+            // all-zero run counts as known only if ThreadLocal confirms it;
+            // otherwise it is a placeholder, which the core may fill from the
+            // module image. Runs with any non-zero byte skip the extra query.
             uint8_t flag = ITTD_KNOWN_YES;
             bool all_zero = true;
             for ( size_t i = 0; i < run && all_zero; i++ )
@@ -1031,9 +1175,12 @@ namespace idattd
         }
 
         // Bytes rebuilt from recorded writes win: the position query only
-        // zero-fills that memory.
+        // zero-fills that memory. Only a rebuild made at this very position.
+        const TtdPosition here = m_exec->GetPosition();
         for ( const Rebuilt &r : m_rebuilt )
         {
+            if ( !(r.pos == here) )
+                continue;
             ea_t s = ea > r.lo ? ea : r.lo;
             ea_t e = (ea + (ea_t)size) < r.hi ? (ea + (ea_t)size) : r.hi;
             for ( ea_t a = s; a < e; a++ )
@@ -1058,16 +1205,18 @@ namespace idattd
     {
         if ( lo >= hi )
             return 0;
+        const TtdPosition here = m_exec->GetPosition();
         if ( replace )
             m_rebuilt.erase(std::remove_if(m_rebuilt.begin(), m_rebuilt.end(),
-                                           [lo, hi](const Rebuilt &r) { return r.lo < hi && lo < r.hi; }),
+                                           [lo, hi, &here](const Rebuilt &r)
+                                           { return r.pos == here && r.lo < hi && lo < r.hi; }),
                             m_rebuilt.end());
         size_t recovered = 0;
         if ( rebuild(lo, hi) )
         {
             for ( const Rebuilt &r : m_rebuilt )
             {
-                if ( r.lo >= hi || lo >= r.hi )
+                if ( !(r.pos == here) || r.lo >= hi || lo >= r.hi )
                     continue;
                 for ( size_t i = 0; i < r.known.size(); i++ )
                 {
@@ -1081,7 +1230,7 @@ namespace idattd
     }
 
     // Replay forward to the playhead with a Write watchpoint over the range,
-    // keeping the latest written value of each byte -- what WinDbg shows there.
+    // keeping the latest written value of each byte (what WinDbg shows there).
     bool MsTtdCursor::rebuild(ea_t lo, ea_t hi)
     {
         // A hard cap on the window: callers derive 'hi' from segment bounds,
@@ -1090,26 +1239,27 @@ namespace idattd
         if ( (uint64_t)(hi - lo) > kMaxBytes )
             hi = lo + (ea_t)kMaxBytes;
 
+        const TtdPosition target = m_exec->GetPosition();
         for ( const Rebuilt &r : m_rebuilt )
-            if ( r.lo <= lo && hi <= r.hi )
+            if ( r.pos == target && r.lo <= lo && hi <= r.hi )
                 return true;
 
         UniqueCursor cur = m_owner->new_engine_cursor();
         if ( !cur )
             return false;
-        const TtdPosition target = m_exec->GetPosition();
 
         Rebuilt reg;
-        reg.lo = lo;
-        reg.hi = hi;
+        reg.lo  = lo;
+        reg.hi  = hi;
+        reg.pos = target;
         reg.data.assign((size_t)(hi - lo), 0);
         reg.known.assign((size_t)(hi - lo), false);
 
         size_t hits = 0;
         // On each recorded write touching [lo, hi), copy the just-written bytes
-        // (read thread-locally from the writing thread, which has them).
-        // Replaying sequentially forward means the last write before 'target'
-        // wins. Returning false keeps the watchpoint from stopping the replay.
+        // (read thread-locally from the writing thread, which has them). The
+        // replay is sequential, so the last write before 'target' wins.
+        // Returning false keeps the replay going.
         auto on_write = [&](ICursorView::MemoryWatchpointResult const &wp,
                             IThreadView const *t) noexcept -> bool
         {
@@ -1160,6 +1310,11 @@ namespace idattd
             (uint64_t)lo, (uint64_t)hi, (unsigned)nknown, (unsigned)reg.data.size(), (unsigned)hits);
         if ( nknown == 0 )
             return false;
+        // Up to a megabyte of data plus its bitmap each, so only the most
+        // recent few are kept.
+        static const size_t kMaxRebuilt = 8;
+        if ( m_rebuilt.size() >= kMaxRebuilt )
+            m_rebuilt.erase(m_rebuilt.begin(), m_rebuilt.begin() + (m_rebuilt.size() - kMaxRebuilt + 1));
         m_rebuilt.push_back(std::move(reg));
         return true;
     }

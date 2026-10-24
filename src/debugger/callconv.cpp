@@ -20,9 +20,9 @@ namespace idattd
         return off;
     }
 
-    // Sampled at the call instruction before it executes, so the return address
-    // has not been pushed yet: register args live in their registers and stack
-    // args sit at SP + shadow space (+ preceding stack args).
+    // Read at the call instruction before it executes, so no return address
+    // is pushed yet: register arguments are in their registers and stack
+    // arguments at SP (+ shadow space on x64, + preceding stack arguments).
     uint64_t get_int_arg(const GuestView &view, const tinfo_t &tinfo, size_t n, bool is64)
     {
         ittd_regs r{};
@@ -49,17 +49,16 @@ namespace idattd
                 const int regs[4] = { ITTD_REG_RCX, ITTD_REG_RDX, ITTD_REG_R8, ITTD_REG_R8 + 1 /* R9 */ };
                 return r.gp[regs[n]];
             }
-            // Every x64 argument takes exactly one 8-byte slot: anything that
-            // is not 1, 2, 4 or 8 bytes is passed by reference. Summing the
-            // types' sizes would misplace every argument after a by-value
-            // structure. 0x20 is the callee's shadow space.
+            // Every x64 argument takes one 8-byte slot (anything not 1, 2, 4
+            // or 8 bytes goes by reference), so type sizes are not summed.
+            // 0x20 is the callee's shadow space.
             size_t off = 0x20 + 8 * (n - 4);
             uint64_t v = 0;
             view.read(r.gp[ITTD_REG_RSP] + off, &v, sizeof(v));
             return v;
         }
 
-        // A 32-bit target has its registers in the low halves of the slots.
+        // A 32-bit target's registers are the low halves.
         size_t first_stack_arg = 0;
         if ( cc == CM_CC_FASTCALL )
         {
@@ -108,9 +107,8 @@ namespace idattd
         }
     }
 
-    // Both string readers pull the buffer in chunks rather than one character at
-    // a time: at 260 characters, the per-character form cost 260 engine queries
-    // for every string argument of every traced call.
+    // Both string readers read in chunks: per character, a 260-character
+    // string cost 260 engine queries per argument of every traced call.
     static const int kMaxStrChars = 260;
 
     qstring read_string_at(const GuestView &view, uint64_t addr)

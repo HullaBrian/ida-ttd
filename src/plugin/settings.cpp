@@ -29,9 +29,9 @@ namespace idattd
         return true;
     }
 
-    // One "key=value" line from dump(). False for a value this plugin cannot
-    // use, which then keeps its default; ida-settings has validated it
-    // against ida-plugin.json already, so that is a mismatch between the two.
+    // Apply one "key=value" line from dump(). False for a value the plugin
+    // cannot use (it keeps its default); ida-settings already validated it
+    // against ida-plugin.json, so this means the two disagree.
     static bool apply(Settings *s, const qstring &key, const qstring &value)
     {
         if ( key == "symbol_downloads" )
@@ -69,8 +69,8 @@ namespace idattd
         return false;
     }
 
-    // dump()'s answer, or empty: without IDAPython, without ida-settings, or
-    // when the module is missing (a build folder copied by hand).
+    // dump()'s answer, or empty without IDAPython, without ida-settings, or
+    // without the module (a build folder copied by hand).
     static qstring read_values()
     {
         qstring text;
@@ -90,26 +90,41 @@ namespace idattd
         return text;
     }
 
-    // ida-config.json's modification time when the values were last read.
-    static qtime64_t g_configTime = 0;
+    // ida-config.json's modification time and size when the values were last
+    // read. The time has one-second resolution, so two saves within a second
+    // could look like none; the size catches most of those (a changed value
+    // usually changes the length).
+    struct ConfigStamp
+    {
+        qtime64_t mtime = 0;
+        uint64    size  = 0;
+        bool operator!=(const ConfigStamp &o) const { return mtime != o.mtime || size != o.size; }
+    };
+    static ConfigStamp g_configStamp;
 
-    static qtime64_t config_time()
+    static ConfigStamp config_stamp()
     {
         qstring path = get_user_idadir();
         path.append("\\ida-config.json");
         qstatbuf st;
-        return qstat(path.c_str(), &st) == 0 ? st.qst_mtime : 0;
+        ConfigStamp c;
+        if ( qstat(path.c_str(), &st) == 0 )
+        {
+            c.mtime = st.qst_mtime;
+            c.size  = (uint64)st.qst_size;
+        }
+        return c;
     }
 
     void reload_settings_if_changed()
     {
-        if ( config_time() != g_configTime )
+        if ( config_stamp() != g_configStamp )
             load_settings();
     }
 
     void load_settings()
     {
-        g_configTime = config_time();
+        g_configStamp = config_stamp();
         Settings s;
         qstring text = read_values();
         size_t at = 0;

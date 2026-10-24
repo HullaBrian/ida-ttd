@@ -32,8 +32,8 @@ namespace idattd
         v->push_back(dir);
     }
 
-    // By recording, for this session: a root is a property of the machine
-    // the recording is looked at on, and moving one is rare.
+    // Per recording, for this session only: a root belongs to the machine
+    // viewing the recording, and rarely moves.
     static std::map<qstring, qstring> g_roots;
 
     qstring chosen_emulation_root(TraceManager *mgr)
@@ -118,8 +118,8 @@ namespace idattd
                     break;
             }
         }
-        // Carrying its hives, a recording replays without files: only its
-        // own would add anything (a fork reading further than it did).
+        // A recording carrying its hives replays without files; only its own
+        // hives would add anything (a fork reading further than it did).
         if ( known && env.registry_carried )
             return qstring();
         return !unverified.empty() ? unverified : mismatch;

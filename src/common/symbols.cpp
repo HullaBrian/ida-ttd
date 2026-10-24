@@ -1,7 +1,25 @@
 #include "common/symbols.h"
+#include "common/local_path.h"
+#include "common/strings.h"
 
 namespace idattd
 {
+    // Open a module file named by the recording. The path is the recording
+    // machine's and the recording may be crafted, so only a local drive path
+    // is opened (a UNC path would send the user's credentials to its host).
+    // The path is UTF-8; the wide open keeps non-ASCII names working, which
+    // the narrow (ANSI code page) open does not.
+    static bool open_recorded_file(const char *path, std::ifstream &f, std::ios::openmode mode)
+    {
+        if ( !is_local_drive_path(path) )
+            return false;
+        std::wstring wpath = to_wstring(path);
+        if ( wpath.empty() )
+            return false;
+        f.open(wpath.c_str(), mode);
+        return f.is_open();
+    }
+
     size_t apply_module_exports(const GuestRead &cursor, ea_t base, bool is64)
     {
         std::vector<std::pair<ea_t, std::string>> exports;
@@ -17,15 +35,11 @@ namespace idattd
     {
         if ( va == BADADDR || name == nullptr || name[0] == '\0' )
             return false;
-        // Several exports routinely share one address: ntdll exports every
-        // syscall stub twice, as NtXxx and ZwXxx. The export name table is
-        // sorted alphabetically, so without care the Zw spelling arrives
-        // second and renames the address, and every call site in the
-        // database then reads ZwAllocateVirtualMemory.
-        //
-        // Whichever real name got there first keeps the address, except that
-        // a Zw name is replaced by the Nt spelling of the same stub. A dummy
-        // sub_/loc_ name is always replaced.
+        // ntdll exports every syscall stub twice, as NtXxx and ZwXxx, and the
+        // sorted name table delivers Zw second; naively it would rename every
+        // call site to ZwXxx. So the first real name keeps the address, except
+        // that Zw gives way to the Nt spelling of the same stub. Dummy
+        // sub_/loc_ names are always replaced.
         if ( has_user_name(get_flags(va)) )
         {
             qstring cur;
@@ -56,9 +70,8 @@ namespace idattd
         if ( !pe_read_val(cursor, b, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE )
             return 0;
 
-        // The same e_lfanew bound as guest_pe's header walk. The magic check
-        // matters too: a PE32 image read through the PE32+ layout puts the
-        // data directories eight bytes off.
+        // The same e_lfanew bound as guest_pe. The magic check matters too: a
+        // PE32 image read as PE32+ puts the data directories 16 bytes off.
         if ( dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
             return 0;
         IMAGE_NT_HEADERS64 nt{};
@@ -75,8 +88,8 @@ namespace idattd
 
         // RUNTIME_FUNCTION = { uint32 BeginRva; uint32 EndRva; uint32 UnwindRva; }.
         struct RtFunc { uint32_t Begin, End, Unwind; };
-        // 'size' is an attacker-controllable header field (the image may be
-        // malware); cap it so a corrupt directory can't ask for a multi-gigabyte buffer.
+        // 'size' is attacker-controlled (the image may be malware); cap it so
+        // a corrupt directory cannot ask for a multi-gigabyte buffer.
         static const size_t kMaxFuncs = 1u << 22;   // 4M functions ~ 48 MB
         size_t maxEntries = size / sizeof(RtFunc);
         if ( maxEntries == 0 )
@@ -108,8 +121,8 @@ namespace idattd
         if ( path == nullptr || *path == '\0' || base == BADADDR || !is64 )
             return 0;
 
-        std::ifstream f(path, std::ios::binary);
-        if ( !f.is_open() )
+        std::ifstream f;
+        if ( !open_recorded_file(path, f, std::ios::binary) )
             return 0;
 
         IMAGE_DOS_HEADER dos{};
@@ -117,16 +130,20 @@ namespace idattd
         if ( !f || dos.e_magic != IMAGE_DOS_SIGNATURE )
             return 0;
 
+        // The same e_lfanew bound and directory-count check as the guest
+        // reader above: entries past NumberOfRvaAndSizes are not directories.
+        if ( dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
+            return 0;
         f.seekg((std::streamoff)(uint32_t)dos.e_lfanew, std::ios::beg);
         IMAGE_NT_HEADERS64 nt{};
         f.read((char *)&nt, sizeof(nt));
         if ( !f || nt.Signature != IMAGE_NT_SIGNATURE
-          || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC )
+          || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC
+          || nt.OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION )
             return 0;
 
-        // Same build as the one in the trace? The path came off the recording
-        // machine; a local file at that path with different headers is a different
-        // build, and its function bounds would be silently wrong.
+        // The path is the recording machine's; a local file there with other
+        // headers is a different build whose bounds would be silently wrong.
         if ( (want_timestamp != 0 && nt.FileHeader.TimeDateStamp != want_timestamp)
           || (want_checksum  != 0 && nt.OptionalHeader.CheckSum  != want_checksum) )
             return 0;
@@ -164,8 +181,7 @@ namespace idattd
             return 0;
 
         struct RtFunc { uint32_t Begin, End, Unwind; };
-        // As above: 'size' is untrusted header data. Bound it by both a hard cap
-        // and what the file could actually contain.
+        // 'size' is untrusted: bound it by a hard cap and by the file length.
         static const size_t kMaxFuncs = 1u << 22;
         size_t count = size / sizeof(RtFunc);
         if ( count == 0 )
@@ -206,8 +222,8 @@ namespace idattd
         if ( path == nullptr || *path == '\0' )
             return false;
 
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if ( !f.is_open() )
+        std::ifstream f;
+        if ( !open_recorded_file(path, f, std::ios::binary | std::ios::ate) )
             return false;
         std::streamoff len = f.tellg();
         if ( len <= 0 )
@@ -227,6 +243,8 @@ namespace idattd
         if ( dos->e_magic != IMAGE_DOS_SIGNATURE )
             return false;
 
+        if ( dos->e_lfanew < 0 )
+            return false;
         uint32_t ntoff = (uint32_t)dos->e_lfanew;
         if ( (size_t)ntoff + sizeof(IMAGE_NT_HEADERS32) > fsz )
             return false;
@@ -239,9 +257,8 @@ namespace idattd
         out.timestamp    = nt32->FileHeader.TimeDateStamp;
         if ( nt32->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC )
         {
-            // IMAGE_NT_HEADERS64 is larger than the ...32 form bounds-checked
-            // above, so re-check before reading through the wider view. (A
-            // truncated PE32+ file would otherwise be read past its end.)
+            // IMAGE_NT_HEADERS64 is larger than the 32-bit form checked above;
+            // re-check so a truncated PE32+ file is not read past its end.
             if ( (size_t)ntoff + sizeof(IMAGE_NT_HEADERS64) > fsz )
                 return false;
             const IMAGE_NT_HEADERS64 *nt64 = (const IMAGE_NT_HEADERS64 *)(base + ntoff);

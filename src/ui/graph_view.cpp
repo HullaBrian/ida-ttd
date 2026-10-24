@@ -17,7 +17,8 @@ namespace idattd
             json_str(out, value.c_str());
         }
 
-        // Kinds are plugin-chosen words; nothing else reaches the snippet.
+        // Kinds are plugin-chosen words; this keeps anything else out of the
+        // Python snippet.
         bool plain(const char *kind)
         {
             if ( kind == nullptr || *kind == '\0' )
@@ -28,8 +29,8 @@ namespace idattd
             return true;
         }
 
-        // Run Python: the window's code (defined again each time, so a
-        // reinstalled plugin's takes over), then 'call'.
+        // Run the window's code (redefined each time, so a reinstalled
+        // plugin's version takes over), then 'call'.
         bool run_python(const char *call)
         {
             extlang_object_t py = find_extlang_by_name("Python");
@@ -112,6 +113,12 @@ namespace idattd
         TWidget *w = graph_widget(kind);
         if ( w != nullptr )
             close_widget(w, 0);
+    }
+
+    void forget_graph(const char *kind)
+    {
+        close_graph(kind);
+        g_models.erase(kind);
     }
 
     bool graph_json(const char *kind, qstring *out)

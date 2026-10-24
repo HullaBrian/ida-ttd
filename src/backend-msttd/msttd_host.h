@@ -4,10 +4,10 @@
 
 namespace idattd
 {
-    // Where the Microsoft backend's diagnostics go. The backend runs outside
-    // IDA's reach -- a DLL behind the C ABI -- so it cannot call msg(); the
-    // host hands it a callback (ittd_backend_api::set_log). Without one the
-    // lines go to the debugger output, which is all a probe needs.
+    // Where the Microsoft backend's diagnostics go. A DLL behind the C ABI
+    // cannot call msg(), so the host hands it a callback
+    // (ittd_backend_api::set_log); without one, lines go to the debugger
+    // output, which is all a probe needs.
     using MsttdLogFn = void (*)(void *ud, const char *line);
     void msttd_set_log(MsttdLogFn fn, void *ud);
 

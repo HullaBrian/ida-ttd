@@ -40,9 +40,9 @@ namespace idattd
             return p.type != nullptr && strcmp(p.type, name) == 0;
         }
 
-        // ttd-capa's abi.cpp: what one parameter occupies on the x86 stack, 0
-        // when the metadata cannot say (a by-value aggregate, an ambiguous
-        // 8-byte scalar) -- and then no later offset can be trusted.
+        // From ttd-capa's abi.cpp: what one parameter occupies on the x86
+        // stack, or 0 when the metadata cannot say (a by-value aggregate, an
+        // ambiguous 8-byte scalar), after which no offset can be trusted.
         size_t x86_footprint(const ParamSig &p)
         {
             if ( p.x86Footprint != 0 )
@@ -371,8 +371,8 @@ namespace idattd
         if ( name == nullptr || *name == '\0' || !ensure_loaded() )
             return nullptr;
         qstring n(name);
-        // "module!Name", IDA's import and thunk prefixes, and its "_0" suffix
-        // for a second name.
+        // Strip "module!", IDA's import and thunk prefixes, and its "_0"
+        // suffix for a second name.
         ssize_t bang = n.rfind('!');
         if ( bang >= 0 )
             n.remove(0, (size_t)bang + 1);
@@ -544,11 +544,11 @@ namespace idattd
     qstring decode_api_return(const DecodedCall &call, uint64_t rv)
     {
         qstring s;
-        // Nt and Zw calls return an NTSTATUS. Rtl and Ldr ones mostly do too,
-        // but some return a pointer (RtlAllocateHeap) or a count, and the
-        // metadata does not say which. A status is written to eax, which
-        // clears the upper half of rax, so a value with any of those bits set
-        // is not one, and cutting it to 32 bits would show a wrong pointer.
+        // Nt and Zw calls return an NTSTATUS. Rtl and Ldr ones mostly do, but
+        // some return a pointer (RtlAllocateHeap) or a count, and the metadata
+        // does not say which. A status written to eax clears rax's upper half,
+        // so a value with upper bits set is not one, and truncating it would
+        // show a wrong pointer.
         const bool status = call.sig != nullptr && is_native(call.sig->name)
                          && (call.sig->name[0] == 'N' || call.sig->name[0] == 'Z'
                           || !call.is64 || (rv >> 32) == 0);

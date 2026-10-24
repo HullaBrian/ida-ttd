@@ -5,9 +5,8 @@ namespace idattd
 {
     void copy_to_clipboard(const char *text)
     {
-        // As UTF-16: CF_TEXT is read in the ANSI code page, which garbles any
-        // character outside it (a path with an accent in it). Windows makes the
-        // CF_TEXT form from this one for readers that want it.
+        // As UTF-16: CF_TEXT uses the ANSI code page and garbles anything
+        // outside it. Windows synthesizes CF_TEXT from this for readers.
         if ( text == nullptr || !OpenClipboard(nullptr) )
             return;
         EmptyClipboard();
@@ -21,8 +20,8 @@ namespace idattd
             {
                 memcpy(p, w.c_str(), n);
                 GlobalUnlock(h);
-                // The clipboard only takes ownership of the block when
-                // SetClipboardData succeeds; on failure it is still ours to free.
+                // The clipboard owns the block only when SetClipboardData
+                // succeeds; on failure it must be freed here.
                 if ( SetClipboardData(CF_UNICODETEXT, h) == nullptr )
                     GlobalFree(h);
             }

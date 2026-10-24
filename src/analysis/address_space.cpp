@@ -36,7 +36,7 @@ namespace idattd
         uint64_t page_up(uint64_t v) { return (v + PAGE - 1) & ~(PAGE - 1); }
 
         // The protection a section header asks for. Writable image pages are
-        // copy-on-write, which is what the loader maps them as.
+        // copy-on-write, as the loader maps them.
         uint32_t section_protect(uint32_t ch)
         {
             const uint32_t SCN_MEM_EXECUTE = 0x20000000;    // IMAGE_SCN_MEM_*
@@ -67,8 +67,7 @@ namespace idattd
             qstring text;
         };
 
-        // Non-overlapping pieces keyed by start. A piece put later wins where
-        // it overlaps an earlier one.
+        // Non-overlapping pieces keyed by start; a later put wins on overlap.
         class Layout
         {
         public:
@@ -110,8 +109,8 @@ namespace idattd
             std::map<ea_t, Piece> m;
 
         private:
-            // Remove [lo, hi), keeping what falls outside it. 'removed' gets
-            // the pieces it overlapped, whole.
+            // Remove [lo, hi), keeping what falls outside. With 'removed', the
+            // overlapped pieces are moved there whole instead.
             void cut(ea_t lo, ea_t hi, std::vector<Piece> *removed)
             {
                 auto it = m.upper_bound(lo);
@@ -137,7 +136,7 @@ namespace idattd
             }
         };
 
-        // The fields of a TEB and PEB this needs, for either pointer size.
+        // The TEB and PEB fields used here, for either pointer size.
         struct Tib
         {
             uint64_t stack_base = 0, stack_limit = 0, dealloc = 0, peb = 0;
@@ -174,8 +173,8 @@ namespace idattd
         const Position now  = mgr->current_position();
         const bool     is64 = mgr->is64();
         const ea_t     HI   = is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
-        // Through the same reader IDA's views use, so a module header the
-        // recording never read still comes from the image on disk.
+        // The reader IDA's views use, so a module header the recording never
+        // read still comes from the image on disk.
         GuestRead rd = [mgr](uint64_t addr, void *buf, size_t size) -> size_t
         {
             size_t n = 0;
@@ -196,8 +195,7 @@ namespace idattd
 
         // ---- what the kernel made: stacks, TEBs, the PEB ----------------------
         //
-        // Put first, so a region the recording itself reported replaces the
-        // guess wherever the two meet.
+        // Put first, so regions the recording reported replace these guesses.
         std::set<uint64_t> pebs;
         auto add_thread = [&](uint32_t tid, uint64_t teb, bool p64, const char *suffix)
         {
@@ -258,7 +256,7 @@ namespace idattd
                 pl.sprnt("PEB%s", suffix);
                 label(pp.lo, pp.hi, pl);
 
-                // What the PEB points at, labelling whichever region holds it.
+                // What the PEB points at labels the region holding it.
                 struct Field { uint32_t off64, off32; const char *what; };
                 static const Field fields[] =
                 {
@@ -317,8 +315,7 @@ namespace idattd
         // ---- what the recording allocated and mapped ---------------------------
         const MemoryMap &map = mgr->memmap();
         bool reports_state = false;     // the backend reports regions as they are
-        // The protection changes up to here, gathered once for every module
-        // below rather than found in the whole timeline per module.
+        // Protection changes up to here, gathered once for all modules below.
         std::vector<const RegionChange *> protects;
         for ( size_t i = 0; i < map.size(); i++ )
         {
@@ -389,8 +386,8 @@ namespace idattd
                 }
             }
 
-            // A backend that reports its own image regions knows their real
-            // protections; only the labels above are added to them.
+            // A backend that reports image regions knows their protections;
+            // only the labels above are added.
             if ( reports_state )
                 continue;
 
@@ -407,9 +404,8 @@ namespace idattd
                 p.since = m->loaded;
                 lay.put(p);
             }
-            // Then every protection change the recording made inside it since
-            // it loaded, in order: a loader patching its imports, or an
-            // unpacker making its own code writable.
+            // Then every protection change inside it since it loaded, in order
+            // (a loader patching imports, an unpacker making code writable).
             for ( const RegionChange *c : protects )
             {
                 if ( m->loaded.is_valid() && c->pos < m->loaded )
@@ -434,8 +430,8 @@ namespace idattd
             r.reserved = p.reserved;
             r.type = p.type;
             r.since = p.since;
-            // The most specific label wins: a section over its module, a heap
-            // over the region it sits in. Narrower is more specific.
+            // The narrowest overlapping label wins: a section over its module,
+            // a heap over its region.
             const Label *best = nullptr;
             for ( const Label &l : labels )
             {
@@ -443,8 +439,7 @@ namespace idattd
                     break;
                 if ( l.hi <= p.lo )
                     continue;
-                // A point label (a heap, a PEB field) names only the region it
-                // falls in.
+                // A point label (heap, PEB field) names only its own region.
                 if ( best == nullptr || (l.hi - l.lo) < (best->hi - best->lo) )
                     best = &l;
             }

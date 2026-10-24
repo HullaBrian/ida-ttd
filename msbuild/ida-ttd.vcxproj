@@ -46,6 +46,7 @@
     <ClInclude Include="$(SrcDir)\common\dbstore.h" />
     <ClInclude Include="$(SrcDir)\common\pch.h" />
     <ClInclude Include="$(SrcDir)\common\symbols.h" />
+    <ClInclude Include="$(SrcDir)\common\local_path.h" />
     <ClInclude Include="$(SrcDir)\common\guest_pe.h" />
     <ClInclude Include="$(SrcDir)\common\strings.h" />
     <ClInclude Include="$(SrcDir)\common\pdb_publics.h" />

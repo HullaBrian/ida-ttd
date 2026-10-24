@@ -7,8 +7,8 @@ namespace idattd
 {
     class TraceManager;
 
-    // What a search is looking for. These are the plugin's own bits, not the engine's:
-    // the dialog speaks in these and only the sweep translates them.
+    // What a search looks for: the plugin's own bits, not the engine's (equal
+    // to the core's ACCESS_* values).
     enum : uint8_t
     {
         ACC_READ  = 1,
@@ -27,15 +27,12 @@ namespace idattd
         uint8_t  kind = 0;         // one of ACC_*
     };
 
-    // Replay the recording and collect every access to [lo, hi) matching 'mask'.
+    // Replay the recording and collect every access to [lo, hi) matching
+    // 'mask'. A watchpoint is maskable, so the engine skips stretches that
+    // cannot touch the range. Behind a cancellable wait box.
     //
-    // A watchpoint is a maskable event, so the engine skips the stretches that
-    // cannot touch the range instead of replaying all of it. Runs behind a
-    // cancellable wait box.
-    //
-    // Returns false when it could not run at all. 'truncated' means the record
-    // cap was hit and the results are the first N; 'cancelled' means the user
-    // stopped it, and both leave 'out' holding what was gathered so far.
+    // False when it could not run. 'truncated' (the record cap was hit) and
+    // 'cancelled' both leave 'out' holding what was gathered.
     bool search_memory(TraceManager *mgr, ea_t lo, ea_t hi, uint8_t mask,
                        std::vector<MemAccess> *out, bool *truncated, bool *cancelled);
 

@@ -31,9 +31,10 @@ namespace idattd
         std::vector<CallTreeRow> rows;  // in the order they were made
     };
 
-    // Every call the function the cursor is in made during this run of it, on
-    // the cursor's thread: from the call that entered the frame to its return.
-    // Behind a cancellable wait box. False with 'err' set when it could not run.
+    // Every call made during the current run of the function at the cursor,
+    // on the cursor's thread, from the call that entered the frame to its
+    // return. Behind a cancellable wait box; false with 'err' set when it
+    // could not run.
     bool build_call_tree(TraceManager *mgr, CallTree *out, qstring *err);
 
     // Nest calls by their positions: 'calls' on one thread, in any order.

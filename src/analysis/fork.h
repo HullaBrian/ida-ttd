@@ -12,9 +12,9 @@ namespace idattd
 
     // Numbers are hex, as IDA shows them (0x optional); 0n or # for decimal.
     //
-    // "rax=1 rcx=0x10, rip=140001000" into register edits. Names are the
-    // 64-bit general registers, rip and rflags; separators are spaces, commas
-    // or semicolons. False with 'err' set on anything it cannot read.
+    // "rax=1 rcx=0x10, rip=140001000" into register edits: the 64-bit general
+    // registers, rip and rflags, separated by spaces, commas or semicolons.
+    // False with 'err' set on anything unreadable.
     bool parse_fork_registers(const char *text, std::vector<std::pair<int, uint64_t>> *out, qstring *err);
 
     // Memory edits, separated by semicolons or new lines:
@@ -23,12 +23,12 @@ namespace idattd
     //   0x140007000 = d:5             a little-endian 32-bit value
     bool parse_fork_memory(const char *text, std::vector<std::pair<ea_t, bytevec_t>> *out, qstring *err);
 
-    // Where a fork of the current recording at 'at' goes by default: next to
-    // the recording, named after it and the position.
+    // Default path for a fork at 'at': beside the recording, named after it
+    // and the position.
     qstring default_fork_path(TraceManager *mgr, Position at);
 
-    // Run the fork behind a cancellable wait box. Cancelling during the
-    // recording keeps what was recorded so far, as a complete trace.
+    // Run the fork behind a cancellable wait box. Cancelling while recording
+    // keeps what was recorded so far as a complete trace.
     ForkResult run_fork(TraceManager *mgr, const ForkRequest &req);
 
     // "rax=0x1, 8 bytes at 0x1400070A8", or "no changes".

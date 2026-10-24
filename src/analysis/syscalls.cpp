@@ -38,7 +38,8 @@ namespace idattd
             return false;
         ITraceBackend *b = mgr->backend();
 
-        // Signatures on this thread (loading the index may print), by name.
+        // Signatures looked up here on the main thread (loading the index may
+        // print), once per name.
         std::vector<const win32meta::FuncSig *> sigs(calls.size(), nullptr);
         {
             std::map<qstring, const win32meta::FuncSig *> by_name;
@@ -50,8 +51,8 @@ namespace idattd
                 sigs[i] = it->second;
             }
         }
-        // The syscall convention, from the 64-bit side: always on Sogen; a
-        // Microsoft x86 recording holds the 32-bit side, arguments on the stack.
+        // The 64-bit syscall convention: always on Sogen. A Microsoft x86
+        // recording has the 32-bit side, with arguments on the stack.
         const bool wide = b->info().is64 || qstrcmp(b->id(), "sogen") == 0;
 
         QueryResult qr = run_query("Decoding the recording's syscalls", [&](ProgressSink *sink)
@@ -99,10 +100,10 @@ namespace idattd
                 const SyscallEvent &c = calls[which[k]];
                 if ( !cur->seek(c.pos) )
                     continue;
-                // At the syscall instruction the arguments are where a callee
-                // finds them: r10 for rcx, and the stack one return address
-                // deep (two on x86: the return into the stub, then the stub's
-                // own). Seen from the call site, which is what the decoder reads.
+                // At the syscall instruction, rcx is in r10 and the stack is one
+                // return address deep (two on x86: into the stub, then the
+                // stub's own). Shown as the call site sees them, as the decoder
+                // expects.
                 ittd_regs g = regs[k];
                 if ( wide )
                     g.gp[ITTD_REG_RCX] = g.gp[SYSCALL_ARG_REGS[0]];
@@ -127,9 +128,8 @@ namespace idattd
             }
 
             // ---- what the kernel wrote back -------------------------------
-            // Integers and handles from the backend's own search where it has
-            // one (Microsoft TTD); everything else from memory just after the
-            // call.
+            // Integers and handles from the backend's search where it has one
+            // (Microsoft TTD); the rest from memory just after the call.
             std::vector<std::optional<uint64_t>> values;
             StageSink outs_stage(sink, 50, 75);
             const bool searched = !slots.empty() && b->query_out_values(slots, &values, &outs_stage);
@@ -257,8 +257,8 @@ namespace idattd
             uint64_t words[3];
             uint32_t small[2];
             qstring  text;
-            // A truncated blob yields nothing rather than the part before
-            // the damage, which would read as the whole list.
+            // A truncated blob yields nothing rather than a prefix that would
+            // look complete.
             if ( end - p < (ptrdiff_t)(sizeof(words) + sizeof(small)) )
             {
                 calls->clear();

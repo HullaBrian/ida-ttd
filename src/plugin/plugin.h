@@ -23,26 +23,24 @@ namespace idattd
         ssize_t idaapi on_event(ssize_t code, va_list va) override;
     };
 
-    // Listener for HT_UI notifications -- adds the "Trace this function" item to
-    // the disassembly context menu.
+    // HT_UI notifications: the TTD context-menu items, plus UI-ready and
+    // widget-closing handling.
     struct UiEventListener : public event_listener_t
     {
         Plugin *p = nullptr;
         ssize_t idaapi on_event(ssize_t code, va_list va) override;
     };
 
-    // Listener for HT_IDB notifications -- when names change (e.g. a PDB finishes
-    // downloading and IDA applies symbols), refresh the call stack so frames show
-    // names instead of raw VAs.
+    // HT_IDB notifications: when names change (e.g. IDA applies a downloaded
+    // PDB), refresh the call stack so frames show names instead of raw VAs.
     struct IdbEventListener : public event_listener_t
     {
         Plugin *p = nullptr;
         ssize_t idaapi on_event(ssize_t code, va_list va) override;
     };
 
-    // The plugin object. It is both the plugmod_t returned from init() and the
-    // HT_IDD event listener that receives all debugger (ev_*) notifications for
-    // the plugin's debugger_t.
+    // The plugmod_t returned from init(), and the HT_IDD listener for every
+    // debugger (ev_*) notification of the plugin's debugger_t.
     class Plugin : public plugmod_t, public event_listener_t
     {
     public:
@@ -57,19 +55,17 @@ namespace idattd
         const ActionContext *action_context() const { return &m_ctx; }
         FunctionTracer &tracer()   { return m_tracer; }
 
-        // The TTD commands only exist while a trace is loaded: show_actions()
-        // registers them (shortcuts included) and builds the toolbar,
-        // hide_actions() tears the toolbar down and unregisters them again, so
-        // no TTD shortcut or button is live without an active trace.
-        void show_actions();    // register actions + build the TTD toolbar (session start)
-        void hide_actions();    // tear the TTD toolbar down + unregister actions (session end)
+        // The TTD commands exist only while a trace is loaded, so no TTD
+        // shortcut or button is live without one.
+        void show_actions();    // register actions, build the TTD toolbar (session start)
+        void hide_actions();    // remove the toolbar, unregister actions (session end)
         void reskin_actions();  // (re)apply the codicon icons to the movement actions
         bool actions_visible() const { return m_actionsRegistered; }
-        void update_position_label();   // refresh the live "Seq:Steps" toolbar readout
+        void update_position_label();   // refresh the toolbar's position readout
 
         // --- keep the decompiler focused across stops --------------------------
-        // IDA forces the disassembly view to the front on every debugger stop. If
-        // the user stepped from the decompiler, it is brought back after the stop.
+        // IDA brings the disassembly to the front on every stop; if the user
+        // stepped from the decompiler, it is brought back afterwards.
         void begin_movement();                // ev_resume: note where the user stepped from
         void movement_done();                 // ev_resume carried it out; the stop is known
         void check_stop_decompiles();         // dbg_suspend_process, stepping in pseudocode
@@ -78,55 +74,50 @@ namespace idattd
         { m_stepView = nullptr; m_viewsBefore.clear(); m_renderBefore.clear(); }
         void schedule_after_stop();           // queue the re-focus and view restores
 
-        // Queue a coverage sweep of the function just stopped in, if that is
-        // switched on and the function has not been measured before. Deferred to
-        // a timer rather than run here: a sweep pumps the UI behind a wait box,
-        // and doing that from inside a debugger notification invites reentrancy.
+        // Queue a coverage sweep of the function just stopped in, if enabled
+        // and not measured before. Deferred to a timer: a sweep pumps the UI
+        // behind a wait box, which invites reentrancy inside a debugger
+        // notification.
         void schedule_auto_coverage();
 
-        // Install the decompiler hook if it is not installed yet. Cheap and
-        // idempotent, and called from several points because Hex-Rays is a
-        // plugin too and may not have loaded when first asked for.
+        // Install the decompiler hook if not installed yet. Cheap, idempotent,
+        // and called from several places because Hex-Rays may load after this
+        // plugin.
         void try_hook_decompiler();
 
-        // Databases created by the .run loader carry a record naming the
-        // recording they came from. When one is present, offer to start
-        // replaying it, and put an action on the TTD menu so a declined
-        // offer is never a dead end. Called once the UI is up.
+        // A database created by the loader records its recording. If present,
+        // start (or offer) the replay and put a TTD menu action for it, so a
+        // declined start is never a dead end. Called once the UI is up.
         void offer_trace_session();
-        // Lay the whole TTD menu out again: the session's items when a
-        // session is running, then the replay-start items of a database made
-        // from a recording, then Backends, which is always there. IDA appends
-        // to a menu and has no reliable "insert before", so every change
-        // rebuilds it in order rather than patching it.
+        // Rebuild the whole TTD menu: session items (during a session), then
+        // the replay-start items (database made from a recording), then
+        // Backends (always). IDA appends to menus and has no reliable
+        // "insert before", so every change rebuilds it in order.
         void rebuild_ttd_menu();
-        // Wait for the database's initial analysis to finish, then offer.
-        // Starting a session rebases the program and adds segments, neither of
-        // which is safe while the analysis queue is still draining.
+        // Wait for the initial analysis to finish, then offer. Starting a
+        // session rebases the program and adds segments, which is unsafe while
+        // the analysis queue is draining.
         void schedule_trace_offer();
         void switch_trace(const qstring &path);
         // A switch's first half, from the request queue: end the session.
         void switch_exit();
-        // After a switch, at the new session's first stop: open the Fork
-        // manager again if it was open before.
+        // At the new session's first stop after a switch: reopen the Fork
+        // manager if it was open before.
         void reopen_fork_manager();
-        // Start the replay of 'path' in this database (a fork of its
-        // recording). False when the debugger could not be selected.
+        // Start replaying 'path' (a fork of this database's recording). False
+        // when the debugger could not be selected.
         bool start_trace_at(const char *path);
         void start_trace_session();     // the action body; no prompting
-        // Make IDA's debugger machinery point at this plugin and know where the trace is,
-        // so Debugger > Process options and Start process are already correct
-        // whether or not the replay is started right now. Returns false when the
-        // backend could not be selected at all.
-        // 'quiet' suppresses the popup when another debugger is already
-        // active, for the call made silently on database open.
+        // Point IDA's debugger at this plugin and the trace, so Debugger >
+        // Process options and Start process are correct whether or not the
+        // replay starts now. False when the debugger could not be selected.
+        // 'quiet' suppresses the popup, for the silent call on database open.
         bool select_trace_debugger(const char *trace_path, bool quiet = false);
 
-        // Source-path prompts. IDA offers to map a source file whenever it
-        // finds line information for the address stopped at; replaying
-        // someone else's build, that source is not on this machine and the
-        // dialog is pure noise. The provider supplying the line info is
-        // switched off for the session and switched back on when it ends.
+        // IDA offers to map a source file whenever it finds line information
+        // at the stop; for someone else's build that source is not here and
+        // the dialog is noise. The line-info providers are switched off for
+        // the session and back on when it ends.
         void suspend_source_debugging();
         void restore_source_debugging();
 
@@ -141,7 +132,7 @@ namespace idattd
         void restore_native_icons();          // give IDA's movement actions their own icons back
         void load_icons();
         void build_action_table();            // fill m_actions (after load_icons)
-        void do_after_stop();                    // timer body: re-activate the decompiler
+        void do_after_stop();                 // timer body: post-stop view work
         static int idaapi refocus_cb(void *ud);
         void do_auto_coverage();              // timer body: sweep the current function
         bool auto_coverage_wanted(ea_t start) const;
@@ -149,9 +140,9 @@ namespace idattd
         static int idaapi autocover_cb(void *ud);
         static int idaapi attach_cb(void *ud);  // timer body: wait for analysis, then offer
 
-        // One TTD command, as registration, the TTD menu and unregistration all
-        // need it. m_actions is the only list of them, so a command cannot be
-        // added to one of the three and forgotten in the others.
+        // One TTD command, as registration, the menu and unregistration need
+        // it. m_actions is the only list, so a command cannot be added to one
+        // of the three and forgotten in the others.
         struct ActionDesc
         {
             const char       *id       = nullptr;
@@ -168,9 +159,8 @@ namespace idattd
         debugger_t     m_debugger = {};
         TraceManager   m_mgr;
         FunctionTracer m_tracer;
-        // Bookmarks belong to the database, not the trace, so this outlives any
-        // one session; it is invalidated at session end because the next one may
-        // be a different database.
+        // Bookmarks belong to the database, so this outlives a session; it is
+        // invalidated at session end since the next may be another database.
         BookmarkStore  m_bookmarks;
 
         DbgEventListener m_dbgEvents;
@@ -228,10 +218,9 @@ namespace idattd
         // Every TTD command, in menu order. Built once in the constructor.
         std::vector<ActionDesc> m_actions;
 
-        // Custom codicon icons (SVG), loaded once for the plugin's lifetime.
-        // The first six are the glyphs put on IDA's own movement actions, in the
-        // order NATIVE_MOVEMENT_ACTIONS expects; the rest belong to TTD actions
-        // and are set at registration time.
+        // SVG icons, loaded once for the plugin's lifetime. The first six go
+        // on IDA's own movement actions, in NATIVE_MOVEMENT_ACTIONS order; the
+        // rest belong to TTD actions and are set at registration.
         enum Icon
         {
             ICO_CONTINUE = 0,
@@ -260,54 +249,53 @@ namespace idattd
             ICO_HANDLES,
             ICO_COUNT
         };
-        // One array rather than 13 handles, so the destructor frees them all
-        // without a second list to keep in step. -1 means "not loaded".
+        // One array, so the destructor frees them all without a second list
+        // to keep in step. -1 means "not loaded".
         std::array<int, ICO_COUNT> m_icons{};
 
-        // True while the plugin's actions are registered (i.e. a trace is loaded). Guards
-        // show_actions()/hide_actions() so registration is never doubled up.
+        // True while the actions are registered (a trace is loaded), so
+        // registration is never doubled.
         bool m_actionsRegistered = false;
 
-        // IDA's own icons for the native movement actions re-skinned here, captured
-        // the first time each action is seen (they register lazily) and restored
-        // when the trace is unloaded -- the override is global, so leaving it in
-        // place would re-skin IDA's toolbar for every other debugger too.
-        // Parallel to NATIVE_MOVEMENT_ACTIONS in plugin.cpp.
+        // IDA's own icons for the re-skinned movement actions, captured the
+        // first time each action is seen (they register lazily) and restored
+        // when the trace unloads: the override is global and would otherwise
+        // re-skin the toolbar for every other debugger. Parallel to
+        // NATIVE_MOVEMENT_ACTIONS in plugin.cpp.
         int  m_nativeSaved[ICO_NATIVE_COUNT]   = { -1, -1, -1, -1, -1, -1 };
         bool m_nativeSavedOk[ICO_NATIVE_COUNT] = { false, false, false, false, false, false };
 
         // Decompiler-focus tracking, decided when a movement starts: the view
-        // that has focus when the user steps is where they are stepping from.
-        // Watching focus changes instead cannot work -- IDA's own switches to
-        // the disassembly, and to views it opens, look the same as the user's.
+        // with focus then is where the user stepped from. Watching focus
+        // changes cannot work, because IDA's own switches look like the user's.
         TWidget *m_stepView = nullptr;        // pseudocode view the movement started in
         std::vector<TWidget *> m_viewsBefore; // pseudocode views open when it started
         uint64   m_settledResume = 0;         // resume_serial() when the last stop settled
         OneShotTimer m_refocusTimer;          // deferred re-focus
         void settle_stop();                   // the stop is done: the next resume is a new movement
-        // Disassembly views and whether they showed text or graph when the
-        // movement started: IDA flips a text view to graph on its own once a
-        // stop lands inside a function, and that is put back.
+        // Disassembly views and their text/graph mode when the movement
+        // started: IDA flips a text view to graph by itself when a stop lands
+        // in a function, and that is undone.
         std::vector<std::pair<TWidget *, tcc_renderer_type_t>> m_renderBefore;
         void restore_renderers();
-        // IDA's 'batch' flag, set by the plugin across a stop Hex-Rays cannot
-        // decompile so that its "Decompilation failure" goes to the output
-        // window instead of a dialog per step.
+        // IDA's 'batch' flag, set across a stop Hex-Rays cannot decompile so
+        // its "Decompilation failure" goes to the output window instead of a
+        // dialog per step.
         bool m_quiet      = false;
         bool m_quietSaved = false;
         void quiet_ui();
         void unquiet_ui();
-        // The position readout only ever grows within a session, so the
-        // toolbar does not shift every time the position gains a digit.
+        // The position readout only grows within a session, so the toolbar
+        // does not shift each time the position gains a digit.
         size_t m_posLabelChars = 0;
 
-        // Automatic per-function coverage. Functions the user cancelled out of
-        // are remembered for the session only, so a sweep they stopped is not
-        // offered again on the very next step -- but reopening the trace retries.
+        // Automatic per-function coverage. Functions whose sweep the user
+        // cancelled are remembered for the session only, so the next step
+        // does not re-offer it; reopening the trace retries.
         OneShotTimer    m_autoCoverTimer;
         OneShotTimer    m_attachTimer;
-        // Switching the replay to another recording: stop, then start on it
-        // once IDA has finished with the old session.
+        // Switching the replay to another recording: stop, then start it once
+        // IDA has finished with the old session.
         qstring         m_switchTo;
         bool            m_switchExitSent = false;
         bool            m_reopenForkManager = false;   // it was open when a switch began
@@ -317,16 +305,16 @@ namespace idattd
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;
         bool            m_haveDecompiler = false;
-        // Source-info providers turned off here, so only those are turned back
-        // on: one the user had already disabled must stay that way. The
-        // entries are string literals, so storing the pointers is safe.
+        // Source-info providers turned off here; only these are turned back
+        // on, so one the user had disabled stays disabled. The entries are
+        // string literals, so storing the pointers is safe.
         std::vector<const char *> m_srcProvidersOff;
-        // The "start the replay for this database" action, registered only when
-        // the database actually came from a .run. Unlike the session's TTD
-        // actions it lives OUTSIDE a session -- it is the thing that starts one.
+        // The "start the replay for this database" action, registered only
+        // for a database made from a recording. It lives outside a session,
+        // since it is what starts one.
         bool m_attachRegistered = false;
-        // The Backends actions and the menu separators: registered with the
-        // plugin, not with a session.
+        // The Backends actions and menu separators: registered with the
+        // plugin, not a session.
         bool m_menuActionsRegistered = false;
         // A failed debugger switch is worth saying once, not on every try.
         bool m_switchReported   = false;

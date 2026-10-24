@@ -7,15 +7,14 @@ namespace idattd
 {
     // A backend DLL, seen through the C++ interface the core uses.
     //
-    // The DLL exports one function and speaks the flat C ABI in
-    // abi/ida_ttd_backend.h; this class is the translation between that and
-    // ITraceBackend, and nothing more. It never adds behaviour a backend does
-    // not have: an entry point the table leaves NULL becomes a query that did
-    // not run, a navigation that Failed, or an empty list.
+    // A pure translation between the C ABI (abi/ida_ttd_backend.h) and
+    // ITraceBackend that adds no behaviour: an entry the table leaves NULL
+    // becomes a query that did not run, a navigation that Failed, or an empty
+    // list.
     //
-    // The DLL stays loaded for the life of the process. The ABI says the table
-    // is static and the core keeps the pointer, and unloading from a static
-    // destructor would run under the loader lock.
+    // The DLL stays loaded for the life of the process: the table is static
+    // and the core keeps the pointer, and unloading from a static destructor
+    // would run under the loader lock.
     class BackendModule : public ITraceBackend
     {
     public:
@@ -115,25 +114,45 @@ namespace idattd
         qstring       m_path;
         ittd_backend *m_handle = nullptr;
         bool          m_prepared = false;
+        // The open recording's info set ITTD_CAP_PREPARE and the table has
+        // prepare(): only then is prepare() called.
+        bool          m_needs_prepare = false;
         TraceInfo     m_info;
         Capabilities  m_caps;
         ReplayBlock   m_replayBlock = ReplayBlock::None;
     };
 
-    // $IDAUSR\ida-ttd, or a folder in it when 'sub' is given: where the
-    // things a user adds after installing live (the TTD runtime in windbg\,
-    // the Sogen backend in backends\, registry hives in registry\). Not in
+    // $IDAUSR\ida-ttd, or a folder in it when 'sub' is given: where files the
+    // user adds after installing live (the TTD runtime in windbg\, the Sogen
+    // backend in backends\, registry hives in registry\). Not in
     // plugins\ida-ttd\, which HCLI replaces on every upgrade, and not under
     // plugins\ at all, since none of it is a plugin.
     qstring user_data_dir(const char *sub = nullptr);
 
-    // Load every backend DLL in $IDAUSR\ida-ttd\backends, then in the
-    // plugins\ida-ttd-backends and plugins\ida-ttd\ida-ttd-backends
-    // directories -- the user's and the installation's -- and add the ones
-    // that answer for this core's ABI version to BackendRegistry. A module that fails to load,
-    // or answers for another version, is named in the output window and
-    // skipped. Safe to call more than once; later calls do nothing.
-    void load_backend_modules();
+    // Load every backend DLL in $IDAUSR\ida-ttd\backends, then in the user's
+    // and the installation's plugins\ida-ttd-backends and
+    // plugins\ida-ttd\ida-ttd-backends, and add those that speak this core's
+    // ABI version to BackendRegistry. A module that fails to load or speaks
+    // another version is named in the output window and skipped. Later calls
+    // load nothing more.
+    //
+    // A backend DLL is loaded once per process and its table is shared by
+    // every IDA module that loads it (ida-ttd.dll and ttd-loader.dll), so its
+    // log callback is whichever was set last. With 'install_log' (the
+    // plugin), every call points every registered module's log at this
+    // binary again, so a callback a since-unloaded binary left behind is
+    // replaced. The loader passes false and uses attach_backend_log /
+    // detach_backend_log around the work it does.
+    void load_backend_modules(bool install_log = true);
+    // Point every registered module's log at this binary. With
+    // 'post_requests' false, lines logged from other threads are only queued,
+    // never handed to IDA as a UI request, so nothing of this binary can run
+    // after it is unloaded; they are printed by flush_backend_log and by
+    // detach_backend_log.
+    void attach_backend_log(bool post_requests);
+    // Clear every registered module's log callback and print what is queued.
+    // Call on the main thread, after the backends' work has finished.
+    void detach_backend_log();
     // Print what backends logged from other threads, when called on the main
     // thread (run_query's wait loop calls it).
     void flush_backend_log();

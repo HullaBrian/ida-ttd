@@ -22,20 +22,17 @@ namespace idattd
         const MsTtdBackend *owner = nullptr;
     };
 
-    // Build the trace's memory index if it does not already have one. Without an
-    // index, memory reads are severely limited.
+    // Build the trace's memory index if it has none; without one, memory reads
+    // are severely limited.
     //
-    // BuildIndex is fully synchronous and can run for minutes, so the caller
-    // runs this on a worker thread: the core's run_query, behind a wait box.
-    // The percentage goes to 'progress' (which may be null) from TTD's own
-    // indexing threads; a sink must take that, and the core's does.
+    // BuildIndex is synchronous and can take minutes, so the core runs this on
+    // a worker thread behind a wait box. The percentage reaches 'progress'
+    // (may be null) from TTD's own indexing threads. The build cannot be
+    // interrupted: the progress callback returns void and there is no
+    // cancellation flag.
     //
-    // The build cannot be interrupted: IndexBuildProgressCallback returns void and
-    // BuildIndex exposes no cancellation flag.
-    //
-    // Returns true when the trace has a usable index afterwards. Note that a
-    // status of IndexFileUnloadable is normal and still counts as usable: the
-    // engine keeps an in-memory index, and GetIndexStatus() describes the on-disk
-    // .idx file only.
+    // Returns true when the trace has a usable index. IndexFileUnloadable still
+    // counts: the engine keeps an in-memory index, and GetIndexStatus()
+    // describes only the on-disk .idx file.
     bool build_trace_index(TTD::Replay::IReplayEngine *engine, ProgressSink *progress);
 }

@@ -4,17 +4,16 @@
 
 namespace idattd
 {
-    // The record a database created from a recording carries about that file.
+    // The record a database created from a recording keeps about that file.
     //
-    // The loader runs exactly once, when the database is created. Every later
-    // open of the .i64 goes straight to the plugin, so anything the plugin needs
-    // in order to reconnect the database to its recording has to be written here
-    // and not recomputed.
+    // The loader runs only when the database is created; later opens go
+    // straight to the plugin, so whatever it needs to reconnect the database
+    // to its recording is written here.
     struct TraceLink
     {
         qstring  trace_path;            // absolute path of the recording, as it was then
         qstring  module_path;           // main module's full path on the RECORDING machine
-        qstring  module_name;           // its base name -- what a module load is matched against
+        qstring  module_name;           // its base name, matched against module loads
         ea_t     module_base = BADADDR; // recorded load address of the main image
         uint64_t module_size = 0;
         int      bitness = 0;           // 0 unknown, 32, or 64
@@ -25,28 +24,26 @@ namespace idattd
     // Read the record. False when absent or written by a newer schema.
     bool trace_link_read(TraceLink *out);
     void trace_link_write(const TraceLink &link);
-    // Point the record at a different recording. Used when the recording has been
-    // moved or renamed since the database was made and the user re-locates it.
+    // Point the record at a different path, when the user re-locates a
+    // recording that was moved or renamed.
     void trace_link_set_path(const char *path);
 
-    // Whether the user wants the replay started when this database is opened.
-    // 0 = never asked, 1 = declined, 2 = accepted. Kept in the database rather
-    // than in the plugin object, because a fresh plugin is constructed on every
-    // open and would otherwise ask again every time.
+    // Whether to start the replay when this database opens: 0 never asked,
+    // 1 declined, 2 accepted. Kept in the database because a new plugin object
+    // is made on every open.
     enum { TL_ASK = 0, TL_NO = 1, TL_YES = 2 };
     int  trace_link_autostart();
     void trace_link_set_autostart(int v);
 
     // Crash guard for the automatic start.
     //
-    // The mark is set just before a replay is started on its own and cleared as
-    // soon as the session is up. Finding it still set at the next open means the
-    // last automatic start did not survive, so that open does not try again --
-    // otherwise a database that takes IDA down on start could never be opened at
-    // all, not even to switch the automatic start off.
+    // Set just before an automatic start and cleared once the session is up.
+    // Still set at the next open means that start crashed, so the open skips
+    // it; otherwise a database that takes IDA down could never be opened to
+    // turn the automatic start off.
     //
-    // It lives in IDA's own settings rather than in the database, because a
-    // database that was never saved cannot remember anything.
+    // Kept in IDA's settings, not the database, which may never have been
+    // saved.
     bool trace_link_start_marked();
     void trace_link_mark_start(bool pending);
 }

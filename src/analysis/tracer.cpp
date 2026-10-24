@@ -47,6 +47,34 @@ namespace idattd
         return value;
     }
 
+    // The integer an argument or return value of type 't' really holds: a
+    // register carries 64 bits, but an int or a BYTE uses only its low bytes,
+    // and the rest is whatever the register held before. Truncated to the
+    // type's size and sign-extended when the type is signed (an unknown sign,
+    // like plain int's, counts as signed unless the type says unsigned).
+    static uint64_t fit_to_type(const tinfo_t &t, uint64_t raw)
+    {
+        size_t sz = t.get_size();
+        if ( sz == 0 || sz >= 8 )
+            return raw;                     // includes BADSIZE: nothing to cut
+        const unsigned bits = (unsigned)sz * 8;
+        uint64_t v = raw & ((1ULL << bits) - 1);
+        if ( !t.is_unsigned() && !t.is_bool() && (v >> (bits - 1)) != 0 )
+            v |= ~0ULL << bits;
+        return v;
+    }
+
+    // An integer of type 't', already fitted (fit_to_type), in decimal.
+    static qstring render_int(const tinfo_t &t, uint64_t v)
+    {
+        qstring out;
+        if ( t.is_unsigned() || t.is_bool() )
+            out.sprnt("%llu", (unsigned long long)v);
+        else
+            out.sprnt("%lld", (long long)v);
+        return out;
+    }
+
     // Render a single argument value (no type prefix) from the integer fetched
     // at the call site.
     static qstring render_value(const GuestView &cur, const tinfo_t &arg, uint64_t raw)
@@ -58,22 +86,25 @@ namespace idattd
         }
         else if ( arg.is_enum() )
         {
+            // Compared at the enum's width: a 4-byte enum's members are
+            // matched against the low 32 bits only.
             enum_type_data_t ed;
             bool named = false;
+            size_t sz = arg.get_size();
+            uint64_t mask = sz == 0 || sz >= 8 ? ~0ULL : (1ULL << (sz * 8)) - 1;
+            uint64_t v = raw & mask;
             if ( arg.get_enum_details(&ed) )
             {
                 for ( size_t k = 0; k < ed.size(); k++ )
-                    if ( (uint64_t)ed[k].value == raw ) { value = ed[k].name; named = true; break; }
+                    if ( ((uint64_t)ed[k].value & mask) == v ) { value = ed[k].name; named = true; break; }
             }
             if ( !named )
-                value.sprnt("0x%llX", raw);
+                value.sprnt("0x%llX", v);
         }
         else if ( arg.is_floating() )
         {
-            // 'raw' holds the argument's BITS (XMMn on x64, or the stack slot).
-            // Reinterpret them rather than printing them as an integer. Anything
-            // that is not a plain float/double (long double, an unknown size)
-            // falls back to hex rather than being decoded as one.
+            // 'raw' holds the argument's bits (XMMn on x64, or the stack slot):
+            // reinterpret them. Anything but float or double falls back to hex.
             size_t sz = arg.get_size();
             if ( sz == 4 )
             {
@@ -95,7 +126,7 @@ namespace idattd
         }
         else if ( arg.is_int() || arg.is_bool() )
         {
-            value.sprnt("%lld", (long long)raw);
+            value = render_int(arg, fit_to_type(arg, raw));
         }
         else
         {
@@ -104,17 +135,15 @@ namespace idattd
         return value;
     }
 
-    // Produce one "name=value" string per *actual* argument of the function's
-    // signature (so the count matches the prototype). Falls back to four raw
-    // register/stack args when there is no prototype.
+    // One value string per argument of the function's prototype, or four raw
+    // register/stack arguments without one.
     static void extract_args(const GuestView &cur, ea_t func_ea, bool is64, std::vector<qstring> &out)
     {
         tinfo_t          tinfo;
         func_type_data_t fd;
         bool have = get_tinfo(&tinfo, func_ea) && tinfo.is_func() && tinfo.get_func_details(&fd);
 
-        // Value-only cells: the chooser renders one column per argument with the
-        // parameter name as the column header, so the name doesn't belong here.
+        // Values only: the chooser's column headers carry the parameter names.
         if ( !have )
         {
             for ( size_t i = 0; i < 4; i++ )
@@ -149,7 +178,7 @@ namespace idattd
             else if ( rt.is_void() )
                 value = "void";
             else
-                value.sprnt("%lld", (long long)rv);
+                value = render_int(rt, fit_to_type(rt, rv));
         }
         else
         {
@@ -251,10 +280,9 @@ namespace idattd
             out.insert(v);
     }
 
-    // Calls reach an imported function either directly (target == real VA) or
-    // through a thunk (target == thunk addr, which jumps via the IAT). The
-    // function start, the thunk's resolved target and the live IAT pointer are
-    // all collected, so the call sweep matches whichever path a call took.
+    // Calls reach an import directly (the real VA) or through a thunk that
+    // jumps via the IAT. The function start, the thunk's target and the live
+    // IAT pointer are all collected, so the sweep matches either path.
     std::vector<ea_t> FunctionTracer::resolve_targets(ea_t func_ea) const
     {
         std::set<ea_t> out;
@@ -263,8 +291,7 @@ namespace idattd
         ea_t start = has_func ? fi.start_ea : func_ea;
         out.insert(start);
 
-        // Case 1: an import thunk (jmp cs:Foo) -> follow it and read its live
-        // IAT slot to get the real runtime callee VA.
+        // An import thunk (jmp cs:Foo): follow it and read its live IAT slot.
         if ( has_func && (fi.get_flags() & FUNC_THUNK) != 0 )
         {
             ea_t ptr = BADADDR;
@@ -274,9 +301,8 @@ namespace idattd
             add_live_ptr(ptr, m_is64, out);
         }
 
-        // Case 2: the user clicked the import data slot itself (no function, or a
-        // data item). Read the live pointer there = runtime callee VA. Only
-        // for data, so real code bytes are never misread as a pointer.
+        // The import data slot itself was picked: read the live pointer there.
+        // Only for data, so code bytes are never read as a pointer.
         if ( !is_code(get_flags(start)) )
             add_live_ptr(start, m_is64, out);
 
@@ -288,9 +314,8 @@ namespace idattd
         if ( m_mgr == nullptr )
             return;
 
-        // Map every resolved runtime target -> the user-picked function (for
-        // display + type info). Built on the main thread; read-only in the
-        // replay callback.
+        // Each resolved runtime target to the picked function (for display and
+        // types).
         std::map<ea_t, ea_t> tgt2disp;
         {
             std::lock_guard<std::mutex> g(m_traces_mtx);
@@ -333,8 +358,7 @@ namespace idattd
             msg("[ida-ttd] tracer: hit the backend's call limit; results are "
                 "truncated. Narrow the pattern to see the rest.\n");
 
-        // Phase 2 runs on the main thread, so it has real progress and a
-        // working Cancel.
+        // Phase 2 runs on the main thread, with its own progress and Cancel.
         CursorPtr cur = backend->make_cursor();
         std::vector<FunctionInvocation> built;
         built.reserve(calls.size());
@@ -343,16 +367,15 @@ namespace idattd
         show_wait_box("Resolving %d call(s)... (Cancel to stop)", (int)calls.size());
         if ( cur )
         {
-            // Every place to read, then read them in position order. A call's
-            // arguments and its return are far apart, and a backend that
-            // rebuilds state from the nearest checkpoint (Sogen) pays for that
-            // checkpoint again each time the reads alternate between two --
-            // which, call by call, they otherwise always do.
+            // Collect every place to read, then read in position order. A
+            // call and its return are far apart, and a backend that rebuilds
+            // state from the nearest checkpoint (Sogen) would pay again each
+            // time reads alternated between them.
             struct Visit { Position where; size_t call; bool ret; };
             std::vector<Visit> visits;
             std::vector<FunctionInvocation> slot(calls.size());
-            // A function the API metadata describes is decoded from it: flags
-            // by name, out parameters read again at the return. The rest from
+            // Functions the API metadata describes are decoded from it (flags
+            // by name, out parameters re-read at the return); others from
             // IDA's types.
             std::vector<DecodedCall> decoded(calls.size());
             std::map<ea_t, const win32meta::FuncSig *> sigs;
@@ -370,10 +393,9 @@ namespace idattd
                 auto disp = tgt2disp.find(c.target);
                 if ( disp == tgt2disp.end() )
                     continue;
-                // The arguments are decoded as the caller left them, just
-                // before the call. Without a call -- the thread began in the
-                // callee, or a jump got there -- they are read at the entry
-                // instead (see below).
+                // Arguments are decoded just before the call. Without a call
+                // (the thread began in the callee, or a jump got there) they
+                // are read at the entry instead (see below).
                 Position where = c.is_call && c.pos.is_valid() ? c.pos : c.entry_pos;
                 if ( !where.is_valid() )
                     continue;
@@ -388,10 +410,9 @@ namespace idattd
             std::sort(visits.begin(), visits.end(),
                       [](const Visit &x, const Visit &y) { return x.where < y.where; });
 
-            // A backend that rebuilds registers by replay (Sogen) rebuilds each
-            // stretch once for all the positions in it when asked for them
-            // together; through the cursor it would rebuild one per visit.
-            // Memory is still read through the cursor, which costs it little.
+            // A backend that rebuilds registers by replay (Sogen) does each
+            // stretch once for a batch, but once per visit through the cursor.
+            // Memory is still read through the cursor, which is cheap.
             std::vector<ittd_regs> pre;
             bool regs_cancelled = false;
             if ( backend->capabilities().batch_regs && !visits.empty() )
@@ -404,15 +425,14 @@ namespace idattd
                 {
                     return backend->registers_at(where, &pre, p);
                 });
-                // Cancelled here, nothing is decoded: the calls stay listed
-                // without their values.
+                // Cancelled here: the calls stay listed without values.
                 if ( rq.cancelled )
                     cancelled = regs_cancelled = true;
                 if ( !rq.ran || pre.size() != visits.size() )
                     pre.clear();
             }
-            // The registers at visit k: the batch's when it has every register
-            // a calling convention reads, the cursor's otherwise.
+            // Registers at visit k: the batch's when it has every register a
+            // calling convention reads, else the cursor's.
             auto view_at = [&](size_t k)
             {
                 GuestView gv = guest_view(cur.get());
@@ -463,9 +483,8 @@ namespace idattd
                 const CallEvent &c = calls[v.call];
                 if ( !(c.is_call && c.pos.is_valid()) )
                 {
-                    // At the entry the return address is already on the
-                    // stack: step the stack pointer back over it so the stack
-                    // arguments are where a call site would have them.
+                    // At the entry the return address is on the stack: skip
+                    // it so stack arguments sit where a call site has them.
                     auto regs = view.regs;
                     view.regs = [regs, ptr](ittd_regs *r)
                     {
@@ -486,11 +505,10 @@ namespace idattd
                 extract_args(view, ev.func_ea, m_is64, ev.args);
             }
 
-            // An integer out parameter that reads the same at the return as
-            // at the call may be Microsoft TTD not having the kernel's write
-            // yet: the backend looks for it from the return on, where it
-            // surfaces. One the callee wrote itself reads changed and is
-            // recorded as it is.
+            // An integer out parameter unchanged at the return may be the
+            // kernel's write not yet visible on Microsoft TTD: the backend
+            // searches from the return on, where it surfaces. A changed one is
+            // kept as read.
             std::vector<OutSlot> oslots;
             std::vector<std::pair<size_t, size_t>> owner;     // (call, parameter)
             for ( size_t i = 0; i < calls.size() && !cancelled; i++ )
@@ -561,8 +579,7 @@ namespace idattd
         }
         hide_wait_box();
 
-        // Open events tabs are not refreshed: each holds a snapshot frozen when it
-        // was opened, and a later sweep must not rewrite it.
+        // Open events tabs are not refreshed: each holds a frozen snapshot.
         if ( cancelled )
             msg("[ida-ttd] tracer: cancelled - showing %d of %d recorded call(s).\n",
                 (int)nbuilt, (int)calls.size());

@@ -1,25 +1,23 @@
 // The Microsoft backend's replay scans: self-modifying code, strings and
-// buffers, the three answers Sogen gets from hooks on its emulator's writes
-// and executions. Here they come from the engine's memory watchpoints.
+// buffers, which Sogen gets from hooks on its emulator and this backend from
+// the engine's memory watchpoints.
 //
-// One write watchpoint can cover the whole address space, and at its
-// callback memory already holds what the write put there. So:
+// One write watchpoint can cover the whole address space, and at its callback
+// memory already holds the written value. So:
 //
 //   1. A replay with that watchpoint finds every range the program wrote.
-//   2. A second replay watches the writes again, and the execution of those
-//      ranges -- only those, so the code that was never written costs nothing.
-//      Each write is read in its callback and goes to all three scanners;
-//      each execution is looked up against the writes before it.
+//   2. A second replay watches the writes again plus the execution of only
+//      those ranges, so never-written code costs nothing. Each write feeds
+//      all three scanners; each execution is matched against earlier writes.
 //
-// What the system wrote (a syscall filling a buffer, the loader mapping an
-// image) the engine reports as other access types, which are left out, as
-// Sogen leaves them out. The three answers come from the same two replays and
-// are kept, so whichever is asked for second costs nothing.
+// System writes (a syscall filling a buffer, the loader mapping an image)
+// arrive as other access types and are left out, as Sogen leaves them out.
+// All three answers come from the same two replays and are kept, so the
+// second one asked for is free.
 //
-// The scanners (common/write_scans.h) apply Sogen's rules
-// (docs/scan-rules.md) and are shared with the Sogen backend, so a list reads
-// the same from either kind of recording. Every
-// callback is noexcept and guards its growth, as the other sweeps do.
+// The scanners (common/write_scans.h) implement docs/scan-rules.md and are
+// shared with the Sogen backend, so lists read the same from either kind of
+// recording. Every callback is noexcept and guards its growth.
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
@@ -42,22 +40,6 @@ namespace idattd
         const uint64_t kStringWindowMax  = 64 * 1024;
 
         using scans::kStringContext;
-
-        // Two replays and a scan of the modules, as one percentage.
-        class Stage : public ProgressSink
-        {
-        public:
-            Stage(ProgressSink *to, uint32_t from, uint32_t span) : m_to(to), m_from(from), m_span(span) {}
-            void report(uint32_t pct) override
-            {
-                if ( m_to != nullptr )
-                    m_to->report(m_from + pct * m_span / 100);
-            }
-            bool cancelled() override { return m_to != nullptr && m_to->cancelled(); }
-        private:
-            ProgressSink *m_to;
-            uint32_t      m_from, m_span;
-        };
 
         // Sogen measures "the same burst of writing" as 250,000 instructions;
         // the engine's callbacks count writes, about a fifth as many.
@@ -244,7 +226,7 @@ namespace idattd
             cur->SetMemoryWatchpointCallback(on_write);
             cur->SetEventMask(EventMask::MemoryWatchpoint);
             cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-            Stage stage(progress, 0, 30);
+            ScaledProgress stage(progress, 0, 30);
             bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
             cur->SetMemoryWatchpointCallback(nullptr, 0);
             if ( !complete )
@@ -264,10 +246,10 @@ namespace idattd
         std::map<uint64_t, SelfModHit> selfmod;
         bool        truncated = capped || exec_capped;
 
-        // Strings are scanned a burst of writing at a time, per thread: the
-        // bytes one thread writes forwards through memory, with what was
-        // there just before them. A copy is kept as it is written, so a later
-        // write over the same bytes does not change what is scanned.
+        // Strings are scanned one burst of writing at a time, per thread: the
+        // bytes a thread writes forwards through memory, plus what was just
+        // before them. A copy is kept as written, so a later overwrite does not
+        // change what is scanned.
         struct Window
         {
             uint64_t             base = 0;      // bytes[0] is here
@@ -417,7 +399,7 @@ namespace idattd
         cur->SetMemoryWatchpointCallback(on_hit);
         cur->SetEventMask(EventMask::MemoryWatchpoint);
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        Stage stage(progress, 30, 60);
+        ScaledProgress stage(progress, 30, 60);
         bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         if ( !complete )
@@ -442,10 +424,10 @@ namespace idattd
 
         // ---- 3: the text the modules brought with them ----------------------
         //
-        // What was in memory from the start, as Sogen's scan of the initial
-        // memory finds it: each image, where it was loaded.
+        // What was in memory from the start (Sogen scans its initial memory):
+        // each image, at its load position.
         {
-            Stage stage3(progress, 90, 10);
+            ScaledProgress stage3(progress, 90, 10);
             std::vector<uint8_t> bytes;      // one buffer for every chunk
             for ( size_t i = 0; i < mods.size(); i++ )
             {
@@ -557,14 +539,13 @@ namespace idattd
     //=======================================================================
     // The memory heatmap
     //=======================================================================
-    // One replay with a watchpoint for reads, writes and executions over the
-    // whole address space, each access counted against its page and its slice
-    // of time. Time is sliced by sequence number: the engine's own clock,
-    // which advances with every thread switch and so with the program's
-    // progress.
+    // One replay with a read/write/execute watchpoint over the whole address
+    // space, each access counted against its page and time slice. Time is
+    // sliced by sequence number, the engine's clock, which advances with
+    // every thread switch.
     //
     // A window (the heatmap zoomed in) replays only its own stretch, so
-    // zooming in is cheaper than the first count, not dearer.
+    // zooming in is cheaper than the first count.
 
     // The window's ends on the engine's clock, the open ends taken as the
     // recording's.

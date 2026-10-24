@@ -14,8 +14,8 @@ namespace idattd
     static const uint32_t kHeatSlices    = 256;
 
     static qstring g_heatJson;
-    // Where each slice of the counted span starts, and where the span ends,
-    // for placing the current position without re-asking the backend.
+    // Each slice's start and the span's end, to place the current position
+    // without asking the backend again.
     static std::vector<Position> g_heatStarts;
     static Position              g_heatEnd = Position::none();
 
@@ -27,7 +27,7 @@ namespace idattd
     // {"page_shift":12,"slices":256,"starts":["HI:LO",...],"end":"HI:LO",
     //  "whole":true,"can_zoom":true,
     //  "pages":[{"page":N,"label":"ntdll","cells":[[slice,r,w,x],...]},...]}
-    // 'end' is where the last slice ends: the window's last position, or the
+    // 'end' is where the last slice ends: the span's last position, or the
     // recording's.
     static qstring heat_json(TraceManager *mgr, const std::vector<HeatCell> &cells, PositionRange when)
     {
@@ -131,8 +131,8 @@ namespace idattd
         const Position cur = mgr->current_position();
         if ( !cur.is_valid() || !g_heatStarts[0].is_valid() || cur < g_heatStarts[0] || g_heatEnd < cur )
             return -1;
-        // The last slice whose start is at or before the position. Slice
-        // starts are in order; an unknown one (none) is skipped over.
+        // The last slice starting at or before the position. Starts are in
+        // order; unknown ones (none) are skipped.
         int found = 0;
         for ( size_t s = 1; s < g_heatStarts.size(); s++ )
         {
@@ -143,6 +143,17 @@ namespace idattd
             found = (int)s;
         }
         return found;
+    }
+
+    void heatmap_session_ended()
+    {
+        g_heatJson.clear();
+        g_heatStarts.clear();
+        g_heatEnd = Position::none();
+        // The title heatmap_py.hh gives its window.
+        TWidget *w = find_widget("TTD memory heatmap");
+        if ( w != nullptr )
+            close_widget(w, 0);
     }
 
     int idaapi HeatmapHandler::activate(action_activation_ctx_t *)

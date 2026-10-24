@@ -48,7 +48,7 @@ namespace idattd
         R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#1DCC23" xmlns="http://www.w3.org/2000/svg"><path d="M760-160v-640h80v640h-80ZM480-280l-56-56 104-104H120v-80h408L424-624l56-56 200 200-200 200Z"/></svg>)SVG";
 
     // Step to cursor backward: the forward run-to-cursor glyph mirrored, in
-    // backward blue (the previous markup here duplicated the go-to-position clock).
+    // backward blue.
     static const char icon_step_to_cursor_backward_svg[] =
         R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#3A9BE8" xmlns="http://www.w3.org/2000/svg"><g transform="translate(960,0) scale(-1,1)"><path d="M760-160v-640h80v640h-80ZM480-280l-56-56 104-104H120v-80h408L424-624l56-56 200 200-200 200Z"/></g></svg>)SVG";
 

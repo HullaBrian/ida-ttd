@@ -10,22 +10,20 @@ namespace idattd
     static const nodeidx_t BM_IDX = 0;
     static const uchar     BM_TAG = 'B';
 
-    // Blob layout. Versioned from the start: a bookmark list is user-authored
-    // data that has to survive the plugin changing shape around it, and the
-    // reader below rejects anything it does not recognise rather than guessing.
+    // Blob layout. Versioned because bookmarks are user data that must survive
+    // plugin changes; the reader rejects anything it does not recognise.
     //   u32 magic, u32 version, u32 count
     //   count * { u64 sequence, u64 steps, u64 ea, u32 tid, str name, str comment,
     //             u64 trace (version 2 on) }
     // where str = u32 length followed by that many bytes, no terminator.
-    // Version 1 records are still read, their marks with no recording; the
-    // next change writes the list back as version 2.
+    // Version 1 is still read (marks without a recording); the next change
+    // rewrites the list as version 2.
     static const uint32_t BM_MAGIC   = 0x4B4D4254;  // 'TBMK'
     static const uint32_t BM_VERSION = 2;
 
-    // A bookmark list is small, but the blob is IDB data and IDB data can be
-    // stale, truncated or written by something else entirely, so the count is
-    // capped before anything is allocated from it.
-    // Strings are capped at DB_MAX_STR (common/dbstore.h) on both sides.
+    // IDB data may be stale, truncated or foreign, so the count is capped
+    // before anything is allocated from it. Strings are capped at DB_MAX_STR
+    // (common/dbstore.h) on both sides.
     static const uint32_t BM_MAX_ITEMS = 100000;
 
     void BookmarkStore::load()
@@ -42,8 +40,8 @@ namespace idattd
         if ( nn.getblob(&blob, BM_IDX, BM_TAG) <= 0 )
             return;
 
-        // Not PluginNode::get(): bookmarks predate its header, and their blob
-        // is kept byte for byte so existing databases keep their marks.
+        // Not PluginNode::get(): bookmarks predate its header, and the blob
+        // format is kept so existing databases keep their marks.
         BlobReader r(blob.begin(), blob.size());
         uint32_t magic   = r.u32();
         uint32_t version = r.u32();
@@ -144,8 +142,7 @@ namespace idattd
     {
         if ( !m_loaded )
             load();
-        // Ordered by position, so the list reads as a walk through the recording
-        // no matter what order the analyst dropped the marks in.
+        // Ordered by position, so the list reads as a walk through the recording.
         auto it = std::lower_bound(m_items.begin(), m_items.end(), b,
                                    [](const Bookmark &a, const Bookmark &c)
                                    { return a.pos < c.pos; });
@@ -155,14 +152,22 @@ namespace idattd
         return idx;
     }
 
-    void BookmarkStore::update(size_t i, const Bookmark &b)
+    size_t BookmarkStore::update(size_t i, const Bookmark &b)
     {
         if ( !m_loaded )
             load();
         if ( i >= m_items.size() )
-            return;
-        m_items[i] = b;
+            return i;
+        // Taken out and inserted again, as in add(): the edit may have moved
+        // it, and the list must stay in position order.
+        m_items.erase(m_items.begin() + i);
+        auto it = std::lower_bound(m_items.begin(), m_items.end(), b,
+                                   [](const Bookmark &a, const Bookmark &c)
+                                   { return a.pos < c.pos; });
+        size_t idx = (size_t)(it - m_items.begin());
+        m_items.insert(it, b);
         save();
+        return idx;
     }
 
     void BookmarkStore::remove(size_t i)

@@ -9,13 +9,12 @@ namespace idattd
 
     // The syscalls of a Microsoft recording.
     //
-    // The recording does not list them, but the engine reports every
-    // transition into the kernel as a KernelCall gap, on the syscall
-    // instruction itself. That catches a syscall wherever it was made -- an
-    // ntdll stub or code that issues its own -- which watching ntdll's
-    // exports never could. The number is in rax (eax) there; the name comes
-    // from the stubs of the ntdll the recording loaded, each of which starts
-    // by loading its number.
+    // The recording does not list them, but the engine reports every kernel
+    // transition as a KernelCall gap on the syscall instruction. That catches
+    // syscalls made anywhere (an ntdll stub or the program's own code), which
+    // watching ntdll's exports cannot. The number is in rax (eax) there; the
+    // name comes from the recorded ntdll's stubs, each of which starts by
+    // loading its number.
 
     static const size_t kKernelCallArgs = 12;
 
@@ -40,8 +39,8 @@ namespace idattd
         // the program made its own.
         ea_t      chain[ITTD_CHAIN_MAX] = { 0 };
         uint8_t   chain_n   = 0;
-        // With chains: where the innermost call still out returns to -- for
-        // a stub's syscall, back into the stub's caller.
+        // With chains: where the innermost open call returns to (for a
+        // stub's syscall, back into the stub's caller).
         uint64_t  frame_ret = 0;
         // From the return pass:
         TTD::Replay::Position ret_pos;      // at the instruction the kernel returned to

@@ -85,8 +85,7 @@ namespace idattd
             nn.delblob(0, tag);
             return;
         }
-        // The header goes in front of the caller's bytes so a reader can reject
-        // a blob before interpreting any of it.
+        // Header first, so a reader can reject a blob before parsing it.
         BlobWriter hdr;
         hdr.u32(magic);
         hdr.u32(version);

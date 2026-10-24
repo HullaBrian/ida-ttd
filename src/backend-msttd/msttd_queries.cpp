@@ -1,11 +1,10 @@
-// The whole-trace queries of the Microsoft backend: each one a replay with a
+// The Microsoft backend's whole-trace queries, each a replay with a
 // watchpoint or the call/return callback armed. The analyses that ask them
-// (memsearch, coverage, callsites, tracer) only do what IDA needs with the
-// answer.
+// (memsearch, coverage, callsites, tracer) only present the answer.
 //
-// Every callback below runs on the engine's replay thread and is noexcept:
-// it writes plain memory only, caps what it keeps, and guards its growth, so
-// an allocation failure stops the recording instead of terminating IDA.
+// Every callback runs on the engine's replay thread and is noexcept: it
+// writes plain memory only, caps what it keeps and guards its growth, so an
+// allocation failure stops collecting instead of terminating IDA.
 
 #include "backend-msttd/msttd_backend.h"
 #include "backend-msttd/msttd_sweep.h"
@@ -25,12 +24,11 @@ namespace idattd
         return when.last == Position::end() ? TtdPosition::Max : from_core(when.last);
     }
 
-    // The position of the instruction after the one at 'p', on the same
-    // thread: between two sequence points the steps are one thread's, so it
-    // is one step on. Not when the instruction at 'p' is the last before a
-    // sequence point -- the next one is then in a later sequence -- which a
-    // call or a return rarely is; finding it exactly would cost a seek per
-    // call, and a query can return millions of them.
+    // The position of the next instruction on the same thread: between two
+    // sequence points the steps are one thread's, so it is one step on. Wrong
+    // only when 'p' is the last instruction before a sequence point (the next
+    // one is then in a later sequence), which a call or return rarely is;
+    // exactness would cost a seek per call, and there can be millions.
     static Position next_on_thread(const TtdPosition &p)
     {
         TtdPosition n = p;
@@ -42,23 +40,21 @@ namespace idattd
     // Accesses to a range
     //=======================================================================
 
-    // A watched range with a busy loop over it can produce millions of hits.
-    // Past a certain point the answer is "this is touched constantly".
+    // A busy loop over a watched range can produce millions of hits; past
+    // this many the answer is "touched constantly".
     static const size_t kMaxHits = 200000;
 
-    // The engine reports more access types than the three a reader thinks in.
-    // CodeFetch is an execute; Overwrite is a write. The rest describe how the
-    // recording stored a value rather than what the program did.
+    // Only the three access types the watchpoint asks for. CodeFetch and
+    // Overwrite are not asked for (see query_accesses); the rest describe how
+    // the recording stored a value rather than what the program did.
     static uint8_t kind_of(DataAccessType t)
     {
         switch ( t )
         {
-            case DataAccessType::Read:      return ACCESS_READ;
-            case DataAccessType::Write:
-            case DataAccessType::Overwrite: return ACCESS_WRITE;
-            case DataAccessType::Execute:
-            case DataAccessType::CodeFetch: return ACCESS_EXEC;
-            default:                        return 0;
+            case DataAccessType::Read:    return ACCESS_READ;
+            case DataAccessType::Write:   return ACCESS_WRITE;
+            case DataAccessType::Execute: return ACCESS_EXEC;
+            default:                      return 0;
         }
     }
 
@@ -102,17 +98,22 @@ namespace idattd
             return false;       // collecting them, not stopping on them
         };
 
-        // Segment filtering is left on: a watchpoint is a maskable event, so
-        // the engine skips the parts of the recording that never touch the
-        // range, which is what makes a narrow search fast.
+        // Segment filtering stays on: a watchpoint is maskable, so the engine
+        // skips the parts of the recording that never touch the range.
+        // Read, Write and Execute only, as query_executed and the scans ask.
+        // Execute is exact, one hit per executed instruction; CodeFetch is
+        // the engine's lossy coverage aggregate (hits vary run to run, may
+        // repeat or cover many executions at once). Overwrite is the
+        // pre-write companion of every Write, so asking for it would report
+        // each store twice and halve what kMaxHits holds.
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
         DataAccessMask am = DataAccessMask::None;
         if ( kinds & ACCESS_READ )
             am |= DataAccessMask::Read;
         if ( kinds & ACCESS_WRITE )
-            am |= DataAccessMask::Write | DataAccessMask::Overwrite;
+            am |= DataAccessMask::Write;
         if ( kinds & ACCESS_EXEC )
-            am |= DataAccessMask::Execute | DataAccessMask::CodeFetch;
+            am |= DataAccessMask::Execute;
         MemoryWatchpointData wp{};
         wp.Address    = GuestAddress{ (uint64_t)lo };
         wp.Size       = (uint64_t)(hi - lo);
@@ -128,9 +129,8 @@ namespace idattd
         // sorting on the whole tuple groups duplicates for the pass below.
         auto key = [](const Access &a) { return std::tie(a.pos, a.addr, a.kind, a.size, a.tid); };
         std::sort(hits.begin(), hits.end(), [&key](const Access &a, const Access &b) { return key(a) < key(b); });
-        // One access can be reported twice: the watchpoint asks for Write and
-        // Overwrite, Execute and CodeFetch, because a recording may describe
-        // the same event under either name.
+        // Exact duplicates are dropped all the same, which costs nothing
+        // after the sort and keeps the list clean whatever the engine reports.
         hits.erase(std::unique(hits.begin(), hits.end(),
                                [&key](const Access &a, const Access &b) { return key(a) == key(b); }),
                    hits.end());
@@ -169,6 +169,20 @@ namespace idattd
         if ( merged.empty() )
             return r;
 
+        // One bit per byte of scope, so the scope is capped: a caller passing
+        // a whole address space would otherwise ask for terabytes of bitmap.
+        // The core's coverage command already stops at 512 MiB.
+        static const uint64_t kMaxScopeBytes = 1ull << 30;
+        uint64_t total = 0;
+        for ( const auto &x : merged )
+            total += (uint64_t)(x.second - x.first);
+        if ( total > kMaxScopeBytes )
+        {
+            set_error("the coverage scope spans %llu MiB, more than the %llu MiB "
+                      "this backend maps at once", total >> 20, kMaxScopeBytes >> 20);
+            return r;
+        }
+
         UniqueCursor cur = new_engine_cursor();
         if ( !cur )
             return r;
@@ -180,12 +194,21 @@ namespace idattd
             ea_t lo = 0, hi = 0;
             std::vector<uint8_t> bits;
         };
-        std::vector<Bin> bins(merged.size());
-        for ( size_t i = 0; i < merged.size(); i++ )
+        std::vector<Bin> bins;
+        try
         {
-            bins[i].lo = merged[i].first;
-            bins[i].hi = merged[i].second;
-            bins[i].bits.assign((size_t)(((uint64_t)(merged[i].second - merged[i].first) + 7) / 8), 0);
+            bins.resize(merged.size());
+            for ( size_t i = 0; i < merged.size(); i++ )
+            {
+                bins[i].lo = merged[i].first;
+                bins[i].hi = merged[i].second;
+                bins[i].bits.assign((size_t)(((uint64_t)(merged[i].second - merged[i].first) + 7) / 8), 0);
+            }
+        }
+        catch ( const std::bad_alloc & )
+        {
+            set_error("not enough memory for a coverage map of %llu MiB", total >> 23);
+            return r;
         }
 
         // Cached last hit: consecutive instructions almost always land in the
@@ -257,10 +280,10 @@ namespace idattd
     static const size_t kMaxSites          = 20000;
 
     // Every call made from inside 'ranges', with each target it reached. The
-    // engine says where a call went, not whether it was indirect -- that is a
-    // property of the instruction, which this backend does not decode -- so
-    // direct calls are reported too and the caller keeps the indirect ones.
-    // Indirect jumps are not reported: the engine has no callback for them.
+    // engine says where a call went, not whether it was indirect (this
+    // backend does not decode the instruction), so direct calls are reported
+    // too and the caller keeps the indirect ones. Indirect jumps are not
+    // reported.
     QueryResult MsTtdBackend::query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                                      bool jumps,
                                                      std::map<ea_t, std::vector<IndirectTarget>> *out,
@@ -407,9 +430,8 @@ namespace idattd
                     return;
                 }
                 Rec rec{};
-                // The callback fires at the call instruction: this position is
-                // the ABI's 'pos', where a call's arguments are read with the
-                // call-site layout of the stack.
+                // The callback fires at the call instruction: the ABI's 'pos',
+                // where arguments are read with the call-site stack layout.
                 rec.ev.pos       = to_core(t->GetPosition());
                 rec.ev.entry_pos = next_on_thread(t->GetPosition());
                 rec.ev.ret_pos   = Position::none();
@@ -430,11 +452,11 @@ namespace idattd
             }
             else
             {
-                // RET: instr == the address being returned to. Pair it with the
-                // most recent in-flight call on this thread expecting it. The
-                // calls above that one left without returning (an exception,
-                // a longjmp, a tail jump out): with every call listed, leaving
-                // them on top would keep every outer call from pairing.
+                // RET: instr == the address returned to. Pair it with the most
+                // recent in-flight call on this thread expecting it, and drop
+                // the calls above it, which left without returning (an
+                // exception, longjmp or tail jump) and would block every outer
+                // call from pairing.
                 auto it = inflight.find(tid);
                 if ( it != inflight.end() )
                 {

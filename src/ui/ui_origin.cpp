@@ -10,13 +10,13 @@ namespace idattd
     //=======================================================================
     // ValueOriginChooser
     //=======================================================================
-    // How long a chain may get, and how many values a graph may have: each
-    // is a search of the recording.
+    // Limits on a chain's length and a graph's size: each hop is a search of
+    // the recording.
     static const size_t kOriginHops = 40;
     static const size_t kGraphNodes = 60;
 
-    // What each listing started from, by its title: the graph action, run
-    // from a listing's context menu, draws that.
+    // Each listing's starting value, by title, for the graph action on its
+    // context menu.
     struct OriginRoot
     {
         OriginTarget what;
@@ -26,7 +26,7 @@ namespace idattd
 
     // "Seen at": where the row looks at the value (where it was asked about,
     // or where the previous row's instruction read it). "Written at": the
-    // last instruction before that which wrote it.
+    // last write before that.
     static const int   g_vo_widths[] = { 3, 20, 26, 14, 14, 40, 44 };
     static const char *g_vo_header[] = { "#", "Value", "In", "Seen at", "Written at", "By", "How" };
 
@@ -150,8 +150,7 @@ namespace idattd
             pick = (size_t)r;
         }
 
-        // From just before the instruction ran: by_pos is where it is about
-        // to, on its thread.
+        // From just before the instruction ran (by_pos, on its thread).
         std::vector<OriginHop> more;
         if ( !trace_value_origin(m_mgr, inputs[pick].what, h.by_pos, kOriginHops, &more) || more.empty() )
             return cbret_t(n, NOTHING_CHANGED);
@@ -249,7 +248,7 @@ namespace idattd
     }
 
     // What to follow: from the context, else asked for. False when the user
-    // backed out or the answer made no sense (they were told).
+    // cancelled or gave an unparsable answer (after a warning).
     static bool pick_target(action_activation_ctx_t *ctx, OriginTarget *out)
     {
         OriginTarget &t = *out;
@@ -348,8 +347,8 @@ namespace idattd
         if ( written )
         {
             g.code = h.insn;
-            // A copy is one line: chains of them (spills and reloads) are
-            // long, and what matters is where they lead.
+            // A copy gets one line: chains of them (spills and reloads) are
+            // long, and only where they lead matters.
             if ( h.kind == OriginKind::Copied )
             {
                 g.lines.push_back(qstring().sprnt("%s, written at %s", describe_address(mgr, h.by_pc).c_str(),
@@ -440,6 +439,13 @@ namespace idattd
                        g_og.cancelled ? " Stopped before the end." : "");
         m.act = og_action;
         show_graph(OG_KIND, std::move(m));
+    }
+
+    void origin_session_ended()
+    {
+        forget_graph(OG_KIND);
+        g_og     = OriginGraph();
+        g_og_mgr = nullptr;
     }
 
     int idaapi OriginGraphHandler::activate(action_activation_ctx_t *ctx)

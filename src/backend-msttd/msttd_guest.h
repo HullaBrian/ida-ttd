@@ -5,9 +5,9 @@
 
 namespace idattd
 {
-    // Microsoft TTD's side of core/guest_view.h: a TTD cursor as a GuestRead,
-    // one QueryMemoryBuffer with the cursor's default policy -- what PE header
-    // and export parsing use.
+    // Microsoft TTD's side of core/guest_view.h: a TTD cursor as a GuestRead
+    // (one QueryMemoryBuffer with the cursor's default policy), for PE header
+    // and export parsing.
     GuestRead msttd_read_plain(TTD::Replay::ICursorView *cursor);
 
     // One word of 'width' bytes (4 or 8) at 'addr', through a cursor or a

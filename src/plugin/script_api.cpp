@@ -26,9 +26,9 @@ namespace idattd
 {
     // ------------------------------------------------------------------ JSON
     //
-    // Just enough to write answers: objects, arrays, strings, numbers. Numbers
-    // that are addresses or positions go out as "0x..." strings, because a
-    // 64-bit value does not survive a JSON reader that parses into doubles.
+    // Just enough to write answers. Addresses and other 64-bit values go out
+    // as "0x..." strings, since a JSON reader that parses into doubles would
+    // lose bits.
 
     // Length of the well-formed UTF-8 sequence at 'p', or 0 when it is not one
     // (a stray continuation byte, an overlong or truncated sequence).
@@ -83,9 +83,9 @@ namespace idattd
                     }
                     else
                     {
-                        // Text out of a recording need not be UTF-8, and one
-                        // bad byte would make the whole answer unreadable to
-                        // a JSON parser: pass it on as the Latin-1 character.
+                        // Text from a recording need not be UTF-8, and one bad
+                        // byte would make the answer unparseable: emit it as
+                        // the Latin-1 character.
                         out->cat_sprnt("\\u%04x", *p);
                     }
             }
@@ -173,8 +173,8 @@ namespace idattd
                 p++;
             if ( *p == '\0' )
                 break;
-            // Quotes may sit anywhere in a word, so registry="C:\Program Files\x"
-            // is one argument.
+            // Quotes may sit anywhere in a word: registry="C:\Program Files\x"
+            // is one argument. There is no escape for a literal quote.
             qstring tok;
             bool quoted = false;
             for ( ; *p != '\0' && (quoted || (*p != ' ' && *p != '\t')); p++ )
@@ -194,8 +194,8 @@ namespace idattd
         const char *p = s.c_str();
         if ( p[0] == '0' && (p[1] == 'x' || p[1] == 'X') )
             p += 2;
-        // strtoull would also take leading blanks and a sign ("-1" as
-        // 0xFFFF...), and saturate on overflow; none of those is a number here.
+        // Reject what strtoull would accept but is no number here: leading
+        // blanks, a sign ("-1" as 0xFFFF...), overflow.
         if ( !isxdigit((unsigned char)*p) )
             return false;
         char *end = nullptr;
@@ -239,7 +239,7 @@ namespace idattd
             return x;
         }
         uint64_t u64_or(size_t i, uint64_t dflt) const { return i < count() ? u64(i) : dflt; }
-        // A trailing "back" (or "backward") makes a movement go backwards.
+        // A "back", "backward" or "backwards" anywhere reverses a movement.
         bool back() const
         {
             for ( size_t i = 1; i < v.size(); i++ )
@@ -250,7 +250,7 @@ namespace idattd
     };
 
     // An "rwx"-style word as access bits. The backend ABI and the analyses
-    // number the kinds differently, so the caller names the three bits.
+    // number the kinds differently, so the caller supplies the bits.
     static uint8_t rwx_mask(const qstring &k, uint8_t r, uint8_t w, uint8_t x)
     {
         uint8_t m = 0;
@@ -269,10 +269,10 @@ namespace idattd
         return p;
     }
 
-    // One of the words that set up a Sogen replay: registry=DIR, root=DIR (the
-    // emulation root, where it is elsewhere here), strict, host or
-    // anyregistry (replay with hives that are not the recording's).
-    // ForkRequest and ReplaySettings name the fields alike.
+    // A word that sets up a Sogen replay: registry=DIR, root=DIR (the
+    // emulation root, when it is elsewhere here), strict, host, or
+    // anyregistry (accept hives that are not the recording's). ForkRequest
+    // and ReplaySettings name the fields alike.
     template <typename T>
     static bool replay_option(const qstring &t, T *s)
     {
@@ -295,13 +295,12 @@ namespace idattd
 
     static Plugin *g_plugin = nullptr;
 
-    // A recording opened straight through a backend, with no debugger session:
-    // what the drv.* commands work on. It exercises a backend and the core's
-    // adapter in-process, headless or not.
+    // A recording opened directly through a backend, without a debugger
+    // session: what drv.* works on. Exercises a backend and the core's adapter
+    // in-process, headless or not.
     //
-    // A backend instance of its own, never the registry's: that one is the
-    // debugger session's, and opening another recording through it would close
-    // the session's from under it.
+    // Its own backend instance, never the registry's: that one belongs to the
+    // debugger session, whose recording another open would close.
     struct Driver
     {
         BackendPtr     owned;
@@ -397,16 +396,15 @@ namespace idattd
             g_drv.close();
             fail("%s could not open %s: %s", id.c_str(), path.c_str(), err.c_str());
         }
-        // As a debugger session would: without it a Microsoft trace has no
-        // memory index, and reads come back mostly empty.
+        // As a session does: without it a Microsoft trace has no memory
+        // index and reads come back mostly empty.
         prepare_backend(b);
         g_drv.backend = b;
         g_drv.path    = path;
         g_drv.cursor  = b->make_cursor();
         if ( g_drv.cursor )
             g_drv.nav = b->make_navigator(g_drv.cursor.get());
-        // Every drv.* command after this one relies on both, so a recording
-        // without them is not left open half-usable.
+        // Every other drv.* command needs both; do not leave it half-usable.
         if ( !g_drv.cursor || !g_drv.nav )
         {
             qstring id = b->id();
@@ -572,8 +570,11 @@ namespace idattd
     {
         ITraceBackend &b = drv();
         uint64_t n = a.u64_or(0, 0x20);
+        // Bounded like drv.read's size: every instruction becomes a JSON object.
+        if ( n == 0 || n > 0x10000 )
+            fail("list at most 0x10000 instructions");
         // To the end of the recording: the backend stops after 'n', and a
-        // window in positions would mean something different to each backend.
+        // position window would mean something different to each backend.
         Position from = g_drv.cursor->position();
         Position to   = Position::end();
         std::vector<Access> v;
@@ -767,7 +768,9 @@ namespace idattd
     // Wait for the debugger to stop again, and say where.
     static void wait_stop(const Args &a, size_t timeout_arg, JObj &out)
     {
-        int timeout = (int)a.u64_or(timeout_arg, 0x3C);   // seconds, hex like every number
+        // Seconds, hex like every number. Capped at a day: a cast alone would
+        // turn a large value negative, which IDA reads as "wait forever".
+        int timeout = (int)qmin(a.u64_or(timeout_arg, 0x3C), uint64_t(86400));
         // WFNE_SILENT: a script has nobody to answer a modal box.
         dbg_event_code_t code = wait_for_next_event(WFNE_SUSP | WFNE_SILENT, timeout);
         out.num("event", code);
@@ -812,9 +815,8 @@ namespace idattd
 
     static void cmd_wait(const Args &a, JObj &out) { wait_stop(a, 0, out); }
 
-    // switch PATH [TIMEOUT]: end the session, if one runs, and start the
-    // replay of PATH in this database -- what the Fork manager's "Switch
-    // here" does, without its timer.
+    // switch PATH [TIMEOUT]: end any session and replay PATH in this
+    // database, as the Fork manager's switch does but without its timer.
     static void cmd_switch(const Args &a, JObj &out)
     {
         qstring path = a.at(0);
@@ -835,16 +837,16 @@ namespace idattd
         out.str("trace", mgr().trace_path());
     }
 
-    // The switch as the Fork manager makes it: queued, from a timer and IDA's
-    // request queue, returning at once. Poll "state" for the new trace.
+    // The switch as the Fork manager makes it (timer, then IDA's request
+    // queue), returning at once. Poll "state" for the new trace.
     static void cmd_switch_ui(const Args &a, JObj &out)
     {
         g_plugin->switch_trace(a.at(0));
         out.str("queued", a.at(0));
     }
 
-    // One movement of the real debugger session, then wait for it to stop.
-    // The backward ones go the way the TTD toolbar sends them.
+    // One movement of the debugger session, then wait for the stop. Backward
+    // movements go the way the TTD toolbar sends them.
     static void cmd_move(const Args &a, JObj &out)
     {
         need_session();
@@ -958,9 +960,9 @@ namespace idattd
 
     // ------------------------------------------------------------------ an.*
     //
-    // The analyses, run inside the session exactly as their UI actions run
-    // them -- the same functions, the same wait boxes, the same writes into
-    // the database -- with the scope given here instead of in a dialog.
+    // The analyses, run exactly as their UI actions run them (same functions,
+    // wait boxes and database writes), with the scope given here instead of
+    // in a dialog.
 
     static uint8_t access_mask(const Args &a, size_t i)
     {
@@ -1100,8 +1102,8 @@ namespace idattd
            .raw("regs", regs.done()).raw("memory", mem.done());
     }
 
-    // an.registry: where the plugin looks for the open recording's hives,
-    // what each place holds, and the folder a replay would use.
+    // an.registry: where the recording's hives are looked for, what each
+    // place holds, and the folder a replay would use.
     static void cmd_an_registry(const Args &, JObj &out)
     {
         need_session();
@@ -1167,8 +1169,8 @@ namespace idattd
         return mgr().at_fork_draft() && (!d.regs.empty() || !d.bytes.empty());
     }
 
-    // an.forkhere: make the current position a fork (TTD > Fork here). Its
-    // registers and memory are then changed through IDA's own debugger calls.
+    // an.forkhere: make the current position a fork (TTD > Fork here); change
+    // it through IDA's own debugger calls.
     static void cmd_an_forkhere(const Args &, JObj &out)
     {
         need_session();
@@ -1227,7 +1229,7 @@ namespace idattd
            .num("regs", (int64_t)req.regs.size()).num("writes", (int64_t)req.memory.size());
     }
 
-    // Trailing "registry=DIR" and "strict" words set what the replay needs.
+    // Replay options (replay_option) from argument 'from' on.
     static ReplaySettings replay_args(const Args &a, size_t from)
     {
         ReplaySettings rs;
@@ -1335,9 +1337,8 @@ namespace idattd
         out.raw("heat", j);
     }
 
-    // Which slice of the heatmap's span the cursor is in, for the window's
-    // position marker; polled by the window, so cheap, and "busy" rather
-    // than an answer while the replay is moving (the cursor is mid-move).
+    // The heatmap slice the cursor is in, for the window's marker. Polled,
+    // so cheap; "busy" while the replay is moving.
     static void cmd_ui_heatnow(const Args &, JObj &out)
     {
         if ( get_process_state() != DSTATE_SUSP )
@@ -1438,14 +1439,25 @@ namespace idattd
         FunctionTracer &tr = g_plugin->tracer();
         uint64_t max = a.u64_or(1, 40);
         tr.reset();
-        // An address, or a "module!Glob*" pattern as the Trace calls by pattern
-        // action takes it.
+        // An address, or a "module!Glob*" pattern as Find calls by pattern
+        // takes it. A hex word with "0x" or a leading digit is an address
+        // (no symbol starts with a digit, and ida_ttd.py sends ints as bare
+        // hex). One starting with a letter ("add", "face") is a name first,
+        // and an address only when no function matches it.
+        const qstring &word = a.at(0);
         uint64_t ea = 0;
-        if ( parse_u64(a.at(0), &ea) )
+        const bool is_hex = parse_u64(word, &ea);
+        if ( is_hex && (word.starts_with("0x") || word.starts_with("0X") || qisdigit((uchar)word[0])) )
+        {
             tr.add_func((ea_t)ea);
+        }
         else
-            for ( ea_t f : mgr().modules().resolve_function_pattern(a.at(0).c_str()) )
+        {
+            for ( ea_t f : mgr().modules().resolve_function_pattern(word.c_str()) )
                 tr.add_func(f);
+            if ( tr.count_traced() == 0 && is_hex )
+                tr.add_func((ea_t)ea);
+        }
         out.num("traced", (int64_t)tr.count_traced());
         tr.run_sweep();
         std::vector<FunctionInvocation> v = tr.snapshot_events();
@@ -1507,8 +1519,7 @@ namespace idattd
         out.boolean("done", ok).hex("start", fi.start_ea).hex("end", fi.end_ea);
     }
 
-    // Where a value came from: "an.origin rax", "an.origin mem ADDR [SIZE]".
-    // A trailing "from=POS", taken off the arguments: the position a command
+    // A "from=POS" argument, removed from the list: the position a command
     // works at instead of the playhead.
     static bool from_arg(Args *a, Position *p)
     {
@@ -1532,7 +1543,7 @@ namespace idattd
             o.hex("addr", t.addr).num("size", t.size);
     }
 
-    // A word among the arguments, taken off them: whether it was there.
+    // Remove 'word' from the arguments; whether it was there.
     static bool flag_arg(Args *a, const char *word)
     {
         for ( size_t i = 1; i < a->v.size(); i++ )
@@ -1576,6 +1587,7 @@ namespace idattd
         return o.done();
     }
 
+    // Where a value came from: "an.origin rax", "an.origin mem ADDR [SIZE]".
     static void cmd_an_origin(const Args &args, JObj &out)
     {
         need_session();
@@ -1699,8 +1711,8 @@ namespace idattd
         out.num("count", (int64_t)v.size()).boolean("cancelled", cancelled).raw("handles", arr.done());
     }
 
-    // The Memory map listing's rows. Builds the session's change timeline
-    // first when it has none (as the menu does, without asking).
+    // The Memory map listing's rows. Builds the change timeline first if
+    // there is none (as the menu does, without asking).
     static void cmd_an_regions(const Args &a, JObj &out)
     {
         need_session();
@@ -1838,8 +1850,8 @@ namespace idattd
         out.raw("backends", arr.done());
     }
 
-    // The settings as the plugin holds them (read again first if IDA's
-    // settings file changed), so a test can see a change arrive.
+    // The settings as the plugin holds them (re-read first if
+    // ida-config.json changed), so a test can see a change arrive.
     static void cmd_settings(const Args &, JObj &out)
     {
         reload_settings_if_changed();

@@ -1,10 +1,9 @@
 // The IDA kernel functions the Microsoft backend reaches without meaning to.
 //
-// The backend is written in the core's vocabulary -- qstring, ea_t -- and
-// pro.h's inline code for those calls into ida.dll for memory and
-// formatting. A backend DLL must run without IDA (the probe loads it into a
-// plain process), so it does not link ida.lib, and these stand in: the same
-// contracts, over the C runtime.
+// The backend uses the core's types (qstring, ea_t), whose inline code in
+// pro.h calls into ida.dll for memory and formatting. A backend DLL must run
+// without IDA (the probe loads it into a plain process), so it does not link
+// ida.lib; these stand in, with the same contracts over the C runtime.
 //
 // Only what the link asks for is here. A new unresolved external from ida.dll
 // means the backend started using something of IDA's it should not.
@@ -59,9 +58,9 @@ idaman THREAD_SAFE void *ida_export qrealloc_or_throw(void *ptr, size_t size)
 }
 
 // qvector<T> is { T *array; size_t n; size_t alloc; }. This grows its array
-// to at least 'cnt' elements -- in place from 'old', or fresh when 'old' is
-// null -- records the new capacity in the vector and returns the array.
-// Growing by half again keeps repeated push_back amortised, as IDA's does.
+// to at least 'cnt' elements (reallocating 'old', or fresh when it is null),
+// records the new capacity and returns the array. Growing by half again keeps
+// push_back amortised, as IDA's does.
 idaman THREAD_SAFE void *ida_export qvector_reserve(void *vec, void *old, size_t cnt, size_t elsize)
 {
     struct layout { void *array; size_t n; size_t alloc; };
@@ -71,7 +70,15 @@ idaman THREAD_SAFE void *ida_export qvector_reserve(void *vec, void *old, size_t
         want = cnt;
     if ( want < 4 )
         want = 4;
-    void *p = old != nullptr ? qrealloc_or_throw(old, want * elsize) : qalloc_or_throw(want * elsize);
+    // A count whose byte size wraps would allocate a small block and let the
+    // caller write past it; no allocation can satisfy it anyway.
+    if ( elsize != 0 && want > SIZE_MAX / elsize )
+    {
+        if ( cnt > SIZE_MAX / elsize )
+            out_of_memory();
+        want = cnt;     // the half-again growth overflowed, the request did not
+    }
+    void *p =old != nullptr ? qrealloc_or_throw(old, want * elsize) : qalloc_or_throw(want * elsize);
     v->alloc = want;
     return p;
 }

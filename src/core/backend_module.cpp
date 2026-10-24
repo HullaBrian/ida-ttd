@@ -4,6 +4,8 @@
 
 #include <diskio.hpp>   // idadir, get_user_idadir
 
+#include <atomic>
+
 namespace idattd
 {
     // ---------------------------------------------------------------- helpers
@@ -34,17 +36,17 @@ namespace idattd
         return r;
     }
 
-    // A fixed-size string field of an ABI struct. The ABI says it is
-    // NUL-terminated, but a backend that filled it to the brim must not make
-    // the core read past the struct.
+    // A fixed-size string field of an ABI struct, read without trusting the
+    // NUL: a backend that filled it to the brim must not make the core read
+    // past the struct.
     template <size_t N>
     static qstring fixed_str(const char (&s)[N])
     {
         return qstring(s, strnlen(s, N));
     }
 
-    // A ProgressSink as the ABI's ittd_progress. The sink's percent is
-    // coarser than the ABI's permille; the sink is told only when it changes.
+    // A ProgressSink as the ABI's ittd_progress. The sink takes percent, not
+    // permille, and is told only when the percent changes.
     struct ProgressBridge
     {
         ProgressSink *sink = nullptr;
@@ -78,8 +80,8 @@ namespace idattd
         }
     };
 
-    // Whether the table has entry 'f' and fills it: entries added after the
-    // first table sit past the 'size' of a backend built before them.
+    // Whether the table has entry 'f' and fills it. Entries added after the
+    // first table lie past the 'size' of a backend built before them.
     #define ITTD_HAS(api, f) \
         (offsetof(ittd_backend_api, f) + sizeof((api)->f) <= (api)->size && (api)->f != nullptr)
 
@@ -93,16 +95,24 @@ namespace idattd
     }
 
     // The count-then-fill convention: ask for the count, then fill an array
-    // that large. A backend answers the same count twice for an unchanged
-    // recording, but if it ever grew between the calls the array is grown and
-    // the fill repeated rather than the tail silently lost. A count too large
+    // that large. If the count grew between the calls, the array is grown and
+    // the fill repeated (up to three times); when it is still short after
+    // that, the answer is what fit and '*truncated' is set. A count too large
     // to allocate fails the query instead of throwing into IDA.
     template <typename T, typename Call>
-    static int count_fill(std::vector<T> *out, Call call)
+    static int count_fill(std::vector<T> *out, Call call, int *truncated = nullptr)
     {
         size_t n = 0;
         int rc = call((T *)nullptr, (size_t)0, &n);
-        for ( int attempt = 0; rc == ITTD_OK && attempt < 3; attempt++ )
+        if ( rc != ITTD_OK )
+            return rc;
+        // Nothing to fill: a second call would only repeat the first.
+        if ( n == 0 )
+        {
+            out->clear();
+            return rc;
+        }
+        for ( int attempt = 0; attempt < 3; attempt++ )
         {
             try
             {
@@ -122,6 +132,10 @@ namespace idattd
             }
             n = got;
         }
+        // The count kept growing: keep the last fill, which is valid as far
+        // as the array reached, and say it is not the whole answer.
+        if ( truncated != nullptr )
+            *truncated = 1;
         return rc;
     }
 
@@ -307,7 +321,7 @@ namespace idattd
             char buf[1024] = { 0 };
             if ( !ITTD_HAS(m_api, nav_take_notice) || m_api->nav_take_notice(m_c, buf, sizeof(buf)) != ITTD_OK )
                 return qstring();
-            return qstring(buf);
+            return fixed_str(buf);
         }
 
         void set_progress(ProgressSink *progress) override
@@ -325,8 +339,8 @@ namespace idattd
         {
             DiagTimer diag_timer(forward ? "nav.forward" : "nav.backward");
             int stop = ITTD_STOP_FAILED;
-            // NULL, or a direction the backend does not do (ITTD_E_UNSUPPORTED),
-            // is a movement that did not happen.
+            // A NULL entry, or a direction the backend does not support
+            // (ITTD_E_UNSUPPORTED), is a movement that did not happen.
             if ( fn == nullptr || fn(m_c, forward ? 1 : 0, &stop) != ITTD_OK )
                 return StopReason::Failed;
             return reason(stop);
@@ -433,6 +447,10 @@ namespace idattd
         m_caps.replay_scans     = (c & ITTD_CAP_REPLAY_SCANS) != 0
                                && ITTD_HAS(m_api, query_strings) && ITTD_HAS(m_api, query_buffers);
         m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
+        // The header promises prepare() is called only when the bit is set,
+        // so a backend may leave the entry filled but meaningless for a
+        // recording that needs no preparation.
+        m_needs_prepare         = (c & ITTD_CAP_PREPARE) != 0 && m_api->prepare != nullptr;
         return true;
     }
 
@@ -445,12 +463,13 @@ namespace idattd
         m_info     = TraceInfo{};
         m_caps     = Capabilities{};
         m_prepared = false;
+        m_needs_prepare = false;
     }
 
     bool BackendModule::prepare(ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.prepare");
-        if ( m_handle == nullptr || m_api->prepare == nullptr )
+        if ( m_handle == nullptr || !m_needs_prepare )
             return true;
         ProgressBridge pb(progress);
         m_prepared = m_api->prepare(m_handle, pb.get()) == ITTD_OK;
@@ -461,7 +480,7 @@ namespace idattd
     {
         if ( m_handle == nullptr )
             return false;
-        if ( m_api->prepare == nullptr || m_prepared )
+        if ( !m_needs_prepare || m_prepared )
             return true;
         return ITTD_HAS(m_api, prepared) && m_api->prepared(m_handle) != 0;
     }
@@ -478,7 +497,7 @@ namespace idattd
             s.sprnt("%llX:%llX", (uint64_t)p.hi, (uint64_t)p.lo);
             return s;
         }
-        return qstring(buf);
+        return fixed_str(buf);
     }
 
     bool BackendModule::parse_position(const char *text, Position *out) const
@@ -577,7 +596,7 @@ namespace idattd
     }
 
     // The whole-trace queries all run the same way: count, fill, convert.
-    // 'truncated' is the backend's own flag from the fill.
+    // 'truncated' is the backend's flag from the fill.
 
     QueryResult BackendModule::query_accesses(ea_t lo, ea_t hi, uint8_t kinds, PositionRange when,
                                               std::vector<Access> *out, ProgressSink *progress)
@@ -593,7 +612,7 @@ namespace idattd
         {
             return m_api->query_accesses(m_handle, (uint64_t)lo, (uint64_t)hi, k, to_abi(when),
                                          b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         for ( const ittd_access &a : v )
         {
             Access x;
@@ -622,9 +641,9 @@ namespace idattd
         int rc = count_fill(&v, [&](uint64_t *b, size_t cap, size_t *n)
         {
             return m_api->query_executed(m_handle, r.data(), r.size(), b, cap, n, &trunc, pb.get());
-        });
-        // The ABI's answer is already sorted and distinct. A module's worth is
-        // millions of addresses: one append, not a push_back each.
+        }, &trunc);
+        // Already sorted and distinct. A module's worth is millions of
+        // addresses: one append, not a push_back each.
         out->insert(out->end(), v.begin(), v.end());
         return result_of(rc, trunc);
     }
@@ -643,7 +662,7 @@ namespace idattd
         {
             return m_api->query_calls(m_handle, t.data(), t.size(), to_abi(when),
                                       b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         for ( const ittd_call &c : v )
         {
             CallEvent e;
@@ -675,7 +694,7 @@ namespace idattd
         {
             return m_api->query_indirect(m_handle, r.data(), r.size(), jumps ? ITTD_INDIRECT_JUMPS : 0,
                                          b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         for ( const ittd_call_target &c : v )
         {
             IndirectTarget t;
@@ -699,7 +718,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_exception *b, size_t cap, size_t *n)
         {
             return m_api->query_exceptions(m_handle, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         for ( const ittd_exception &x : v )
         {
             ExceptionEvent e;
@@ -727,7 +746,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_syscall *b, size_t cap, size_t *n)
         {
             return m_api->query_syscalls(m_handle, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         out->reserve(v.size());
         for ( const ittd_syscall &x : v )
         {
@@ -753,7 +772,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_selfmod *b, size_t cap, size_t *n)
         {
             return m_api->query_self_modifying(m_handle, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         out->reserve(v.size());
         for ( const ittd_selfmod &x : v )
         {
@@ -799,9 +818,9 @@ namespace idattd
         out->registry_known  = e.registry_known != 0;
         out->registry_carried = e.registry_carried != 0;
         out->system_dlls     = e.system_dlls;
-        out->registry_hint   = e.registry_hint;
-        out->emulation_root  = e.emulation_root;
-        out->windows_version = e.windows_version;
+        out->registry_hint   = fixed_str(e.registry_hint);
+        out->emulation_root  = fixed_str(e.emulation_root);
+        out->windows_version = fixed_str(e.windows_version);
         return true;
     }
 
@@ -855,7 +874,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_string_hit *b, size_t cap, size_t *n)
         {
             return m_api->query_strings(m_handle, &fs, min_length, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         note_replay(rc);
         out->reserve(v.size());
         for ( const ittd_string_hit &x : v )
@@ -885,7 +904,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_buffer_hit *b, size_t cap, size_t *n)
         {
             return m_api->query_buffers(m_handle, &fs, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         note_replay(rc);
         out->reserve(v.size());
         for ( const ittd_buffer_hit &x : v )
@@ -981,7 +1000,7 @@ namespace idattd
         int rc = count_fill(out, [&](ittd_mapping_change *b, size_t cap, size_t *n)
         {
             return m_api->query_mapping_changes(m_handle, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         if ( files != nullptr && m_api->query_mapping_files != nullptr )
         {
             std::vector<ittd_name> names;
@@ -1033,7 +1052,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_heat_cell *b, size_t cap, size_t *n)
         {
             return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         append_heat(v, out);
         return result_of(rc, trunc);
     }
@@ -1049,7 +1068,7 @@ namespace idattd
                                                         ProgressSink *progress)
     {
         // The whole recording goes through the original entry, which every
-        // backend with a heatmap has, and which caches its answer.
+        // heatmap backend has and which caches its answer.
         if ( when.whole_trace() )
             return query_access_heat(page_shift, slices, out, progress);
         DiagTimer diag_timer("backend.query_access_heat_window", 0);
@@ -1062,7 +1081,7 @@ namespace idattd
         int rc = count_fill(&v, [&](ittd_heat_cell *b, size_t cap, size_t *n)
         {
             return m_api->query_access_heat_window(m_handle, page_shift, slices, w, b, cap, n, &trunc, pb.get());
-        });
+        }, &trunc);
         append_heat(v, out);
         return result_of(rc, trunc);
     }
@@ -1153,8 +1172,8 @@ namespace idattd
         DiagTimer diag_timer("backend.query_instructions");
         if ( m_handle == nullptr || m_api->query_instructions == nullptr || out == nullptr || max == 0 )
             return QueryResult{};
-        // One call into a buffer of 'max': this query is capped, not counted
-        // (see the ABI), because counting would cost a replay the full price.
+        // One call into a buffer of 'max': this query is capped, not counted,
+        // because counting would cost a replay the full price.
         ProgressBridge pb(progress);
         int trunc = 0;
         std::vector<ittd_access> v(max);
@@ -1255,17 +1274,26 @@ namespace idattd
 
     // ------------------------------------------------------- backend logging
     //
-    // A backend logs from whichever thread runs its query: a run_query worker,
-    // or the engine's own. msg() is not called from such a thread: output can
-    // end up in Python (IDAPython and other plugins watch it), and a script
-    // waiting on the query (ttd() from IDAPython) holds the GIL on the main
-    // thread, so the worker would wait until the UI happened to run Python
-    // code (run_query also lets the GIL go while it waits). Lines from other
-    // threads are queued and printed by the main thread: at the next line it
-    // logs, from run_query's wait loop, or from a UI request posted for them.
+    // A backend logs from whichever thread runs its query (a run_query worker
+    // or the engine's own). msg() is not called from such a thread: output can
+    // reach Python (IDAPython and other plugins watch it), and a script
+    // waiting on the query holds the GIL on the main thread, so the worker
+    // would stall until the UI next ran Python. Lines from other threads are
+    // queued and printed by the main thread: at its next log line, from
+    // run_query's wait loop, or from a posted UI request.
     static DWORD                g_main_tid = 0;
     static std::mutex           g_log_mtx;
     static std::vector<qstring> g_log_queue;
+    // Whether a line queued from another thread may post a PrintQueuedLines
+    // request. The loader turns it off: IDA unloads ttd-loader.dll after
+    // load_file, and a request still queued then would run unmapped code.
+    static std::atomic<bool>    g_post_requests{ true };
+
+    // The tables of the registered modules, whose log callbacks this binary
+    // sets and clears. They live in backend DLLs that are never unloaded.
+    static std::vector<const ittd_backend_api *> g_log_apis;
+    // Whether this binary's callback is the one installed.
+    static bool                 g_log_attached = false;
 
     static void print_queued_lines()
     {
@@ -1304,7 +1332,7 @@ namespace idattd
             g_log_queue.push_back(qstring(line));
         }
         // One request per batch; IDA owns and deletes it.
-        if ( first )
+        if ( first && g_post_requests )
             execute_ui_requests(new PrintQueuedLines, nullptr);
     }
 
@@ -1314,13 +1342,44 @@ namespace idattd
             print_queued_lines();
     }
 
-    // Load one module and register it. Each failure is named, because a
-    // backend the user installed and does not see is otherwise a mystery.
+    void attach_backend_log(bool post_requests)
+    {
+        g_post_requests = post_requests;
+        for ( const ittd_backend_api *api : g_log_apis )
+            api->set_log(backend_log, nullptr);
+        g_log_attached = !g_log_apis.empty();
+    }
+
+    static void clear_backend_log()
+    {
+        if ( !g_log_attached )
+            return;
+        for ( const ittd_backend_api *api : g_log_apis )
+            api->set_log(nullptr, nullptr);
+        g_log_attached = false;
+    }
+
+    void detach_backend_log()
+    {
+        clear_backend_log();
+        flush_backend_log();
+    }
+
+    // When this binary is unloaded (the plugin at the end of a session, the
+    // loader after load_file), a callback it left installed would dangle in
+    // the backend, which stays loaded. This runs from the CRT's teardown,
+    // where printing is unsafe, so it only clears.
+    static struct BackendLogGuard
+    {
+        ~BackendLogGuard() { clear_backend_log(); }
+    } g_log_guard;
+
+    // Load one module and register it. Each failure is named, so an installed
+    // backend that does not appear can be explained.
     static void load_one(const qstring &path)
     {
         // Search the module's own directory for its dependencies: a backend
-        // ships what it needs next to itself (Sogen's Unicorn, in a build that
-        // is not static).
+        // ships them beside itself (Sogen's Unicorn, in a non-static build).
         HMODULE h = LoadLibraryExW(widen(path).c_str(), nullptr,
                                    LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
         if ( h == nullptr )
@@ -1345,17 +1404,16 @@ namespace idattd
         {
             api = nullptr;
         }
-        if ( api == nullptr || api->abi_version != ITTD_ABI_VERSION || api->id == nullptr )
+        // Every entry up to set_log was in the first table of this version
+        // and is read without a size check, so a shorter table is refused.
+        if ( api == nullptr || api->abi_version != ITTD_ABI_VERSION || api->id == nullptr
+          || api->size < offsetof(ittd_backend_api, set_log) )
         {
             msg("[ida-ttd] the backend %s does not speak backend ABI version %u; skipped. "
                 "It was built for a different ida-ttd.\n", path.c_str(), ITTD_ABI_VERSION);
             FreeLibrary(h);
             return;
         }
-
-        // Its diagnostics go to the output window.
-        if ( ITTD_HAS(api, set_log) )
-            api->set_log(backend_log, nullptr);
 
         auto mod = std::make_unique<BackendModule>(api, path);
         if ( BackendRegistry::instance().by_id(mod->id()) != nullptr )
@@ -1367,6 +1425,10 @@ namespace idattd
         msg("[ida-ttd] backend loaded: %s (%s) from %s\n",
             mod->display_name(), mod->id(), path.c_str());
         BackendRegistry::instance().add_backend(std::move(mod));
+        // Its diagnostics go to the output window once load_backend_modules
+        // or attach_backend_log installs the callback.
+        if ( ITTD_HAS(api, set_log) )
+            g_log_apis.push_back(api);
     }
 
     static void load_dir(const qstring &dir)
@@ -1401,27 +1463,19 @@ namespace idattd
         return dir;
     }
 
-    void load_backend_modules()
+    static void load_all_dirs()
     {
-        static bool done = false;
-        if ( done )
-            return;
-        done = true;
-        // Called first from the plugin's init, on the main thread.
-        g_main_tid = GetCurrentThreadId();
-
         // First the backends the user installed (TTD > Backends > Install the
-        // Sogen backend puts it there), so one they added wins over one an
-        // installation shipped: a second module with the same id is skipped.
+        // Sogen backend puts it there), so they win over shipped ones: a
+        // second module with the same id is skipped.
         load_dir(user_data_dir("backends"));
 
-        // Then where a plugin's own backends are, never plugins\ itself (IDA
+        // Then the plugin's own backend folders, never plugins\ itself (IDA
         // loads everything there as a plugin): plugins\ida-ttd-backends\
-        // beside a hand-installed ida-ttd.dll, and plugins\ida-ttd\ida-ttd-backends\
-        // inside the folder IDA's plugin manager installs the package into.
-        // The user's plugins\ida-ttd-backends\ is also where earlier versions
-        // installed the Sogen backend. The loader looks in the same places,
-        // having no plugin path of its own to go by.
+        // beside a hand-installed ida-ttd.dll (also where earlier versions put
+        // the Sogen backend), and plugins\ida-ttd\ida-ttd-backends\ in the
+        // HCLI package folder. The loader searches the same places, having no
+        // plugin path of its own.
         qstring user = get_user_idadir();
         user.append("\\plugins");
         qstring install = idadir(PLG_SUBDIR);
@@ -1434,5 +1488,24 @@ namespace idattd
             packaged.append("\\ida-ttd\\ida-ttd-backends");
             load_dir(packaged);
         }
+    }
+
+    void load_backend_modules(bool install_log)
+    {
+        static bool done = false;
+        if ( done )
+        {
+            // The loader may have pointed the shared tables elsewhere since.
+            if ( install_log )
+                attach_backend_log(true);
+            return;
+        }
+        done = true;
+        // Called first from the plugin's init (or the loader's accept_file),
+        // on the main thread.
+        g_main_tid = GetCurrentThreadId();
+        load_all_dirs();
+        if ( install_log )
+            attach_backend_log(true);
     }
 }

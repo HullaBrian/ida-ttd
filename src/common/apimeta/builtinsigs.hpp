@@ -6,28 +6,23 @@
 // The three small hand-written tables, and why each one has to be hand-written.
 //
 // Most signatures are generated: win32json for the documented Win32 surface
-// (build-win32-index.py) and phnt for the native one (build-phnt-index.py). Between
-// them they cover everything that has a public source. What is left is:
+// (build-win32-index.py) and phnt for the native one (build-phnt-index.py). What
+// no public source covers is:
 //
-//   1. win32u -- the win32k syscall stubs. phnt's ntuser.h has 292 of them but not
-//      NtUserGetAsyncKeyState, which is the single most-called unsignatured function
-//      in a desktop trace by an order of magnitude. Syscall-table projects publish
-//      numbers and names, not prototypes, so there is nothing to generate from.
+//   1. win32u: the win32k syscall stubs. phnt's ntuser.h has 292 of them but not
+//      NtUserGetAsyncKeyState, by far the most-called unsignatured function in a
+//      desktop trace. Syscall-table projects publish names, not prototypes.
 //
-//   2. The C runtime -- memset, strlen, malloc and friends, exported by ntdll,
-//      msvcrt and ucrtbase. Standard C, stable since 1989, and no metadata anywhere
-//      describes them because nothing needs to.
+//   2. The C runtime (memset, strlen, malloc and friends), exported by ntdll,
+//      msvcrt and ucrtbase. Standard C, and no metadata describes it.
 //
-//   3. The flag-enum overlay. phnt types every flag argument as a bare ULONG:
-//      NtProtectVirtualMemory's NewProtection is a ULONG, not PAGE_PROTECTION_FLAGS.
-//      win32json already holds those enum tables, so this names one for a given
-//      function and parameter and the two halves of the index are stitched together.
-//      It is a judgement about meaning rather than a fact any header states, which is
-//      exactly why it cannot be generated.
+//   3. The flag-enum overlay. phnt types every flag argument as a bare ULONG
+//      (NtProtectVirtualMemory's NewProtection is not PAGE_PROTECTION_FLAGS).
+//      win32json holds those enum tables, so this names one per function and
+//      parameter. It is a judgement about meaning, so it cannot be generated.
 //
-// Keep all three short. Every row is a maintenance liability, and a wrong prototype
-// is worse than no prototype -- it turns "we do not know" into a confident-looking
-// value, which is the failure mode this whole subsystem exists to avoid.
+// Keep all three short. A wrong prototype is worse than none: it turns "unknown"
+// into a confident-looking value, the failure this subsystem exists to avoid.
 
 #include <cstdint>
 #include <span>

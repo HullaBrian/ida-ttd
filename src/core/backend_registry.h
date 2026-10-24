@@ -8,13 +8,12 @@ namespace idattd
     // Which backends are available, and which one a file belongs to.
     //
     // Backends are separate DLLs the core loads at startup from its backend
-    // directory (see docs/modular-backends.md). Installing one is dropping a
-    // file in; a backend the user does not have is simply absent, rather than
-    // code they paid for in the download. It also keeps each backend's
-    // third-party dependencies -- and its licence -- to itself.
+    // directories (docs/modular-backends.md). Installing one is dropping a
+    // file in, and each backend keeps its third-party dependencies and its
+    // licence to itself.
     //
-    // add() exists for a backend compiled into the core, which none is today;
-    // it is what a test double would use.
+    // add() is for a backend compiled into the core (none is today), such as
+    // a test double.
     class BackendRegistry
     {
     public:
@@ -33,8 +32,8 @@ namespace idattd
         const std::vector<ITraceBackend *> &all();
 
         // The first registered backend that says it handles 'path', or nullptr.
-        // Registration order is the tie-break, which is why a backend's
-        // can_open() should look at the file rather than only its extension.
+        // Registration order breaks ties, so can_open() should look at the
+        // file, not only its extension.
         ITraceBackend *for_file(const char *path);
         ITraceBackend *by_id(const char *id);
 

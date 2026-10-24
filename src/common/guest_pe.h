@@ -5,9 +5,8 @@
 
 namespace idattd
 {
-    // Parsing a PE image out of guest memory: what the backends and the core
-    // both need, with nothing of IDA's database in it. common/symbols applies
-    // what this reads to the database.
+    // PE parsing from guest memory, for both the backends and the core. Nothing
+    // here touches the IDA database; common/symbols applies the results.
 
     // Read exactly 'size' bytes of guest memory; false on a short read.
     bool pe_read(const GuestRead &c, uint64_t addr, void *buf, size_t size);
@@ -19,20 +18,17 @@ namespace idattd
     // A NUL-terminated string of at most 'maxlen' bytes; empty when unreadable.
     std::string pe_read_cstr(const GuestRead &c, uint64_t addr, size_t maxlen = 512);
 
-    // Every named export of the module mapped at 'base', as (address, name),
-    // forwarders left out. Reads the export directory from guest memory, so
-    // the cursor must be where the module is mapped. Returns how many.
+    // Every named, non-forwarded export of the module at 'base', as (address,
+    // name). The cursor must be where the module is mapped. Returns the count.
     size_t read_guest_exports(const GuestRead &cursor, ea_t base, bool is64,
                               std::vector<std::pair<ea_t, std::string>> *out);
 
     // ---- reading a module's PE headers straight out of the recording -------
     //
-    // The loader and the memory-map sweep both need to know things about a module
-    // that the TTD engine does not report: whether it is 32- or 64-bit, where its
-    // entry point is, and how its sections are laid out. The engine's Module
-    // record carries only a name, a base, a size, a checksum and a timestamp, so
-    // the answer has to come from the image itself, read at a position where the
-    // module is mapped.
+    // The loader and the memory-map sweep need a module's bitness, entry point
+    // and section layout. The engine's Module record has only name, base, size,
+    // checksum and timestamp, so these come from the image itself, read at a
+    // position where the module is mapped.
 
     struct GuestPeSection
     {
@@ -55,39 +51,25 @@ namespace idattd
         std::vector<GuestPeSection> sections;
     };
 
-    // Parse the PE headers of the module mapped at 'base' out of guest memory.
-    // The cursor must be positioned where the module is loaded (its
-    // ModuleLoadedEvent position is the reliable choice).
+    // Parse the PE headers of the module at 'base'. The cursor must be where
+    // the module is loaded (its ModuleLoadedEvent position is reliable).
     //
-    // Bitness comes from the optional header magic. It deliberately does not come
-    // from the engine's SystemInfo: that reports the recording machine, so a
-    // 32-bit program recorded on an x64 box calls itself AMD64 there.
+    // Bitness comes from the optional header magic, not the engine's
+    // SystemInfo, which describes the recording machine: a 32-bit program
+    // recorded on x64 reports AMD64 there.
     bool read_guest_pe_info(const GuestRead &cursor, ea_t base, GuestPeInfo *out);
 
-    // Runtime address of one export of the module at 'base', read from the
-    // module's own export directory in guest memory. BADADDR when the module is
-    // unreadable at this position, the name is not exported, or the export is a
-    // forwarder (whose real target lives in another module).
-    //
-    // This is the address-returning sibling of apply_module_exports, which walks
-    // the same table but applies IDA names instead.
-    ea_t resolve_export_va(const GuestRead &cursor, ea_t base, bool is64,
-                           const char *name);
-
-    // Which PDB a module was built with, taken from the CodeView record in its
-    // debug directory. This is the only authoritative answer when the copy of
-    // the DLL on this machine is a different build from the recorded one: the
-    // local file names a different PDB, and symbols fetched for it describe
-    // code the recording never ran.
+    // Which PDB a module was built with, from the CodeView record in its debug
+    // directory. The only authoritative answer when the local DLL is a
+    // different build: its PDB would describe code the recording never ran.
     struct GuestPdbInfo
     {
         std::string name;           // e.g. "ntdll.pdb", as the linker wrote it
         std::string signature;      // GUID + age, the symbol server's directory
     };
 
-    // Read the above out of guest memory for the module mapped at 'base'. The
-    // cursor must be positioned where the module is loaded. False when the module
-    // is unreadable there, has no debug directory, or carries no CodeView record.
+    // Read the above for the module at 'base'; the cursor must be where it is
+    // loaded. False when it is unreadable there or has no CodeView record.
     bool read_guest_pdb_info(const GuestRead &cursor, ea_t base,
                              GuestPdbInfo *out);
 }

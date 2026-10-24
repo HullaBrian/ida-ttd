@@ -22,10 +22,9 @@ namespace idattd
 
     const meminfo_vec_t &SegmentLayout::build(Position now) const
     {
-        // Start above the Windows null page (the low 64 KiB is always reserved /
-        // unmapped). Excluding it stops IDA from treating small integers (0, 1, ...)
-        // as valid TTD pointers and recursively dereferencing them in the
-        // register/stack views.
+        // Start above the low 64 KiB, which Windows never maps. Otherwise IDA
+        // treats small integers as pointers and dereferences them recursively
+        // in the register and stack views.
         const ea_t  LO   = 0x10000;
         const ea_t  HI   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
         const uchar BITS = m_is64 ? 2 : 1;
@@ -37,8 +36,8 @@ namespace idattd
         out->qclear();
         m_foldValid = false;
 
-        // Named pieces of the address space, gathered before anything is
-        // emitted so they can be sorted and the gaps filled in one pass.
+        // Named pieces of the address space, gathered first so they can be
+        // sorted and the gaps filled in one pass.
         struct Named
         {
             ea_t    lo = 0, hi = 0;
@@ -51,11 +50,10 @@ namespace idattd
 
         // ---- the regions the recording built ------------------------------
         //
-        // A region inside a module is skipped: the module already has a segment,
-        // and splitting it would make IDA rebuild that segment and discard the
-        // code defined in it. What the map adds that a module cannot is the
-        // memory a module does not cover, which is where an RWX allocation or a
-        // manually mapped payload lives.
+        // A region starting inside a module is skipped: splitting the module's
+        // segment would make IDA rebuild it and discard its code. The map's
+        // value is the memory no module covers, where RWX allocations and
+        // manually mapped payloads live.
         std::vector<Region> regs;
         if ( !m_map.empty() && now.is_valid() )
             m_map.state_at(now, regs);
@@ -86,20 +84,18 @@ namespace idattd
 
         // ---- every module the recording ever loaded -----------------------
         //
-        // Without these a function in kernelbase reads as being in a segment
-        // called "TTD", because everything unnamed falls into the filler below.
+        // Without these, kernelbase code would sit in a segment called "TTD"
+        // (the filler below).
         //
-        // Taken from the module registry, which lists every module across the
-        // whole recording, not from the playhead, which lists only those mapped
-        // right now. That difference matters more than the extra entries cost:
-        // IDA rebuilds its debugger segments whenever this layout changes, and
-        // rebuilding one discards the code it had defined there. A per-position
-        // list changes on every module load, so stepping through startup would
-        // repeatedly throw away the disassembly it had just produced.
+        // From the registry (every module in the recording), not the playhead
+        // (modules mapped now). IDA rebuilds its debugger segments whenever
+        // the layout changes, discarding their code, and a per-position list
+        // changes on every load, so stepping through startup would keep
+        // throwing away fresh disassembly.
         //
-        // Read and execute, not read/write/execute: per-section protections are
-        // not tracked, and marking every module writable would bury the RWX
-        // allocations this feature exists to make visible.
+        // Read and execute only: per-section protections are not tracked, and
+        // marking every module writable would bury the RWX allocations this
+        // exists to show.
         {
             for ( const ModuleRegistry::Span &sp : m_modules->spans() )
             {
@@ -114,14 +110,13 @@ namespace idattd
                 if ( ident.empty() )
                     ident.sprnt("mod_%a", mlo);
 
-                // A discovered region is more specific than the module it sits
-                // in, so the module only claims what the regions leave.
+                // A region is more specific than its module, so the module
+                // claims only what the regions leave.
                 ea_t cur = mlo;
                 for ( size_t k = 0; k < nregions && cur < mhi; k++ )
                 {
-                    // Copies, not a reference: the push_back below appends to
-                    // this same vector, and a reallocation would leave a
-                    // reference dangling.
+                    // Copies, not references: the push_back below can
+                    // reallocate this vector.
                     ea_t rlo = named[k].lo;
                     ea_t rhi = named[k].hi;
                     if ( rhi <= cur )
@@ -157,11 +152,9 @@ namespace idattd
 
         // ---- emit, filling every gap --------------------------------------
         //
-        // The filler is not optional. Stacks, heaps, the PEB and the TEB need
-        // not appear in the memory map and belong to no module, so reporting
-        // only the named pieces would make IDA stop reading them and break the
-        // stack and register views. The names add description, never less
-        // reachability.
+        // The filler is required: stacks, heaps, the PEB and TEBs may be in no
+        // region and no module, and IDA does not read memory outside the
+        // layout, which would break the stack and register views.
         auto filler = [&](ea_t lo, ea_t hi)
         {
             if ( hi <= lo )
@@ -178,8 +171,8 @@ namespace idattd
         ea_t cur = LO;
         for ( const Named &nm : named )
         {
-            // Two modules can overlap in a recording that reused an address;
-            // whatever was emitted first keeps the space.
+            // Modules can overlap where a recording reused an address; the
+            // first emitted keeps the space.
             if ( nm.hi <= cur )
                 continue;
             ea_t lo = nm.lo < cur ? cur : nm.lo;
@@ -201,9 +194,8 @@ namespace idattd
 
         m_foldPos    = now;
         m_foldValid  = true;
-        // Only the regions vary with the position, and with no map there are
-        // none. Changing the map goes through map_for_update(), which drops the
-        // fold.
+        // Only the regions vary with the position, and without a map there
+        // are none. map_for_update() drops the fold.
         m_foldConst  = m_map.empty();
         return m_foldLayout;
     }
@@ -212,14 +204,14 @@ namespace idattd
     {
         const meminfo_vec_t &layout = build(now);
 
-        // Rebuilding IDA's debugger segments is not cheap, and stepping inside
-        // one region changes nothing about the layout. Say so.
+        // Rebuilding IDA's debugger segments is not cheap; report no change
+        // when there is none.
         if ( m_haveLayout && layout == m_lastLayout )
             return DRC_NOCHG;
 
-        // Worth saying out loud: IDA rebuilds every debugger segment when the
-        // layout changes, and rebuilding one discards the code defined in it.
-        // A run of these lines is the explanation for disassembly disappearing.
+        // Logged because a layout change makes IDA rebuild every debugger
+        // segment and discard their code: these lines explain disappearing
+        // disassembly.
         if ( m_haveLayout )
             msg("[ida-ttd] memory layout changed (%d ranges); IDA is rebuilding "
                 "its debugger segments.\n", (int)layout.size());
@@ -232,13 +224,12 @@ namespace idattd
 
     void SegmentLayout::refresh(Position now)
     {
-        // Without a memory map the layout is the same at every position (the
-        // modules come from the whole recording) and build() answers from its
-        // cache. With one, time travel can cross an allocation or a free.
+        // Without a memory map the layout is the same everywhere and build()
+        // answers from its cache. With one, a travel can cross an allocation
+        // or a free.
         if ( !m_haveLayout || build(now) == m_lastLayout )
             return;
-        // Documented as slow, which is exactly why it is behind the comparison
-        // rather than called on every stop.
+        // Documented as slow, hence the comparison above.
         invalidate_dbgmem_config();
     }
 

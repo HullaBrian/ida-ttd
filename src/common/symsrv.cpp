@@ -7,9 +7,9 @@
 
 namespace idattd
 {
-    // Where PDBs come from: Microsoft's server unless the symbol_server
-    // setting names another (symsrv_configure). Set as the plugin loads,
-    // before any fetch, and copied into each fetch, so workers never read it.
+    // Where PDBs come from: Microsoft's server unless the symbol_server setting
+    // names another (symsrv_configure). Set at plugin load, before any fetch,
+    // and copied into each fetch so workers never read the global.
     struct Server
     {
         bool          enabled = true;
@@ -20,42 +20,46 @@ namespace idattd
         std::wstring  root    = L"/download/symbols";
     };
     static Server g_server;
-    // The conventional symbol-client user agent. Some symbol servers serve only
-    // clients that identify themselves this way.
+    // The conventional symbol-client user agent; some servers serve only it.
     static const wchar_t SYM_AGENT[] = L"Microsoft-Symbol-Server/10.0.0.0";
 
-    // Timeouts, in milliseconds. Generous on receive because a PDB can be tens
-    // of megabytes, tight on connect because an unreachable server is the case
-    // this whole file exists to stop hurting.
+    // Timeouts in milliseconds: generous on receive (a PDB can be tens of MB),
+    // tight on connect (an unreachable server is the case this file is for).
     static const int TMO_RESOLVE = 5000;
     static const int TMO_CONNECT = 5000;
     static const int TMO_SEND    = 15000;
     static const int TMO_RECEIVE = 60000;
 
-    // A recording loads dozens of modules at once, and asking for all their
-    // PDBs at the same moment is what made the server stop answering some of
-    // them on a fresh machine (ntdll's among them). So a few at a time, and
-    // a request that got no answer is asked again after a pause.
+    // Asking for dozens of PDBs at once made the server stop answering some
+    // of them on a fresh machine (ntdll's among them). So a few at a time,
+    // and an unanswered request is retried after a pause.
     static const size_t MAX_PARALLEL = 4;
     static const int    ATTEMPTS     = 3;
     static const int    RETRY_MS[]   = { 2000, 6000 };
 
     namespace
     {
+        // A download thread and the flag it sets when it has finished, so
+        // fetch_pdb can join it without blocking.
+        struct Worker
+        {
+            std::thread                        thread;
+            std::shared_ptr<std::atomic<bool>> done;
+        };
+
         struct State
         {
             std::mutex               mtx;
-            std::vector<std::thread> workers;
+            std::vector<Worker>      workers;
             std::vector<FetchResult> completed;
-            std::set<qstring>        seen;      // identities asked for this session
+            std::set<qstring>        seen;      // identities being fetched now
             size_t                   pending = 0;
             size_t                   running = 0;   // downloads holding a slot
             std::condition_variable  cv;            // a slot freed, or abort
             std::atomic<bool>        abort{ false };
-            // Requests a worker is blocked in. Closing one from another thread
-            // makes the worker's WinHTTP call fail at once, which is the only
-            // way to stop a fetch stuck waiting on a slow server: the abort
-            // flag is only looked at between reads.
+            // Requests a worker may be blocked in. Closing one from another
+            // thread makes the blocked WinHTTP call fail at once; the abort
+            // flag is only checked between reads.
             std::set<HINTERNET>      live;
         };
 
@@ -65,9 +69,9 @@ namespace idattd
             return s;
         }
 
-        // Create every level of 'dir'. qmkdir makes one at a time, and a failure
-        // at any level is harmless here: either it already exists, or the create
-        // that needs it fails next and is reported there.
+        // Create every level of 'dir'. A failure at any level is harmless:
+        // either it exists, or the file create that needs it fails and is
+        // reported there.
         void make_dirs(const qstring &dir)
         {
             qstring cur;
@@ -87,11 +91,10 @@ namespace idattd
             operator HINTERNET() const { return h; }
         };
 
-        // Download one PDB to 'dest'. Writes to a temporary beside it and renames
-        // on success, so an interrupted fetch never leaves a short file that a
-        // later run would mistake for a complete one. '*again' says whether the
-        // failure is worth another try: the server not answering, or answering
-        // that it is busy, rather than a PDB it does not have.
+        // Download one PDB to 'dest' via a ".part" file renamed on success, so
+        // an interrupted fetch never leaves a short file that looks complete.
+        // '*again' says whether a retry is worthwhile (no answer, or busy),
+        // as opposed to a PDB the server does not have.
         bool download(const Server &srv, const std::wstring &url_path, const qstring &dest,
                       qstring *err, bool *again)
         {
@@ -125,9 +128,9 @@ namespace idattd
                 return false;
             }
 
-            // Make the request cancellable by symsrv_shutdown(), and take it
-            // back on the way out. If shutdown got there first it has already
-            // closed the handle, so it must not be closed again here.
+            // Register the request so symsrv_shutdown() can cancel it, and
+            // unregister on the way out. If shutdown already closed the
+            // handle, it must not be closed again here.
             {
                 std::lock_guard<std::mutex> lock(state().mtx);
                 if ( state().abort.load() )
@@ -183,6 +186,17 @@ namespace idattd
                 return false;
             }
 
+            // The body becomes the PDB that IDA's PDB plugin and the publics
+            // reader open, so it is checked before it is renamed into the
+            // store: an error page, a captive portal's answer or a hostile
+            // server's endless body must not land there. Only uncompressed
+            // PDBs are requested (no .pd_), so the MSF 7.00 magic must lead.
+            static const char     kMsfMagic[] = "Microsoft C/C++ MSF 7.00\r\n\x1a" "DS\0\0";
+            static const size_t   kMsfMagicSize = 32;
+            static const uint64_t kMaxBody = 1ull << 30;   // far above any real PDB
+            char     head[kMsfMagicSize] = { 0 };
+            uint64_t total = 0;
+
             std::vector<char> buf(64 * 1024);
             bool ok = true;
             for ( ;; )
@@ -203,6 +217,18 @@ namespace idattd
                 }
                 if ( got == 0 )
                     break;                          // end of body
+                if ( total < kMsfMagicSize )
+                {
+                    size_t n = (size_t)qmin((uint64_t)got, kMsfMagicSize - total);
+                    memcpy(head + total, buf.data(), n);
+                }
+                total += got;
+                if ( total > kMaxBody )
+                {
+                    *err = "the symbol server's answer is too large to be a PDB";
+                    ok = false;
+                    break;
+                }
                 if ( fwrite(buf.data(), 1, got, f) != got )
                 {
                     *err = "could not write the downloaded file";
@@ -211,6 +237,12 @@ namespace idattd
                 }
             }
             qfclose(f);
+
+            if ( ok && (total < kMsfMagicSize || memcmp(head, kMsfMagic, kMsfMagicSize) != 0) )
+            {
+                *err = "the symbol server's answer is not a PDB";
+                ok = false;
+            }
 
             if ( !ok || qrename(tmp.c_str(), dest.c_str()) != 0 )
             {
@@ -222,8 +254,8 @@ namespace idattd
             return true;
         }
 
-        // Up to ATTEMPTS downloads, holding one of the MAX_PARALLEL slots
-        // throughout. The pauses between attempts end early on shutdown.
+        // Up to ATTEMPTS downloads, holding one MAX_PARALLEL slot throughout.
+        // Pauses between attempts end early on shutdown.
         bool download_with_retries(const Server &srv, const std::wstring &url_path, const qstring &dest,
                                    qstring *err)
         {
@@ -261,10 +293,10 @@ namespace idattd
 
     qstring symbol_store_dir()
     {
-        // Beside IDA's own user files rather than in the system temp directory:
-        // a PDB is expensive to fetch and worth keeping across reboots.
-        // qgetenv, not getenv: the path goes to IDA's UTF-8 file functions,
-        // and getenv's ANSI text mangles a profile path outside the code page.
+        // Under LOCALAPPDATA rather than temp: PDBs are expensive to fetch and
+        // worth keeping across reboots. qgetenv, not getenv: IDA's file
+        // functions take UTF-8, and getenv's ANSI text mangles a profile path
+        // outside the code page.
         qstring dir;
         qstring local;
         if ( qgetenv("LOCALAPPDATA", &local) && !local.empty() )
@@ -274,11 +306,11 @@ namespace idattd
         return dir;
     }
 
-    // Both parts end up as a directory and file name in the store and as path
-    // segments of a URL, and the name comes out of the recorded image -- which,
-    // for a recording of malware, its author wrote. So only what a real PDB name
-    // and signature are made of is accepted: no separators, no drive or stream
-    // colon, no URL metacharacters, no "." or "..", and a sane length.
+    // Name and signature become store directory and file names and URL path
+    // segments, and the name comes from the recorded image (written by the
+    // malware author, for a malware recording). Only the characters of real
+    // PDB names and signatures are accepted: no separators, drive or stream
+    // colons, URL metacharacters, "." or "..", and a bounded length.
     static bool safe_component(const char *s)
     {
         size_t n = strlen(s);
@@ -311,15 +343,15 @@ namespace idattd
     {
         qstring store = symbol_store_dir();
         qstring want;
-        // With downloads off, the store alone: IDA's PDB plugin must not
-        // fetch what the setting says not to.
+        // With downloads off, the store alone, so IDA's PDB plugin does not
+        // fetch either.
         if ( g_server.enabled )
             want.sprnt("srv*%s*%s", store.c_str(), g_server.url.c_str());
         else
             want.sprnt("srv*%s", store.c_str());
 
-        // Keep whatever the user had, after ours: their own store may hold PDBs
-        // for modules the public server has never heard of.
+        // Keep the user's path after this one: their store may hold PDBs the
+        // public server lacks.
         qstring existing;
         if ( qgetenv("_NT_SYMBOL_PATH", &existing) && !existing.empty() )
         {
@@ -336,8 +368,8 @@ namespace idattd
         srv.enabled = enabled;
         if ( url != nullptr && url[0] != '\0' && strcmp(url, srv.url.c_str()) != 0 )
         {
-            // WinHttpCrackUrl writes pointers into the string it is given,
-            // so the wide copy outlives the call.
+            // WinHttpCrackUrl returns pointers into its input, so the wide
+            // copy must outlive the uses below.
             std::wstring wurl = to_wstring(url);
             URL_COMPONENTS uc = { sizeof(uc) };
             uc.dwHostNameLength = (DWORD)-1;
@@ -384,10 +416,28 @@ namespace idattd
 
         std::lock_guard<std::mutex> lock(s.mtx);
         if ( !s.seen.insert(key).second )
-            return FetchState::Failed;      // already being fetched
+            return FetchState::Fetching;    // already being fetched; it reports when done
 
-        // The store directory has to exist before the worker writes into it, and
-        // creating it here keeps all the path handling on one thread.
+        // Join the workers that have finished, so a long session does not
+        // keep one thread object per PDB until shutdown. A worker sets its
+        // flag as the last thing it does under this lock, so one seen done
+        // here has released the lock and only has to return: the join does
+        // not wait on anything this thread holds.
+        for ( size_t i = 0; i < s.workers.size(); )
+        {
+            if ( s.workers[i].done->load() )
+            {
+                if ( s.workers[i].thread.joinable() )
+                    s.workers[i].thread.join();
+                s.workers.erase(s.workers.begin() + i);
+            }
+            else
+            {
+                i++;
+            }
+        }
+
+        // Create the directory here so all path handling stays on one thread.
         qstring dir;
         dir.sprnt("%s/%s/%s", symbol_store_dir().c_str(), name, signature);
         make_dirs(dir);
@@ -403,17 +453,20 @@ namespace idattd
 
         qstring qname = name;
         s.pending++;
-        s.workers.emplace_back([srv = g_server, url, dest, qname, key, base]()
+        auto done = std::make_shared<std::atomic<bool>>(false);
+        Worker w;
+        w.done   = done;
+        w.thread = std::thread([srv = g_server, url, dest, qname, key, base, done]()
         {
             qstring err;
             bool ok = download_with_retries(srv, url, dest, &err);
 
             State &st = state();
             std::lock_guard<std::mutex> l(st.mtx);
-            // A failed identity may be asked for again later (the next stop
-            // in its module); a fetched one is in the store from now on.
-            if ( !ok )
-                st.seen.erase(key);
+            // The key leaves the in-flight set either way: a failed identity
+            // may be asked for again (the next stop in its module), and a
+            // fetched one is found in the store (Cached) from now on.
+            st.seen.erase(key);
             FetchResult r;
             r.base  = base;
             r.name  = qname;
@@ -421,7 +474,9 @@ namespace idattd
             r.error = ok ? qstring() : err;
             st.completed.push_back(r);
             st.pending--;
+            done->store(true);      // last, under the lock (see fetch_pdb)
         });
+        s.workers.push_back(std::move(w));
         return FetchState::Fetching;
     }
 
@@ -451,11 +506,10 @@ namespace idattd
         s.abort.store(true);
         s.cv.notify_all();      // workers waiting for a slot or between attempts
 
-        // Move the threads out under the lock, then join outside it: a worker
-        // takes the same lock on its way out and would deadlock against a join
-        // held under it. Close every request in flight first, so no worker is
-        // left waiting out a receive timeout while IDA waits on the join.
-        std::vector<std::thread> mine;
+        // Close every request in flight (so no worker waits out a receive
+        // timeout), and move the threads out under the lock, then join outside
+        // it: a worker takes the same lock on its way out.
+        std::vector<Worker> mine;
         {
             std::lock_guard<std::mutex> lock(s.mtx);
             for ( HINTERNET h : s.live )
@@ -463,9 +517,9 @@ namespace idattd
             s.live.clear();
             mine.swap(s.workers);
         }
-        for ( std::thread &t : mine )
-            if ( t.joinable() )
-                t.join();
+        for ( Worker &w : mine )
+            if ( w.thread.joinable() )
+                w.thread.join();
 
         std::lock_guard<std::mutex> lock(s.mtx);
         s.completed.clear();

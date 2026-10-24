@@ -37,9 +37,8 @@ namespace idattd
         try { st = engine->BuildIndex(index_progress, progress, IndexBuildFlags::None); }
         catch ( ... ) {}
 
-        // IndexFileUnloadable here is normal and does not mean memory reads will
-        // fail -- the engine builds and uses an in-memory index, while
-        // GetIndexStatus()/this result describe the on-disk .idx file only.
+        // IndexFileUnloadable is normal here: the engine still builds and uses
+        // an in-memory index; this status describes only the on-disk .idx file.
         if ( st != IndexStatus::IndexFileLoaded )
             msttd_log("[ida-ttd] TTD index build finished with status %d (in-memory index still usable).\n", (int)st);
         return true;

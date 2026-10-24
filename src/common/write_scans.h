@@ -7,9 +7,9 @@
 //
 // The string and buffer scanners both backends feed: the Microsoft backend
 // from its watchpoint replays, the Sogen backend from recorded write events.
-// This implements docs/scan-rules.md and is written from that description,
-// not ported from another project. The rules themselves follow Sogen's, so
-// that a list reads the same whichever kind of recording it came from.
+// Implements docs/scan-rules.md and is written from that description, not
+// ported from another project. The rules follow Sogen's, so a list reads the
+// same whichever kind of recording it came from.
 //
 // Header-only and standard-library-only on purpose: the Sogen backend builds
 // without the rest of the plugin.
@@ -75,9 +75,9 @@ namespace idattd::scans
     //=======================================================================
     // Every NUL-terminated ASCII or UTF-16LE string seen in the windows of
     // memory the caller offers, keyed by address. A string that grows in
-    // place (written a piece at a time, each window seeing more of it) keeps
-    // one entry, which ends up with the longest text and the position it was
-    // last extended at.
+    // place (written piece by piece, each window seeing more) keeps one
+    // entry, ending with the longest text and the position of its last
+    // extension.
     template <typename Pos>
     class StringScan
     {
@@ -96,8 +96,8 @@ namespace idattd::scans
         size_t minimum() const { return m_minimum; }
 
         // One window: 'bytes' at 'address', as memory held them at 'pos'.
-        // All ASCII strings go in first, then all UTF-16 ones, because that
-        // order decides which entry an address's later offers land on.
+        // ASCII strings go in before UTF-16 ones; the order decides which
+        // entry an address's later offers land on.
         void inspect(uint64_t address, const std::vector<uint8_t> &bytes, const Pos &pos)
         {
             scan_ascii(address, bytes.data(), bytes.size(), pos);
@@ -121,8 +121,8 @@ namespace idattd::scans
         std::map<uint64_t, std::vector<Entry>> m_entries;
 
         // A run of printable bytes counts only when the window shows the NUL
-        // after it; a run cut off by the window's end may go on, and the
-        // overlapping next window will see it whole.
+        // after it. A run cut off by the window's end may continue, and the
+        // overlapping next window sees it whole.
         void scan_ascii(uint64_t address, const uint8_t *p, size_t size, const Pos &pos)
         {
             size_t i = 0;
@@ -144,8 +144,8 @@ namespace idattd::scans
         }
 
         // Every offset is tried, odd ones too, since a wide string need not
-        // be aligned. An offset continuing the pair two bytes before it is
-        // the middle of a string, not a start.
+        // be aligned. An offset that continues the pair two bytes before it
+        // is inside a string, not a start.
         void scan_wide(uint64_t address, const uint8_t *p, size_t size, const Pos &pos)
         {
             std::string text;
@@ -193,8 +193,8 @@ namespace idattd::scans
                 truncated = true;
                 return;
             }
-            // Only now is the address's slot made, so a refused offer leaves
-            // nothing behind for for_each to visit.
+            // The address's slot is made only now, so a refused offer leaves
+            // nothing for for_each to visit.
             if ( it == m_entries.end() )
                 it = m_entries.emplace(address, std::vector<Entry>()).first;
             it->second.push_back(Entry{ pos, wide, value });
@@ -215,11 +215,11 @@ namespace idattd::scans
         std::string kind, preview;
     };
 
-    // Groups the program's writes into regions -- bytes written close
-    // together in space, and either touching or close together in time --
-    // and, as each region is retired, classifies what it held: files, text,
-    // code that ran, random-looking data, plain buffers, and the strings and
-    // embedded files inside them.
+    // Groups the program's writes into regions (bytes written close together
+    // in space, and either touching or close together in time) and, as each
+    // region is retired, classifies what it held: files, text, code that ran,
+    // random-looking data, plain buffers, and the strings and embedded files
+    // inside them.
     template <typename Pos>
     class BufferScan
     {
@@ -246,7 +246,7 @@ namespace idattd::scans
                 const uint64_t lo = std::min(s, address);
                 const uint64_t hi = std::max(t, end);
                 // Deliberately weaker than overlapping: a write wholly
-                // before the region also counts, as Sogen has it.
+                // before the region also counts, as in Sogen.
                 const bool reaches = address < t;
 
                 if ( reaches && rewrites_executed(s, r, address, bytes, size) )
@@ -266,9 +266,9 @@ namespace idattd::scans
             start_region(address, bytes, size, clock, pos, ip);
         }
 
-        // [address, address + size) ran. Only the bytes the program wrote
-        // count as code it made; an execution never reaches a region that
-        // starts above it.
+        // [address, address + size) ran. Only bytes the program wrote count
+        // as code it made, and regions starting above 'address' are not
+        // touched.
         void executed(uint64_t address, size_t size)
         {
             const uint64_t end = saturating_end(address, size);
@@ -292,14 +292,18 @@ namespace idattd::scans
         }
 
         // Memory in [address, address + size) was mapped, unmapped or
-        // remapped: what the regions held there is gone. Each region's part
-        // in the range is reported now, as it stood, and forgotten.
+        // remapped, so what the regions held there is gone. Each region's
+        // part in the range is reported now, as it stood, then forgotten.
         void mapping_changed(uint64_t address, uint64_t size)
         {
             if ( size == 0 )
                 return;
             const uint64_t end = address > UINT64_MAX - size ? UINT64_MAX : address + size;
-            for ( auto it = m_regions.begin(); it != m_regions.end() && it->first < end; )
+            // A region starting more than the longest region ever held below
+            // 'address' ends before it. Not kMaximumRegion: a single large
+            // write starts a region longer than that.
+            auto it = address > m_longest ? m_regions.lower_bound(address - m_longest) : m_regions.begin();
+            for ( ; it != m_regions.end() && it->first < end; )
             {
                 const uint64_t s = it->first;
                 Region &r = it->second;
@@ -360,12 +364,58 @@ namespace idattd::scans
         static constexpr size_t   kWidePreview  = 96;
         static constexpr size_t   kPemWindow    = 128;
 
-        // One region. Its start is the key it is stored under. The flags are
-        // per byte: 'known' when the program wrote it (bytes gained by
-        // growing over a gap are not), 'exec' when a known byte later ran.
+        // A byte array that grows at both ends. A region growing downwards
+        // (stack pushes, a buffer filled from its end) gains a few bytes at
+        // its front at a time; a plain vector moves the whole region for each.
+        // Unused room is kept before the first byte instead, so growing the
+        // front is amortised constant time per byte, like growing the back.
+        class Lane
+        {
+        public:
+            size_t size() const { return m_v.size() - m_head; }
+            uint8_t *data() { return m_v.data() + m_head; }
+            const uint8_t *data() const { return m_v.data() + m_head; }
+            uint8_t &operator[](size_t k) { return m_v[m_head + k]; }
+            const uint8_t &operator[](size_t k) const { return m_v[m_head + k]; }
+            typename std::vector<uint8_t>::iterator begin() { return m_v.begin() + ptrdiff_t(m_head); }
+            typename std::vector<uint8_t>::const_iterator begin() const { return m_v.begin() + ptrdiff_t(m_head); }
+
+            void assign(const uint8_t *first, const uint8_t *last) { m_v.assign(first, last); m_head = 0; }
+            void assign(size_t n, uint8_t value) { m_v.assign(n, value); m_head = 0; }
+
+            // Never shrinks below the current size: regions only grow.
+            void resize(size_t n, uint8_t value) { m_v.resize(m_head + n, value); }
+
+            // 'n' zero bytes before the first.
+            void grow_front(size_t n)
+            {
+                if ( n <= m_head )
+                {
+                    m_head -= n;
+                    std::fill_n(m_v.begin() + ptrdiff_t(m_head), n, uint8_t(0));
+                    return;
+                }
+                // Room for as much again as the region will hold, capped at
+                // the longest a region grows by merging.
+                const size_t len   = size();
+                const size_t slack = std::min(len + n, kMaximumRegion);
+                std::vector<uint8_t> w(slack + n + len, 0);
+                std::copy(begin(), m_v.end(), w.begin() + ptrdiff_t(slack + n));
+                m_v.swap(w);
+                m_head = slack;
+            }
+
+        private:
+            std::vector<uint8_t> m_v;
+            size_t m_head = 0;      // unused bytes before the first
+        };
+
+        // One region, stored under its start address. Per-byte flags:
+        // 'known' when the program wrote it (not bytes gained by growing
+        // over a gap), 'exec' when a known byte later ran.
         struct Region
         {
-            std::vector<uint8_t> bytes, known, exec;
+            Lane                 bytes, known, exec;
             Pos                  first, last;
             uint64_t             last_clock = 0;
             uint64_t             writer_ip = 0;
@@ -376,11 +426,12 @@ namespace idattd::scans
         using Regions = std::map<uint64_t, Region>;
 
         // Eviction order: short regions first, then the one written longest
-        // ago, then the lowest start. std::set keeps it sorted as regions
+        // ago, then the lowest start. The std::set stays sorted as regions
         // change, so finding the victim does not walk every region.
         using OrderKey = std::tuple<int, uint64_t, uint64_t>;
 
         uint64_t           m_nearby;
+        uint64_t           m_longest = 0;     // the longest region so far, for mapping_changed
         Regions            m_regions;
         std::set<OrderKey> m_order;
 
@@ -396,7 +447,7 @@ namespace idattd::scans
 
         // The region a write at 'address' may belong to: the one starting at
         // or below it if that ends no more than kGap before it, else the
-        // next one up. The caller still checks that one is close enough.
+        // next one up. The caller still checks that it is close enough.
         typename Regions::iterator candidate(uint64_t address)
         {
             auto next = m_regions.upper_bound(address);
@@ -410,7 +461,7 @@ namespace idattd::scans
         }
 
         // Whether the write puts a different value over a byte that already
-        // ran: new code over old, so what ran is reported as it was.
+        // ran (new code over old), so the old code is reported as it was.
         static bool rewrites_executed(uint64_t s, const Region &r, uint64_t address, const uint8_t *bytes, size_t size)
         {
             const uint64_t lo = std::max(s, address);
@@ -430,15 +481,15 @@ namespace idattd::scans
             const uint64_t s = it->first;
             m_order.erase(order_key(s, it->second));
             // A region growing downwards changes its key. No other region
-            // can start at 'lo' then: it would have been the candidate.
+            // can start at 'lo': it would have been the candidate.
             Region r = std::move(it->second);
             if ( lo != s )
             {
                 m_regions.erase(it);
                 const size_t front = size_t(s - lo);
-                r.bytes.insert(r.bytes.begin(), front, 0);
-                r.known.insert(r.known.begin(), front, 0);
-                r.exec.insert(r.exec.begin(), front, 0);
+                r.bytes.grow_front(front);
+                r.known.grow_front(front);
+                r.exec.grow_front(front);
             }
             const size_t length = size_t(hi - lo);
             r.bytes.resize(length, 0);
@@ -452,6 +503,7 @@ namespace idattd::scans
             r.last       = pos;
             r.writer_ip  = ip;
             r.writes++;
+            m_longest = std::max<uint64_t>(m_longest, length);
             m_order.insert(order_key(lo, r));
             if ( lo != s )
                 m_regions.emplace(lo, std::move(r));
@@ -474,6 +526,7 @@ namespace idattd::scans
             r.last_clock = clock;
             r.writer_ip  = ip;
             r.writes     = 1;
+            m_longest = std::max<uint64_t>(m_longest, size);
             m_order.insert(order_key(address, r));
             m_regions.emplace(address, std::move(r));
             if ( m_regions.size() > kMaxRegions )
@@ -537,9 +590,8 @@ namespace idattd::scans
             if ( !kind.empty() )
                 record(r, address, p, n, kind, text ? Preview::text : Preview::hex);
 
-            // ASCII strings: runs of printable bytes, bounded by the
-            // segment. The one run that is the whole of a text segment would
-            // only repeat it.
+            // ASCII strings: runs of printable bytes within the segment. A
+            // run that is the whole of a text segment would only repeat it.
             size_t count = 0;
             for ( size_t i = 0; i < n && count < kMaxStrings; )
             {
@@ -560,7 +612,7 @@ namespace idattd::scans
             }
 
             // UTF-16LE strings: the walk skips past each run of pairs, long
-            // enough or not, so a run is only ever looked at from its start.
+            // enough or not, so a run is only examined from its start.
             count = 0;
             for ( size_t i = 0; i + 1 < n && count < kMaxStrings; )
             {
@@ -581,8 +633,8 @@ namespace idattd::scans
             }
 
             // Files inside the segment, past its first byte (a file at the
-            // start is the segment's own kind). The first-byte test is only
-            // a quick filter for the signatures worth looking for here.
+            // start is the segment's own kind). The first-byte test is a
+            // quick filter for the signatures looked for here.
             count = 0;
             for ( size_t i = 1; i + 16 < n && count < kMaxEmbedded; i++ )
             {
@@ -650,8 +702,8 @@ namespace idattd::scans
         }
 
         // ---- classification ---------------------------------------------------
-        // The percentage tests stay in integers so that a boundary case
-        // comes out the same on every compiler.
+        // The percentage tests use integers so boundary cases come out the
+        // same on every compiler.
 
         static bool is_text(const uint8_t *p, size_t n)
         {
@@ -661,8 +713,7 @@ namespace idattd::scans
             return printable * 100 >= n * 90;
         }
 
-        // Pairs counted at even offsets only, as an aligned UTF-16 text has
-        // them.
+        // Pairs are counted at even offsets only, as in aligned UTF-16 text.
         static bool is_wide_text(const uint8_t *p, size_t n)
         {
             if ( n < kMinText )

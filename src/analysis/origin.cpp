@@ -15,17 +15,17 @@ namespace idattd
             "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip",
         };
 
-        // How far back a register's last change is looked for: the backend's
-        // own search is a forward replay of the thread, so millions of steps
-        // cost seconds. Stepping back one at a time, where the backend has no
-        // search of its own, costs a millisecond or more a step.
+        // How far back a register's last change is sought. The backend's own
+        // search replays the thread forward (seconds per few million steps);
+        // stepping back one at a time, without one, costs a millisecond or
+        // more per step.
         const uint64_t kRegisterLookBack = 4000000;
         const uint64_t kStepLookBack     = 200000;
         // Syscalls checked for having written memory, latest first.
         const size_t   kSyscallsChecked  = 300;
 
         // IDA's x86 register number to ITTD_REG_* / ITTD_ORIGIN_XMM0 + n;
-        // -1 for one this does not follow (segment, flags, x87, ...).
+        // -1 for those not followed (segment, flags, x87, ...).
         int ittd_reg_of(int r)
         {
             if ( r >= R_ax && r <= R_r15 )
@@ -53,8 +53,8 @@ namespace idattd
             bytevec_t v;
             if ( t.is_reg )
             {
-                // Between the general registers and xmm0, and past xmm15,
-                // there is nothing to read.
+                // Nothing between the general registers and xmm0, or past
+                // the last xmm.
                 const uint32_t nxmm = (uint32_t)std::extent_v<decltype(ittd_regs::xmm)>;
                 if ( t.reg >= ITTD_ORIGIN_XMM0 + nxmm || (t.reg >= ITTD_REG_GP_COUNT && t.reg < ITTD_ORIGIN_XMM0) )
                     return v;
@@ -74,8 +74,7 @@ namespace idattd
             return v;
         }
 
-        // What the backend phase of one hop found: worker-thread work only,
-        // no IDA calls.
+        // What one hop's backend phase found (worker thread, no IDA calls).
         struct Search
         {
             bool        found = false;      // an instruction of the program set it
@@ -84,8 +83,7 @@ namespace idattd
             uint32_t    tid = 0;
             bool        stepped = false;    // searched by stepping back (no backend search)
             uint64_t    looked = 0;         // how far, when not found
-            // The system wrote it after the program last did (memory), or
-            // the instruction was a syscall (register).
+            // The system wrote it after the program last did (memory).
             bool        system = false;
             Position    sys_pos;
             qstring     sys_name;
@@ -95,7 +93,7 @@ namespace idattd
         // The reads the instruction at 'pc' made in the one step at 'pos'.
         void reads_at(ITraceBackend *b, Position pos, ea_t pc, std::vector<Access> *out, ProgressSink *sink)
         {
-            // All of user space: the step is the narrow part of the question.
+            // All of user space; the one-step range is what narrows it.
             const ea_t hi = b->info().is64 ? (ea_t)0x800000000000ull : (ea_t)0x100000000ull;
             PositionRange one{ pos, b->position_add(pos, 1) };
             std::vector<Access> v;
@@ -164,20 +162,20 @@ namespace idattd
             }
         }
 
-        // The syscalls, listed once per trace_value_origin: on Microsoft TTD
-        // listing them is a replay of the whole recording.
+        // The syscalls, listed at most once per trace_value_origin: on
+        // Microsoft TTD a listing replays the whole recording.
         struct SyscallCache
         {
             bool                      listed = false;
             std::vector<SyscallEvent> calls;
         };
 
-        // Memory is set by the program's last write to it -- or by the system
-        // after that, which a recording may not report as a write (Microsoft
-        // TTD reports a syscall filling a buffer as other kinds of access).
-        // So the value right after the program's write is checked against the
-        // value asked about, and when they differ, or nothing of the program
-        // wrote it, the syscalls since are checked latest first.
+        // Memory is set by the program's last write to it, or by the system
+        // afterwards, which may not be reported as a write (Microsoft TTD
+        // reports a syscall filling a buffer as other access kinds). So when
+        // the value after the program's write differs from the one asked
+        // about, or the program never wrote it, the syscalls since are checked,
+        // latest first.
         void search_memory(ITraceBackend *b, const OriginTarget &t, Position at, const bytevec_t &value,
                            SyscallCache *sc_cache, Search *s, ProgressSink *sink)
         {
@@ -223,7 +221,7 @@ namespace idattd
                 return;
             if ( !sc_cache->listed )
             {
-                // Never appended to a listing left part-done.
+                // Start clean: never append to a listing left part-done.
                 sc_cache->calls.clear();
                 b->query_syscalls(&sc_cache->calls, sink);
                 sc_cache->listed = !(sink != nullptr && sink->cancelled());
@@ -285,8 +283,8 @@ namespace idattd
             return op.type == o_mem || op.type == o_displ || op.type == o_phrase;
         }
 
-        // The read the instruction made of its memory operand, as the
-        // recording has it.
+        // The recorded read of the instruction's memory operand: one of
+        // 'want_size' bytes when there is one, else the first.
         const Access *pick_read(const Search &s, size_t want_size)
         {
             const Access *any = nullptr;
@@ -300,11 +298,11 @@ namespace idattd
             return any;
         }
 
-        // From the instruction that set the value, the next thing to follow:
-        // fills 'next' and returns true for a copy, or sets hop.kind and the
+        // From the instruction that set the value, what to follow next: for a
+        // copy, fills 'next' and returns true; otherwise sets the kind and
         // note and returns false. 'made_here' is set when the instruction
-        // computed the value into its destination -- not a register it
-        // changed on the side -- so that what it read is what it was made of.
+        // computed the value into its destination (not a side-effect
+        // register), so its inputs are what the value was made of.
         bool next_source(const OriginHop &hop, const Search &s, OriginHop *out, OriginTarget *next,
                          bool *made_here)
         {
@@ -323,9 +321,8 @@ namespace idattd
                 return false;
             }
 
-            // A register a copy changes on the side -- rsp under push and pop,
-            // rsi/rdi/rcx under the string moves -- was not copied into: the
-            // value asked about was computed there.
+            // A register a copy changes as a side effect (rsp under push and
+            // pop, rsi/rdi/rcx under string moves) was computed, not copied.
             if ( hop.what.is_reg )
             {
                 const int want = int(hop.what.reg);
@@ -376,7 +373,7 @@ namespace idattd
                     break;
                 case NN_xchg:
                 {
-                    // The operand that is not where the value now is.
+                    // The operand that is not the value's destination.
                     const op_t &a = ins.ops[0], &b = ins.ops[1];
                     bool a_is_dest = hop.what.is_reg
                                    ? a.type == o_reg && ittd_reg_of(a.reg) == int(hop.what.reg)
@@ -440,7 +437,7 @@ namespace idattd
                 out->note.sprnt("copied from %s", origin_target_text(*next).c_str());
                 return true;
             }
-            // From memory: the address it read, as recorded.
+            // From memory: the recorded read gives the address.
             size_t want = src != nullptr ? get_dtype_size(src->dtype) : 0;
             const Access *rd = pick_read(s, want);
             if ( rd == nullptr )
@@ -499,7 +496,7 @@ namespace idattd
         for ( uint32_t i = 0; i < ITTD_REG_RIP; i++ )
             if ( n == GP_NAMES[i] )
                 return *reg = i, true;
-        // The 32-, 16- and 8-bit names of the first eight name the 64-bit one.
+        // 32-, 16- and 8-bit names of the first eight map to the 64-bit one.
         static const char *const NARROW[][4] =
         {
             { "eax", "ax", "al", "ah" }, { "ecx", "cx", "cl", "ch" },
@@ -511,7 +508,7 @@ namespace idattd
             for ( const char *alias : NARROW[i] )
                 if ( *alias != '\0' && n == alias )
                     return *reg = i, true;
-        // r8d, r8w, r8b and friends name their 64-bit register.
+        // r8d, r8w, r8b and the like map to their 64-bit register.
         if ( n.length() >= 2 && n[0] == 'r' && qisdigit(n[1]) )
         {
             char *end = nullptr;
@@ -545,13 +542,13 @@ namespace idattd
         }
     }
 
-    // origin_inputs, saying whether the user cancelled the search for the
-    // memory read -- which leaves 'out' without it, and so short of an input.
+    // origin_inputs, also reporting whether the user cancelled the search for
+    // the memory read (which leaves 'out' missing that input).
     static bool collect_inputs(TraceManager *mgr, Position at, std::vector<OriginInput> *out,
                                bool *cancelled);
 
-    // How many values (not address registers) the instruction about to run
-    // at 'at' read, and the one when it is one.
+    // How many values (not address registers) the instruction at 'at' read;
+    // 'only' gets the first.
     static int value_inputs(TraceManager *mgr, Position at, OriginTarget *only, bool *cancelled)
     {
         std::vector<OriginInput> inputs;
@@ -564,11 +561,14 @@ namespace idattd
         return n;
     }
 
+    // 'syscalls' holds the recording's syscall list once something asked for
+    // it; a caller tracing several values passes one cache to all of them, so
+    // the list (a full replay) is made at most once.
     static bool trace_from(TraceManager *mgr, const OriginTarget &what, Position start, uint32_t start_tid,
-                           size_t max_hops, bool through_computations, std::vector<OriginHop> *out)
+                           size_t max_hops, bool through_computations, std::vector<OriginHop> *out,
+                           SyscallCache &syscalls)
     {
         ITraceBackend *b = mgr->backend();
-        SyscallCache syscalls;
         OriginTarget target = what;
         Position     at     = start;
         uint32_t     tid    = start_tid;
@@ -649,10 +649,9 @@ namespace idattd
             OriginTarget next;
             bool made_here = false;
             bool more = next_source(hop, s, &hop, &next, &made_here);
-            // A computation made from a single value -- lea rax, [rdi+0Dh],
-            // inc rdi, add [mem], 2 -- is gone through: the value it read is
-            // followed as if copied. Not the stack pointer: a stack
-            // address's history is only the frames that moved it.
+            // A computation from a single value (lea rax, [rdi+0Dh]; inc rdi;
+            // add [mem], 2) is followed through it as if copied. Not through
+            // rsp: a stack address's history is just the frames that moved it.
             if ( !more && made_here )
             {
                 OriginTarget only;
@@ -679,8 +678,8 @@ namespace idattd
             out->push_back(hop);
             if ( !more )
                 return true;
-            // The next hop asks about the source as it stood just before the
-            // copy ran. Following itself would loop.
+            // The next hop asks about the source just before the copy ran.
+            // Stop rather than follow the same target at the same position.
             if ( same_target(next, target) && s.pos == at )
                 return true;
             target = next;
@@ -701,12 +700,15 @@ namespace idattd
         out->clear();
         if ( !session_ready(mgr) )
             return false;
+        SyscallCache syscalls;
         return trace_from(mgr, what, mgr->current_position(), mgr->cursor()->thread_id(), max_hops,
-                          through_computations, out);
+                          through_computations, out, syscalls);
     }
 
-    bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
-                            std::vector<OriginHop> *out, bool through_computations)
+    // trace_value_origin at a position, with the caller's syscall cache.
+    static bool trace_origin_at(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
+                                std::vector<OriginHop> *out, bool through_computations,
+                                SyscallCache &syscalls)
     {
         out->clear();
         if ( !session_ready(mgr) )
@@ -714,7 +716,14 @@ namespace idattd
         CursorPtr cur = mgr->backend()->make_cursor();
         if ( !cur || !cur->seek(at) )
             return false;
-        return trace_from(mgr, what, at, cur->thread_id(), max_hops, through_computations, out);
+        return trace_from(mgr, what, at, cur->thread_id(), max_hops, through_computations, out, syscalls);
+    }
+
+    bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_hops,
+                            std::vector<OriginHop> *out, bool through_computations)
+    {
+        SyscallCache syscalls;
+        return trace_origin_at(mgr, what, at, max_hops, out, through_computations, syscalls);
     }
 
     bool build_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at, size_t max_nodes,
@@ -738,6 +747,8 @@ namespace idattd
             return origin_target_text(h.what) + qstring().sprnt("@%llX:%llX", h.at.hi, h.at.lo);
         };
 
+        // One syscall list for every value the graph follows.
+        SyscallCache syscalls;
         while ( !work.empty() )
         {
             if ( out->nodes.size() >= max_nodes )
@@ -748,7 +759,8 @@ namespace idattd
             Work w = work.front();
             work.pop_front();
             std::vector<OriginHop> hops;
-            if ( !trace_value_origin(mgr, w.what, w.at, max_nodes - out->nodes.size(), &hops) || hops.empty() )
+            if ( !trace_origin_at(mgr, w.what, w.at, max_nodes - out->nodes.size(), &hops, true, syscalls)
+              || hops.empty() )
                 continue;
             int prev = w.from;
             bool input = w.from >= 0;
@@ -822,8 +834,8 @@ namespace idattd
         if ( decode_insn(&ins, pc) <= 0 || ins.itype == NN_syscall || ins.itype == NN_sysenter )
             return true;
 
-        // Operands first, then the registers that only formed an address: a
-        // pointer is rarely the value being chased.
+        // Operands first, then address-only registers: a pointer is rarely the
+        // value being chased.
         std::vector<OriginTarget> operands, addresses;
         auto has = [](const std::vector<OriginTarget> &v, const OriginTarget &t)
         {
@@ -875,7 +887,7 @@ namespace idattd
             if ( index != R_none )
                 add_reg(index, !lea);
         }
-        // What the operands do not show.
+        // Implicit inputs the operands do not show.
         switch ( ins.itype )
         {
             case NN_mul: case NN_div: case NN_idiv:
@@ -894,8 +906,8 @@ namespace idattd
                 break;
         }
 
-        // The memory, as the recording has the read: the operand's address
-        // is not worked out here.
+        // Memory comes from the recorded read; the operand's address is not
+        // computed here.
         if ( reads_memory )
         {
             Search s;

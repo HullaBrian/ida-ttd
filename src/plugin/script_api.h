@@ -6,20 +6,20 @@ namespace idattd
 {
     class Plugin;
 
-    // Driving the plugin from a script: one IDC function,
+    // Driving the plugin from a script through one IDC function:
     //
     //     ttd("command arg arg ...")  ->  a JSON string
     //
-    // so that anything able to evaluate IDC -- IDAPython, an MCP server that
-    // runs Python inside IDA, the IDC command line -- can open recordings, move
-    // through them and read what the plugin sees, and get an answer it can
-    // parse. It is how the plugin is tested without a person at the UI.
+    // Anything that can evaluate IDC (IDAPython, an MCP server running Python
+    // in IDA, the IDC command line) can open recordings, move through them
+    // and read what the plugin sees. This is how the plugin is tested without
+    // a person at the UI.
     //
-    // Arguments are separated by spaces; one with spaces in it is written in
-    // double quotes. Numbers are hex with or without 0x. Every answer is a JSON
-    // object with "ok"; a failure has "error" as well. "help" lists the
-    // commands. scripts/ida_ttd.py wraps this for Python, and
-    // docs/scripting.md describes the commands.
+    // Arguments are space-separated; double-quote one that holds spaces.
+    // Numbers are hex, with or without 0x. Every answer is a JSON object with
+    // "ok", plus "error" on failure. "help" lists the commands;
+    // scripts/ida_ttd.py wraps this for Python and docs/scripting.md
+    // documents it.
     void install_script_api(Plugin *plugin);
     void remove_script_api();
 }

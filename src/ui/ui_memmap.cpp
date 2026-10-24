@@ -21,8 +21,7 @@ namespace idattd
         : chooser_t(0, qnumber(g_mm_widths), g_mm_widths, g_mm_header, nullptr),
           m_mgr(mgr), m_rows(std::move(rows))
     {
-        // The string is a member because chooser_base_t keeps the pointer it is
-        // given rather than copying it.
+        // A member: chooser_base_t keeps the pointer, not a copy.
         m_title.sprnt("TTD memory timeline [%d]", (int)m_rows.size());
         title = m_title.c_str();
     }
@@ -42,8 +41,8 @@ namespace idattd
         cols->at(1).sprnt("0x%X", c.tid);
 
         qstring what = change_name(c.kind);
-        // Say when a call targeted another process. It is left out of this
-        // process's map, and seeing that it happened at all is the point.
+        // A call on another process is left out of this process's map, but
+        // that it happened is worth showing.
         if ( c.other_process )
             what.append(" (other process)");
         cols->at(2) = what;
@@ -53,10 +52,9 @@ namespace idattd
             cols->at(4) = "whole region";
         else
             cols->at(4).sprnt("0x%llX", c.size);
-        // The base and size are what an unrecoverable out-parameter costs: the
-        // kernel's exact answer was not in the recording, so the caller's own
-        // request was rounded out to page boundaries instead. That is a floor on
-        // the real region, never an overstatement.
+        // Not exact: the kernel's out-parameters were not in the recording, so
+        // the caller's request was rounded out to pages. A floor on the real
+        // region, never an overstatement.
         if ( !c.exact )
             cols->at(4).append(" (at least)");
 
@@ -68,11 +66,10 @@ namespace idattd
         else
             cols->at(5) = protection_text(c.protect);
 
-        // Who wanted the memory, and what they ended up calling. The instruction
-        // that actually invoked the syscall sits in between and is nearly always
-        // an unnamed internal helper of the DLL the stub lives in, which is why
-        // it is not a column: double-click travels there, where the whole stack
-        // is live.
+        // Who wanted the memory, and the API they called. The instruction that
+        // invoked the syscall is nearly always an unnamed helper in the stub's
+        // DLL, so it is not a column; double-click travels there, with the
+        // whole stack live.
         ea_t origin = chain_origin(m_mgr, c);
         cols->at(6) = origin != BADADDR ? describe_address(m_mgr, origin) : qstring();
         cols->at(7) = c.api != BADADDR ? describe_address(m_mgr, c.api) : qstring();
@@ -89,9 +86,8 @@ namespace idattd
 
     chooser_t::cbret_t idaapi MemoryTimelineChooser::enter(size_t n)
     {
-        // The call, not the return. Travelling to the return leaves you inside
-        // the syscall stub, which is never what the row is about and does not
-        // match the function the row names.
+        // The call, not the return: the return is inside the syscall stub,
+        // not the function the row names.
         if ( n < m_rows.size() )
             travel_to(m_mgr, m_rows[n].call_pos.is_valid() ? m_rows[n].call_pos : m_rows[n].pos);
         return cbret_t(n, NOTHING_CHANGED);
@@ -108,8 +104,7 @@ namespace idattd
             return 1;
         }
 
-        // A selection in the disassembly is the common case; fall back to asking
-        // so the command is usable from the menu with nothing selected.
+        // A selection in the disassembly, else ask (the menu, nothing selected).
         ea_t lo = BADADDR, hi = BADADDR;
         if ( !read_range_selection(nullptr, &lo, &hi) || lo >= hi )
         {
@@ -119,8 +114,8 @@ namespace idattd
                 warning("Put the cursor on an address, or select a range, first.");
                 return 1;
             }
-            // Default to the enclosing function, else a page, kept inside the
-            // segment the cursor is in.
+            // Default to the enclosing function, else a page, clipped to the
+            // cursor's segment.
             lo = here;
             hi = here + 0x1000;
             segment_info_t si;
@@ -145,7 +140,7 @@ namespace idattd
                 "  <~S~tart:$::16::>\n"
                 "  <~E~nd:$::16::>\n"
                 "\n";
-            if ( !ask_form(form, &lo, &hi) )
+            if ( ask_form(form, &lo, &hi) <= 0 )
                 return 1;
         }
 
@@ -165,16 +160,14 @@ namespace idattd
     //=======================================================================
     // Memory map actions
     //=======================================================================
-    // Build the change timeline if this database has none yet, asking first:
-    // it replays the whole recording. False when there is none afterwards.
+    // Build the change timeline if this database has none yet, asking first
+    // since it replays the whole recording. False when there is none after.
     static bool ensure_timeline(TraceManager *mgr, const char *declined_note)
     {
         MemoryMap &map = mgr->memmap_for_update();
         if ( !map.empty() )
             return true;
 
-        // Building it replays the whole recording, so say so before starting
-        // rather than after.
         qstring q;
         q.sprnt("Reconstructing the memory map replays the whole recording "
                 "once, watching every call that allocates, protects or frees "
@@ -200,8 +193,8 @@ namespace idattd
             msg("[ida-ttd] memory map: the sweep was cancelled, so the partial "
                 "map is used for this session but not saved.\n");
 
-        // The regions in force at the current position are new information
-        // for IDA: it has been treating all of user space as one segment.
+        // IDA has been treating all of user space as one segment; the regions
+        // at the current position are new to it.
         invalidate_dbgmem_config();
         refresh_idaview_anyway();
         return true;
@@ -235,8 +228,8 @@ namespace idattd
             warning("The memory map is only available while replaying a trace.");
             return 1;
         }
-        // Without the timeline the map still has the modules, stacks and the
-        // PEB, just not what the program allocated.
+        // Without the timeline the map still has modules, stacks and the PEB,
+        // just not the program's allocations.
         ensure_timeline(mgr(), "\n\nWithout it, the map shows the modules, "
                                "stacks and the PEB, but nothing the program "
                                "allocated.");
@@ -316,8 +309,8 @@ namespace idattd
         if ( r.since.is_valid() )
             cols->at(6) = format_position(r.since);
 
-        // Memory that is writable and executable at once is what this view is
-        // most often opened to find.
+        // Writable and executable memory, what this view is most often
+        // opened to find.
         if ( attrs != nullptr && !r.reserved && r.type != ITTD_REGION_IMAGE )
         {
             uchar perm = protection_perm(r.protect);

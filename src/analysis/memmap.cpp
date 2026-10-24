@@ -9,8 +9,8 @@ namespace idattd
     //=======================================================================
     // Page protections
     //=======================================================================
-    // PAGE_* values, spelled out rather than taken from <windows.h>, so that what
-    // is decoded here is the recording's ABI and not this build's headers.
+    // PAGE_* values spelled out rather than taken from <windows.h>: they are the
+    // recording's ABI, not this build's headers.
     enum : uint32_t
     {
         P_NOACCESS           = 0x001,
@@ -40,8 +40,8 @@ namespace idattd
         uchar p = 0;
         if ( (a & (P_EXECUTE | P_EXECUTE_READ | P_EXECUTE_READWRITE | P_EXECUTE_WRITECOPY)) != 0 )
             p |= SEGPERM_EXEC;
-        // PAGE_EXECUTE alone is execute-without-read, which is why it is absent
-        // from both lists below.
+        // PAGE_EXECUTE alone is execute-without-read, so it is in neither list
+        // below.
         if ( (a & (P_READONLY | P_READWRITE | P_WRITECOPY
                  | P_EXECUTE_READ | P_EXECUTE_READWRITE | P_EXECUTE_WRITECOPY)) != 0 )
             p |= SEGPERM_READ;
@@ -83,16 +83,15 @@ namespace idattd
     //=======================================================================
     typedef std::map<ea_t, Region> LiveMap;
 
-    // Remove [lo, hi) from the live set, keeping whatever of each overlapping
-    // region falls outside it. This is what makes a free-then-reallocate at the
-    // same address come out right, and it is why the region set can never
-    // contain two regions that overlap.
+    // Remove [lo, hi) from the live set, keeping the parts of overlapping
+    // regions outside it. This keeps the set non-overlapping and makes a
+    // free-then-reallocate at one address come out right.
     static void carve(LiveMap &live, ea_t lo, ea_t hi, std::vector<Region> *removed)
     {
         if ( hi <= lo )
             return;
-        // Start at the last region beginning at or before 'lo': it is the only
-        // one before 'lo' that can reach into the range.
+        // Start at the last region beginning at or before 'lo', the only one
+        // before 'lo' that can reach into the range.
         LiveMap::iterator it = live.upper_bound(lo);
         if ( it != live.begin() )
             --it;
@@ -127,8 +126,8 @@ namespace idattd
 
     static void apply_change(LiveMap &live, const RegionChange &c)
     {
-        // A call that targeted another process changed that process's map, not
-        // this one. It stays in the listing, where seeing it is the point.
+        // A call on another process changed that process's map, not this one
+        // (it stays in the listing).
         if ( c.other_process || c.base == BADADDR )
             return;
 
@@ -160,12 +159,10 @@ namespace idattd
                 carve(live, lo, hi, &hit);
                 if ( hit.empty() )
                 {
-                    // A protection change on memory no watched call ever
-                    // allocated. Inside a module that is ordinary (a loader
-                    // fixing up its own sections) and the module already has
-                    // segments of its own. Outside one it is the interesting
-                    // case -- a payload whose allocation was not recovered --
-                    // so it stands up a region rather than being lost.
+                    // A protection change on memory no watched call allocated.
+                    // Inside a module that is ordinary (the loader fixing up
+                    // sections). Outside one it may be a payload whose
+                    // allocation was not recovered, so it makes a region.
                     if ( c.in_module )
                         return;
                     Region r;
@@ -177,8 +174,8 @@ namespace idattd
                     live[r.base] = r;
                     return;
                 }
-                // Put back the parts outside the changed range with the
-                // protection they had, and the part inside with the new one.
+                // Parts outside the range keep their protection; the part
+                // inside takes the new one.
                 for ( const Region &r : hit )
                 {
                     if ( r.base < lo )
@@ -244,9 +241,8 @@ namespace idattd
                     carve(live, c.base, (ea_t)(c.base + c.size), nullptr);
                     return;
                 }
-                // A size of zero means "release the whole thing", which is what
-                // MEM_RELEASE and every unmap do. Drop the region containing the
-                // address rather than guessing an extent.
+                // Size zero releases the whole region (MEM_RELEASE, every
+                // unmap): drop the region containing the address.
                 LiveMap::iterator it = live.upper_bound(c.base);
                 if ( it == live.begin() )
                     return;
@@ -265,13 +261,11 @@ namespace idattd
     {
         out.clear();
 
-        // Replaying forward from where the cache already stands is the common
-        // case by far -- stepping crosses a handful of changes, if any. Only a
-        // jump backward has to start over, because a change cannot be undone
-        // without knowing what it displaced.
-        // An invalid position on either side means "the whole timeline", which
-        // sorts after every real one -- so it can be reached from anywhere, and
-        // nothing can be reached from it.
+        // Moving forward from the cache is the common case (a step crosses few
+        // changes, if any). Moving backward starts over, since a change cannot
+        // be undone without knowing what it displaced. An invalid position
+        // means "the whole timeline" and sorts after every real one: it can be
+        // reached from anywhere, and nothing can be reached from it.
         bool backward = pos.is_valid() && (!m_livePos.is_valid() || pos < m_livePos);
         if ( !m_liveValid || backward )
         {
@@ -320,7 +314,7 @@ namespace idattd
     static const char  MM_NODE[]  = "$ ida-ttd memmap";
     static const uchar MM_TAG     = 'M';
     static const uint32_t MM_MAGIC   = 0x50414D54;   // 'TMAP'
-    // A map of any other version is rebuilt rather than shown:
+    // A map of any other version is rebuilt, not shown:
     // 9: a Microsoft TTD change with no call chain carries its calling
     //    instruction as a one-frame chain, so a v8 map shows no caller there.
     // 8: RC_STATE entries, with their state, region type and allocation base.
@@ -333,13 +327,12 @@ namespace idattd
     //    from the stack rather than being assumed, so an older map can hold a
     //    wrong Protect value.
     static const uint32_t MM_VERSION = 9;
-    // A recording that allocates in a loop can produce a great many changes.
-    // Past this there is nothing left to learn from another row, and the blob
-    // has to fit in the database.
+    // A recording that allocates in a loop can produce very many changes; past
+    // this cap more rows add nothing, and the blob must fit the database.
     static const size_t MM_MAX_ITEMS = 200000;
 
-    // The blob is the header PluginNode writes (u32 magic, u32 version, u64
-    // trace fingerprint) followed by the changes.
+    // The blob: PluginNode's header (u32 magic, u32 version, u64 fingerprint),
+    // then the changes.
     void MemoryMap::save(uint64_t fingerprint) const
     {
         PluginNode node(MM_NODE);
@@ -389,9 +382,7 @@ namespace idattd
     {
         clear();
 
-        // A map built from a different recording would show addresses and
-        // positions that mean nothing here. get() refuses it rather than
-        // mislead.
+        // get() refuses a map built from a different recording.
         std::vector<uchar> blob;
         if ( !PluginNode(MM_NODE).get(MM_TAG, MM_MAGIC, MM_VERSION, fingerprint, &blob) )
             return false;
@@ -444,8 +435,8 @@ namespace idattd
 
         if ( !ok )
             return false;
-        // Through set_changes so the sort and the cache reset cannot diverge:
-        // state_at() walks m_changes assuming it is ordered by position.
+        // Through set_changes, which sorts by position (state_at() relies on
+        // it) and resets the cache.
         set_changes(std::move(v));
         return true;
     }
@@ -453,14 +444,6 @@ namespace idattd
     void MemoryMap::erase()
     {
         PluginNode(MM_NODE).erase(MM_TAG);
-    }
-
-    bool MemoryMap::stored()
-    {
-        // Any fingerprint: this only asks whether a map of this version is
-        // there at all.
-        std::vector<uchar> blob;
-        return PluginNode(MM_NODE).get(MM_TAG, MM_MAGIC, MM_VERSION, 0, &blob);
     }
 
     //=======================================================================
@@ -500,8 +483,7 @@ namespace idattd
         changes.reserve(found.size());
         for ( const ittd_mapping_change &m : found )
         {
-            // A kind this build does not know, checked before the narrowing
-            // below could fold it onto one it does.
+            // Skip unknown kinds before the narrowing below could alias them.
             if ( m.kind > ITTD_MAP_STATE )
                 continue;
             RegionChange c;
@@ -527,16 +509,14 @@ namespace idattd
             changes.push_back(c);
         }
 
-        // Name what the listing shows, once per module: the routine called
-        // (an ntdll stub, which its exports name) and the code that wanted
-        // the memory. The plugin names a module when you stop inside it, and
-        // you have never stopped in most of these.
+        // Name what the listing shows, once per module: the stub called and
+        // the code that wanted the memory. Modules are otherwise named only
+        // when stopped in, which most of these never were.
         //
-        // A PDB only where that code is in a library. There exports alone
-        // name the wrong function -- the code that allocates is usually an
-        // internal helper -- but applying one blocks IDA for as long as it
-        // takes (combase's, a dozen seconds), so the libraries the chains
-        // merely pass through get none.
+        // A PDB only where that code is in a library: there exports name the
+        // wrong function (allocations come from internal helpers). Applying a
+        // PDB blocks IDA (combase's takes a dozen seconds), so libraries the
+        // chains merely pass through get none.
         {
             std::set<ea_t> exports, pdbs;
             for ( const RegionChange &c : changes )
@@ -584,19 +564,17 @@ namespace idattd
         if ( mgr == nullptr || c.chain_n == 0 )
             return BADADDR;
 
-        // The frame worth naming is the first one that is not library code:
-        // either the analysed binary, or -- the case that matters most when
-        // reading a recording of malware -- an address in no module at all,
-        // which is code the recording allocated and ran.
+        // The first frame that is not library code: the analysed binary, or an
+        // address in no module (code the recording allocated and ran, the case
+        // that matters most in malware).
         for ( uint8_t k = 0; k < c.chain_n; k++ )
         {
             if ( c.chain[k] != BADADDR && !mgr->modules().is_library_address(c.chain[k]) )
                 return c.chain[k];
         }
 
-        // Everything is library code. Then the useful frame is the first one
-        // that left the module the syscall's own caller sits in: for a heap
-        // allocation that is the CRT's malloc rather than ntdll's internals.
+        // All library code: take the first frame outside the syscall caller's
+        // module (for a heap allocation, the CRT's malloc rather than ntdll).
         ea_t lo0 = 0, hi0 = 0;
         if ( !mgr->modules().range_at(c.chain[0], lo0, hi0) )
             return c.chain[c.chain_n - 1];
@@ -609,9 +587,8 @@ namespace idattd
                 return c.chain[k];
             }
         }
-        // The whole chain lived in one module -- an allocation a DLL made
-        // entirely for itself. The outermost frame recorded is the most that
-        // can be said, and saying it beats leaving the column empty.
+        // The whole chain is in one module (a DLL allocating for itself): the
+        // outermost recorded frame is the best answer.
         return c.chain[c.chain_n - 1];
     }
 

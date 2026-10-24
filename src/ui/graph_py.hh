@@ -3,10 +3,9 @@
 // One window per kind of graph ("forks", "origin"). The plugin builds the
 // model (graph_view.cpp) and this draws it: ttd("ui.graph KIND") hands over
 // the nodes and edges, ttd("ui.graphact KIND NODE ACTION") runs a node's
-// action. Nodes are cards -- a bold title, an instruction in the code font,
-// a few dimmer lines, a badge whose colour says what the node is -- laid out
-// as a tree from the top down, joined by curved edges. Colours come from the
-// palette IDA's theme sets, so it reads the same in the light and dark themes.
+// action. Nodes are cards (bold title, an instruction in the code font, dimmer
+// lines, a coloured badge) laid out as a top-down tree with curved edges.
+// Colours come from IDA's theme palette, so light and dark themes both work.
 //
 // Mouse and keys as in IDA's graphs: drag to pan, wheel to scroll,
 // Ctrl+wheel to zoom; F (or Home) fits the graph, Ctrl+0 shows it at 100%.
@@ -24,6 +23,8 @@ def _ida_ttd_graph_show(kind, first):
     forms = globals().setdefault("_ida_ttd_graph_forms", {})
 
     def ttd(cmd):
+        # cmd becomes an IDC string literal: escape what would end it early.
+        cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
         return json.loads(idc.eval_idc('ttd("%s")' % cmd))
 
     def fetch():
@@ -330,9 +331,9 @@ def _ida_ttd_graph_show(kind, first):
             m.exec(e.globalPos())
 
     def layout(cards, edges):
-        # A tree from the top down: each node under the first node that has
-        # an edge to it, met breadth first from the roots; children in the
-        # order of their edges. Other edges are drawn, not laid out.
+        # A top-down tree: each node goes under the first node, breadth first
+        # from the roots, with an edge to it; children in edge order. Other
+        # edges are drawn but do not affect the layout.
         n = len(cards)
         kids = [[] for _ in range(n)]
         has_parent = [False] * n
@@ -435,8 +436,8 @@ def _ida_ttd_graph_show(kind, first):
                 cards.append(c)
             layout(cards, graph["edges"])
             up = bool(graph.get("arrows_up"))
-            # The edges leaving a card spread across its bottom, in the order
-            # of the cards they go to, so they do not leave from one point.
+            # Edges leaving a card spread across its bottom, ordered by the
+            # cards they reach, rather than all leaving from one point.
             leaving = {}
             for e in graph["edges"]:
                 if 0 <= e["src"] < len(cards) and 0 <= e["dst"] < len(cards):
@@ -455,8 +456,8 @@ def _ida_ttd_graph_show(kind, first):
                 QtCore.QTimer.singleShot(0, self.fit_or_actual)
 
         def fit_or_actual(self):
-            # Actual size when it fits, else the whole graph; the top of it
-            # either way, which is where it starts.
+            # Actual size when it fits, else the whole graph; either way,
+            # scrolled to the top, where it starts.
             r = self.scene.sceneRect()
             vp = self.view.viewport().rect()
             self.view.resetTransform()
@@ -486,7 +487,7 @@ def _ida_ttd_graph_show(kind, first):
                 if not menu:
                     return
                 action = menu[0]
-            # Later, not inside this item's own event: the action may redraw
+            # Deferred out of this item's own event: the action may redraw
             # the graph, which deletes the item.
             def run():
                 r = ttd("ui.graphact %s %x %s" % (kind, node["id"], action))
@@ -501,7 +502,7 @@ def _ida_ttd_graph_show(kind, first):
     graph = fetch()
     form = forms.get(kind)
     if form is not None and ida_kernwin.find_widget(graph["title"]) is not None:
-        # Unless the window closed in between, deleting what load() draws on.
+        # Skipped if the window closed meanwhile, deleting what load() draws on.
         QtCore.QTimer.singleShot(0, lambda: form.load(graph) if forms.get(kind) is form else None)
         if first:
             ida_kernwin.activate_widget(ida_kernwin.find_widget(graph["title"]), True)
