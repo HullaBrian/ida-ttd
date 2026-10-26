@@ -16,9 +16,12 @@ namespace idattd
     // The per-stop pipeline (on_stop) runs on every step, so it must not walk
     // the trace far. In order:
     //
+    //   0. Re-read a module's exception table read from recorded memory when
+    //      it does not cover the stop (a packer writes it when it unpacks).
     //   1. If IDA has a function at the stop address, grow it to the end its
     //      module's exception table gives (static analysis stops where it
-    //      loses the flow, and the rest renders as a jump to nowhere).
+    //      loses the flow, and the rest renders as a jump to nowhere), or
+    //      refit it to the table entry it is a fragment of.
     //   2. Otherwise define the function from the module's .pdata bounds,
     //      which locate every x64 function with or without symbols.
     //   3. Failing that (dynamic code, with no module or exception table),
@@ -62,6 +65,9 @@ namespace idattd
         // so the two become one. The merged function's
         // start, or BADADDR.
         ea_t  merge_fragment(ITraceCursor *playhead, ea_t pc, const func_entry_info_t &fi);
+        // A function that starts inside an exception table entry without
+        // being one, redefined to the entry's bounds. Its start, or BADADDR.
+        ea_t  fit_to_table(ea_t pc, const func_entry_info_t &fi, ea_t seg_end);
         // Likewise, code no function owns that the function before it falls
         // into: that function is laid out again to cover it.
         ea_t  extend_into(ITraceCursor *playhead, ea_t pc, ea_t seg_start);

@@ -112,6 +112,7 @@ namespace idattd
         m_publics.clear();
         m_funcRanges.clear();
         m_funcTried.clear();
+        m_funcFromMemory.clear();
         m_exports.clear();
         m_loadImage.clear();
         m_loadImageTried.clear();
@@ -244,6 +245,30 @@ namespace idattd
             return true;
         }
         return false;
+    }
+
+    bool ModuleRegistry::refresh_function_ranges(ea_t pc, ITraceCursor *now)
+    {
+        ea_t s, e;
+        size_t mi = index_at(pc);
+        if ( now == nullptr || mi == (size_t)-1 || function_range_at(pc, s, e) )
+            return false;
+        const ea_t base = m_spans[mi].base;
+        if ( m_funcFromMemory.count(base) == 0 )
+            return false;
+        std::vector<std::pair<ea_t, ea_t>> v;
+        if ( parse_pdata_functions(guest_read(now), base, m_is64, v) == 0 )
+            return false;
+        std::sort(v.begin(), v.end());
+        std::vector<std::pair<ea_t, ea_t>> &cur = m_funcRanges[base];
+        if ( v == cur )
+            return false;
+        cur = std::move(v);
+        const ModuleInfo *rec = record_at(base);
+        msg("[ida-ttd] %s: its exception table changed after it loaded (unpacked code): "
+            "%u function range(s) now.\n",
+            rec != nullptr ? qbasename(rec->path.c_str()) : "module", (unsigned)cur.size());
+        return true;
     }
 
     std::vector<ea_t> ModuleRegistry::resolve_function_pattern(const char *pattern) const
@@ -473,6 +498,7 @@ namespace idattd
         }
         if ( nfunc == 0 )
         {
+            m_funcFromMemory.insert(base);
             GuestRead rd = read_at_load(base);
             if ( rd )
                 nfunc = parse_pdata_functions(rd, base, m_is64, franges);

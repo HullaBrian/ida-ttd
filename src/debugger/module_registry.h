@@ -88,6 +88,11 @@ namespace idattd
         // exception table, worked out on first use. False outside any
         // recorded function.
         bool function_range_at(ea_t pc, ea_t &start, ea_t &end) const;
+        // When no range covers 'pc' and its module's table was read from
+        // recorded memory, read the table again as it stands at 'now': a
+        // packer writes the real one when it unpacks, after the module
+        // loaded. True when the ranges changed.
+        bool refresh_function_ranges(ea_t pc, ITraceCursor *now);
         // "kernel32!SleepStub" for an export at 'ea', or empty: a name for a
         // listing when IDA has none yet (the module is not mapped where the
         // user is).
@@ -167,6 +172,7 @@ namespace idattd
         // sorted by start address.
         std::map<ea_t, std::vector<std::pair<ea_t, ea_t>>> m_funcRanges;
         std::set<ea_t> m_funcTried;     // function_ranges() ran for these
+        std::set<ea_t> m_funcFromMemory;  // ... and read the table from recorded memory
         // Per-module named exports, keyed by module base; each vector is
         // sorted by address (stable, so aliases keep their recorded order).
         std::map<ea_t, std::vector<std::pair<ea_t, std::string>>> m_exports;

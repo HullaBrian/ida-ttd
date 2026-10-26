@@ -417,11 +417,40 @@ namespace idattd
         return got;
     }
 
+    ea_t CodeAnalyzer::fit_to_table(ea_t pc, const func_entry_info_t &fi, ea_t seg_end)
+    {
+        ea_t ps, pe, s2, e2;
+        if ( !m_modules->function_range_at(pc, ps, pe) || ps >= fi.start_ea || pe > seg_end )
+            return BADADDR;
+        // A table entry starting at the function (a chunk of a function
+        // described in pieces) is not a fragment.
+        if ( m_modules->function_range_at(fi.start_ea, s2, e2) && s2 == fi.start_ea )
+            return BADADDR;
+        for ( ea_t ea = ps; ea != BADADDR && ea < pe; ea = next_head(ea, pe) )
+            if ( get_func_start(ea) == ea )
+                del_func(ea);
+        lay_out_linear(ps, pe);
+        if ( !add_func(ps, pe) )
+            return BADADDR;
+        m_dynFuncBytes.erase(fi.start_ea);
+        m_calleeScanFunc = BADADDR;
+        msg("[ida-ttd] the function at %a is part of %a..%a in the module's exception table; "
+            "redefined it so.\n", fi.start_ea, ps, pe);
+        return ps;
+    }
+
     void CodeAnalyzer::analyze_current_function(ITraceCursor *playhead, ea_t pc)
     {
         segment_info_t seg;
         if ( !get_segment_info(&seg, pc) )
             return;
+
+        // A packed module's real exception table appears once it unpacks.
+        if ( m_modules->refresh_function_ranges(pc, playhead) )
+        {
+            m_pdataExtended.clear();
+            m_fragmentChecked.clear();
+        }
 
         func_entry_info_t cur_fi;
         if ( get_func_entry_info(&cur_fi, pc) )
@@ -431,6 +460,17 @@ namespace idattd
             // embedded data) and the tail renders as a JUMPOUT. The exception
             // table says where it really ends.
             extend_to_pdata_bounds(pc, cur_fi);
+
+            // One that starts inside a table entry without being one is a
+            // fragment of that entry's function.
+            ea_t whole = fit_to_table(pc, cur_fi, seg.end_ea);
+            if ( whole != BADADDR )
+            {
+                func_entry_info_t wfi;
+                if ( get_func_entry_info(&wfi, whole) )
+                    define_callees(playhead, wfi.start_ea, wfi.end_ea);
+                return;
+            }
 
             // A fragment of the function before it, cut off at a loop head.
             ea_t merged = merge_fragment(playhead, pc, cur_fi);
