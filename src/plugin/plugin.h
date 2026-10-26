@@ -183,8 +183,6 @@ namespace idattd
         // Function-call tracer
         TraceFuncHandler    m_traceFunc;
         TracePatternHandler m_tracePat;
-        AttachTraceHandler  m_attachTrace;
-        AutoStartHandler    m_autoStart;
         InstallRuntimeHandler m_installRuntime;
         InstallSogenHandler   m_installSogen;
         // Bookmarks + execution coverage
@@ -283,6 +281,7 @@ namespace idattd
         // dialog per step.
         bool m_quiet      = false;
         bool m_quietSaved = false;
+        bool m_layoutChanged = false;   // since the last after-stop work
         void quiet_ui();
         void unquiet_ui();
         // The position readout only grows within a session, so the toolbar
@@ -309,10 +308,6 @@ namespace idattd
         // on, so one the user had disabled stays disabled. The entries are
         // string literals, so storing the pointers is safe.
         std::vector<const char *> m_srcProvidersOff;
-        // The "start the replay for this database" action, registered only
-        // for a database made from a recording. It lives outside a session,
-        // since it is what starts one.
-        bool m_attachRegistered = false;
         // The Backends actions and menu separators: registered with the
         // plugin, not a session.
         bool m_menuActionsRegistered = false;

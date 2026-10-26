@@ -41,8 +41,8 @@ namespace idattd
     // shows no dialog. Successes are cached by Hex-Rays, so asking again is cheap.
     bool can_decompile(ea_t func_ea);
 
-    // Show the function containing ea in this pseudocode view, caret on ea,
-    // without opening another window. False when the function cannot be
+    // Show the function containing ea in this pseudocode view, caret on the
+    // statement holding ea, without opening another window. False when the function cannot be
     // decompiled; the view is then left as it was.
     bool show_in_pseudocode(TWidget *view, ea_t ea);
 }

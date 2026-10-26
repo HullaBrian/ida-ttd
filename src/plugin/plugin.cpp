@@ -9,6 +9,7 @@
 #include "plugin/settings.h"
 #include "debugger/registers.h"
 #include "core/diag.h"
+#include "ui/graph_view.h"
 #include <expr.hpp>
 
 // Embedded SVG icons (codicons for the movement actions, including "continue
@@ -43,14 +44,17 @@ namespace idattd
     // name or label, "TTD/" then means this menu. (Toolbars are a separate
     // namespace, "TTDToolBar".)
     static const char *TTD_MENU      = "TTD";
+    // Also how ida_ttd_qt finds the position button.
+    static const char POS_LABEL_TOOLTIP[] = "Current trace position; click to copy it";
     static const char *TTD_MENU_PATH = "TTD/";      // path items attach under
 
     // Submenus of the TTD menu, in display order. An ActionDesc names one by
     // 'name'; a submenu's rows are consecutive in the table. Paths resolve by
     // label, so a label holds no '/' or '&'.
-    static const char *SUB_CODE     = "TTDCode";
-    static const char *SUB_ANALYSIS = "TTDAnalysis";
     static const char *SUB_FORKS    = "TTDForks";
+    static const char *SUB_MEMORY   = "TTDMemory";
+    static const char *SUB_WRITTEN  = "TTDWritten";
+    static const char *SUB_ANNOTATE = "TTDAnnotate";
     // Not a session submenu: always there, last, built by rebuild_ttd_menu().
     static const char *SUB_BACKENDS       = "TTDBackends";
     static const char *SUB_BACKENDS_LABEL = "Backends";
@@ -64,47 +68,43 @@ namespace idattd
     static const SubmenuDesc TTD_SUBMENUS[] =
     {
         // Among the items with icons, so it has one too.
-        { SUB_FORKS,    "Forks",    true,  icons_fork_svg },
-        { SUB_CODE,     "Code",     true,  nullptr },
-        { SUB_ANALYSIS, "Analysis", false, nullptr },
+        { SUB_FORKS,    "Forks",             true,  icons_fork_svg },
+        // Beside Syscalls and Handles, in their section.
+        { SUB_MEMORY,   "Memory",            false, nullptr },
+        { SUB_WRITTEN,  "Written data",      false, nullptr },
+        // Everything that changes the database, in a section of its own.
+        { SUB_ANNOTATE, "Annotate database", true,  nullptr },
     };
 
-    // create_menu() takes no icon, so it is set on the submenu's Qt action
-    // through IDAPython's PySide (IDA's Qt renders SVG). Without IDAPython or
-    // Qt (an idalib worker) the submenu has none.
-    static void set_submenu_icon(const char *label, const char *svg)
+    // ida_ttd_qt.<fn>(args...) (scripts/ida_ttd_qt.py), for the Qt changes
+    // the SDK has no call for. The arguments go as quoted string literals.
+    static bool call_qt(const char *fn, std::initializer_list<const char *> args)
     {
         extlang_object_t py = find_extlang_by_name("Python");
         if ( py == nullptr || py->eval_snippet == nullptr )
-            return;
-        // The label and SVG hold no quote or backslash, so they go into
-        // Python string literals unescaped.
+            return false;
         qstring code;
-        code.sprnt("def _idattd_submenu_icon():\n"
-                   "    try:\n"
-                   "        from PySide6 import QtGui, QtWidgets\n"
-                   "        import shiboken6\n"
-                   "    except ImportError:\n"
-                   "        return\n"
-                   "    app = QtWidgets.QApplication.instance()\n"
-                   "    if app is None:\n"
-                   "        return\n"
-                   "    pix = QtGui.QPixmap()\n"
-                   "    pix.loadFromData(b'%s', 'SVG')\n"
-                   "    for m in app.allWidgets():\n"
-                   "        if not isinstance(m, QtWidgets.QMenu) or not shiboken6.isValid(m) \\\n"
-                   "                or m.title().replace('&', '') != '%s':\n"
-                   "            continue\n"
-                   "        for a in m.actions():\n"
-                   "            sub = a.menu()\n"
-                   "            if sub is not None and shiboken6.isValid(sub) and a.text().replace('&', '') == '%s':\n"
-                   "                a.setIcon(QtGui.QIcon(pix))\n"
-                   "_idattd_submenu_icon()\n"
-                   "del _idattd_submenu_icon\n",
-                   svg, TTD_MENU, label);
+        code.sprnt("import ida_ttd_qt\nida_ttd_qt.%s(", fn);
+        bool first = true;
+        for ( const char *a : args )
+        {
+            if ( !first )
+                code.append(", ");
+            first = false;
+            json_str(&code, a);
+        }
+        code.append(")\n");
         qstring err;
-        if ( !py->eval_snippet(code.c_str(), &err) )
-            msg("[ida-ttd] could not give the %s submenu its icon: %s\n", label, err.c_str());
+        if ( py->eval_snippet(code.c_str(), &err) )
+            return true;
+        msg("[ida-ttd] ida_ttd_qt.%s failed: %s\n", fn, err.c_str());
+        return false;
+    }
+
+    // create_menu() takes no icon.
+    static void set_submenu_icon(const char *label, const char *svg)
+    {
+        call_qt("set_submenu_icon", { TTD_MENU, label, svg });
     }
 
     // A separator goes above a menu item, not a submenu, so the one above a
@@ -114,7 +114,7 @@ namespace idattd
     static const char SEP_CARRIER_LABEL[] = "separator";
     static const char *const SUBMENU_SEP_ACTIONS[] =
     {
-        "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2",
+        "idattd:menu_sep_0", "idattd:menu_sep_1", "idattd:menu_sep_2", "idattd:menu_sep_3",
     };
     static const char SUB_BACKENDS_SEP[] = "idattd:menu_sep_backends";
     struct MenuSepHandler : public action_handler_t
@@ -235,7 +235,6 @@ namespace idattd
         m_dbgEvents.p = this;
         m_uiEvents.p  = this;
         m_idbEvents.p = this;
-        m_attachTrace.start_session = [this]() { start_trace_session(); };
 
         // One context for every TTD handler.
         m_ctx.mgr    = &m_mgr;
@@ -303,12 +302,6 @@ namespace idattd
         for ( const SubmenuDesc &s : TTD_SUBMENUS )
             delete_menu(s.name);
         delete_menu(TTD_MENU);
-        if ( m_attachRegistered )
-        {
-            unregister_action(actions::ATTACH_TRACE);
-            unregister_action(actions::AUTO_START);
-            m_attachRegistered = false;
-        }
         if ( m_menuActionsRegistered )
         {
             unregister_action(actions::INSTALL_RUNTIME);
@@ -363,144 +356,119 @@ namespace idattd
         const bool GROUP = true, ITEM = false;
         const bool MENU = true, TOOLBAR_ONLY = false;
 
+        // Tooltips: rows with an icon can sit on the toolbar, where the
+        // tooltip is all that names them, so theirs start with the label.
         m_actions = {
             // Getting around.
             { actions::TIMELINE, "Timeline...", &m_timeline, "Ctrl+Shift+T",
-              "Timeline: open the TTD trace timeline of notable positions",
+              "Timeline: notable positions in the trace",
               m_icons[ICO_TIMELINE], ITEM, MENU },
             { actions::GOTO_POS, "Go to position...", &m_goto, "Ctrl+Shift+G",
-              "Go to position: jump to a Sequence:Steps trace position",
+              "Go to position: jump to a trace position",
               m_icons[ICO_GOTO], ITEM, MENU },
             { actions::ADD_BOOKMARK, "Bookmark this position...", &m_addBookmark, "Ctrl+Shift+B",
-              "Bookmark this position: save the current trace position, with a name "
-              "and a note, in the database",
+              "Bookmark this position, with a name and a note",
               m_icons[ICO_BOOKMARK_ADD], GROUP, MENU },
             { actions::BOOKMARKS, "Bookmarks...", &m_bookmarksView, nullptr,
-              "Bookmarks: the saved trace positions for this database",
+              "Bookmarks: the saved positions",
               m_icons[ICO_BOOKMARKS], ITEM, MENU },
 
             // Forks, right after bookmarks: both are positions to come back to.
             { actions::FORK, "Fork here", &m_fork, nullptr,
-              "Fork here: make this position a fork. Change registers and memory in "
-              "IDA as on a live target, then Record fork (Sogen recordings)",
+              "Make this position a fork: change registers and memory here, then record the fork",
               NO_ICON, ITEM, MENU, SUB_FORKS },
             { actions::FORK_RECORD, "Record fork...", &m_forkRecord, nullptr,
-              "Record fork: replay the program to the fork, apply the changes, and let "
-              "it run on into a new recording",
+              "Replay to the fork, apply the changes and record from there into a new recording",
               NO_ICON, ITEM, MENU, SUB_FORKS },
             { actions::FORK_DISCARD, "Discard fork", &m_forkDiscard, nullptr,
-              "Discard fork: drop the fork and its changes",
+              "Drop the fork and its changes",
               NO_ICON, ITEM, MENU, SUB_FORKS },
             { actions::FORK_MANAGER, "Fork manager", &m_forkManager, nullptr,
-              "Fork manager: this recording and the forks recorded from it, as a graph; "
-              "double-click one to switch to it",
+              "This recording and its forks; double-click one to switch to it",
               NO_ICON, GROUP, MENU, SUB_FORKS },
             // On the Fork manager's popup only.
             { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
               "Switch this IDA to the selected recording, or open it in a new IDA",
               NO_ICON, ITEM, TOOLBAR_ONLY },
             { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
-              "Take the selected fork out of the graph (its file stays)",
+              "Remove the selected fork from the graph (its file stays)",
               NO_ICON, ITEM, TOOLBAR_ONLY },
 
             // Searching the recording.
-            { actions::TRACE_FUNC, "Find all calls to this function", &m_traceFunc, "Ctrl+Shift+C",
-              "Find all calls to this function: sweep the whole trace and list every "
-              "call with its arguments and return value",
+            { actions::TRACE_FUNC, "Find calls to this function", &m_traceFunc, "Ctrl+Shift+C",
+              "Find calls to this function: every call in the trace, with arguments and return value",
               m_icons[ICO_FUNCTION], GROUP, MENU },
             { actions::TRACE_PAT, "Find calls by name/pattern...", &m_tracePat, "Ctrl+Shift+F",
-              "Find calls by name/pattern: trace every function matching a wildcard "
-              "like 'kernel32!Virtual*' in one sweep",
+              "Find calls by name/pattern, such as kernel32!Virtual*",
               m_icons[ICO_FUNC_SEARCH], ITEM, MENU },
             { actions::CALL_TREE, "Call tree of this function", &m_callTree, nullptr,
-              "Call tree: every call the function at the cursor made during this run "
-              "of it, nested, from its entry to its return",
+              "Call tree: the calls this function made during this run of it",
               m_icons[ICO_CALL_TREE], ITEM, MENU },
             { actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, "Ctrl+Shift+M",
-              "Find memory accesses: every read, write or execute of an address "
-              "anywhere in the recording",
+              "Find memory accesses: every read, write or execute of an address",
               m_icons[ICO_MEMORY], ITEM, MENU },
             { actions::VALUE_ORIGIN, "Where did this value come from?...", &m_valueOrigin, "Ctrl+Shift+W",
-              "Where did this value come from: follow a register or memory back through "
-              "the instructions that copied it, to where it was made",
+              "Where did this value come from: follow a register or memory back to where it was made",
               m_icons[ICO_ORIGIN], ITEM, MENU },
             { actions::ORIGIN_GRAPH, "Graph where this value came from...", &m_originGraph,
               "Ctrl+Shift+Alt+W",
-              "Graph where this value came from: every chain at once, following each value an "
-              "instruction combined, to the constants, syscalls and inputs it was made of",
+              "Graph where this value came from: every chain back to its constants, syscalls and inputs",
               m_icons[ICO_ORIGIN], ITEM, MENU },
 
-            // What the program asked of the system, over the whole recording.
+            // What the program did, over the whole recording: the system
+            // calls and objects at the top, memory and what it wrote below.
             { actions::SYSCALLS, "Syscalls...", &m_syscalls, nullptr,
-              "Syscalls: every syscall the program made, with its result and "
-              "arguments",
+              "Syscalls: every syscall, with its arguments and result",
               m_icons[ICO_SYSCALLS], GROUP, MENU },
-            { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
-              "Memory map: every region of memory at this position, with its "
-              "protection, its type and what it is used for",
-              m_icons[ICO_MEMORY_MAP], ITEM, MENU },
             { actions::HANDLES, "Handles...", &m_handles, nullptr,
-              "Handles: every file, key, socket, pipe, process and other object the program "
-              "opened, with its name, where it was opened and where it was closed",
+              "Handles: every object the program opened, with where it was opened and closed",
               m_icons[ICO_HANDLES], ITEM, MENU },
-
-            // Code: what the recording says about the code at hand, written
-            // into the database.
-            { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
-              "Analyze whole function: walk the trace backward to find the enclosing "
-              "function's entry and define it (runs behind a cancellable wait box)",
-              NO_ICON, ITEM, MENU, SUB_CODE },
-            { actions::FULL_PDB, "Load full symbols for this module", &m_fullPdb, nullptr,
-              "Load full symbols: apply the whole PDB of the module under the cursor "
-              "(types and prototypes too) through IDA's PDB plugin. Function names "
-              "are applied in the background without this; it blocks while it loads",
-              NO_ICON, ITEM, MENU, SUB_CODE },
-            { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
-              "Highlight executed code: replay the recording and color every "
-              "instruction in the chosen scope that actually ran",
-              NO_ICON, ITEM, MENU, SUB_CODE },
-            { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
-              "Resolve indirect calls: record where each one actually went, as a "
-              "comment and a cross-reference",
-              NO_ICON, ITEM, MENU, SUB_CODE },
-            // Doing either on every stop is a setting (auto_coverage,
-            // auto_callsites), not a menu item. Undoing them, in a section of
-            // their own.
-            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
-              "Clear execution highlight: remove the coverage color from the whole "
-              "database",
-              NO_ICON, GROUP, MENU, SUB_CODE },
-            { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
-              "Clear resolved indirect calls: remove the comments and cross-references "
-              "a previous run added",
-              NO_ICON, ITEM, MENU, SUB_CODE },
-
-            // Analysis: what the program did, recovered by replaying the
-            // whole recording.
-            { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
-              "Self-modifying code: every instruction the program wrote before "
-              "running it, with the write",
-              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
-            { actions::STRINGS, "Recover strings...", &m_recoverStrings, nullptr,
-              "Recover strings: replay the recording and list every string the "
-              "program had in memory, with where it appeared",
-              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
-            { actions::BUFFERS, "Recover buffers...", &m_recoverBuffers, nullptr,
-              "Recover buffers: replay the recording and list every buffer the "
-              "program filled, with the code that wrote it",
-              NO_ICON, ITEM, MENU, SUB_ANALYSIS },
-            { actions::HEATMAP, "Memory heatmap", &m_heatmap, nullptr,
-              "Memory heatmap: which pages the program read, wrote and ran from, and when, "
-              "drawn as a grid of address against time",
-              NO_ICON, GROUP, MENU, SUB_ANALYSIS },
+            { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
+              "Memory map: the regions at this position, with protection and use",
+              m_icons[ICO_MEMORY_MAP], ITEM, MENU, SUB_MEMORY },
             { actions::MEM_TIMELINE, "Memory timeline", &m_memTimeline, nullptr,
-              "Memory timeline: every allocation, protection change and free the "
-              "recording made, in order, with each live region as a segment",
-              NO_ICON, GROUP, MENU, SUB_ANALYSIS },
+              "Every allocation, protection change and free, in order",
+              NO_ICON, ITEM, MENU, SUB_MEMORY },
+            { actions::HEATMAP, "Memory heatmap", &m_heatmap, nullptr,
+              "Which pages were read, written and run, and when",
+              NO_ICON, ITEM, MENU, SUB_MEMORY },
+            { actions::STRINGS, "Recover strings...", &m_recoverStrings, nullptr,
+              "Every string the program had in memory, with where it appeared",
+              NO_ICON, ITEM, MENU, SUB_WRITTEN },
+            { actions::BUFFERS, "Recover buffers...", &m_recoverBuffers, nullptr,
+              "Every buffer the program filled, with the code that wrote it",
+              NO_ICON, ITEM, MENU, SUB_WRITTEN },
+            { actions::SELF_MOD, "Self-modifying code...", &m_selfMod, nullptr,
+              "Every instruction the program wrote before running it",
+              NO_ICON, ITEM, MENU, SUB_WRITTEN },
+
+            // What the recording can write into the database: the commands
+            // that change the listing, then those that undo them.
+            { actions::COVERAGE, "Highlight executed code...", &m_coverage, nullptr,
+              "Color every instruction in the chosen scope that ran",
+              NO_ICON, ITEM, MENU, SUB_ANNOTATE },
+            { actions::INDIRECT, "Resolve indirect calls...", &m_indirect, nullptr,
+              "Comment each indirect call with where it went, and add the cross-reference",
+              NO_ICON, ITEM, MENU, SUB_ANNOTATE },
+            { actions::ANALYZE_FUNC, "Analyze whole function", &m_analyzeFunc, "Ctrl+Shift+A",
+              "Find the entry of the function around the cursor in the trace and define it",
+              NO_ICON, ITEM, MENU, SUB_ANNOTATE },
+            { actions::FULL_PDB, "Load full symbols for this module", &m_fullPdb, nullptr,
+              "Apply the module's whole PDB, types included, through IDA's PDB plugin "
+              "(names load in the background without this). Blocks while it loads",
+              NO_ICON, ITEM, MENU, SUB_ANNOTATE },
+            // Doing either on every stop is a setting (auto_coverage,
+            // auto_callsites), not a menu item.
+            { actions::COVERAGE_CLR, "Clear execution highlight", &m_coverageClear, nullptr,
+              "Remove the execution color from the whole database",
+              NO_ICON, GROUP, MENU, SUB_ANNOTATE },
+            { actions::INDIRECT_CLR, "Clear resolved indirect calls", &m_indirectClear, nullptr,
+              "Remove the comments and cross-references Resolve indirect calls added",
+              NO_ICON, ITEM, MENU, SUB_ANNOTATE },
             // On the disassembly's right-click menu only.
             { actions::REREAD, "Re-read memory from the recording", &m_reread, nullptr,
-              "Re-read memory: discard what IDA cached for the selected range, rebuild "
-              "it from the recording and disassemble it again",
+              "Discard IDA's copy of the selected range, read it again from the recording "
+              "and disassemble it",
               NO_ICON, ITEM, TOOLBAR_ONLY },
 
             // Toolbar only: the backward and run-to-cursor movements sit
@@ -508,29 +476,25 @@ namespace idattd
             // the ten on the menu read as an arbitrary subset). They stay
             // registered, so shortcuts and buttons work.
             { actions::RUN_BACK, "Continue backwards", &m_runBack, nullptr,
-              "Continue backwards: run backward to the previous breakpoint or the "
-              "start of the trace",
+              "Continue backwards to the previous breakpoint or the start of the trace",
               m_icons[ICO_REV_CONTINUE], ITEM, TOOLBAR_ONLY },
             { actions::STEP_OUT_BACK, "Step out backwards", &m_stepOutBack, nullptr,
-              "Step out backwards: run backward out of the current function to the "
-              "call that entered it",
+              "Step out backwards to the call that entered this function",
               m_icons[ICO_STEP_OUT_BACK], ITEM, TOOLBAR_ONLY },
             { actions::RUN_TO_CUR_FWD, "Run to cursor", &m_runToCurFwd, nullptr,
-              "Run to cursor: run forward until execution reaches the cursor address",
+              "Run to cursor",
               m_icons[ICO_RUN_TO_CUR], ITEM, TOOLBAR_ONLY },
             { actions::RUN_TO_CUR_BACK, "Run to cursor backwards", &m_runToCurBack, nullptr,
-              "Run to cursor backwards: run backward until execution reaches the "
-              "cursor address",
+              "Run to cursor backwards",
               m_icons[ICO_RUN_TO_CUR_BACK], ITEM, TOOLBAR_ONLY },
 
             // The position readout: a clickable, text-only toolbar button.
             { actions::POS_LABEL, "TTD position", &m_posLabel, nullptr,
-              "Current TTD position (Sequence:Steps) -- click to copy it to the clipboard",
+              POS_LABEL_TOOLTIP,
               NO_ICON, ITEM, TOOLBAR_ONLY },
         };
 
         // Every TTD handler reaches the plugin's state through one context.
-        // AttachTrace is not in the table and carries its own callback.
         for ( const ActionDesc &d : m_actions )
             if ( auto *a = dynamic_cast<TtdAction *>(d.handler) )
                 a->ctx = &m_ctx;
@@ -819,34 +783,16 @@ namespace idattd
         if ( !trace_link_read(&link) )
             return;
 
-        // Both actions belong to the TTD menu outside a session, since they
-        // start one. Registered here, not in the constructor: they only mean
-        // something for a database made from a recording.
-        if ( !m_attachRegistered )
-        {
-            m_attachRegistered = true;      // one attempt, whatever it yields
-            register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                actions::ATTACH_TRACE, "Start the TTD replay for this database",
-                &m_attachTrace, this, nullptr, nullptr, -1));
-            if ( register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                     actions::AUTO_START, "Replay the TTD trace when this database opens",
-                     &m_autoStart, this, nullptr, nullptr, -1)) )
-            {
-                update_action_checkable(actions::AUTO_START, true);
-                update_action_checked(actions::AUTO_START,
-                                      trace_link_autostart() != TL_NO);
-            }
-            rebuild_ttd_menu();
-        }
-
         // First, whether or not the replay starts: point the debugger at the
-        // trace so Process options and Start process work.
+        // trace so Debugger > Start process (F9) replays it. That is also how
+        // a replay is started by hand, so the TTD menu has no start item.
         if ( qfileexist(link.trace_path.c_str()) )
             select_trace_debugger(link.trace_path.c_str(), true);
 
         // Opening a recording is a request to replay it, so nothing is asked.
-        // A TTD menu toggle turns this off.
-        if ( trace_link_autostart() == TL_NO )
+        // The replay_on_open setting turns this off. (A per-database toggle
+        // on the TTD menu used to; its stored answer is ignored now.)
+        if ( !settings().replay_on_open )
             return;
 
         // A leftover mark means the last automatic start never reached a
@@ -856,9 +802,9 @@ namespace idattd
         {
             trace_link_mark_start(false);
             msg("[ida-ttd] the last automatic replay start for this database did "
-                "not finish, so it was not repeated. Start it by hand from "
-                "TTD > Start the TTD replay for this database, or leave it "
-                "off with the toggle beside it.\n");
+                "not finish, so it was not repeated. Start it with Debugger > "
+                "Start process (F9), or turn off \"Replay when a recording's "
+                "database opens\" in TTD > Settings.\n");
             return;
         }
 
@@ -946,14 +892,6 @@ namespace idattd
         if ( m_actionsRegistered )
         {
             attach_session_menu();
-            above = true;
-        }
-
-        if ( m_attachRegistered )
-        {
-            attach_action_to_menu(TTD_MENU_PATH, actions::ATTACH_TRACE,
-                                  SETMENU_APP | (above ? SETMENU_ENSURE_SEP : 0));
-            attach_action_to_menu(TTD_MENU_PATH, actions::AUTO_START, SETMENU_APP);
             above = true;
         }
 
@@ -1138,6 +1076,14 @@ namespace idattd
         unregister_actions();
     }
 
+    // A fixed width for the position button, so the toolbar does not shift
+    // as the position changes.
+    static void pin_position_width(const qstring &widest)
+    {
+        if ( !widest.empty() )
+            call_qt("pin_position_width", { POS_LABEL_TOOLTIP, widest.c_str() });
+    }
+
     // Refresh the text on the toolbar's position button from the live cursor.
     void Plugin::update_position_label()
     {
@@ -1176,6 +1122,8 @@ namespace idattd
         for ( size_t n = label.length(); n < m_posLabelChars; n++ )
             label.append(FIGURE_SPACE);
         update_action_label(actions::POS_LABEL, label.c_str());
+        if ( m_mgr.is_active() )
+            pin_position_width(format_position(m_mgr.last_position()));
     }
 
     // Every open disassembly view, by title: the user's (A-Z) and the
@@ -1319,8 +1267,12 @@ namespace idattd
         if ( m_mgr.is_active() )
             coverage_settle_recording_change();
         // The stop may have shown a function painted since its pseudocode
-        // was last printed.
-        refresh_pseudocode_views();
+        // was last printed. After a layout change, decompiled afresh.
+        if ( m_layoutChanged )
+            redecompile_pseudocode_views();
+        else
+            refresh_pseudocode_views();
+        m_layoutChanged = false;
         reopen_fork_manager();
         // The replayed recording may have changed: redraw here, never at
         // session start or end (see switch_exit).
@@ -1355,12 +1307,10 @@ namespace idattd
                     close_widget(w, 0);
             close_widget(from, 0);      // reaches widget_closing()
         }
-        else if ( pc != BADADDR )
-        {
-            func_entry_info_t fi;
-            if ( get_func_entry_info(&fi, pc) && pseudocode_function(from) != fi.start_ea )
-                show_in_pseudocode(from, pc);
-        }
+        // Also within one function: IDA puts the caret on an argument's own
+        // line when the stop is in code setting it up.
+        if ( pc != BADADDR )
+            show_in_pseudocode(keep, pc);
         diag("refocus: from %p, %d opened, kept %p showing %llX, pc %llX",
              from, (int)opened.size(), keep,
              (unsigned long long)pseudocode_function(keep), (unsigned long long)pc);
@@ -1820,7 +1770,19 @@ namespace idattd
             {
                 meminfo_vec_t *ranges = va_arg(va, meminfo_vec_t *);
                 va_arg(va, qstring *);
-                return m_mgr.on_get_memory_info(ranges);
+                const uint32_t before = m_mgr.layout().changes();
+                ssize_t rc = m_mgr.on_get_memory_info(ranges);
+                // A new layout makes IDA rebuild its debugger segments and
+                // re-decompile open pseudocode from stale ranges ("bad input
+                // ranges" dialogs). Quiet until the after-stop work has
+                // decompiled them afresh.
+                if ( m_mgr.layout().changes() != before )
+                {
+                    quiet_ui();
+                    m_layoutChanged = true;
+                    schedule_after_stop();
+                }
+                return rc;
             }
 
             case debugger_t::ev_read_memory:

@@ -41,8 +41,9 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   exact PDB each recorded module was built with is downloaded and read in
   the background, and its function names are filled in a few at a time while
   you look at a stop, so neither a slow symbol server nor a big PDB holds up
-  a step. **TTD > Code > Load full symbols for this module** applies a
-  module's whole PDB (types and prototypes too) through IDA's PDB plugin.
+  a step. **TTD > Annotate database > Load full symbols for this module**
+  applies a module's whole PDB (types and prototypes too) through IDA's PDB
+  plugin.
 - Execution coverage colors the instructions that actually ran, in both the
   disassembly and the decompiler.
 - Indirect calls are resolved to the targets they really reached and written
@@ -93,10 +94,10 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 
 **Sogen recordings only**
 
-- Fork the recording: TTD > Fork here makes the current position a fork.
+- Fork the recording: TTD > Forks > Fork here makes the current position a fork.
   Change registers (the registers window) and memory (the hex view, or Edit >
   Patch program) as on a live target; the views show the changes there, and
-  the toolbar says "(fork)". TTD > Record fork... replays the program to the
+  the toolbar says "(fork)". TTD > Forks > Record fork... replays the program to the
   fork, applies them, and lets it run on into a new recording, which opens
   like any other. Fork here is also on the context menu of the disassembly,
   pseudocode, hex view and registers.
@@ -222,10 +223,12 @@ with its section.
 
 | Section | Key | Default | |
 | --- | --- | --- | --- |
+| Replay | `replay_on_open` | `true` | start the replay when a recording's database opens (off: Debugger > Start process) |
 | Symbols | `symbol_downloads` | `true` | download system DLLs' PDBs in the background |
 | | `symbol_server` | `https://msdl.microsoft.com/download/symbols` | where from |
 | Analysis | `auto_coverage` | `true` | measure and colour each function the first time the replay stops in it |
 | | `auto_callsites` | `false` | comment its indirect calls with where they went, likewise |
+| Memory map | `memmap_flag_code` | `true` | colour executable regions outside every loaded module |
 | Sogen | `fork_instructions` | `1000000` | the Fork dialog's default length (0: to the end) |
 | | `registry_folder` | (none) | another folder to look in for a recording's registry hives |
 | Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
@@ -241,9 +244,9 @@ installs with the plugin. Without it (a hand install), the defaults apply.
 (.run)** (or **Sogen recording**). IDA builds a database from the recording and
 starts replaying it.
 
-To open the database without replaying, turn off **TTD > Replay the TTD
-trace when this database opens**. **TTD > Start the TTD replay for this
-database** starts it again later.
+To open the database without replaying, turn off the `replay_on_open` setting
+(**TTD > Settings...**). **Debugger > Start process** (F9) starts the replay
+later.
 
 If the trace has no index yet, you are asked whether to build one. Building can
 take several minutes. Declining still gives you a database with the right
@@ -277,12 +280,14 @@ the call.
 
 ### Map allocated memory
 
-Run **TTD > Memory map** for the address space at the current position: each
+Run **TTD > Memory > Memory map** for the address space at the current position: each
 region's base, size, protection, type and use, with writable-and-executable
-memory in bold. It follows the playhead as you step. Double-click a region to go
+memory in bold and executable memory outside every loaded module (code the
+program allocated or mapped itself) coloured; the `memmap_flag_code` setting
+turns the colour off. It follows the playhead as you step. Double-click a region to go
 to it; Ctrl+E travels to where it was allocated.
 
-**TTD > Analysis > Memory timeline** lists every allocation, protection change
+**TTD > Memory > Memory timeline** lists every allocation, protection change
 and free in order, with the code that requested it. Building it replays the
 recording once and is saved in the database. Regions live at the current
 position become named IDA segments with their real permissions, so an RWX
@@ -302,7 +307,7 @@ writes, and it is disassembled again.
 
 | Action | Shortcut |
 | --- | --- |
-| Find all calls to this function | `Ctrl+Shift+C` |
+| Find calls to this function | `Ctrl+Shift+C` |
 | Find calls by name/pattern | `Ctrl+Shift+F` |
 | Find memory accesses | `Ctrl+Shift+M` |
 | Analyze whole function | `Ctrl+Shift+A` |

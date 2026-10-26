@@ -144,41 +144,6 @@ namespace idattd
         return 1;
     }
 
-    //=======================================================================
-    // Starting the replay for a database that came from a .run
-    //=======================================================================
-    int idaapi AttachTraceHandler::activate(action_activation_ctx_t *)
-    {
-        if ( start_session )
-            start_session();
-        return 1;
-    }
-
-    action_state_t idaapi AttachTraceHandler::update(action_update_ctx_t *)
-    {
-        // Only with a recording to attach to and nothing running (else it
-        // would restart a live session). Not an _ALWAYS state, which is never
-        // re-evaluated and would stay enabled through the replay.
-        if ( !trace_link_present() || get_process_state() != DSTATE_NOTASK )
-            return AST_DISABLE;
-        return AST_ENABLE;
-    }
-
-    int idaapi AutoStartHandler::activate(action_activation_ctx_t *)
-    {
-        bool on = trace_link_autostart() != TL_NO;
-        trace_link_set_autostart(on ? TL_NO : TL_YES);
-        update_action_checked(actions::AUTO_START, !on);
-        return 1;
-    }
-
-    action_state_t idaapi AutoStartHandler::update(action_update_ctx_t *)
-    {
-        if ( !trace_link_present() )
-            return AST_DISABLE;
-        return AST_ENABLE_ALWAYS;
-    }
-
     int idaapi InstallRuntimeHandler::activate(action_activation_ctx_t *)
     {
         // Done in Python (HTTP, zip, a license dialog); the module is in

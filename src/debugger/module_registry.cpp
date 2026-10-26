@@ -671,7 +671,7 @@ namespace idattd
                     // IDA's own reader, which handles the rearrangement).
                     const ModuleInfo *m = record_at(j.base);
                     msg("[ida-ttd] could not read the names in %s for %s (%s). "
-                        "TTD > Code > Load full symbols for this module loads it "
+                        "TTD > Annotate database > Load full symbols for this module loads it "
                         "through IDA's PDB plugin instead.\n",
                         j.pdb_name.c_str(),
                         m != nullptr ? base_name(m->path.c_str()).c_str() : "?",

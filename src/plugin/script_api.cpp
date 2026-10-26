@@ -1734,6 +1734,7 @@ namespace idattd
              .str("protect", r.reserved ? qstring("reserved")
                            : r.protect != 0 ? protection_text(r.protect) : qstring())
              .str("type", region_type_name(r.type)).str("use", r.use)
+             .boolean("in_module", r.in_module)
              .str("since", r.since.is_valid() ? format_position(r.since) : qstring());
             arr.add(o.done());
         }
@@ -1856,13 +1857,15 @@ namespace idattd
     {
         reload_settings_if_changed();
         const Settings &s = settings();
-        out.boolean("symbol_downloads", s.symbol_downloads)
+        out.boolean("replay_on_open", s.replay_on_open)
+           .boolean("symbol_downloads", s.symbol_downloads)
            .str("symbol_server", s.symbol_server)
            .boolean("auto_coverage", s.auto_coverage)
            .boolean("auto_callsites", s.auto_callsites)
            .str("fork_instructions", qstring().sprnt("%llu", (unsigned long long)s.fork_instructions))
            .str("registry_folder", s.registry_folder)
-           .boolean("diagnostics_log", s.diagnostics_log);
+           .boolean("diagnostics_log", s.diagnostics_log)
+           .boolean("memmap_flag_code", s.memmap_flag_code);
     }
 
     static void cmd_help(const Args &, JObj &out)

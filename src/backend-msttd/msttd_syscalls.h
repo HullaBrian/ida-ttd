@@ -42,10 +42,6 @@ namespace idattd
         // With chains: where the innermost open call returns to (for a
         // stub's syscall, back into the stub's caller).
         uint64_t  frame_ret = 0;
-        // From the return pass:
-        TTD::Replay::Position ret_pos;      // at the instruction the kernel returned to
-        bool      returned  = false;
-        uint64_t  result    = 0;            // rax (eax) there
     };
 
     // Syscall number -> Nt* name, from the stubs of every ntdll in the
@@ -86,14 +82,59 @@ namespace idattd
                            uint64_t target)> on_call_ret;
         // Told of each syscall as the census reads it, on the replay thread.
         std::function<void(const KernelCall &, TTD::Replay::IThreadView const *)> on_syscall;
-        // A second replay, to the instructions the kernel returned to, for
-        // each syscall's result.
-        bool results = true;
     };
 
-    // Every syscall in the recording, in position order. Progress through
-    // 'progress' (both replays in one percentage).
+    // Every syscall in the recording, in position order: one replay.
     QueryResult collect_kernel_calls(const MsTtdBackend *backend, const SyscallTable &table,
                                      const KernelCallOptions &opts,
                                      std::vector<KernelCall> *out, ProgressSink *progress);
+
+    // One syscall as the census keeps it between queries: what the listing
+    // shows and what the return pass needs. The registers go to the
+    // backend's register cache and the arguments are not kept, so a census
+    // at the cap of a million syscalls stays near 60 MB.
+    struct CensusSyscall
+    {
+        TTD::Replay::Position pos;          // at the syscall instruction
+        uint64_t    ret_pc   = 0;           // where the kernel returns to; 0 unknown
+        uint64_t    result   = 0;           // from the return pass
+        const char *name     = nullptr;     // in the census's SyscallTable; nullptr unknown
+        uint32_t    utid     = 0;
+        uint32_t    tid      = 0;
+        uint32_t    number   = 0;
+        bool        returned = false;       // the return pass saw it come back
+    };
+
+    // What the memory map keeps from the census replay (msttd_memmap.cpp).
+    struct MemmapRecords;
+
+    // The syscall census, kept by the backend so the listing and the memory
+    // map share one replay, whichever is asked first: the map's call/return
+    // callback costs little next to the replay itself, so the census always
+    // collects the map's records too. Immutable once cached; a return pass
+    // that completes caches a copy with the results.
+    struct SyscallCensus
+    {
+        std::shared_ptr<const SyscallTable> table;     // the names point into it
+        std::vector<CensusSyscall> calls;              // in position order
+        bool truncated = false;                        // the census was cut short
+        bool results   = false;                        // the return pass ran to the end
+        bool results_truncated = false;
+        // Null when the recording names none of the memory syscalls.
+        std::shared_ptr<const MemmapRecords> memmap;
+    };
+
+    // The memory map's part of the census (msttd_memmap.cpp): callbacks that
+    // settle each memory syscall as the replay passes its return.
+    class MemmapHooks
+    {
+    public:
+        virtual ~MemmapHooks() = default;
+        // Sets the options the map needs; the hooks must outlive the replay.
+        virtual void arm(KernelCallOptions *opts) = 0;
+        // What the replay settled, taken once it has ended.
+        virtual std::shared_ptr<const MemmapRecords> finish() = 0;
+    };
+    // Null when 'table' names none of the memory syscalls.
+    std::unique_ptr<MemmapHooks> make_memmap_hooks(const MsTtdBackend *backend, const SyscallTable &table);
 }

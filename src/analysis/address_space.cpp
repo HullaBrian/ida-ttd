@@ -5,6 +5,11 @@
 
 namespace idattd
 {
+    bool is_code_outside_modules(const AddressRegion &r)
+    {
+        return !r.reserved && !r.in_module && (protection_perm(r.protect) & SEGPERM_EXEC) != 0;
+    }
+
     const char *region_type_name(uint32_t type)
     {
         switch ( type )
@@ -343,11 +348,13 @@ namespace idattd
         }
 
         // ---- the modules loaded here ------------------------------------------
+        std::map<ea_t, ea_t> module_spans;      // lo -> hi
         for ( const ModuleInfo *m : mgr->modules().loaded_at(now) )
         {
             if ( m == nullptr || m->base == BADADDR || m->size == 0 )
                 continue;
             ea_t mlo = m->base, mhi = (ea_t)(m->base + m->size);
+            module_spans[mlo] = std::max(module_spans[mlo], mhi);
             qstring name = m->name;
             {
                 // "ntdll", the way a debugger qualifies a symbol.
@@ -445,6 +452,10 @@ namespace idattd
             }
             if ( best != nullptr )
                 r.use = best->text;
+            // Modules do not overlap: only the last one starting below the
+            // region's end can reach into it.
+            auto mod = module_spans.lower_bound(p.hi);
+            r.in_module = mod != module_spans.begin() && std::prev(mod)->second > p.lo;
             out->push_back(r);
         }
     }

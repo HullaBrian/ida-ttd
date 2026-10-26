@@ -22,6 +22,17 @@ namespace idattd
     // Why the indexes are not loaded, or empty when they are.
     const qstring &api_metadata_error();
 
+    // An IDA prototype built from a signature, for a function the database's
+    // type libraries do not know (phnt's ntdll Rtl names, which mssdk lacks).
+    // Each parameter keeps its name and gets its metadata type when the
+    // database's types know that name (ULONG, HANDLE, UNICODE_STRING *),
+    // else a generic integer or pointer of the right size. The metadata has
+    // no return types: Nt and Zw calls return NTSTATUS, others a
+    // pointer-sized integer. __fastcall on x64, __stdcall on x86 (__cdecl
+    // for the C runtime). False for a signature that returns an aggregate
+    // through a hidden pointer, whose parameter list would be misleading.
+    bool api_prototype(const win32meta::FuncSig &sig, bool is64, tinfo_t *out);
+
     struct DecodedArg
     {
         qstring  name;

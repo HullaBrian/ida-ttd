@@ -213,8 +213,11 @@ namespace idattd
         // segment and discard their code: these lines explain disappearing
         // disassembly.
         if ( m_haveLayout )
+        {
             msg("[ida-ttd] memory layout changed (%d ranges); IDA is rebuilding "
                 "its debugger segments.\n", (int)layout.size());
+            m_changes++;
+        }
 
         m_lastLayout = layout;
         m_haveLayout = true;

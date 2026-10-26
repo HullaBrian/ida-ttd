@@ -370,15 +370,12 @@ namespace idattd
 
         switch ( h.kind )
         {
-            case OriginKind::Copied:    g.badge = "copy";      g.tone = "muted";  break;
-            case OriginKind::Constant:  g.badge = "constant";  g.tone = "good";   break;
-            case OriginKind::System:    g.badge = "system";    g.tone = "warn";   break;
-            case OriginKind::Unchanged: g.badge = "unchanged"; g.tone = "muted";  g.dashed = true; break;
-            case OriginKind::Computed:
-                g.badge = h.combined ? "combined" : "computed";
-                g.tone  = "accent";
-                break;
-            default:                    g.badge = origin_kind_name(h.kind); g.tone = "bad"; break;
+            case OriginKind::Copied:    g.badge = "copy";      break;
+            case OriginKind::Constant:  g.badge = "constant";  break;
+            case OriginKind::System:    g.badge = "system";    break;
+            case OriginKind::Unchanged: g.badge = "unchanged"; g.dashed = true; break;
+            case OriginKind::Computed:  g.badge = h.combined ? "combined" : "computed"; break;
+            default:                    g.badge = origin_kind_name(h.kind); break;
         }
         g.emphasis = root;
         g.tooltip  = h.note;

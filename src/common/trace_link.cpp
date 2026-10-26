@@ -23,7 +23,9 @@ namespace idattd
         N_MODULE_SIZE = 2,
         // 1 = 32-bit, 2 = 64-bit, so 0 (altval's missing slot) means unknown.
         N_BITNESS     = 3,
-        N_AUTOSTART   = 4,
+        // 4 held the per-database automatic start answer; the
+        // replay_on_open setting replaced it. Not to be reused: old
+        // databases still have it.
     };
 
     static const nodeidx_t TL_VERSION = 1;
@@ -78,20 +80,6 @@ namespace idattd
             return;
         netnode nn(TL_NODE, 0, true);
         nn.supset(S_TRACE_PATH, path, qstrlen(path) + 1, TL_STR);
-    }
-
-    int trace_link_autostart()
-    {
-        netnode nn(TL_NODE);
-        if ( nn == BADNODE )
-            return TL_ASK;
-        return (int)nn.altval(N_AUTOSTART, TL_NUM);
-    }
-
-    void trace_link_set_autostart(int v)
-    {
-        netnode nn(TL_NODE, 0, true);
-        nn.altset(N_AUTOSTART, (nodeidx_t)v, TL_NUM);
     }
 
     // Settings subkey for the start mark. One value per database, so one that

@@ -25,20 +25,67 @@ namespace idattd
     // arguments at SP (+ shadow space on x64, + preceding stack arguments).
     uint64_t get_int_arg(const GuestView &view, const tinfo_t &tinfo, size_t n, bool is64)
     {
+        func_type_data_t fd;
+        if ( !tinfo.get_func_details(&fd) )
+            return 0;
+        return get_int_arg(view, fd, n, is64);
+    }
+
+    // stack_arg_offset over an unpacked prototype.
+    static size_t stack_arg_offset(const func_type_data_t &fd, size_t n, size_t first_stack_arg,
+                                   size_t slot)
+    {
+        size_t off  = 0;
+        size_t mask = slot - 1;
+        for ( size_t i = first_stack_arg; i < n && i < fd.size(); i++ )
+        {
+            size_t sz = fd[i].type.get_size();
+            if ( sz == BADSIZE )
+                continue;
+            if ( sz < slot )
+                sz = slot;
+            off += (sz + mask) & ~mask;
+        }
+        return off;
+    }
+
+    uint64_t get_int_arg(const GuestView &view, const func_type_data_t &fd, size_t n, bool is64)
+    {
         ittd_regs r{};
-        if ( !view.regs || !view.regs(&r) )
+        if ( n >= fd.size() || !view.regs || !view.regs(&r) )
             return 0;
 
-        func_type_data_t fd;
-        cm_t cc = CM_CC_UNKNOWN;
-        if ( tinfo.get_func_details(&fd) )
-            cc = fd.get_cc();
+        const tinfo_t &arg = fd[n].type;
+        const callcnv_t cc = fd.get_cc();
+
+        // A __usercall prototype says where each argument is. IDA numbers
+        // the x86 general registers as ITTD_REG_* does (rax 0 .. r15 15);
+        // a stack location is an offset from the first stack argument, which
+        // is where the stack pointer points at the call. Anything else (an
+        // XMM register, a register pair, a scattered aggregate) reads as 0.
+        if ( fd.is_user_cc() )
+        {
+            const argloc_t &loc = fd[n].argloc;
+            const size_t sz = arg.get_size();
+            if ( loc.is_reg1() && loc.reg1() >= 0 && loc.reg1() < 16 )
+            {
+                uint64_t v = r.gp[loc.reg1()] >> (8 * loc.regoff());
+                return is64 ? v : (uint32_t)v;
+            }
+            if ( loc.is_stkoff() )
+            {
+                uint64_t sp = is64 ? r.gp[ITTD_REG_RSP] : (uint32_t)r.gp[ITTD_REG_RSP];
+                uint64_t v = 0;
+                view.read(sp + loc.stkoff(), &v, sz != BADSIZE && sz >= 1 && sz <= 8 ? sz : (is64 ? 8 : 4));
+                return v;
+            }
+            return 0;
+        }
 
         if ( is64 )
         {
             if ( n < 4 )
             {
-                tinfo_t arg = tinfo.get_nth_arg((int)n);
                 if ( arg.is_floating() )
                 {
                     // The low 64 bits of XMM0..3.
@@ -72,9 +119,8 @@ namespace idattd
                 return (uint32_t)r.gp[ITTD_REG_RCX];
             first_stack_arg = 1;
         }
-        size_t off = stack_arg_offset(tinfo, n, first_stack_arg, 4);
-        tinfo_t arg = tinfo.get_nth_arg((int)n);
-        size_t  sz  = arg.get_size();
+        size_t off = stack_arg_offset(fd, n, first_stack_arg, 4);
+        size_t sz  = arg.get_size();
         uint64_t v = 0;
         view.read((uint32_t)r.gp[ITTD_REG_RSP] + off, &v, sz == 8 ? 8 : 4);
         return v;

@@ -85,7 +85,7 @@ session or in the database, and answer at once the next time.
 | Call | Each entry | Notes |
 | --- | --- | --- |
 | `s.syscalls(limit)` | `pos`, `tid`, `number`, `name`, `result`, `args` (the first four) | |
-| `s.calls_to(target, limit)` | `func`, `name`, `pos`, `end`, `tid`, `args`, `ret` | `target` is an address or `"module!Glob*"`. Arguments are decoded from the Win32/phnt metadata where it has the function, else from IDA's types: each is text (`"PAGE_READWRITE"`, `"0x1524B8F8A0 -> 2"`) or, where it is a plain number, an int |
+| `s.calls_to(target, limit)` | `func`, `name`, `pos`, `end`, `tid`, `args`, `ret` | `target` is an address or `"module!Glob*"`. Arguments follow a prototype you set in IDA (Y) first, then the Win32/phnt metadata where it has the function, then IDA's own or guessed type: each is text (`"PAGE_READWRITE"`, `"0x1524B8F8A0 -> 2"`) or, where it is a plain number, an int |
 | `s.accesses(lo, hi, kinds, limit)` | `pos`, `pc`, `addr`, `size`, `tid`, `kind` | every read (`"r"`), write (`"w"`) and execute (`"x"`) of `[lo, hi)`; `hi` defaults to `lo + 1` |
 | `s.origin(what, size, at, through)` | `what`, `value`, `at`, `kind`, `by_pos`, `by_pc`, `insn`, `note` | where a value came from, as of the current position or `at`; see below |
 | `s.origin_graph(what, size, at, max_nodes)` | `nodes` (as `origin`, plus `combined`), `edges` (`from`, `to`, `input`), `truncated` | every chain at once; see below |

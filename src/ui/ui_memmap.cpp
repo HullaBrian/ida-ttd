@@ -2,6 +2,9 @@
 // and re-reading memory from the recording.
 #include "ui/ui.h"
 #include "ui/names.h"
+#include "plugin/settings.h"
+
+#include <expr.hpp>
 
 namespace idattd
 {
@@ -249,6 +252,28 @@ namespace idattd
     //=======================================================================
     const char *const MemoryMapChooser::TITLE = "TTD memory map";
 
+    // The SDK cannot say; Qt's palette can (scripts/ida_ttd_qt.py). Asked
+    // once: the theme changes only with a restart.
+    static bool theme_is_dark()
+    {
+        static int dark = -1;
+        if ( dark < 0 )
+        {
+            dark = 0;
+            extlang_object_t py = find_extlang_by_name("Python");
+            idc_value_t rv;
+            qstring err;
+            if ( py != nullptr && py->eval_snippet != nullptr && py->eval_expr != nullptr
+              && py->eval_snippet("import ida_ttd_qt\n", &err)
+              && py->eval_expr(&rv, BADADDR, "ida_ttd_qt.theme_is_dark()", &err)
+              && rv.vtype == VT_LONG )
+            {
+                dark = rv.num != 0 ? 1 : 0;
+            }
+        }
+        return dark == 1;
+    }
+
     static const int   g_am_widths[] = { 16, 16, 10, 12, 8, 36, 16 };
     static const char *g_am_header[] = { "Base", "End", "Size", "Protection",
                                          "Type", "Use", "Allocated at" };
@@ -309,14 +334,15 @@ namespace idattd
         if ( r.since.is_valid() )
             cols->at(6) = format_position(r.since);
 
-        // Writable and executable memory, what this view is most often
-        // opened to find.
+        // What this view is most often opened to find.
         if ( attrs != nullptr && !r.reserved && r.type != ITTD_REGION_IMAGE )
         {
             uchar perm = protection_perm(r.protect);
             if ( (perm & SEGPERM_EXEC) != 0 && (perm & SEGPERM_WRITE) != 0 )
                 attrs->flags |= CHITEM_BOLD;
         }
+        if ( attrs != nullptr && settings().memmap_flag_code && is_code_outside_modules(r) )
+            attrs->color = theme_is_dark() ? 0x2A2A5C : 0xC8D2FF;   // muted red (0xBBGGRR)
     }
 
     ea_t idaapi MemoryMapChooser::get_ea(size_t n) const

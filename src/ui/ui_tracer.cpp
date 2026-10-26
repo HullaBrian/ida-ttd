@@ -3,6 +3,7 @@
 #include "ui/ui.h"
 #include "ui/names.h"
 #include "debugger/apidecode.h"
+#include "analysis/tracer.h"
 
 namespace idattd
 {
@@ -24,9 +25,6 @@ namespace idattd
     //=======================================================================
     // TraceEventsChooser
     //=======================================================================
-    // Columns for a function with no prototype: four generic argument slots.
-    static const int UNTYPED_ARGC = 4;
-
     EventColumns::EventColumns(FunctionTracer *tracer)
     {
         // One column per parameter only when a single function is traced
@@ -34,41 +32,15 @@ namespace idattd
         ea_t single = (tracer != nullptr && tracer->count_traced() == 1)
                     ? tracer->traced_at(0) : BADADDR;
 
+        // The same prototype the sweep decoded with (resolve_traced_proto),
+        // so the headers name the values in the rows.
         std::vector<qstring> arg_names;
         if ( single != BADADDR )
         {
             per_arg = true;
-            tinfo_t          t;
-            func_type_data_t fd;
-            const win32meta::FuncSig *sig =
-                tracer->manager() != nullptr ? api_signature(&tracer->manager()->modules(), single) : nullptr;
-            if ( sig != nullptr )
-            {
-                argc = sig->paramCount;
-                for ( uint8_t i = 0; i < sig->paramCount; i++ )
-                    arg_names.push_back(qstring(sig->params[i].name));
-            }
-            else if ( get_tinfo(&t, single) && t.is_func() && t.get_func_details(&fd) )
-            {
-                argc = (int)fd.size();
-                for ( size_t i = 0; i < fd.size(); i++ )
-                {
-                    qstring nm = fd[i].name;
-                    if ( nm.empty() )
-                        nm.sprnt("arg%d", (int)i);
-                    arg_names.push_back(nm);
-                }
-            }
-            else
-            {
-                argc = UNTYPED_ARGC;
-                for ( int i = 0; i < UNTYPED_ARGC; i++ )
-                {
-                    qstring nm;
-                    nm.sprnt("arg%d", i);
-                    arg_names.push_back(nm);
-                }
-            }
+            TraceManager *m = tracer->manager();
+            arg_names = resolve_traced_proto(m != nullptr ? &m->modules() : nullptr, single).names;
+            argc = (int)arg_names.size();
         }
 
         // Fixed leading columns (LEAD == 4): call/return positions, thread, name.
@@ -119,21 +91,11 @@ namespace idattd
             if ( per_arg )
                 continue;
             // Functions share the Arguments column, so each value is labelled
-            // with its parameter name: from the API metadata, else IDA's type.
-            const win32meta::FuncSig *sig =
-                api_signature(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
-            tinfo_t          t;
-            func_type_data_t fd;
-            if ( sig != nullptr )
-            {
-                for ( uint8_t i = 0; i < sig->paramCount; i++ )
-                    l.params.push_back(qstring(sig->params[i].name));
-            }
-            else if ( get_tinfo(&t, ev.func_ea) && t.is_func() && t.get_func_details(&fd) )
-            {
-                for ( size_t i = 0; i < fd.size(); i++ )
-                    l.params.push_back(fd[i].name);
-            }
+            // with its parameter name, from the prototype the sweep used.
+            // Untyped functions' values stay unlabelled.
+            TracedProto proto = resolve_traced_proto(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
+            if ( proto.sig != nullptr || proto.have_type )
+                l.params = std::move(proto.names);
         }
     }
 

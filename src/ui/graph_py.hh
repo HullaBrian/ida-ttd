@@ -3,9 +3,10 @@
 // One window per kind of graph ("forks", "origin"). The plugin builds the
 // model (graph_view.cpp) and this draws it: ttd("ui.graph KIND") hands over
 // the nodes and edges, ttd("ui.graphact KIND NODE ACTION") runs a node's
-// action. Nodes are cards (bold title, an instruction in the code font, dimmer
-// lines, a coloured badge) laid out as a top-down tree with curved edges.
-// Colours come from IDA's theme palette, so light and dark themes both work.
+// action. It is drawn as IDA draws its own graphs: plain boxes with a shadow,
+// text in the disassembly font and colours (the node's kind as a comment),
+// right-angled edges, in a top-down tree. Colours are read from IDA's theme,
+// so light and dark themes both work.
 //
 // Mouse and keys as in IDA's graphs: drag to pan, wheel to scroll,
 // Ctrl+wheel to zoom; F (or Home) fits the graph, Ctrl+0 shows it at 100%.
@@ -16,6 +17,7 @@ namespace idattd
     static const char GRAPH_PY[] = R"PY(
 def _ida_ttd_graph_show(kind, first):
     import json
+    import re
     import ida_kernwin
     import idc
     from PySide6 import QtCore, QtGui, QtWidgets
@@ -38,64 +40,124 @@ def _ida_ttd_graph_show(kind, first):
                             int(a.green() + (b.green() - a.green()) * t),
                             int(a.blue() + (b.blue() - a.blue()) * t))
 
+    # IDA's theme colours, read from a disassembly view (CustomIDAMemo).
+    # Fallbacks: IDA's shipped light and dark values.
+    LIGHT = {
+        "line-bg-default": "#ffffff", "line-fg-insn": "#000080", "line-fg-default": "#000080",
+        "line-fg-automatic-comment": "#808080", "line-fg-regular-comment": "#0000ff",
+        "line-fg-numlit-in-insn": "#008000", "line-fg-register-name": "#000080",
+        "line-fg-keyword": "#000080", "line-fg-punctuation": "#000080",
+        "graph-bg-top": "#ffffff", "graph-bg-bottom": "#e0f8ff",
+        "graph-node-shadow": "#000000", "graph-node-high1": "#ccffff",
+        "graph-edge-normal": "#0000ff", "graph-node-frame-selected": "#aa5500",
+    }
+    DARK = {
+        "line-bg-default": "#2d2d2d", "line-fg-insn": "#ffffff", "line-fg-default": "#aaaaaa",
+        "line-fg-automatic-comment": "#808080", "line-fg-regular-comment": "#ffc5f3",
+        "line-fg-numlit-in-insn": "#d25032", "line-fg-register-name": "#73adad",
+        "line-fg-keyword": "#ababab", "line-fg-punctuation": "#c0c0c0",
+        "graph-bg-top": "#b2b2b2", "graph-bg-bottom": "#b2b2b2",
+        "graph-node-shadow": "#242424", "graph-node-high1": "#003900",
+        "graph-edge-normal": "#0043cb", "graph-node-frame-selected": "#c68e00",
+    }
+
+    def theme_colours(dark):
+        out = dict(DARK if dark else LIGHT)
+        memo = None
+        for w in QtWidgets.QApplication.allWidgets():
+            if w.metaObject().className() == "CustomIDAMemo":
+                memo = w
+                break
+        if memo is None:
+            return out
+        for key in list(out):
+            for name in (key, key.replace("-", "_")):
+                v = memo.property(name)
+                if isinstance(v, QtGui.QColor) and v.isValid():
+                    out[key] = v.name()
+                    break
+        return out
+
     class Theme(object):
         def __init__(self, widget):
             pal = widget.palette()
-            base = pal.color(QtGui.QPalette.Base)
-            text = pal.color(QtGui.QPalette.Text)
-            self.dark = base.lightness() < 128
-            self.canvas = base.darker(112) if self.dark else mix(base, text, 0.035)
-            self.card = mix(base, text, 0.06) if self.dark else base
-            self.border = mix(base, text, 0.28)
-            self.text = text
-            self.dim = mix(text, base, 0.42)
-            self.code_bg = mix(self.card, text, 0.07)
-            self.edge = mix(base, text, 0.45)
-            self.select = pal.color(QtGui.QPalette.Highlight)
-            hues = {
-                "accent": QtGui.QColor(66, 133, 244),
-                "good": QtGui.QColor(52, 168, 83),
-                "warn": QtGui.QColor(230, 145, 30),
-                "bad": QtGui.QColor(220, 70, 70),
-                "muted": self.dim,
-            }
-            if self.dark:
-                hues = dict((k, v.lighter(125)) for k, v in hues.items())
-            self.tones = hues
+            self.dark = pal.color(QtGui.QPalette.Base).lightness() < 128
+            c = dict((k, QtGui.QColor(v)) for k, v in theme_colours(self.dark).items())
+            self.canvas_top = c["graph-bg-top"]
+            self.canvas_bottom = c["graph-bg-bottom"]
+            self.canvas = mix(self.canvas_top, self.canvas_bottom, 0.5)
+            self.node = c["line-bg-default"]
+            self.root = c["graph-node-high1"]
+            self.text = c["line-fg-insn"]
+            self.plain = c["line-fg-default"]
+            self.comment = c["line-fg-automatic-comment"]
+            self.number = c["line-fg-numlit-in-insn"]
+            self.register = c["line-fg-register-name"]
+            self.punct = c["line-fg-punctuation"]
+            self.frame = mix(self.node, self.text, 0.55)
+            self.shadow = c["graph-node-shadow"]
+            self.edge = c["graph-edge-normal"]
+            self.select = c["graph-node-frame-selected"]
+            # Edge labels sit on the background, not in a node.
+            ink = QtGui.QColor("#000000" if self.canvas.lightness() > 128 else "#ffffff")
+            self.label = mix(ink, self.canvas, 0.3)
 
-        def tone(self, name):
-            return self.tones.get(name)
-
-    PAD = 10
-    STRIPE = 4
-    RADIUS = 8
-    MIN_W = 190
-    MAX_W = 460
-    HGAP = 28
-    VGAP = 56
+    PAD_X = 6
+    PAD_Y = 4
+    SHADOW = 4
+    MAX_W = 520
+    HGAP = 32
+    VGAP = 48
 
     class Fonts(object):
         def __init__(self, widget):
-            base = QtGui.QFont(widget.font())
-            self.title = QtGui.QFont(base)
-            self.title.setBold(True)
-            self.code = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
-            self.code.setPointSizeF(max(base.pointSizeF() - 0.5, 7.0))
-            self.small = QtGui.QFont(base)
-            self.small.setPointSizeF(max(base.pointSizeF() - 1.0, 7.0))
-            self.fm_title = QtGui.QFontMetrics(self.title)
-            self.fm_code = QtGui.QFontMetrics(self.code)
-            self.fm_small = QtGui.QFontMetrics(self.small)
+            # The disassembly's font, else any fixed font.
+            font = None
+            for w in QtWidgets.QApplication.allWidgets():
+                if w.metaObject().className() == "CustomIDAMemo":
+                    font = QtGui.QFont(w.font())
+                    break
+            if font is None:
+                font = QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont)
+            self.code = font
+            self.fm = QtGui.QFontMetrics(font)
+            self.line = self.fm.height()
+
+    REGS = set(
+        "rax rbx rcx rdx rsi rdi rbp rsp rip eax ebx ecx edx esi edi ebp esp eip "
+        "ax bx cx dx si di bp sp al bl cl dl ah bh ch dh sil dil bpl spl".split()
+        + ["r%d%s" % (i, s) for i in range(8, 16) for s in ("", "d", "w", "b")]
+        + ["%smm%d" % (p, i) for p in "xyz" for i in range(32)])
+    TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|0x[0-9A-Fa-f]+|[0-9][0-9A-Fa-f]*h?|\s+|.")
+    NUMBER = re.compile(r"^(0x[0-9A-Fa-f]+|[0-9][0-9A-Fa-f]*h?)$")
+
+    def insn_runs(theme, text):
+        # Mnemonic, registers, numbers and punctuation, coloured as IDA does.
+        runs = []
+        first = True
+        for tok in TOKEN.findall(text):
+            if tok.isspace():
+                colour = theme.text
+            elif first:
+                colour = theme.text
+                first = False
+            elif tok.lower() in REGS:
+                colour = theme.register
+            elif NUMBER.match(tok):
+                colour = theme.number
+            elif tok.isalnum() or tok[0] == "_":
+                colour = theme.text
+            else:
+                colour = theme.punct
+            runs.append((tok, colour))
+        return runs
 
     class Card(QtWidgets.QGraphicsItem):
         def __init__(self, form, node):
             super().__init__()
             self.form = form
             self.node = node
-            self.hover = False
             self.setFlag(QtWidgets.QGraphicsItem.ItemIsSelectable, True)
-            self.setAcceptHoverEvents(True)
-            self.setCursor(QtCore.Qt.PointingHandCursor)
             if node.get("tooltip"):
                 self.setToolTip(node["tooltip"])
             self.measure()
@@ -104,117 +166,71 @@ def _ida_ttd_graph_show(kind, first):
             f = self.form.fonts
             n = self.node
             badge = n.get("badge") or ""
-            self.badge_w = f.fm_small.horizontalAdvance(badge) + 14 if badge else 0
-            want = f.fm_title.horizontalAdvance(n["title"]) + (self.badge_w + 10 if badge else 0)
+            # Title with its kind as a comment, the instruction, comment lines.
+            self.rows = [("title", n["title"], badge)]
             if n.get("code"):
-                want = max(want, f.fm_code.horizontalAdvance(n["code"]) + 14)
+                self.rows.append(("code", n["code"], ""))
             for line in n.get("lines", []):
-                want = max(want, f.fm_small.horizontalAdvance(line))
-            self.w = int(min(max(want + 2 * PAD + STRIPE, MIN_W), MAX_W))
-            inner = self.w - 2 * PAD - STRIPE
-            self.title_text = f.fm_title.elidedText(n["title"], QtCore.Qt.ElideRight,
-                                                    inner - (self.badge_w + 10 if badge else 0))
-            self.code_text = f.fm_code.elidedText(n.get("code") or "", QtCore.Qt.ElideRight, inner - 14)
-            self.line_texts = [f.fm_small.elidedText(l, QtCore.Qt.ElideRight, inner) for l in n.get("lines", [])]
-            h = PAD + f.fm_title.height()
-            if self.code_text:
-                h += 6 + f.fm_code.height() + 8
-            if self.line_texts:
-                h += 4 + len(self.line_texts) * (f.fm_small.height() + 1)
-            self.h = int(h + PAD)
+                self.rows.append(("comment", "; " + line, ""))
+            want = 0
+            for kind_, text, extra in self.rows:
+                w = f.fm.horizontalAdvance(text)
+                if extra:
+                    w += f.fm.horizontalAdvance("  ; " + extra)
+                want = max(want, w)
+            self.w = int(min(want + 2 * PAD_X, MAX_W))
+            self.h = int(len(self.rows) * f.line + 2 * PAD_Y)
 
         def boundingRect(self):
-            return QtCore.QRectF(-2, -2, self.w + 4, self.h + 6)
+            return QtCore.QRectF(-2, -2, self.w + SHADOW + 4, self.h + SHADOW + 4)
 
         def paint(self, painter, option, widget=None):
             t = self.form.theme
             f = self.form.fonts
             n = self.node
-            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
             rect = QtCore.QRectF(0, 0, self.w, self.h)
-            tone = t.tone(n.get("tone") or "")
-
-            # A soft shadow, then the card.
-            shadow = QtGui.QColor(0, 0, 0, 90 if t.dark else 28)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
             painter.setPen(QtCore.Qt.NoPen)
-            painter.setBrush(shadow)
-            painter.drawRoundedRect(rect.translated(0, 2), RADIUS, RADIUS)
-            painter.setBrush(t.card)
-            painter.drawRoundedRect(rect, RADIUS, RADIUS)
-
-            # The stripe down the left edge, in the node's colour.
-            if tone is not None:
-                clip = QtGui.QPainterPath()
-                clip.addRoundedRect(rect, RADIUS, RADIUS)
-                painter.save()
-                painter.setClipPath(clip)
-                painter.fillRect(QtCore.QRectF(0, 0, STRIPE, self.h), tone)
-                painter.restore()
-
+            painter.setBrush(t.shadow)
+            painter.drawRect(rect.translated(SHADOW, SHADOW))
+            painter.setBrush(t.root if n.get("emphasis") else t.node)
             if self.isSelected():
-                pen = QtGui.QPen(t.select, 2.2)
-            elif n.get("emphasis"):
-                pen = QtGui.QPen(tone if tone is not None else t.text, 1.8)
+                pen = QtGui.QPen(t.select, 2)
             else:
-                pen = QtGui.QPen(t.text if self.hover else t.border, 1.0)
+                pen = QtGui.QPen(t.frame, 1)
             if n.get("dashed"):
                 pen.setStyle(QtCore.Qt.DashLine)
+            pen.setJoinStyle(QtCore.Qt.MiterJoin)
             painter.setPen(pen)
-            painter.setBrush(QtCore.Qt.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), RADIUS, RADIUS)
+            painter.drawRect(rect)
 
-            x = PAD + STRIPE
-            y = PAD
-            inner = self.w - 2 * PAD - STRIPE
-            painter.setFont(f.title)
-            painter.setPen(t.text)
-            painter.drawText(QtCore.QRectF(x, y, inner, f.fm_title.height()),
-                             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, self.title_text)
-
-            badge = n.get("badge") or ""
-            if badge:
-                bh = f.fm_small.height() + 2
-                br = QtCore.QRectF(self.w - PAD - self.badge_w, y + (f.fm_title.height() - bh) / 2,
-                                   self.badge_w, bh)
-                c = tone if tone is not None else t.dim
-                fill = QtGui.QColor(c)
-                fill.setAlpha(60 if t.dark else 38)
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.setBrush(fill)
-                painter.drawRoundedRect(br, bh / 2, bh / 2)
-                painter.setFont(f.small)
-                painter.setPen(c if t.dark else c.darker(135))
-                painter.drawText(br, QtCore.Qt.AlignCenter, badge)
-            y += f.fm_title.height()
-
-            if self.code_text:
-                y += 6
-                cr = QtCore.QRectF(x, y, inner, f.fm_code.height() + 6)
-                painter.setPen(QtCore.Qt.NoPen)
-                painter.setBrush(t.code_bg)
-                painter.drawRoundedRect(cr, 4, 4)
-                painter.setFont(f.code)
-                painter.setPen(t.text)
-                painter.drawText(cr.adjusted(7, 0, -7, 0), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
-                                 self.code_text)
-                y += cr.height() + 2
-
-            if self.line_texts:
-                y += 4
-                painter.setFont(f.small)
-                painter.setPen(t.dim)
-                for line in self.line_texts:
-                    painter.drawText(QtCore.QRectF(x, y, inner, f.fm_small.height()),
-                                     QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter, line)
-                    y += f.fm_small.height() + 1
-
-        def hoverEnterEvent(self, e):
-            self.hover = True
-            self.update()
-
-        def hoverLeaveEvent(self, e):
-            self.hover = False
-            self.update()
+            painter.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+            painter.setFont(f.code)
+            limit = self.w - 2 * PAD_X
+            y = PAD_Y
+            for kind_, text, extra in self.rows:
+                x = PAD_X
+                base = y + f.fm.ascent()
+                if kind_ == "code":
+                    runs = insn_runs(t, text)
+                elif kind_ == "comment":
+                    runs = [(text, t.comment)]
+                else:
+                    runs = [(text, t.text)]
+                    if extra:
+                        runs.append(("  ; " + extra, t.comment))
+                for tok, colour in runs:
+                    room = limit - (x - PAD_X)
+                    if room <= 0:
+                        break
+                    w = f.fm.horizontalAdvance(tok)
+                    if w > room:
+                        tok = f.fm.elidedText(tok, QtCore.Qt.ElideRight, int(room))
+                        w = room
+                    painter.setPen(colour)
+                    painter.drawText(QtCore.QPointF(x, base), tok)
+                    x += w
+                y += f.line
 
         def mouseDoubleClickEvent(self, e):
             self.form.act(self.node, None)
@@ -232,54 +248,55 @@ def _ida_ttd_graph_show(kind, first):
                 m.exec(e.screenPos())
 
     class Edge(QtWidgets.QGraphicsItem):
+        # Right-angled, as IDA routes edges. An edge to a node on its own row
+        # or above goes round the right side.
         def __init__(self, form, a, b, edge, up, port):
             super().__init__()
             self.form = form
-            self.a = a
-            self.b = b
             self.edge = edge
-            self.up = up
             self.setZValue(-1)
             p0 = a.pos() + QtCore.QPointF(a.w / 2 + port, a.h)
             p1 = b.pos() + QtCore.QPointF(b.w / 2, 0)
-            dy = max((p1.y() - p0.y()) / 2, 20)
-            path = QtGui.QPainterPath(p0)
-            path.cubicTo(p0 + QtCore.QPointF(0, dy), p1 - QtCore.QPointF(0, dy), p1)
-            self.path = path
-            self.tip = p0 if up else p1
+            if p1.y() - p0.y() >= 2 * 8:
+                mid = p1.y() - VGAP / 2
+                pts = [p0, QtCore.QPointF(p0.x(), mid), QtCore.QPointF(p1.x(), mid), p1]
+            else:
+                side = max(a.pos().x() + a.w, b.pos().x() + b.w) + HGAP / 2
+                pts = [p0, QtCore.QPointF(p0.x(), p0.y() + 12), QtCore.QPointF(side, p0.y() + 12),
+                       QtCore.QPointF(side, p1.y() - 12), QtCore.QPointF(p1.x(), p1.y() - 12), p1]
+            self.pts = pts
+            self.poly = QtGui.QPolygonF(pts)
+            # The arrowhead, where the flow arrives.
+            self.tip = pts[0] if up else pts[-1]
             self.tip_dir = -1 if up else 1
+            # Beside the line into the target, which no other edge shares.
             self.label = edge.get("label") or ""
-            self.mid = path.pointAtPercent(0.5)
+            self.label_at = QtCore.QPointF(p1.x() + 5, (pts[-2].y() + p1.y()) / 2)
 
         def boundingRect(self):
-            return self.path.boundingRect().adjusted(-60, -12, 60, 12)
+            return self.poly.boundingRect().adjusted(-80, -14, 80, 14)
 
         def paint(self, painter, option, widget=None):
             t = self.form.theme
             f = self.form.fonts
-            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
-            pen = QtGui.QPen(t.edge, 1.4)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, False)
+            pen = QtGui.QPen(t.edge, 1)
             if self.edge.get("dashed"):
                 pen.setStyle(QtCore.Qt.DashLine)
             painter.setPen(pen)
-            painter.setBrush(QtCore.Qt.NoBrush)
-            painter.drawPath(self.path)
-            # The arrowhead, at the end the flow arrives at, pointing along it.
+            painter.drawPolyline(self.poly)
+            painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
             d = self.tip_dir
             tip = self.tip
-            head = QtGui.QPolygonF([tip, tip + QtCore.QPointF(-5, -9 * d), tip + QtCore.QPointF(5, -9 * d)])
+            head = QtGui.QPolygonF([tip, tip + QtCore.QPointF(-4, -8 * d), tip + QtCore.QPointF(4, -8 * d)])
             painter.setPen(QtCore.Qt.NoPen)
             painter.setBrush(t.edge)
             painter.drawPolygon(head)
             if self.label:
-                painter.setFont(f.small)
-                w = f.fm_small.horizontalAdvance(self.label) + 10
-                h = f.fm_small.height() + 2
-                r = QtCore.QRectF(self.mid.x() - w / 2, self.mid.y() - h / 2, w, h)
-                painter.setBrush(t.canvas)
-                painter.drawRoundedRect(r, h / 2, h / 2)
-                painter.setPen(t.dim)
-                painter.drawText(r, QtCore.Qt.AlignCenter, self.label)
+                painter.setFont(f.code)
+                painter.setPen(t.label)
+                painter.drawText(QtCore.QPointF(self.label_at.x(), self.label_at.y() + f.fm.ascent() / 2 - 1),
+                                 self.label)
 
     class View(QtWidgets.QGraphicsView):
         def __init__(self, form):
@@ -319,6 +336,17 @@ def _ida_ttd_graph_show(kind, first):
                     self.form.act(sel[0].node, None)
             else:
                 super().keyPressEvent(e)
+
+        def drawBackground(self, painter, rect):
+            # IDA's graph background: a gradient down the visible area.
+            t = getattr(self.form, "theme", None)
+            if t is None:
+                return super().drawBackground(painter, rect)
+            vr = self.mapToScene(self.viewport().rect()).boundingRect()
+            g = QtGui.QLinearGradient(vr.topLeft(), vr.bottomLeft())
+            g.setColorAt(0, t.canvas_top)
+            g.setColorAt(1, t.canvas_bottom)
+            painter.fillRect(rect, g)
 
         def contextMenuEvent(self, e):
             if self.itemAt(e.pos()) is not None:
@@ -427,7 +455,6 @@ def _ida_ttd_graph_show(kind, first):
             self.graph = graph
             self.theme = Theme(self.view)
             self.fonts = Fonts(self.view)
-            self.view.setBackgroundBrush(self.theme.canvas)
             self.scene.clear()
             cards = []
             for node in graph["nodes"]:
@@ -445,7 +472,7 @@ def _ida_ttd_graph_show(kind, first):
             for src, out in leaving.items():
                 a = cards[src]
                 out.sort(key=lambda e: cards[e["dst"]].pos().x())
-                spread = min(a.w * 0.5, 36 * (len(out) - 1))
+                spread = min(a.w * 0.5, 24 * (len(out) - 1))
                 for k, e in enumerate(out):
                     port = 0 if len(out) == 1 else -spread / 2 + spread * k / (len(out) - 1)
                     self.scene.addItem(Edge(self, a, cards[e["dst"]], e, up, port))

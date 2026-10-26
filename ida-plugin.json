@@ -44,6 +44,15 @@
     ],
     "settings": [
       {
+        "key": "replay_on_open",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Replay: start when a recording's database opens",
+        "documentation": "Start the replay as soon as a database made from a recording opens. Off: start it with Debugger > Start process (F9)."
+      },
+      {
         "key": "symbol_downloads",
         "type": "boolean",
         "required": false,
@@ -79,6 +88,15 @@
         "prompt": false,
         "name": "Analysis: resolve indirect calls automatically",
         "documentation": "Comment the indirect calls of each function the first time the replay stops in it with where they went (one replay per module)."
+      },
+      {
+        "key": "memmap_flag_code",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Memory map: highlight executable memory outside modules",
+        "documentation": "In the Memory map, colour the executable regions no loaded module covers: code the program allocated or mapped itself, such as unpacked or injected code."
       },
       {
         "key": "fork_instructions",

@@ -72,7 +72,7 @@ namespace idattd
     static const char icons_goto_time_svg[] =
         R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#e3e3e3" xmlns="http://www.w3.org/2000/svg"><path d="M600-160q-134 0-227-93t-93-227q0-133 93-226.5T600-800q133 0 226.5 93.5T920-480q0 134-93.5 227T600-160Zm0-80q100 0 170-70t70-170q0-100-70-170t-170-70q-100 0-170 70t-70 170q0 100 70 170t170 70Zm91-91 57-57-108-108v-144h-80v177l131 132ZM80-600v-80h160v80H80ZM40-440v-80h200v80H40Zm40 160v-80h160v80H80Zm520-200Z"/></svg>)SVG";
 
-    // Find all calls to this function (Material Symbols 'function')
+    // Find calls to this function (Material Symbols 'function')
     static const char icons_function_svg[] =
         R"SVG(<svg width="16px" height="16px" viewBox="0 -960 960 960" fill="#e3e3e3" xmlns="http://www.w3.org/2000/svg"><path d="M400-240v-80h62l105-120-105-120h-66l-64 344q-8 45-37 70.5T221-120q-45 0-73-24t-28-64q0-32 17-51.5t43-19.5q25 0 42.5 17t17.5 41q0 5-.5 9t-1.5 9q5-1 8.5-5.5T252-221l62-339H200v-80h129l21-114q7-38 37.5-62t72.5-24q44 0 72 26t28 65q0 30-17 49.5T500-680q-25 0-42.5-17T440-739q0-5 .5-9t1.5-9q-6 2-9 6t-5 12l-17 99h189v80h-32l52 59 52-59h-32v-80h200v80h-62L673-440l105 120h62v80H640v-80h32l-52-60-52 60h32v80H400Z"/></svg>)SVG";
 

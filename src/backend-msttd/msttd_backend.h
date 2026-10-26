@@ -7,6 +7,8 @@
 
 namespace idattd
 {
+    struct SyscallCensus;
+
     // Microsoft TTD (.run recordings) behind ITraceBackend, exported as the
     // C ABI by msttd_entry.cpp; nothing outside src/backend-msttd/ sees these
     // types. Whole-trace questions are replays with a watchpoint armed;
@@ -67,7 +69,7 @@ namespace idattd
                                   std::vector<StringHit> *out, ProgressSink *progress) override;
         QueryResult query_buffers(const ReplaySettings &settings, std::vector<BufferHit> *out,
                                   ProgressSink *progress) override;
-        // From the last syscall listing where it has them, else by seeking.
+        // From the syscall census where it has them, else by seeking.
         QueryResult registers_at(const std::vector<Position> &positions, std::vector<ittd_regs> *out,
                                  ProgressSink *progress) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
@@ -168,6 +170,20 @@ namespace idattd
             uint64_t rflags;
         };
         std::map<std::pair<uint64_t, uint64_t>, SyscallRegs> m_syscallRegs;  // by (sequence, steps)
+        // The syscall census (msttd_syscalls.cpp), shared by query_syscalls
+        // and query_mapping_changes. Only a census that ran to the end is
+        // cached. m_censusMtx guards the pointer only, never a replay: two
+        // queries that both miss each run their own, and the last one kept
+        // is as good as the first.
+        std::mutex                      m_censusMtx;
+        std::shared_ptr<const SyscallCensus> m_census;
+        std::shared_ptr<const SyscallCensus> cached_census();
+        // The cached census, else one replay for it. 'need_memmap': when the
+        // recording names no memory syscall, return a census with no
+        // 'memmap' and no calls, without replaying. Null when no replay
+        // could be made. A cancelled census is returned but not cached.
+        std::shared_ptr<const SyscallCensus> syscall_census(bool need_memmap, ProgressSink *progress,
+                                                            QueryResult *qr);
         // What the write scans found (msttd_scans.cpp), once they have run.
         struct ScanResultsPtr
         {

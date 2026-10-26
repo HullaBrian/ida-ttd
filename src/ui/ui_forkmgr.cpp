@@ -322,24 +322,20 @@ namespace idattd
                 qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)r.time);
                 g.lines.push_back(qstring("recorded ") + when);
                 g.badge = "fork";
-                g.tone  = "muted";
             }
             else
             {
                 g.lines.push_back("the recording this database was made from");
                 g.badge = "recording";
-                g.tone  = "accent";
             }
             if ( n.current )
             {
                 g.badge    = "replaying";
-                g.tone     = "good";
                 g.emphasis = true;
             }
             if ( n.missing )
             {
                 g.badge  = "missing";
-                g.tone   = "bad";
                 g.dashed = true;
                 g.lines.push_back("the file is not there any more");
             }

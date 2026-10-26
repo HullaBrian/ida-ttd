@@ -4,9 +4,8 @@
 
 namespace idattd
 {
-    // A graph drawn by the plugin's own graph window (graph_py.hh): rounded
-    // cards and curved edges in IDA's theme colours, panned and zoomed like
-    // IDA's graphs. The plugin builds the model; IDAPython fetches it with
+    // A graph drawn by the plugin's own graph window (graph_py.hh), styled
+    // and panned and zoomed like IDA's graphs. The plugin builds the model; IDAPython fetches it with
     // ttd("ui.graph KIND") and sends node actions back with
     // ttd("ui.graphact KIND NODE ACTION"). One window per kind ("forks",
     // "origin").
@@ -17,15 +16,12 @@ namespace idattd
 
     struct GraphNode
     {
-        qstring title;                  // bold, first line
-        qstring code;                   // monospaced: an instruction
-        qvector<qstring> lines;         // smaller, dimmer
-        qstring badge;                  // a short word in the top corner
-        // The colour of the badge and the card's edge: "accent", "good",
-        // "warn", "bad", "muted", or "" for none.
-        qstring tone;
-        bool    dashed = false;         // the card's edge: something missing
-        bool    emphasis = false;       // a heavier edge: where the graph starts
+        qstring title;                  // first line
+        qstring code;                   // an instruction, coloured as IDA colours one
+        qvector<qstring> lines;         // comment lines
+        qstring badge;                  // the node's kind, a comment after the title
+        bool    dashed = false;         // a dashed frame: something missing
+        bool    emphasis = false;       // IDA's highlight colour: where the graph starts
         qstring tooltip;
         // Context menu: (label, action) pairs; an empty pair is a separator.
         // The first is what a double-click does.

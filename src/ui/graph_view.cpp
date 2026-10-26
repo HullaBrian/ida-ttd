@@ -145,8 +145,6 @@ namespace idattd
             j.append(',');
             json_field(&j, "badge", n.badge);
             j.append(',');
-            json_field(&j, "tone", n.tone);
-            j.append(',');
             json_field(&j, "tooltip", n.tooltip);
             j.cat_sprnt(",\"dashed\":%s,\"emphasis\":%s,\"lines\":[",
                         n.dashed ? "true" : "false", n.emphasis ? "true" : "false");

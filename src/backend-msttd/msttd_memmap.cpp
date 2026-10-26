@@ -286,6 +286,268 @@ namespace idattd
         return true;
     }
 
+    // What the census replay settled for the map (see SyscallCensus).
+    struct MemmapRecords
+    {
+        std::vector<Rec> recs;
+        bool truncated = false;
+    };
+
+    namespace
+    {
+        // The census callbacks that settle each memory syscall. Everything
+        // here runs on the replay thread, noexcept.
+        class MemmapHooksImpl : public MemmapHooks
+        {
+        public:
+            MemmapHooksImpl(const MsTtdBackend *backend, std::map<uint32_t, const WatchDesc *> by_number)
+                : m_is64(backend->is64()), m_byNumber(std::move(by_number)) {}
+
+            void arm(KernelCallOptions *opts) override
+            {
+                // One replay with the call/return callback, which both the
+                // chains and the settling need.
+                opts->args_wanted = [this](uint32_t n) { return desc_of(n) != nullptr; };
+                opts->chains      = true;
+                opts->on_syscall  = [this](const KernelCall &k, IThreadView const *t) noexcept { on_syscall(k, t); };
+                opts->on_call_ret = [this](IThreadView const *t, uint32_t utid, bool is_return, uint64_t target) noexcept
+                {
+                    on_call_ret(t, utid, is_return, target);
+                };
+            }
+
+            std::shared_ptr<const MemmapRecords> finish() override
+            {
+                auto r = std::make_shared<MemmapRecords>();
+                r->recs      = std::move(m_st.recs);
+                r->truncated = m_st.truncated;
+                m_st = SweepState{};
+                m_outNow.clear();
+                return r;
+            }
+
+        private:
+            const WatchDesc *desc_of(uint32_t n) const
+            {
+                auto it = m_byNumber.find(n);
+                return it != m_byNumber.end() ? it->second : nullptr;
+            }
+
+            void retire(size_t idx) noexcept
+            {
+                if ( !m_st.retries[idx].live )
+                    return;
+                m_st.retries[idx].live = false;
+                if ( m_st.outstanding != 0 )
+                    m_st.outstanding--;
+            }
+
+            void add_retry(uint64_t addr, uint32_t tid, uint32_t width, size_t rec, bool isBase) noexcept
+            {
+                try
+                {
+                    // A wrapper reuses one stack local for every call, so an
+                    // older retry on this slot would pick up a newer call's
+                    // value. Retire it: a missing region is a gap, a wrong
+                    // one silently displaces a real region.
+                    auto it = m_st.byThread.find(tid);
+                    if ( it != m_st.byThread.end() )
+                    {
+                        for ( size_t i : it->second )
+                            if ( m_st.retries[i].live && m_st.retries[i].addr == addr )
+                                retire(i);
+                    }
+                    Retry retry;
+                    retry.addr     = addr;
+                    retry.tid      = tid;
+                    retry.width    = width;
+                    retry.rec      = rec;
+                    retry.isBase   = isBase;
+                    retry.attempts = 256;
+                    retry.live     = true;
+                    m_st.retries.push_back(retry);
+                    m_st.byThread[tid].push_back(m_st.retries.size() - 1);
+                    m_st.outstanding++;
+                }
+                catch ( ... )
+                {
+                    m_st.truncated = true;
+                }
+            }
+
+            // A kernel-written out-param is often not recorded when the
+            // syscall returns, only once the program reads it back, so each
+            // later call and return on the same thread looks again.
+            void poll_retries(IThreadView const *t, uint32_t tid) noexcept
+            {
+                if ( m_st.outstanding == 0 )
+                    return;
+                auto it = m_st.byThread.find(tid);
+                if ( it == m_st.byThread.end() )
+                    return;
+                for ( size_t i : it->second )
+                {
+                    Retry &retry = m_st.retries[i];
+                    if ( !retry.live )
+                        continue;
+                    uint64_t v = 0;
+                    if ( msttd_read_word(t, retry.addr, retry.width, &v) && page_granular(v) )
+                    {
+                        Rec &rec = m_st.recs[retry.rec];
+                        if ( retry.isBase ) { rec.base = v; rec.baseOk = true; }
+                        else                { rec.size = v; rec.sizeOk = true; }
+                        retire(i);
+                    }
+                    else if ( --retry.attempts <= 0 )
+                    {
+                        // Past a few hundred callbacks the slot may belong to
+                        // something else entirely. Hand it to the slower routes.
+                        retire(i);
+                    }
+                }
+                // Drop the settled ones: this runs on every call and return,
+                // and would otherwise walk all of a thread's past retries
+                // each time.
+                std::vector<size_t> &mine = it->second;
+                mine.erase(std::remove_if(mine.begin(), mine.end(),
+                                          [this](size_t i) { return !m_st.retries[i].live; }),
+                           mine.end());
+            }
+
+            void on_syscall(const KernelCall &k, IThreadView const *) noexcept
+            {
+                try
+                {
+                    if ( desc_of(k.number) != nullptr )
+                        m_outNow[k.utid].push_back(k);
+                }
+                catch ( ... )
+                {
+                    m_st.truncated = true;
+                }
+            }
+
+            void settle(const KernelCall &k, IThreadView const *t) noexcept
+            {
+                try
+                {
+                    const WatchDesc *d = desc_of(k.number);
+                    if ( d == nullptr )
+                        return;
+                    // NTSTATUS: anything negative failed, and a failed call
+                    // changed nothing.
+                    if ( (int32_t)(uint32_t)t->GetBasicReturnValue() < 0 )
+                        return;
+                    if ( m_st.recs.size() >= kMaxRecs )
+                    {
+                        m_st.truncated = true;
+                        return;
+                    }
+                    const bool is64 = m_is64;
+                    const uint32_t width = is64 ? 8 : 4;
+                    const uint64_t mask = is64 ? ~0ull : 0xFFFFFFFFull;
+
+                    Rec rec;
+                    rec.d       = d;
+                    rec.is64    = is64;
+                    rec.tid     = k.utid;
+                    rec.os_tid  = k.tid;
+                    rec.pc      = k.chain_n != 0 ? k.chain[0] : k.pc;
+                    rec.api     = k.stub != BADADDR ? k.stub : k.pc;
+                    rec.retPos  = t->GetPosition();
+                    rec.callPos = k.pos;
+                    rec.chain_n = k.chain_n;
+                    for ( uint8_t i = 0; i < k.chain_n; i++ )
+                        rec.chain[i] = k.chain[i];
+                    rec.extra = d->iExtra >= 0 ? (uint32_t)k.args[d->iExtra] : 0;
+                    rec.otherProcess = !is_current_process(k.args[d->iProc] & mask, is64);
+
+                    if ( !d->basePtr )
+                    {
+                        // The address is the argument itself (an unmap).
+                        rec.base   = k.args[d->iBase] & mask;
+                        rec.baseOk = rec.base != 0;
+                        rec.sizeOk = true;                 // there is no size
+                        m_st.recs.push_back(rec);
+                        return;
+                    }
+
+                    rec.pBase = k.args[d->iBase] & mask;
+                    rec.pSize = d->iSize >= 0 ? k.args[d->iSize] & mask : 0;
+
+                    if ( rec.pBase != 0 && msttd_read_word(t, rec.pBase, width, &rec.base) )
+                        rec.baseOk = !d->deferred || page_granular(rec.base);
+                    if ( rec.pSize == 0 )
+                        rec.sizeOk = true;                 // a free may pass none
+                    else if ( msttd_read_word(t, rec.pSize, width, &rec.size) )
+                        rec.sizeOk = !d->deferred || page_granular(rec.size);
+
+                    // A free's out-params were written by the caller, so what
+                    // was just read is recorded and final. Only kernel-written
+                    // ones need chasing.
+                    m_st.recs.push_back(rec);
+                    size_t idx = m_st.recs.size() - 1;
+                    if ( d->deferred )
+                    {
+                        if ( !m_st.recs[idx].baseOk && rec.pBase != 0 )
+                            add_retry(rec.pBase, k.utid, width, idx, true);
+                        if ( !m_st.recs[idx].sizeOk && rec.pSize != 0 )
+                            add_retry(rec.pSize, k.utid, width, idx, false);
+                    }
+                }
+                catch ( ... )
+                {
+                    m_st.truncated = true;
+                }
+            }
+
+            // The memory syscalls still out, per thread, innermost last
+            // (m_outNow). Each is settled at the return from the call that
+            // made it (the stub's return to its caller), where the result is
+            // still in rax and the out-params are as the caller first sees
+            // them.
+            void on_call_ret(IThreadView const *t, uint32_t utid, bool is_return, uint64_t target) noexcept
+            {
+                poll_retries(t, utid);
+                if ( !is_return )
+                    return;
+                auto it = m_outNow.find(utid);
+                if ( it == m_outNow.end() || it->second.empty() )
+                    return;
+                // The innermost call this return leaves. An unwind can leave
+                // several frames at once; syscalls in the frames above it
+                // never came back the usual way.
+                std::vector<KernelCall> &v = it->second;
+                for ( size_t i = v.size(); i-- > 0; )
+                {
+                    if ( v[i].frame_ret != target )
+                        continue;
+                    settle(v[i], t);
+                    v.resize(i);
+                    return;
+                }
+            }
+
+            const bool m_is64;
+            const std::map<uint32_t, const WatchDesc *> m_byNumber;
+            SweepState m_st;
+            std::map<uint32_t, std::vector<KernelCall>> m_outNow;
+        };
+    }
+
+    std::unique_ptr<MemmapHooks> make_memmap_hooks(const MsTtdBackend *backend, const SyscallTable &table)
+    {
+        // By number, not by watching ntdll's exports: a program that makes
+        // its own syscalls never calls the export.
+        std::map<uint32_t, const WatchDesc *> by_number;
+        for ( const WatchDesc &d : kWatches )
+            for ( uint32_t n : table.numbers_of(d.name) )
+                by_number.emplace(n, &d);
+        if ( by_number.empty() )
+            return nullptr;
+        return std::make_unique<MemmapHooksImpl>(backend, std::move(by_number));
+    }
+
     QueryResult MsTtdBackend::query_mapping_changes(std::vector<ittd_mapping_change> *out,
                                                     std::vector<qstring> *files,
                                                     ProgressSink *progress)
@@ -296,17 +558,14 @@ namespace idattd
             return r;
         const std::vector<ModuleInfo> all_modules = modules();
 
-        // ---- which syscall numbers to look at ---------------------------------
+        // ---- the syscalls, with their chains ---------------------------------
         //
-        // By number, not by watching ntdll's exports: a program that makes its
-        // own syscalls never calls the export.
-        SyscallTable table;
-        build_syscall_table(this, &table);
-        std::map<uint32_t, const WatchDesc *> by_number;
-        for ( const WatchDesc &d : kWatches )
-            for ( uint32_t n : table.numbers_of(d.name) )
-                by_number.emplace(n, &d);
-        if ( by_number.empty() )
+        // From the census the syscall listing shares (msttd_syscalls.cpp):
+        // whichever of the two runs first replays the recording, and the
+        // other starts from what it kept.
+        QueryResult kr;
+        std::shared_ptr<const SyscallCensus> census = syscall_census(true, progress, &kr);
+        if ( census != nullptr && census->memmap == nullptr )
         {
             msttd_log("[ida-ttd] memory map: could not find ntdll's memory syscalls in this "
                 "recording (its export table was never read during recording).\n");
@@ -314,225 +573,13 @@ namespace idattd
                       "(its export table was never read during recording)");
             return r;
         }
-        auto desc_of = [&by_number](uint32_t n) -> const WatchDesc *
-        {
-            auto it = by_number.find(n);
-            return it != by_number.end() ? it->second : nullptr;
-        };
-
-        SweepState st;
-
-        auto retire = [&st](size_t idx) noexcept
-        {
-            if ( !st.retries[idx].live )
-                return;
-            st.retries[idx].live = false;
-            if ( st.outstanding != 0 )
-                st.outstanding--;
-        };
-
-        auto add_retry = [&st, &retire](uint64_t addr, uint32_t tid, uint32_t width,
-                                        size_t rec, bool isBase) noexcept
-        {
-            try
-            {
-                // A wrapper reuses one stack local for every call, so an older
-                // retry on this slot would pick up a newer call's value. Retire
-                // it: a missing region is a gap, a wrong one silently displaces
-                // a real region.
-                auto it = st.byThread.find(tid);
-                if ( it != st.byThread.end() )
-                {
-                    for ( size_t i : it->second )
-                        if ( st.retries[i].live && st.retries[i].addr == addr )
-                            retire(i);
-                }
-                Retry retry;
-                retry.addr     = addr;
-                retry.tid      = tid;
-                retry.width    = width;
-                retry.rec      = rec;
-                retry.isBase   = isBase;
-                retry.attempts = 256;
-                retry.live     = true;
-                st.retries.push_back(retry);
-                st.byThread[tid].push_back(st.retries.size() - 1);
-                st.outstanding++;
-            }
-            catch ( ... )
-            {
-                st.truncated = true;
-            }
-        };
-
-        // A kernel-written out-param is often not recorded when the syscall
-        // returns, only once the program reads it back, so each later call and
-        // return on the same thread looks again.
-        auto poll_retries = [&st, &retire](IThreadView const *t, uint32_t tid) noexcept
-        {
-            if ( st.outstanding == 0 )
-                return;
-            auto it = st.byThread.find(tid);
-            if ( it == st.byThread.end() )
-                return;
-            for ( size_t i : it->second )
-            {
-                Retry &retry = st.retries[i];
-                if ( !retry.live )
-                    continue;
-                uint64_t v = 0;
-                if ( msttd_read_word(t, retry.addr, retry.width, &v) && page_granular(v) )
-                {
-                    Rec &rec = st.recs[retry.rec];
-                    if ( retry.isBase ) { rec.base = v; rec.baseOk = true; }
-                    else                { rec.size = v; rec.sizeOk = true; }
-                    retire(i);
-                }
-                else if ( --retry.attempts <= 0 )
-                {
-                    // Past a few hundred callbacks the slot may belong to
-                    // something else entirely. Hand it to the slower routes.
-                    retire(i);
-                }
-            }
-            // Drop the settled ones: this runs on every call and return, and
-            // would otherwise walk all of a thread's past retries each time.
-            std::vector<size_t> &mine = it->second;
-            mine.erase(std::remove_if(mine.begin(), mine.end(),
-                                      [&st](size_t i) { return !st.retries[i].live; }),
-                       mine.end());
-        };
-
-        // The memory syscalls still out, per thread, innermost last. Each is
-        // settled at the return from the call that made it (the stub's return
-        // to its caller), where the result is still in rax and the out-params
-        // are as the caller first sees them.
-        std::map<uint32_t, std::vector<KernelCall>> out_now;
-
-        auto on_syscall = [&](const KernelCall &k, IThreadView const *) noexcept
-        {
-            try
-            {
-                if ( desc_of(k.number) != nullptr )
-                    out_now[k.utid].push_back(k);
-            }
-            catch ( ... )
-            {
-                st.truncated = true;
-            }
-        };
-
-        auto settle = [&](const KernelCall &k, IThreadView const *t) noexcept
-        {
-            try
-            {
-                const WatchDesc *d = desc_of(k.number);
-                if ( d == nullptr )
-                    return;
-                // NTSTATUS: anything negative failed, and a failed call
-                // changed nothing.
-                if ( (int32_t)(uint32_t)t->GetBasicReturnValue() < 0 )
-                    return;
-                if ( st.recs.size() >= kMaxRecs )
-                {
-                    st.truncated = true;
-                    return;
-                }
-                const bool is64 = m_info.is64;
-                const uint32_t width = is64 ? 8 : 4;
-                const uint64_t mask = is64 ? ~0ull : 0xFFFFFFFFull;
-
-                Rec rec;
-                rec.d       = d;
-                rec.is64    = is64;
-                rec.tid     = k.utid;
-                rec.os_tid  = k.tid;
-                rec.pc      = k.chain_n != 0 ? k.chain[0] : k.pc;
-                rec.api     = k.stub != BADADDR ? k.stub : k.pc;
-                rec.retPos  = t->GetPosition();
-                rec.callPos = k.pos;
-                rec.chain_n = k.chain_n;
-                for ( uint8_t i = 0; i < k.chain_n; i++ )
-                    rec.chain[i] = k.chain[i];
-                rec.extra = d->iExtra >= 0 ? (uint32_t)k.args[d->iExtra] : 0;
-                rec.otherProcess = !is_current_process(k.args[d->iProc] & mask, is64);
-
-                if ( !d->basePtr )
-                {
-                    // The address is the argument itself (an unmap).
-                    rec.base   = k.args[d->iBase] & mask;
-                    rec.baseOk = rec.base != 0;
-                    rec.sizeOk = true;                 // there is no size
-                    st.recs.push_back(rec);
-                    return;
-                }
-
-                rec.pBase = k.args[d->iBase] & mask;
-                rec.pSize = d->iSize >= 0 ? k.args[d->iSize] & mask : 0;
-
-                if ( rec.pBase != 0 && msttd_read_word(t, rec.pBase, width, &rec.base) )
-                    rec.baseOk = !d->deferred || page_granular(rec.base);
-                if ( rec.pSize == 0 )
-                    rec.sizeOk = true;                 // a free may pass none
-                else if ( msttd_read_word(t, rec.pSize, width, &rec.size) )
-                    rec.sizeOk = !d->deferred || page_granular(rec.size);
-
-                // A free's out-params were written by the caller, so what was
-                // just read is recorded and final. Only kernel-written ones
-                // need chasing.
-                st.recs.push_back(rec);
-                size_t idx = st.recs.size() - 1;
-                if ( d->deferred )
-                {
-                    if ( !st.recs[idx].baseOk && rec.pBase != 0 )
-                        add_retry(rec.pBase, k.utid, width, idx, true);
-                    if ( !st.recs[idx].sizeOk && rec.pSize != 0 )
-                        add_retry(rec.pSize, k.utid, width, idx, false);
-                }
-            }
-            catch ( ... )
-            {
-                st.truncated = true;
-            }
-        };
-
-        auto on_call_ret = [&](IThreadView const *t, uint32_t utid, bool is_return, uint64_t target) noexcept
-        {
-            poll_retries(t, utid);
-            if ( !is_return )
-                return;
-            auto it = out_now.find(utid);
-            if ( it == out_now.end() || it->second.empty() )
-                return;
-            // The innermost call this return leaves. An unwind can leave
-            // several frames at once; syscalls in the frames above it never
-            // came back the usual way.
-            std::vector<KernelCall> &v = it->second;
-            for ( size_t i = v.size(); i-- > 0; )
-            {
-                if ( v[i].frame_ret != target )
-                    continue;
-                settle(v[i], t);
-                v.resize(i);
-                return;
-            }
-        };
-
-        // ---- the syscalls, with their chains ---------------------------------
-        //
-        // One replay with the call/return callback, which both the chains and
-        // the settling need. No second replay for results.
-        KernelCallOptions opts;
-        opts.args_wanted = [&desc_of](uint32_t n) { return desc_of(n) != nullptr; };
-        opts.chains      = true;
-        opts.on_syscall  = on_syscall;
-        opts.on_call_ret = on_call_ret;
-        opts.results     = false;
-        std::vector<KernelCall> calls;
-        QueryResult kr = collect_kernel_calls(this, table, opts, &calls, progress);
-        if ( !kr.ran )
+        if ( census == nullptr || !kr.ran )
             return r;
-        st.truncated = st.truncated || kr.truncated;
+        SweepState st;
+        // A copy: the census is shared, and the passes below fill in the
+        // records' values.
+        st.recs      = census->memmap->recs;
+        st.truncated = kr.truncated || census->memmap->truncated;
         const std::vector<std::pair<ea_t, ea_t>> mods = module_ranges(all_modules);
 
         // Cancelling the replay or the resolve pass leaves a partial map; the

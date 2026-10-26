@@ -6,6 +6,26 @@
 namespace idattd
 {
     class TraceManager;
+    class ModuleRegistry;
+    namespace win32meta { struct FuncSig; }
+
+    // How a traced function's calls are decoded, decided once per function:
+    //   1. a prototype the user set in IDA (Y on the function) wins;
+    //   2. else the API metadata, when it knows the name: it describes the
+    //      same API as a type library's prototype, plus flag names, buffer
+    //      lengths and which parameters the callee fills in;
+    //   3. else IDA's prototype (a PDB's, a type library's, the decompiler's
+    //      saved one), else the one IDA guesses from the code;
+    //   4. else four untyped integer arguments.
+    struct TracedProto
+    {
+        const win32meta::FuncSig *sig = nullptr;    // 2
+        bool                 have_type = false;     // 1 or 3: 'type' and 'fd' hold it
+        tinfo_t              type;
+        func_type_data_t     fd;
+        std::vector<qstring> names;                 // a header per argument ("arg0" when unnamed)
+    };
+    TracedProto resolve_traced_proto(ModuleRegistry *mods, ea_t func_ea);
 
     // One recorded call to a traced function, with its arguments and (when the
     // matching return was seen) its return value.

@@ -28,13 +28,6 @@ namespace idattd
     // recording that was moved or renamed.
     void trace_link_set_path(const char *path);
 
-    // Whether to start the replay when this database opens: 0 never asked,
-    // 1 declined, 2 accepted. Kept in the database because a new plugin object
-    // is made on every open.
-    enum { TL_ASK = 0, TL_NO = 1, TL_YES = 2 };
-    int  trace_link_autostart();
-    void trace_link_set_autostart(int v);
-
     // Crash guard for the automatic start.
     //
     // Set just before an automatic start and cleared once the session is up.

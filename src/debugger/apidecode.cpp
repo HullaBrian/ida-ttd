@@ -408,6 +408,174 @@ namespace idattd
         return nullptr;
     }
 
+    namespace
+    {
+        // A type from its C spelling, against the database's type libraries.
+        // Silent: a name no library defines is the expected failure.
+        bool parse_c_type(const qstring &spelling, tinfo_t *out)
+        {
+            qstring decl, name;
+            decl.sprnt("%s ittd_param;", spelling.c_str());
+            tinfo_t t;
+            if ( !parse_decl(&t, &name, get_idati(), decl.c_str(), PT_SIL) || t.empty() || !t.is_correct() )
+                return false;
+            *out = t;
+            return true;
+        }
+
+        // The metadata's spelling of a type's base name in C. win32json uses
+        // the .NET names of the primitive types; phnt already uses C names.
+        qstring c_base_name(const qstring &base, bool is64)
+        {
+            static const struct { const char *meta; const char *c; } names[] =
+            {
+                { "Void",    "void" },
+                { "Byte",    "unsigned __int8" },
+                { "SByte",   "signed __int8" },
+                { "Char",    "wchar_t" },             // a UTF-16 unit in win32json
+                { "Int16",   "__int16" },
+                { "UInt16",  "unsigned __int16" },
+                { "Int32",   "int" },
+                { "UInt32",  "unsigned int" },
+                { "Int64",   "__int64" },
+                { "UInt64",  "unsigned __int64" },
+                { "Single",  "float" },
+                { "Double",  "double" },
+                { "Boolean", "bool" },
+                { "Guid",    "GUID" },
+                { "PSTR",    "char *" },
+                { "PWSTR",   "wchar_t *" },
+                { "PCSTR",   "const char *" },
+                { "PCWSTR",  "const wchar_t *" },
+                { "VOID",    "void" },
+            };
+            if ( base == "IntPtr" )
+                return is64 ? "__int64" : "int";
+            if ( base == "UIntPtr" )
+                return is64 ? "unsigned __int64" : "unsigned int";
+            for ( const auto &n : names )
+                if ( base == n.meta )
+                    return n.c;
+            return base;
+        }
+
+        // A generic stand-in for a type the database does not know.
+        tinfo_t generic_param_type(const ParamSig &p, bool is64)
+        {
+            tinfo_t t;
+            switch ( p.kind )
+            {
+                case ArgKind::Float:
+                    t.create_simple_type(BTF_FLOAT);
+                    return t;
+                case ArgKind::Double:
+                    t.create_simple_type(BTF_DOUBLE);
+                    return t;
+                case ArgKind::Handle:
+                case ArgKind::FuncPtr:
+                    break;
+                case ArgKind::Integer:
+                case ArgKind::Enum:
+                case ArgKind::Bool:
+                case ArgKind::Unknown:
+                {
+                    // pointeeSize is a scalar's own size (x86_footprint reads
+                    // it the same way).
+                    switch ( p.pointeeSize )
+                    {
+                        case 1: t.create_simple_type(BT_INT8  | BTMT_UNSIGNED); return t;
+                        case 2: t.create_simple_type(BT_INT16 | BTMT_UNSIGNED); return t;
+                        case 4: t.create_simple_type(BT_INT32 | BTMT_UNSIGNED); return t;
+                        case 8:
+                            if ( is64 || type_is(p, "UInt64") || type_is(p, "Int64") )
+                            {
+                                t.create_simple_type(BT_INT64 | BTMT_UNSIGNED);
+                                return t;
+                            }
+                            break;
+                        default:
+                            break;
+                    }
+                    t.create_simple_type((is64 ? BT_INT64 : BT_INT32) | BTMT_UNSIGNED);
+                    return t;
+                }
+                default:
+                    break;
+            }
+            // Pointers of every kind, handles and function pointers.
+            tinfo_t v;
+            v.create_simple_type(BTF_VOID);
+            t.create_ptr(v);
+            return t;
+        }
+
+        // One parameter's type: its metadata spelling when the database
+        // knows it (array suffixes read as pointers), else, for a pointer to
+        // an unknown type, a void pointer of the same depth, else a generic.
+        tinfo_t param_type(const ParamSig &p, bool is64)
+        {
+            qstring spelling(p.type != nullptr ? p.type : "");
+            while ( spelling.length() >= 2 && spelling.ends_with("[]") )
+            {
+                spelling.resize(spelling.length() - 2);
+                spelling.append('*');
+            }
+            size_t stars = 0;
+            while ( stars < spelling.length() && spelling[spelling.length() - 1 - stars] == '*' )
+                stars++;
+            qstring base = spelling.substr(0, spelling.length() - stars);
+            base.trim2();
+            tinfo_t t;
+            if ( !base.empty() )
+            {
+                qstring c = c_base_name(base, is64);
+                for ( size_t i = 0; i < stars; i++ )
+                    c.append(i == 0 ? " *" : "*");
+                if ( parse_c_type(c, &t) )
+                    return t;
+                if ( stars != 0 )
+                {
+                    t.create_simple_type(BTF_VOID);
+                    for ( size_t i = 0; i < stars; i++ )
+                    {
+                        tinfo_t ptr;
+                        ptr.create_ptr(t);
+                        t = ptr;
+                    }
+                    return t;
+                }
+                if ( p.kind == ArgKind::Handle && parse_c_type("HANDLE", &t) )
+                    return t;
+            }
+            return generic_param_type(p, is64);
+        }
+    }
+
+    bool api_prototype(const FuncSig &sig, bool is64, tinfo_t *out)
+    {
+        if ( sig.hiddenRetPtr() || sig.unsupported() )
+            return false;
+        func_type_data_t fd;
+        // Every Win32 and native API name begins with a capital; the C
+        // runtime functions the hand-written table adds (memset, _stricmp)
+        // are __cdecl, which only differs from __stdcall on x86.
+        const bool crt = sig.name[0] == '_' || (sig.name[0] >= 'a' && sig.name[0] <= 'z');
+        fd.set_cc(is64 ? CM_CC_FASTCALL : crt ? CM_CC_CDECL : CM_CC_STDCALL);
+        const bool status = (sig.name[0] == 'N' && sig.name[1] == 't')
+                         || (sig.name[0] == 'Z' && sig.name[1] == 'w');
+        if ( !status || !parse_c_type("NTSTATUS", &fd.rettype) )
+            fd.rettype.create_simple_type(is64 ? BT_INT64 : BT_INT32);
+        for ( uint8_t i = 0; i < sig.paramCount; i++ )
+        {
+            const ParamSig &p = sig.params[i];
+            funcarg_t a;
+            a.name = p.name;
+            a.type = param_type(p, is64);
+            fd.push_back(a);
+        }
+        return out->create_func(fd);
+    }
+
     void decode_api_args(const GuestView &v, const FuncSig &sig, bool is64, DecodedCall *out)
     {
         out->sig  = &sig;

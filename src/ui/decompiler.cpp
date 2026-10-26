@@ -169,13 +169,27 @@ namespace idattd
         if ( joined.empty() )
             return;
 
-        sl.line.append(COLSTR("  ", SCOLOR_AUTOCMT));
+        // Not the automatic comment colour: too dim on a coverage colour.
+        sl.line.append("  ");
         sl.line.append(SCOLOR_ON);
-        sl.line.append(SCOLOR_AUTOCMT);
+        sl.line.append(SCOLOR_REGCMT);
         sl.line.append(TTD_CMT_MARK);
         sl.line.append(joined);
         sl.line.append(SCOLOR_OFF);
-        sl.line.append(SCOLOR_AUTOCMT);
+        sl.line.append(SCOLOR_REGCMT);
+    }
+
+    // On a coverage colour, dim grey text (Hex-Rays' argument names) in the
+    // normal text colour, so it stays readable.
+    static void brighten_dim_text(qstring &line)
+    {
+        for ( size_t i = 0; i + 1 < line.length(); i++ )
+        {
+            if ( (line[i] == COLOR_ON || line[i] == COLOR_OFF) && line[i + 1] == COLOR_AUTOCMT )
+                line[i + 1] = COLOR_DEFAULT;
+            else if ( line[i] == COLOR_ON && line[i + 1] == COLOR_ADDR )
+                i += 1 + COLOR_ADDR_SIZE;   // skip an address tag's digits
+        }
     }
 
     // Paint one function's pseudocode from the colours already in the database.
@@ -217,6 +231,8 @@ namespace idattd
                         break;
                 }
             }
+            if ( sl.bgcolor != DEFCOLOR )
+                brighten_dim_text(sl.line);
 
             append_ttd_comments(sl, eas, annotated);
         }
@@ -359,8 +375,8 @@ namespace idattd
             vu->switch_to(cf, false);
         }
 
-        // Caret on the statement at ea, not an expression inside it with the
-        // same address: the statement is where the line starts.
+        // Caret on the first line of the statement holding ea: for code
+        // setting up a call's argument, the call, not the argument's line.
         const citem_t *best = nullptr;
         for ( const citem_t *it : vu->cfunc->treeitems )
         {
@@ -369,6 +385,8 @@ namespace idattd
             if ( best == nullptr || (best->is_expr() && !it->is_expr()) )
                 best = it;
         }
+        while ( best != nullptr && best->is_expr() )
+            best = vu->cfunc->body.find_parent_of(best);
         int x = 0;
         int y = 0;
         if ( best != nullptr && vu->cfunc->find_item_coords(best, &x, &y) )

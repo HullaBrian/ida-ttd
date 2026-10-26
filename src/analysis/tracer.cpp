@@ -6,6 +6,9 @@
 
 namespace idattd
 {
+    // Untyped functions show this many integer arguments.
+    static const size_t kUntypedArgs = 4;
+
     // Raw integer-register argument when no prototype is available.
     static uint64_t raw_int_arg(const GuestView &view, size_t n, bool is64)
     {
@@ -22,6 +25,66 @@ namespace idattd
         return v;
     }
 
+    TracedProto resolve_traced_proto(ModuleRegistry *mods, ea_t func_ea)
+    {
+        TracedProto p;
+        tinfo_t t;
+        bool has_type = get_tinfo(&t, func_ea);
+        // A picked import slot (__imp_CreateFileW) holds a pointer to the
+        // function: its prototype is the pointed-to type.
+        if ( has_type && t.is_funcptr() )
+            t = t.get_pointed_object();
+        has_type = has_type && t.is_func();
+        if ( !(has_type && is_userti(func_ea)) )
+            p.sig = api_signature(mods, func_ea);
+        if ( p.sig == nullptr )
+        {
+            if ( has_type )
+                p.type = t;
+            // A guess with nothing in it (no arguments found) is no better
+            // than the untyped default, which at least shows the registers.
+            else if ( is_code(get_flags(func_ea)) && guess_tinfo(&t, func_ea) == GUESS_FUNC_OK && t.is_func() )
+                p.type = t;
+            p.have_type = !p.type.empty() && p.type.get_func_details(&p.fd);
+        }
+
+        if ( p.sig != nullptr )
+        {
+            for ( uint8_t i = 0; i < p.sig->paramCount; i++ )
+                p.names.push_back(qstring(p.sig->params[i].name));
+        }
+        else if ( p.have_type )
+        {
+            for ( size_t i = 0; i < p.fd.size(); i++ )
+            {
+                qstring nm = p.fd[i].name;
+                if ( nm.empty() )
+                    nm.sprnt("arg%d", (int)i);
+                p.names.push_back(nm);
+            }
+        }
+        else
+        {
+            for ( size_t i = 0; i < kUntypedArgs; i++ )
+            {
+                qstring nm;
+                nm.sprnt("arg%d", (int)i);
+                p.names.push_back(nm);
+            }
+        }
+        return p;
+    }
+
+    // A pointed-to type that is a UTF-16 character: wchar_t itself, or a
+    // typedef of it or of a 16-bit integer that Windows uses for one.
+    static bool is_wide_char(const tinfo_t &t, const qstring &printed)
+    {
+        if ( printed == "wchar_t" || printed == "WCHAR" || printed == "OLECHAR"
+          || printed == "wchar16_t" || printed == "char16_t" )
+            return true;
+        return t.get_realtype(true) == (BT_INT16 | BTMT_CHAR);
+    }
+
     static qstring render_pointer(const GuestView &cur, const tinfo_t &ptr_t, uint64_t ptr)
     {
         tinfo_t pointed = ptr_t.get_ptrarr_object();
@@ -30,12 +93,16 @@ namespace idattd
         pt.replace("const ", "");
 
         qstring value;
-        if ( pointed.is_char() )
+        if ( ptr == 0 )
+        {
+            value = "NULL";
+        }
+        else if ( pointed.is_char() )
         {
             qstring s = read_string_at(cur, ptr);
             value.sprnt("0x%llX \"%s\"", (uint64_t)ptr, s.c_str());
         }
-        else if ( pt == "wchar_t" )
+        else if ( is_wide_char(pointed, pt) )
         {
             qstring s = read_wstring_at(cur, ptr);
             value.sprnt("0x%llX L\"%s\"", (uint64_t)ptr, s.c_str());
@@ -64,15 +131,62 @@ namespace idattd
         return v;
     }
 
-    // An integer of type 't', already fitted (fit_to_type), in decimal.
+    // An integer of type 't', already fitted (fit_to_type): hex, as the
+    // untyped values and IDA's listings show numbers, except that a negative
+    // value of a signed type reads as a signed decimal ("-1", not
+    // "0xFFFFFFFFFFFFFFFF"). A bool is 0 or 1.
     static qstring render_int(const tinfo_t &t, uint64_t v)
     {
         qstring out;
-        if ( t.is_unsigned() || t.is_bool() )
+        if ( t.is_bool() )
             out.sprnt("%llu", (unsigned long long)v);
-        else
+        else if ( !t.is_unsigned() && (int64_t)v < 0 )
             out.sprnt("%lld", (long long)v);
+        else
+            out.sprnt("0x%llX", (unsigned long long)v);
         return out;
+    }
+
+    // An enum value by member name: the member equal to it, else for a
+    // bitmask enum the members whose bits it has, joined with '|', with any
+    // bits left over in hex. Compared at the enum's width: a 4-byte enum's
+    // members are matched against the low 32 bits only.
+    static qstring render_enum(const tinfo_t &t, uint64_t raw)
+    {
+        size_t sz = t.get_size();
+        uint64_t mask = sz == 0 || sz >= 8 ? ~0ULL : (1ULL << (sz * 8)) - 1;
+        uint64_t v = raw & mask;
+        qstring value;
+        enum_type_data_t ed;
+        if ( t.get_enum_details(&ed) )
+        {
+            for ( size_t k = 0; k < ed.size(); k++ )
+                if ( ((uint64_t)ed[k].value & mask) == v )
+                    return qstring(ed[k].name);
+            if ( t.is_bitmask_enum() && v != 0 )
+            {
+                uint64_t rest = v;
+                for ( size_t k = 0; k < ed.size(); k++ )
+                {
+                    uint64_t m = (uint64_t)ed[k].value & mask;
+                    if ( m != 0 && (rest & m) == m )
+                    {
+                        if ( !value.empty() )
+                            value.append('|');
+                        value.append(ed[k].name);
+                        rest &= ~m;
+                    }
+                }
+                if ( !value.empty() )
+                {
+                    if ( rest != 0 )
+                        value.cat_sprnt("|0x%llX", (unsigned long long)rest);
+                    return value;
+                }
+            }
+        }
+        value.sprnt("0x%llX", (unsigned long long)v);
+        return value;
     }
 
     // Render a single argument value (no type prefix) from the integer fetched
@@ -86,20 +200,7 @@ namespace idattd
         }
         else if ( arg.is_enum() )
         {
-            // Compared at the enum's width: a 4-byte enum's members are
-            // matched against the low 32 bits only.
-            enum_type_data_t ed;
-            bool named = false;
-            size_t sz = arg.get_size();
-            uint64_t mask = sz == 0 || sz >= 8 ? ~0ULL : (1ULL << (sz * 8)) - 1;
-            uint64_t v = raw & mask;
-            if ( arg.get_enum_details(&ed) )
-            {
-                for ( size_t k = 0; k < ed.size(); k++ )
-                    if ( ((uint64_t)ed[k].value & mask) == v ) { value = ed[k].name; named = true; break; }
-            }
-            if ( !named )
-                value.sprnt("0x%llX", v);
+            value = render_enum(arg, raw);
         }
         else if ( arg.is_floating() )
         {
@@ -124,7 +225,7 @@ namespace idattd
                 value.sprnt("0x%llX", raw);
             }
         }
-        else if ( arg.is_int() || arg.is_bool() )
+        else if ( arg.is_int() || arg.is_bool() || arg.is_char() || arg.is_uchar() )
         {
             value = render_int(arg, fit_to_type(arg, raw));
         }
@@ -135,18 +236,16 @@ namespace idattd
         return value;
     }
 
-    // One value string per argument of the function's prototype, or four raw
-    // register/stack arguments without one.
-    static void extract_args(const GuestView &cur, ea_t func_ea, bool is64, std::vector<qstring> &out)
+    // One value string per argument of the prototype, or four raw
+    // register/stack arguments without one. Values only: the chooser's
+    // column headers carry the parameter names.
+    static void extract_args(const GuestView &cur, const TracedProto &proto, bool is64,
+                             std::vector<qstring> &out)
     {
-        tinfo_t          tinfo;
-        func_type_data_t fd;
-        bool have = get_tinfo(&tinfo, func_ea) && tinfo.is_func() && tinfo.get_func_details(&fd);
-
-        // Values only: the chooser's column headers carry the parameter names.
-        if ( !have )
+        out.clear();
+        if ( !proto.have_type )
         {
-            for ( size_t i = 0; i < 4; i++ )
+            for ( size_t i = 0; i < kUntypedArgs; i++ )
             {
                 qstring v;
                 v.sprnt("0x%llX", (uint64_t)raw_int_arg(cur, i, is64));
@@ -154,31 +253,48 @@ namespace idattd
             }
             return;
         }
-
-        for ( size_t i = 0; i < fd.size(); i++ )
+        for ( size_t i = 0; i < proto.fd.size(); i++ )
         {
-            uint64_t raw = get_int_arg(cur, tinfo, i, is64);
-            out.push_back(render_value(cur, fd[i].type, raw));
+            uint64_t raw = get_int_arg(cur, proto.fd, i, is64);
+            out.push_back(render_value(cur, proto.fd[i].type, raw));
         }
     }
 
-    static qstring render_return(const GuestView &cur, ea_t func_ea, bool is64)
+    // "(type)value", the type from the prototype ("int" without one).
+    static qstring render_return(const GuestView &cur, const TracedProto &proto, bool is64)
     {
         uint64_t rv = get_return_value(cur, is64);
 
-        tinfo_t tinfo;
         qstring type_name = "int";
         qstring value;
-        if ( get_tinfo(&tinfo, func_ea) && tinfo.is_func() )
+        if ( proto.have_type )
         {
-            tinfo_t rt = tinfo.get_rettype();
+            const tinfo_t &rt = proto.fd.rettype;
             rt.print(&type_name);
-            if ( rt.is_ptr_or_array() )
-                value = render_pointer(cur, rt, rv);
-            else if ( rt.is_void() )
+            if ( rt.is_void() )
+            {
                 value = "void";
+            }
+            else if ( rt.is_floating() )
+            {
+                // Returned in XMM0 (x64) or on the x87 stack (x86, which
+                // the register snapshot lacks).
+                ittd_regs r{};
+                if ( is64 && cur.regs && cur.regs(&r) )
+                {
+                    uint64_t bits = 0;
+                    memcpy(&bits, r.xmm[0], sizeof(bits));
+                    value = render_value(cur, rt, bits);
+                }
+                else
+                {
+                    value = "?";
+                }
+            }
             else
-                value = render_int(rt, fit_to_type(rt, rv));
+            {
+                value = render_value(cur, rt, rv);
+            }
         }
         else
         {
@@ -326,7 +442,7 @@ namespace idattd
         if ( tgt2disp.empty() )
         {
             info("No functions are being traced. Right-click a function and pick "
-                 "'TTD: Find all calls to this function'.");
+                 "'TTD: Find calls to this function'.");
             return;
         }
 
@@ -374,16 +490,17 @@ namespace idattd
             struct Visit { Position where; size_t call; bool ret; };
             std::vector<Visit> visits;
             std::vector<FunctionInvocation> slot(calls.size());
-            // Functions the API metadata describes are decoded from it (flags
-            // by name, out parameters re-read at the return); others from
-            // IDA's types.
+            // Each function's prototype is resolved once (resolve_traced_proto
+            // says which source wins). Those the API metadata describes are
+            // decoded from it (flags by name, out parameters re-read at the
+            // return); others from IDA's types.
             std::vector<DecodedCall> decoded(calls.size());
-            std::map<ea_t, const win32meta::FuncSig *> sigs;
-            auto sig_of = [&](ea_t f) -> const win32meta::FuncSig *
+            std::map<ea_t, TracedProto> protos;
+            auto proto_of = [&](ea_t f) -> const TracedProto &
             {
-                auto it = sigs.find(f);
-                if ( it == sigs.end() )
-                    it = sigs.emplace(f, api_signature(&m_mgr->modules(), f)).first;
+                auto it = protos.find(f);
+                if ( it == protos.end() )
+                    it = protos.emplace(f, resolve_traced_proto(&m_mgr->modules(), f)).first;
                 return it->second;
             };
             std::vector<bool> keep(calls.size(), false);
@@ -476,7 +593,7 @@ namespace idattd
                         ev.retval = decode_api_return(dc, get_return_value(rv, m_is64));
                         continue;
                     }
-                    ev.retval  = render_return(view_at(k), ev.func_ea, m_is64);
+                    ev.retval  = render_return(view_at(k), proto_of(ev.func_ea), m_is64);
                     continue;
                 }
                 GuestView view = view_at(k);
@@ -494,15 +611,16 @@ namespace idattd
                         return true;
                     };
                 }
-                if ( const win32meta::FuncSig *sig = sig_of(ev.func_ea) )
+                const TracedProto &proto = proto_of(ev.func_ea);
+                if ( proto.sig != nullptr )
                 {
-                    decode_api_args(view, *sig, m_is64, &decoded[v.call]);
+                    decode_api_args(view, *proto.sig, m_is64, &decoded[v.call]);
                     ev.args.clear();
                     for ( const DecodedArg &a : decoded[v.call].args )
                         ev.args.push_back(a.text);
                     continue;
                 }
-                extract_args(view, ev.func_ea, m_is64, ev.args);
+                extract_args(view, proto, m_is64, ev.args);
             }
 
             // An integer out parameter unchanged at the return may be the

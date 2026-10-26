@@ -22,7 +22,9 @@ namespace idattd
     //   2. Otherwise define the function from the module's .pdata bounds,
     //      which locate every x64 function with or without symbols.
     //   3. Failing that (dynamic code, with no module or exception table),
-    //      find the frame's entry from the recording (bounded
+    //      join a function cut off at a loop head back to the one that runs
+    //      into it, and grow a function over code it runs into; else find the
+    //      frame's entry from the recording (bounded
     //      query_frame_entry) or a short window of this thread's instruction
     //      stream, and let IDA's recursive descent lay the function out, so
     //      code is disassembled in both directions.
@@ -55,6 +57,17 @@ namespace idattd
         // exception table gives. Only grows, only into space no other function
         // claims, and once per function.
         void  extend_to_pdata_bounds(ea_t pc, const func_entry_info_t &fi);
+        // Code without an exception table: a function the one before it falls
+        // straight into is a fragment of it (a start guessed at a loop head),
+        // so the two become one. The merged function's
+        // start, or BADADDR.
+        ea_t  merge_fragment(ITraceCursor *playhead, ea_t pc, const func_entry_info_t &fi);
+        // Likewise, code no function owns that the function before it falls
+        // into: that function is laid out again to cover it.
+        ea_t  extend_into(ITraceCursor *playhead, ea_t pc, ea_t seg_start);
+        // The function at 'head', and the one at 'drop' merged in, laid out
+        // again by recursive descent; kept only if it then covers 'pc'.
+        ea_t  redefine_from(ea_t head, ea_t drop, ea_t pc);
         // Define every function called directly from [lo, hi), one level deep.
         // The session runs with AF_PROC/AF_PROCPTR off, the rule that would
         // create a function at each call target; doing it here one level at a
@@ -103,6 +116,8 @@ namespace idattd
         // Functions already considered for .pdata extension, so the check is
         // paid once per function.
         std::set<ea_t> m_pdataExtended;
+        // Functions merge_fragment refused, so the check is paid once.
+        std::set<ea_t> m_fragmentChecked;
         // Functions defined in dynamic code, start_ea -> hash of their bytes
         // at definition. Detects rewritten or reused regions (including a
         // travel to a position where the bytes differ) so they are

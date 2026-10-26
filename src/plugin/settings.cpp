@@ -15,8 +15,8 @@ namespace idattd
     }
 
     // Every key, for ida_ttd_settings.dump().
-    static const char ALL_KEYS[] = "symbol_downloads symbol_server auto_coverage auto_callsites "
-                                   "fork_instructions registry_folder diagnostics_log";
+    static const char ALL_KEYS[] = "replay_on_open symbol_downloads symbol_server auto_coverage auto_callsites "
+                                   "fork_instructions registry_folder diagnostics_log memmap_flag_code";
 
     static bool parse_bool(const qstring &v, bool *out)
     {
@@ -34,6 +34,8 @@ namespace idattd
     // against ida-plugin.json, so this means the two disagree.
     static bool apply(Settings *s, const qstring &key, const qstring &value)
     {
+        if ( key == "replay_on_open" )
+            return parse_bool(value, &s->replay_on_open);
         if ( key == "symbol_downloads" )
             return parse_bool(value, &s->symbol_downloads);
         if ( key == "auto_coverage" )
@@ -42,6 +44,8 @@ namespace idattd
             return parse_bool(value, &s->auto_callsites);
         if ( key == "diagnostics_log" )
             return parse_bool(value, &s->diagnostics_log);
+        if ( key == "memmap_flag_code" )
+            return parse_bool(value, &s->memmap_flag_code);
         if ( key == "symbol_server" )
         {
             if ( strncmp(value.c_str(), "https://", 8) != 0 && strncmp(value.c_str(), "http://", 7) != 0 )

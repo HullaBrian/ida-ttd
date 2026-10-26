@@ -11,6 +11,7 @@ namespace idattd
     // ida-plugin.json: they apply without IDAPython or ida-settings.
     struct Settings
     {
+        bool     replay_on_open    = true;
         bool     symbol_downloads  = true;
         qstring  symbol_server     = "https://msdl.microsoft.com/download/symbols";
         bool     auto_coverage     = true;      // where the database never set it
@@ -18,6 +19,7 @@ namespace idattd
         uint64   fork_instructions = 1000000;
         qstring  registry_folder;               // empty: none
         bool     diagnostics_log   = true;
+        bool     memmap_flag_code  = true;      // highlight executable memory outside modules
     };
 
     const Settings &settings();

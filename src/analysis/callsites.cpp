@@ -3,6 +3,7 @@
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
 #include "debugger/module_registry.h"
+#include "debugger/apidecode.h"
 #include "plugin/settings.h"
 
 #include <intel.hpp>
@@ -105,6 +106,7 @@ namespace idattd
         }
         if ( name.empty() )
             return false;
+        const qstring full_name = name;
         for ( int pass = 0; pass < 2; pass++ )
         {
             const type_t *type = nullptr;
@@ -120,13 +122,21 @@ namespace idattd
             }
             ssize_t us = name.rfind('_');
             if ( us <= 0 || (size_t)us + 1 >= name.length() )
-                return false;
+                break;
+            bool digits = true;
             for ( size_t k = (size_t)us + 1; k < name.length(); k++ )
                 if ( name[k] < '0' || name[k] > '9' )
-                    return false;
+                    digits = false;
+            if ( !digits )
+                break;
             name.resize((size_t)us);
         }
-        return false;
+        // No type library has it (mssdk has kernel32's names but not ntdll's
+        // Rtl ones, such as RtlAddVectoredExceptionHandler): build the
+        // prototype from the API metadata, phnt's for native calls.
+        // api_signature drops the "_0" suffix itself.
+        const win32meta::FuncSig *sig = api_signature(full_name.c_str());
+        return sig != nullptr && api_prototype(*sig, inf_is_64bit(), out) && out->is_func();
     }
 
     static void remember_type(ea_t site)

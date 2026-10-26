@@ -180,7 +180,7 @@
   <!-- The ida_ttd Python module, in plugins\ida-ttd-python\, which the plugin
        puts on IDAPython's sys.path. -->
   <Target Name="CopyPythonModule" AfterTargets="Build">
-    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py;$(RepoRoot)scripts\ida_ttd_runtime.py;$(RepoRoot)scripts\ida_ttd_settings.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py;$(RepoRoot)scripts\ida_ttd_runtime.py;$(RepoRoot)scripts\ida_ttd_settings.py;$(RepoRoot)scripts\ida_ttd_qt.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -424,8 +424,7 @@ namespace idattd
         // filter on, and every stretch of a recording ends in kernel calls.
         census->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
                              | ReplayFlags::ReplaySegmentsSequentially);
-        ScaledProgress first(progress, 0, opts.results ? 70 : 100);
-        bool complete = msttd_sweep(census.get(), TtdPosition::Min, TtdPosition::Max, &first);
+        bool complete = msttd_sweep(census.get(), TtdPosition::Min, TtdPosition::Max, progress);
         census->SetGapEventCallback(nullptr, 0);
         if ( chains )
             census->SetCallReturnCallback(nullptr, 0);
@@ -435,12 +434,30 @@ namespace idattd
         std::stable_sort(calls.begin(), calls.end(),
                          [](const KernelCall &a, const KernelCall &b) { return a.pos < b.pos; });
 
-        // ---- the returns: each one's result ----------------------------------
-        //
-        // An execute watchpoint on every instruction the kernel returns to
-        // (the stubs' few, plus any code that makes its own syscalls). A
-        // thread makes one syscall at a time, so a return belongs to that
-        // thread's latest call before it.
+        msttd_log("[ida-ttd] syscalls: %d in the recording, %d named%s.\n",
+                  (int)calls.size(),
+                  (int)std::count_if(calls.begin(), calls.end(), [](const KernelCall &c) { return c.name != nullptr; }),
+                  truncated ? " (cut short)" : "");
+        *out = std::move(calls);
+        r.ran       = true;
+        r.cancelled = !complete;
+        r.truncated = truncated;
+        return r;
+    }
+
+    // ---- the returns: each one's result ------------------------------------
+    //
+    // An execute watchpoint on every instruction the kernel returns to (the
+    // stubs' few, plus any code that makes its own syscalls). A thread makes
+    // one syscall at a time, so a return belongs to that thread's latest call
+    // before it. 'calls' is in position order. False when stopped.
+    static bool collect_kernel_returns(const MsTtdBackend *backend, std::vector<CensusSyscall> *callsp,
+                                       ProgressSink *progress, bool *truncatedp)
+    {
+        std::vector<CensusSyscall> &calls = *callsp;
+        const bool is64 = backend->is64();
+        bool truncated = false;
+        bool complete = true;
         std::map<uint32_t, std::vector<size_t>> per_thread;
         std::set<uint64_t> ret_pcs;
         for ( size_t i = 0; i < calls.size(); i++ )
@@ -449,7 +466,7 @@ namespace idattd
             if ( calls[i].ret_pc != 0 )
                 ret_pcs.insert(calls[i].ret_pc);
         }
-        if ( opts.results && complete && !ret_pcs.empty() )
+        if ( !ret_pcs.empty() )
         {
             UniqueCursor ret = backend->new_engine_cursor();
             if ( ret )
@@ -472,12 +489,11 @@ namespace idattd
                             k++;
                         if ( k >= mine.size() )
                             return false;
-                        KernelCall &c = calls[mine[k]];
+                        CensusSyscall &c = calls[mine[k]];
                         if ( c.returned || !(c.pos < here) || c.ret_pc != (uint64_t)w.Address )
                             return false;
                         CROSS_PLATFORM_CONTEXT ctx = t->GetCrossPlatformContext();
                         c.result   = is64 ? (uint64_t)ctx.Amd64Context.Rax : (uint64_t)ctx.X86Nt5Context.Eax;
-                        c.ret_pos  = here;
                         c.returned = true;
                         k++;
                     }
@@ -498,27 +514,15 @@ namespace idattd
                 ret->SetMemoryWatchpointCallback(on_exec);
                 ret->SetEventMask(EventMask::MemoryWatchpoint);
                 ret->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-                ScaledProgress second(progress, 70, 30);
-                complete = msttd_sweep(ret.get(), TtdPosition::Min, TtdPosition::Max, &second);
+                complete = msttd_sweep(ret.get(), TtdPosition::Min, TtdPosition::Max, progress);
                 ret->SetMemoryWatchpointCallback(nullptr, 0);
             }
         }
-
-        size_t returned = 0;
-        for ( const KernelCall &c : calls )
-            returned += c.returned ? 1 : 0;
-        msttd_log("[ida-ttd] syscalls: %d in the recording, %d named, %d with a result%s.\n",
-                  (int)calls.size(),
-                  (int)std::count_if(calls.begin(), calls.end(), [](const KernelCall &c) { return c.name != nullptr; }),
-                  (int)returned, truncated ? " (cut short)" : "");
-        *out = std::move(calls);
-        r.ran       = true;
-        r.cancelled = !complete;
-        r.truncated = truncated;
-        return r;
+        *truncatedp = truncated;
+        return complete;
     }
 
-    // The registers of the syscalls last listed, so the listing's argument
+    // The registers of the syscalls in the census, so the listing's argument
     // column costs no seek per row. Capped: it is a convenience.
     static const size_t kMaxCachedRegs = 250000;
 
@@ -563,43 +567,154 @@ namespace idattd
         return r;
     }
 
+    std::shared_ptr<const SyscallCensus> MsTtdBackend::cached_census()
+    {
+        std::lock_guard<std::mutex> lock(m_censusMtx);
+        return m_census;
+    }
+
+    std::shared_ptr<const SyscallCensus> MsTtdBackend::syscall_census(bool need_memmap, ProgressSink *progress,
+                                                                      QueryResult *qr)
+    {
+        *qr = QueryResult{};
+        if ( std::shared_ptr<const SyscallCensus> c = cached_census() )
+        {
+            qr->ran       = true;
+            qr->truncated = c->truncated;
+            return c;
+        }
+        auto table = std::make_shared<SyscallTable>();
+        const bool named = build_syscall_table(this, table.get());
+        std::unique_ptr<MemmapHooks> mm = make_memmap_hooks(this, *table);
+        if ( need_memmap && mm == nullptr )
+        {
+            // The map has nothing to look for; a replay now would serve only
+            // a listing nobody asked for.
+            auto none = std::make_shared<SyscallCensus>();
+            none->table = table;
+            return none;
+        }
+        if ( !named )
+            msttd_log("[ida-ttd] syscalls: no ntdll stubs were readable in this recording, so they "
+                      "are listed by number only.\n");
+
+        KernelCallOptions opts;
+        opts.args_wanted = [](uint32_t) { return false; };
+        if ( mm != nullptr )
+            mm->arm(&opts);
+        std::vector<KernelCall> calls;
+        QueryResult kr = collect_kernel_calls(this, *table, opts, &calls, progress);
+        if ( !kr.ran )
+            return nullptr;
+
+        auto c = std::make_shared<SyscallCensus>();
+        c->table     = table;
+        c->truncated = kr.truncated;
+        if ( mm != nullptr )
+            c->memmap = mm->finish();
+        c->calls.reserve(calls.size());
+        for ( const KernelCall &k : calls )
+        {
+            CensusSyscall s;
+            s.pos    = k.pos;
+            s.ret_pc = k.ret_pc;
+            s.name   = k.name;
+            s.utid   = k.utid;
+            s.tid    = k.tid;
+            s.number = k.number;
+            c->calls.push_back(s);
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_regsMtx);
+            m_syscallRegs.clear();
+            for ( const KernelCall &k : calls )
+            {
+                if ( m_syscallRegs.size() >= kMaxCachedRegs )
+                    break;
+                SyscallRegs &sr = m_syscallRegs[{ (uint64_t)k.pos.Sequence, (uint64_t)k.pos.Steps }];
+                memcpy(sr.gp, k.gp, sizeof(sr.gp));
+                sr.rflags = k.rflags;
+            }
+        }
+        *qr = kr;
+        if ( !kr.cancelled )
+        {
+            std::lock_guard<std::mutex> lock(m_censusMtx);
+            m_census = c;
+        }
+        return c;
+    }
+
     QueryResult MsTtdBackend::query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress)
     {
         QueryResult r;
         if ( !m_engine || out == nullptr )
             return r;
-        SyscallTable table;
-        if ( !build_syscall_table(this, &table) )
-            msttd_log("[ida-ttd] syscalls: no ntdll stubs were readable in this recording, so they "
-                      "are listed by number only.\n");
-        std::vector<KernelCall> calls;
-        KernelCallOptions opts;
-        opts.args_wanted = [](uint32_t) { return false; };
-        r = collect_kernel_calls(this, table, opts, &calls, progress);
-        if ( !r.ran )
-            return r;
-        out->reserve(out->size() + calls.size());
+        // The census and the return pass cost about the same, so each is
+        // half the percentage, unless the census was already taken.
+        std::shared_ptr<const SyscallCensus> c = cached_census();
+        const bool fresh = c == nullptr;
+        if ( fresh )
         {
-            std::lock_guard<std::mutex> lock(m_regsMtx);
-            m_syscallRegs.clear();
-            for ( const KernelCall &c : calls )
+            ScaledProgress first(progress, 0, 50);
+            c = syscall_census(false, &first, &r);
+            if ( c == nullptr || !r.ran )
+                return r;
+        }
+        else
+        {
+            r.ran       = true;
+            r.truncated = c->truncated;
+        }
+        const std::vector<CensusSyscall> *calls = &c->calls;
+        std::vector<CensusSyscall> with_results;
+        if ( !c->results && !r.cancelled )
+        {
+            with_results = c->calls;
+            ScaledProgress second(progress, fresh ? 50 : 0, fresh ? 50 : 100);
+            bool trunc = false;
+            const bool complete = collect_kernel_returns(this, &with_results, &second, &trunc);
+            r.cancelled = !complete;
+            r.truncated = r.truncated || trunc;
+            calls = &with_results;
+            if ( complete )
             {
-                if ( m_syscallRegs.size() >= kMaxCachedRegs )
-                    break;
-                SyscallRegs &sr = m_syscallRegs[{ (uint64_t)c.pos.Sequence, (uint64_t)c.pos.Steps }];
-                memcpy(sr.gp, c.gp, sizeof(sr.gp));
-                sr.rflags = c.rflags;
+                // Kept in place of the census without results, unless another
+                // query replaced or dropped that one meanwhile.
+                auto done = std::make_shared<SyscallCensus>();
+                done->table             = c->table;
+                done->truncated         = c->truncated;
+                done->memmap            = c->memmap;
+                done->results           = true;
+                done->results_truncated = trunc;
+                done->calls             = std::move(with_results);
+                calls = &done->calls;
+                std::lock_guard<std::mutex> lock(m_censusMtx);
+                if ( m_census == c )
+                    m_census = done;
+                c = std::move(done);
             }
         }
-        for ( const KernelCall &c : calls )
+        else if ( c->results )
+        {
+            r.truncated = r.truncated || c->results_truncated;
+        }
+
+        size_t returned = 0;
+        for ( const CensusSyscall &s : *calls )
+            returned += s.returned ? 1 : 0;
+        msttd_log("[ida-ttd] syscalls: %d listed, %d with a result%s.\n",
+                  (int)calls->size(), (int)returned, r.truncated ? " (cut short)" : "");
+        out->reserve(out->size() + calls->size());
+        for ( const CensusSyscall &s : *calls )
         {
             SyscallEvent e;
-            e.pos    = to_core(c.pos);
-            e.result = c.result;
-            e.number = c.number;
-            e.tid    = c.tid;
-            if ( c.name != nullptr )
-                e.name = c.name;
+            e.pos    = to_core(s.pos);
+            e.result = s.result;
+            e.number = s.number;
+            e.tid    = s.tid;
+            if ( s.name != nullptr )
+                e.name = s.name;
             out->push_back(std::move(e));
         }
         return r;

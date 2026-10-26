@@ -590,27 +590,6 @@ namespace idattd
     struct ClearIndirectCallsHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
-    // Start the replay for a database created from a recording. It exists
-    // while no trace is loaded, so it is outside the session's action table,
-    // in the always-present part of the TTD menu (Plugin::rebuild_ttd_menu).
-    struct AttachTraceHandler : public action_handler_t
-    {
-        // A callback rather than a Plugin*, so ui/ need not know Plugin. The
-        // plugin binds Plugin::start_trace_session.
-        std::function<void()> start_session;
-        int  idaapi activate(action_activation_ctx_t *) override;
-        action_state_t idaapi update(action_update_ctx_t *) override;
-    };
-
-    // Turn the automatic replay start for this database on or off (a database
-    // made from a recording starts replaying when opened). In the menu beside
-    // AttachTraceHandler, for the same reason.
-    struct AutoStartHandler : public action_handler_t
-    {
-        int  idaapi activate(action_activation_ctx_t *) override;
-        action_state_t idaapi update(action_update_ctx_t *) override;
-    };
-
     // Get Microsoft's TTD replay runtime, which ida-ttd may not ship: copy it
     // from an installed WinDbg, or download WinDbg after the user accepts its
     // license (scripts/ida_ttd_runtime.py, through IDAPython). Under TTD >
@@ -672,8 +651,6 @@ namespace idattd
         constexpr const char *TRACE_PAT    = "idattd:trace_pattern";
         constexpr const char *ANALYZE_FUNC = "idattd:analyze_func";
         constexpr const char *FULL_PDB     = "idattd:full_pdb";
-        constexpr const char *ATTACH_TRACE = "idattd:attach_trace";
-        constexpr const char *AUTO_START   = "idattd:auto_start";
         constexpr const char *INSTALL_RUNTIME = "idattd:install_runtime";
         constexpr const char *INSTALL_SOGEN   = "idattd:install_sogen";
         // Greyed section headings in TTD > Backends, one per backend.

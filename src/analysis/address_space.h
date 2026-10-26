@@ -31,6 +31,7 @@ namespace idattd
         bool     reserved = false;    // reserved but not committed
         uint32_t type = 0;            // ITTD_REGION_*
         qstring  use;                 // "ntdll .text", "Stack (thread 0x1A2C)", ...
+        bool     in_module = false;   // overlaps a module loaded at the playhead
         // Position of the call that made the region, when known.
         Position since = Position::none();
         ea_t end() const { return (ea_t)(base + size); }
@@ -38,6 +39,9 @@ namespace idattd
 
     // The regions at the playhead, sorted by address. Free memory is left out.
     void address_space_at(TraceManager *mgr, std::vector<AddressRegion> *out);
+
+    // Executable memory outside every loaded module (unpacked, injected, JIT).
+    bool is_code_outside_modules(const AddressRegion &r);
 
     // "Image", "Private", "Mapped", ... for an ITTD_REGION_* value; empty when
     // unknown.

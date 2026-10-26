@@ -94,6 +94,9 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   (`plugin/settings.h`, whose defaults must match the JSON). Without
   `ida-settings` the defaults apply. TTD > Settings... opens the IDA
   Settings Editor.
+- **`scripts/ida_ttd_qt.py`**: the few Qt changes the SDK has no call for
+  (a toolbar button's width, a submenu's icon, whether the theme is dark),
+  called from C++ through IDAPython. Put such code here, not in C strings.
 - **`scripts/ida_ttd_runtime.py`**: TTD > Backends > Install the TTD runtime
   (WinDbg), and Install the Sogen backend (from a file the user picks, into
   `$IDAUSR\ida-ttd\backends\`). The TTD menu is rebuilt whole

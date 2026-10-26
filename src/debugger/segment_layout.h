@@ -42,6 +42,8 @@ namespace idattd
         // ev_get_memory_info: the layout at 'now', or DRC_NOCHG when it is the
         // one IDA already has.
         ssize_t on_get_memory_info(Position now, meminfo_vec_t *ranges);
+        // How often the layout IDA had was replaced (the first one aside).
+        uint32_t changes() const { return m_changes; }
 
         // Tell IDA to re-read the layout if the one at 'now' differs from what
         // it was last given. Called on every stop, hence the comparison.
@@ -58,6 +60,7 @@ namespace idattd
         MemoryMap     m_map;
         meminfo_vec_t m_lastLayout;      // what IDA was last given
         bool          m_haveLayout = false;
+        uint32_t      m_changes = 0;
 
         // The layout folded for one position.
         //

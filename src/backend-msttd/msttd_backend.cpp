@@ -275,6 +275,10 @@ namespace idattd
             m_regsScratch.reset();
             m_syscallRegs.clear();
         }
+        {
+            std::lock_guard<std::mutex> lock(m_censusMtx);
+            m_census.reset();
+        }
         m_scans.reset();
         m_engine.reset();
         m_info = TraceInfo{};

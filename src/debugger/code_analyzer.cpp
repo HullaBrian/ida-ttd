@@ -27,6 +27,7 @@ namespace idattd
         m_winHi          = 0;
         m_calleeScanFunc = BADADDR;
         m_pdataExtended.clear();
+        m_fragmentChecked.clear();
         m_dynFuncBytes.clear();
         m_failedDyn.clear();
     }
@@ -256,6 +257,133 @@ namespace idattd
         }
     }
 
+    // Whether the function holding the instruction before 'ea' falls straight
+    // into it: that function ends at 'ea' and flows on. Its start goes in
+    // 'head', and whether its last instruction is a call in 'last_call' (it
+    // could be a noreturn call IDA does not know).
+    static bool falls_into(ea_t ea, ea_t seg_start, ea_t *head, bool *last_call)
+    {
+        func_entry_info_t prev;
+        ea_t p = prev_head(ea, seg_start);
+        if ( p == BADADDR || !get_func_entry_info(&prev, p) || prev.end_ea != ea
+          || !is_flow(get_flags(ea)) )
+            return false;
+        *head = prev.start_ea;
+        insn_t last;
+        *last_call = decode_insn(&last, p) > 0 && is_call_insn(last);
+        return true;
+    }
+
+    // Replace the functions starting at 'head' and 'drop' (BADADDR: none) by
+    // one laid out from 'head' by recursive descent. Kept only when it then
+    // covers 'pc'; otherwise the old bounds are put back.
+    ea_t CodeAnalyzer::redefine_from(ea_t head, ea_t drop, ea_t pc)
+    {
+        func_entry_info_t old_head, old_drop;
+        const bool had_head = get_func_entry_info(&old_head, head) && old_head.start_ea == head;
+        const bool had_drop = drop != BADADDR && get_func_entry_info(&old_drop, drop);
+        if ( had_drop )
+            del_func(drop);
+        if ( had_head )
+            del_func(head);
+        force_insn(head);
+        add_func(head);
+        plan_and_wait(head, pc + DYN_LAYOUT_SPAN);
+        if ( get_func_start(pc) == head )
+        {
+            m_dynFuncBytes.erase(drop);
+            m_dynFuncBytes[head] = hash_mem(head, DYN_HASH_BYTES);
+            m_calleeScanFunc = BADADDR;
+            return head;
+        }
+        del_func(head);
+        if ( had_head )
+            add_func(old_head.start_ea, old_head.end_ea);
+        if ( had_drop )
+            add_func(old_drop.start_ea, old_drop.end_ea);
+        return BADADDR;
+    }
+
+    ea_t CodeAnalyzer::merge_fragment(ITraceCursor *playhead, ea_t pc, const func_entry_info_t &fi)
+    {
+        if ( !m_fragmentChecked.insert(fi.start_ea).second )
+            return BADADDR;                  // refused before
+        ea_t ps, pe;
+        if ( m_modules->function_range_at(pc, ps, pe) )
+            return BADADDR;                  // the exception table knows better
+        ea_t head = BADADDR;
+        bool last_call = false;
+        if ( !falls_into(fi.start_ea, get_segment_ea(pc), &head, &last_call) )
+            return BADADDR;                  // nothing falls into it: a real head
+        // Confirmed by the call that entered this frame, when it is known.
+        const ea_t entry = find_dynamic_function_entry(playhead, pc);
+        if ( entry != BADADDR ? entry != head : last_call )
+            return BADADDR;
+        ea_t got = redefine_from(head, fi.start_ea, pc);
+        if ( got != BADADDR )
+        {
+            m_fragmentChecked.erase(fi.start_ea);   // remembered only when refused
+            msg("[ida-ttd] joined the function at %a to the one at %a, which runs into it.\n",
+                fi.start_ea, head);
+        }
+        return got;
+    }
+
+    ea_t CodeAnalyzer::extend_into(ITraceCursor *playhead, ea_t pc, ea_t seg_start)
+    {
+        ea_t ps, pe;
+        if ( m_modules->function_range_at(pc, ps, pe) )
+            return BADADDR;
+        // Back over the code no function owns to where the run starts.
+        ea_t r = get_item_head(pc);
+        for ( int guard = 0; guard < 0x800; guard++ )
+        {
+            if ( !is_code(get_flags(r)) || !is_flow(get_flags(r)) )
+                return BADADDR;
+            ea_t p = prev_head(r, seg_start);
+            if ( p == BADADDR || !is_code(get_flags(p)) )
+                return BADADDR;
+            if ( get_func_start(p) != BADADDR )
+                break;
+            r = p;
+        }
+        ea_t head = BADADDR;
+        bool last_call = false;
+        if ( !falls_into(r, seg_start, &head, &last_call) )
+            return BADADDR;
+        // The function before may itself be a fragment of the frame's
+        // function: then both are joined.
+        ea_t drop = BADADDR;
+        const ea_t entry = find_dynamic_function_entry(playhead, pc);
+        if ( entry != BADADDR && entry != head )
+        {
+            ea_t h2 = BADADDR;
+            bool c2 = false;
+            if ( !(entry < head && falls_into(head, seg_start, &h2, &c2) && h2 == entry) )
+                return BADADDR;
+            drop = head;
+            head = entry;
+        }
+        else if ( entry == BADADDR )
+        {
+            if ( last_call )
+                return BADADDR;
+            // No entry to go by: a fragment is told by what runs into it.
+            ea_t h2 = BADADDR;
+            bool c2 = false;
+            if ( falls_into(head, seg_start, &h2, &c2) && !c2 )
+            {
+                drop = head;
+                head = h2;
+            }
+        }
+        ea_t got = redefine_from(head, drop, pc);
+        if ( got != BADADDR )
+            msg("[ida-ttd] extended the function at %a over the code it runs into at %a.\n",
+                head, r);
+        return got;
+    }
+
     void CodeAnalyzer::analyze_current_function(ITraceCursor *playhead, ea_t pc)
     {
         segment_info_t seg;
@@ -270,6 +398,16 @@ namespace idattd
             // embedded data) and the tail renders as a JUMPOUT. The exception
             // table says where it really ends.
             extend_to_pdata_bounds(pc, cur_fi);
+
+            // A fragment of the function before it, cut off at a loop head.
+            ea_t merged = merge_fragment(playhead, pc, cur_fi);
+            if ( merged != BADADDR )
+            {
+                func_entry_info_t mfi;
+                if ( get_func_entry_info(&mfi, merged) )
+                    define_callees(playhead, mfi.start_ea, mfi.end_ea);
+                return;
+            }
 
             // A function this class defined in dynamic memory is checked for a
             // rewrite (self-modifying or reused region, or a travel to where
@@ -328,6 +466,16 @@ namespace idattd
         // A PC where this already failed to make a function, with the same
         // bytes, would fail again after the same bounded frame query and
         // rebuild; only the cheap window layout is repeated.
+        // Code the function before it falls into: that function was cut short.
+        ea_t grown = extend_into(playhead, pc, seg.start_ea);
+        if ( grown != BADADDR )
+        {
+            func_entry_info_t gfi;
+            if ( get_func_entry_info(&gfi, grown) )
+                define_callees(playhead, gfi.start_ea, gfi.end_ea);
+            return;
+        }
+
         auto failed = m_failedDyn.find(pc);
         if ( failed != m_failedDyn.end() )
         {
