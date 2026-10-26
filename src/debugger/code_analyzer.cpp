@@ -274,6 +274,28 @@ namespace idattd
         return true;
     }
 
+    // A guessed start (the head of the executed run, often a loop head) moved
+    // back over loose code that falls into it, to an instruction nothing
+    // falls into or one something calls: the function's real head.
+    static ea_t walk_back_to_head(ea_t ea, ea_t seg_start)
+    {
+        ea_t h = ea;
+        for ( int guard = 0; guard < 0x1000; guard++ )
+        {
+            xrefblk_t xb;
+            for ( bool ok = xb.first_to(h, XREF_CODE); ok; ok = xb.next_to() )
+                if ( xb.type == fl_CN || xb.type == fl_CF )
+                    return h;
+            if ( !is_flow(get_flags(h)) )
+                return h;
+            ea_t p = prev_head(h, seg_start);
+            if ( p == BADADDR || !is_code(get_flags(p)) || get_func_start(p) != BADADDR )
+                return h;
+            h = p;
+        }
+        return h;
+    }
+
     // Replace the functions starting at 'head' and 'drop' (BADADDR: none) by
     // one laid out from 'head' by recursive descent. Kept only when it then
     // covers 'pc'; otherwise the old bounds are put back.
@@ -313,12 +335,23 @@ namespace idattd
             return BADADDR;                  // the exception table knows better
         ea_t head = BADADDR;
         bool last_call = false;
-        if ( !falls_into(fi.start_ea, get_segment_ea(pc), &head, &last_call) )
-            return BADADDR;                  // nothing falls into it: a real head
-        // Confirmed by the call that entered this frame, when it is known.
-        const ea_t entry = find_dynamic_function_entry(playhead, pc);
-        if ( entry != BADADDR ? entry != head : last_call )
-            return BADADDR;
+        if ( falls_into(fi.start_ea, get_segment_ea(pc), &head, &last_call) )
+        {
+            // Confirmed by the call that entered this frame, when it is known.
+            const ea_t entry = find_dynamic_function_entry(playhead, pc);
+            if ( entry != BADADDR ? entry != head : last_call )
+                return BADADDR;
+        }
+        else
+        {
+            // Loose code running into it: the head is further back.
+            head = walk_back_to_head(fi.start_ea, get_segment_ea(pc));
+            if ( head == fi.start_ea )
+                return BADADDR;              // nothing falls into it: a real head
+            const ea_t entry = find_dynamic_function_entry(playhead, pc);
+            if ( entry != BADADDR && entry != head )
+                return BADADDR;
+        }
         ea_t got = redefine_from(head, fi.start_ea, pc);
         if ( got != BADADDR )
         {
@@ -490,7 +523,7 @@ namespace idattd
 
         ea_t start = find_dynamic_function_entry(playhead, pc);
         if ( start == BADADDR || start > pc || get_segment_ea(start) != seg.start_ea )
-            start = find_dynamic_start(playhead, pc);
+            start = walk_back_to_head(find_dynamic_start(playhead, pc), seg.start_ea);
 
         // The position query zero-fills this region's never-executed bytes.
         // Rebuilding them from recorded writes lets the whole function
@@ -603,15 +636,47 @@ namespace idattd
     // since it can run on every stop in such code.
     ea_t CodeAnalyzer::find_dynamic_function_entry(ITraceCursor *playhead, ea_t pc)
     {
-        // The head comes from the cursor's own position, not from 'pc'.
-        qnotused(pc);
         if ( m_backend == nullptr || playhead == nullptr )
             return BADADDR;
         ea_t entry = BADADDR;
-        if ( !m_backend->query_frame_entry(playhead->position(), playhead->thread_id(), 65536,
-                                           nullptr, &entry) )
+        if ( m_backend->query_frame_entry(playhead->position(), playhead->thread_id(), 65536,
+                                          nullptr, &entry) && entry != BADADDR )
+            return entry;
+        return stack_scan_entry(playhead, pc);
+    }
+
+    // The call is older than the bound: find its return address on the stack,
+    // as a debugger's unwinder does. The first value up from rsp that follows
+    // a direct call (E8 rel32) to an address at most 64 KiB below pc, in pc's
+    // segment, gives the entry.
+    ea_t CodeAnalyzer::stack_scan_entry(ITraceCursor *playhead, ea_t pc)
+    {
+        const size_t W = m_is64 ? 8 : 4;
+        uint8_t stack[0x800];
+        std::vector<uint8_t> known;
+        if ( playhead->read_memory((ea_t)playhead->stack_pointer(), stack, sizeof(stack), &known) == 0 )
             return BADADDR;
-        return entry;
+        const ea_t seg = get_segment_ea(pc);
+        for ( size_t off = 0; off + W <= sizeof(stack) && off + W <= known.size(); off += W )
+        {
+            if ( known[off] != ITTD_KNOWN_YES )
+                continue;
+            uint64_t ret = 0;
+            memcpy(&ret, stack + off, W);
+            if ( ret < 5 || get_segment_ea((ea_t)ret) == BADADDR )
+                continue;
+            uint8_t call[5];
+            std::vector<uint8_t> k;
+            if ( playhead->read_memory((ea_t)(ret - 5), call, sizeof(call), &k) != sizeof(call)
+              || call[0] != 0xE8 )
+                continue;
+            int32_t rel = 0;
+            memcpy(&rel, call + 1, sizeof(rel));
+            const ea_t target = (ea_t)(ret + (int64_t)rel);
+            if ( target <= pc && pc - target < 0x10000 && get_segment_ea(target) == seg )
+                return target;
+        }
+        return BADADDR;
     }
 
     void CodeAnalyzer::lay_out_window(ITraceCursor *playhead, ea_t pc)

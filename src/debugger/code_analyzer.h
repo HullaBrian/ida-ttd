@@ -98,10 +98,13 @@ namespace idattd
         ea_t  find_dynamic_start(ITraceCursor *playhead, ea_t pc);
         // The head of the function the current position is in, from the
         // backend's bounded query_frame_entry (the call that entered this
-        // frame). BADADDR when no enclosing call was captured (a thread entry,
-        // jmp-based shellcode, or a call older than the bound), so the caller
-        // can fall back.
+        // frame), else the return address on the stack. BADADDR when neither
+        // finds it (a thread entry, jmp-based shellcode), so the caller can
+        // fall back.
         ea_t  find_dynamic_function_entry(ITraceCursor *playhead, ea_t pc);
+        // find_dynamic_function_entry's fallback: the return address on the
+        // stack, for a call older than the bound.
+        ea_t  stack_scan_entry(ITraceCursor *playhead, ea_t pc);
 
         ITraceBackend              *m_backend = nullptr;
         ModuleRegistry             *m_modules = nullptr;
