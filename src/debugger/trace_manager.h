@@ -212,7 +212,12 @@ namespace idattd
         // the movement and says why it stopped.
         StopReason navigate(bool forward, const std::function<StopReason()> &move);
         void  navigate_to(Position p);
-        void  emit_stop(bool is_step);
+        // How a stop is reported to IDA: a single step, a breakpoint the
+        // movement stopped on, or neither (a travel, the trace's edge).
+        enum class StopEvent { Step, Breakpoint, Suspended };
+        static StopEvent stop_event(StopReason sr)
+        { return sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Suspended; }
+        void  emit_stop(StopEvent kind);
         // Report the threads and modules that differ from what IDA was last
         // told, and remember the new state as told.
         void  report_differences();

@@ -30,6 +30,10 @@ namespace idattd
         void add_lib_unload(pid_t pid, thid_t tid, const std::string &module, ea_t base);
         void add_step(pid_t pid, thid_t tid, ea_t ea);
         void add_breakpoint(pid_t pid, thid_t tid, ea_t ea);
+        // A stop that is neither a step nor a breakpoint (a travel, the
+        // trace's edge). IDA complains about a BREAKPOINT event where it has
+        // no breakpoint ("unknown debugger breakpoint").
+        void add_suspended(pid_t pid, thid_t tid, ea_t ea);
 
     private:
         std::deque<debug_event_t> m_events;

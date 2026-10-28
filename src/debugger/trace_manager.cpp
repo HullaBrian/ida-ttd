@@ -300,7 +300,7 @@ namespace idattd
                 emit_module_load(*kv.second);
 
         // Finally, suspend at the entry position.
-        emit_stop(false);
+        emit_stop(StopEvent::Suspended);
         return DRC_OK;
     }
 
@@ -729,7 +729,7 @@ namespace idattd
         }
     }
 
-    void TraceManager::emit_stop(bool is_step)
+    void TraceManager::emit_stop(StopEvent kind)
     {
         // Only queues the stop (this runs inside ev_resume). Cache invalidation
         // and disassembly/symbol work happen in on_suspended(), once IDA has
@@ -737,10 +737,12 @@ namespace idattd
         ea_t pc = program_counter();
         auto stop = [&]()
         {
-            if ( is_step )
-                m_events.add_step(m_pid, current_tid(), pc);
-            else
-                m_events.add_breakpoint(m_pid, current_tid(), pc);
+            switch ( kind )
+            {
+                case StopEvent::Step:       m_events.add_step(m_pid, current_tid(), pc);       break;
+                case StopEvent::Breakpoint: m_events.add_breakpoint(m_pid, current_tid(), pc); break;
+                case StopEvent::Suspended:  m_events.add_suspended(m_pid, current_tid(), pc);  break;
+            }
         };
         if ( m_eventOrder == 1 )
         {
@@ -797,8 +799,9 @@ namespace idattd
                            (int)event->eid(), (int)m_resumeMode,
                            m_isForward ? "forward" : "backward", (int)m_pending.kind);
         log_event(qstring("resume: ") + m_lastResume);
-        // Act only when continuing from a stop (breakpoint or step).
-        if ( event->eid() != BREAKPOINT && event->eid() != STEP )
+        // Act only when continuing from a stop (breakpoint, step, or a travel
+        // or trace edge, reported as a suspension).
+        if ( event->eid() != BREAKPOINT && event->eid() != STEP && event->eid() != PROCESS_SUSPENDED )
             return DRC_OK;
         if ( !m_nav )
             return DRC_OK;
@@ -827,7 +830,7 @@ namespace idattd
             log_event("resume ignored: a query is in progress");
             m_pending    = PendingRequest{};
             m_resumeMode = RESMOD_NONE;
-            emit_stop(false);
+            emit_stop(StopEvent::Suspended);
             return DRC_OK;
         }
         struct NavigatingFlag
@@ -858,31 +861,30 @@ namespace idattd
             const PendingRequest req = m_pending;
             m_pending = PendingRequest{};
 
+            // A breakpoint event only where the movement stopped on one: IDA
+            // complains about any other ("unknown debugger breakpoint").
             switch ( req.kind )
             {
                 case Request::GotoPosition:
                     navigate_to(req.position);
-                    emit_stop(false);
+                    emit_stop(StopEvent::Suspended);
                     break;
 
                 case Request::Step:
-                    navigate(req.forward, [&]() { return m_nav->step(req.forward); });
-                    emit_stop(false);
+                    emit_stop(stop_event(navigate(req.forward, [&]() { return m_nav->step(req.forward); })));
                     break;
 
                 case Request::Run:
-                    navigate(req.forward, [&]() { return m_nav->run(req.forward); });
-                    emit_stop(false);
+                    emit_stop(stop_event(navigate(req.forward, [&]() { return m_nav->run(req.forward); })));
                     break;
 
                 case Request::StepOutBackward:
-                    navigate(false, [&]() { return m_nav->step_out(false); });
-                    emit_stop(false);
+                    emit_stop(stop_event(navigate(false, [&]() { return m_nav->step_out(false); })));
                     break;
 
                 case Request::RunToCursor:
-                    navigate(req.forward, [&]() { return m_nav->run_to(req.address, req.forward); });
-                    emit_stop(false);
+                    emit_stop(stop_event(navigate(req.forward,
+                                                  [&]() { return m_nav->run_to(req.address, req.forward); })));
                     break;
 
                 case Request::None:
@@ -896,13 +898,13 @@ namespace idattd
             case RESMOD_INTO:
             {
                 StopReason sr = navigate(true, [&]() { return m_nav->step(true); });
-                emit_stop(sr != StopReason::Breakpoint);
+                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
                 break;
             }
             case RESMOD_BACKINTO:
             {
                 StopReason sr = navigate(false, [&]() { return m_nav->step(false); });
-                emit_stop(sr != StopReason::Breakpoint);
+                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
                 break;
             }
             case RESMOD_OVER:
@@ -915,7 +917,7 @@ namespace idattd
                     StopReason r = m_nav->step_over(fwd);
                     return r == StopReason::Failed ? m_nav->step(fwd) : r;
                 });
-                emit_stop(sr != StopReason::Breakpoint);
+                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
                 break;
             }
             case RESMOD_OUT:
@@ -925,7 +927,7 @@ namespace idattd
                 StopReason sr = navigate(fwd, [&]() { return m_nav->step_out(fwd); });
                 if ( sr == StopReason::Failed && m_pendingNotice.empty() )
                     m_pendingNotice = "This recording's backend cannot step out in that direction.";
-                emit_stop(sr != StopReason::Breakpoint);
+                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
                 break;
             }
             case RESMOD_NONE:
@@ -933,8 +935,7 @@ namespace idattd
                 // Run in the selected direction to a breakpoint or the trace
                 // edge.
                 bool fwd = m_isForward;
-                navigate(fwd, [&]() { return m_nav->run(fwd); });
-                emit_stop(false);
+                emit_stop(stop_event(navigate(fwd, [&]() { return m_nav->run(fwd); })));
                 break;
             }
             default:
@@ -947,7 +948,7 @@ namespace idattd
                     (int)mode);
                 bool fwd = m_isForward;
                 navigate(fwd, [&]() { return m_nav->step(fwd); });
-                emit_stop(true);
+                emit_stop(StopEvent::Step);
                 break;
             }
         }

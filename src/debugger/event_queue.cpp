@@ -127,4 +127,15 @@ namespace idattd
         ev.set_bpt();
         push(ev);
     }
+
+    void EventQueue::add_suspended(pid_t pid, thid_t tid, ea_t ea)
+    {
+        debug_event_t ev;
+        ev.pid = pid;
+        ev.tid = tid;
+        ev.ea  = ea;
+        ev.handled = true;
+        ev.set_eid(PROCESS_SUSPENDED);
+        push(ev);
+    }
 }
