@@ -280,7 +280,7 @@ namespace idattd
         // its "Decompilation failure" goes to the output window instead of a
         // dialog per step.
         bool m_quiet      = false;
-        bool m_quietSaved = false;
+        bool m_quietOwned = false;      // batch was off, and quiet_ui() turned it on
         bool m_layoutChanged = false;   // since the last after-stop work
         void quiet_ui();
         void unquiet_ui();

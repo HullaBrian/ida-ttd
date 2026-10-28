@@ -1194,7 +1194,13 @@ namespace idattd
     {
         if ( m_quiet )
             return;
-        m_quietSaved = batch;
+        // Only what this turns on is turned off again. Saving 'batch' and
+        // restoring it later put back a stale value: on when something else
+        // (a script run in batch mode, an MCP call, the PDB plugin's guard)
+        // had it on for a moment as the stop arrived, and so left IDA in
+        // batch mode for good, with every dialog suppressed (Go to
+        // position... did nothing).
+        m_quietOwned = !batch;
         batch        = true;
         m_quiet      = true;
     }
@@ -1203,8 +1209,10 @@ namespace idattd
     {
         if ( !m_quiet )
             return;
-        batch   = m_quietSaved;
-        m_quiet = false;
+        if ( m_quietOwned )
+            batch = false;
+        m_quietOwned = false;
+        m_quiet      = false;
     }
 
     void Plugin::restore_renderers()
