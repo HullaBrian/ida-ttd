@@ -245,6 +245,21 @@ namespace idattd
             ? cur()->ReplayForward(TtdPosition::Max, steps)
             : cur()->ReplayBackward(TtdPosition::Min, steps);
 
+        // An execute breakpoint on the instruction the replay starts from
+        // fires before it runs, so the movement stopped where it was. A step
+        // or a run from there must still execute it, as in a debugger that
+        // steps over the breakpoint it is stopped on. IDA sets one there
+        // itself when stepping from pseudocode, and the step then reported a
+        // breakpoint without moving, which IDA's statement stepping could
+        // answer by running on to the end of the recording.
+        if ( r.StopReason == EventType::MemoryWatchpoint && !m_lastHitData
+          && cur()->GetPosition() == before )
+        {
+            r = forward
+              ? cur()->ReplayForward(TtdPosition::Max, steps)
+              : cur()->ReplayBackward(TtdPosition::Min, steps);
+        }
+
         // A bounded backward step that lands on the first position jumped to
         // the start instead of stepping; say so.
         if ( !forward && steps != StepCount::Max )

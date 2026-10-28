@@ -290,6 +290,28 @@ int main(int argc, char **argv)
         api->cursor_position(c, &here);
         check(here.lo == mid.lo, "and a backward step moves back");
 
+        /* An execute breakpoint on the instruction a step starts from: the
+           step still executes it. IDA sets one there itself when stepping
+           from pseudocode; stopping in place read as a breakpoint hit, and
+           IDA's statement stepping then ran on to the end of the recording. */
+        if ( api->nav_breakpoints != NULL )
+        {
+            ittd_breakpoint bp;
+            memset(&bp, 0, sizeof(bp));
+            bp.addr  = r.gp[ITTD_REG_RIP];
+            bp.size  = 1;
+            bp.kinds = ITTD_ACCESS_EXEC;
+            api->nav_breakpoints(c, &bp, 1);
+            stop = -1;
+            api->nav_step(c, 1, &stop);
+            api->cursor_position(c, &here);
+            api->nav_breakpoints(c, NULL, 0);
+            printf("  step from an execute breakpoint on rip: stop %d at %s\n", stop, pos_text(here));
+            check(here.lo == mid.lo + 1 && stop == ITTD_STOP_STEPPED,
+                  "a step from an instruction with a breakpoint on it moves one position");
+            api->cursor_seek(c, mid);
+        }
+
         /* run to the instruction at rip again, from just past it */
         api->nav_step(c, 1, &stop);
         t0 = now_ms();
