@@ -399,6 +399,14 @@ namespace idattd
     // Calls reach an import directly (the real VA) or through a thunk that
     // jumps via the IAT. The function start, the thunk's target and the live
     // IAT pointer are all collected, so the sweep matches either path.
+    //
+    // The thunk is recognised from its instruction, not from IDA's
+    // FUNC_THUNK flag: in a fresh session a system DLL's thunk (kernel32's
+    // VirtualProtect, a jmp into kernelbase) is not even a function until a
+    // stop lands there, and the trace then missed every call made to the
+    // target directly (4 calls instead of 29 in beacon). A slot is read
+    // where it holds the bound value: at the playhead, and at the end of
+    // the recording for a playhead the loader had not bound it by yet.
     std::vector<ea_t> FunctionTracer::resolve_targets(ea_t func_ea) const
     {
         std::set<ea_t> out;
@@ -407,20 +415,45 @@ namespace idattd
         ea_t start = has_func ? fi.start_ea : func_ea;
         out.insert(start);
 
-        // An import thunk (jmp cs:Foo): follow it and read its live IAT slot.
-        if ( has_func && (fi.get_flags() & FUNC_THUNK) != 0 )
+        ModuleRegistry *mods = m_mgr != nullptr ? &m_mgr->modules() : nullptr;
+        ITraceBackend  *backend = m_mgr != nullptr ? m_mgr->backend() : nullptr;
+        const size_t    ptrsz = m_is64 ? 8 : 4;
+        // A pointer read from a slot counts only when it is a recorded
+        // module's code: anything else is an unbound slot or not a slot.
+        auto add_slot = [&](ea_t slot)
         {
-            ea_t ptr = BADADDR;
-            ea_t tgt = calc_thunk_function_target(&fi, &ptr);
-            if ( tgt != BADADDR )
-                out.insert(tgt);
-            add_live_ptr(ptr, m_is64, out);
+            std::set<ea_t> vals;
+            add_live_ptr(slot, m_is64, vals);
+            CursorPtr cur = backend != nullptr ? backend->make_cursor() : CursorPtr();
+            if ( cur && cur->seek(backend->info().last) )
+            {
+                uint64_t v = 0;
+                std::vector<uint8_t> known;
+                if ( cur->read_memory(slot, &v, ptrsz, &known) == ptrsz )
+                    vals.insert((ea_t)v);
+            }
+            for ( ea_t v : vals )
+                if ( mods == nullptr || mods->index_at(v) != (size_t)-1 )
+                    out.insert(v);
+        };
+
+        // An import thunk (jmp cs:Foo, or a direct jmp): follow it.
+        insn_t insn;
+        if ( !is_data(get_flags(start))
+          && decode_insn(&insn, start) > 0 && (insn.get_canon_feature(PH) & CF_STOP) != 0 )
+        {
+            const op_t &op = insn.ops[0];
+            if ( op.type == o_near || op.type == o_far )
+                out.insert(op.addr);
+            else if ( op.type == o_mem )
+                add_slot(op.addr);
+            return std::vector<ea_t>(out.begin(), out.end());
         }
 
         // The import data slot itself was picked: read the live pointer there.
         // Only for data, so code bytes are never read as a pointer.
-        if ( !is_code(get_flags(start)) )
-            add_live_ptr(start, m_is64, out);
+        if ( !is_code(get_flags(start)) && !has_func )
+            add_slot(start);
 
         return std::vector<ea_t>(out.begin(), out.end());
     }
