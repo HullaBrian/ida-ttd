@@ -354,6 +354,35 @@ namespace idattd
         return decompile_function(func_ea, &hf, DECOMP_NO_WAIT) != nullptr;
     }
 
+    // Put the caret of a pseudocode view on line 'line', column 'x'.
+    //
+    // The place comes from the view's own: a pseudocode view's position is a
+    // hexrays_place_t, larger than simpleline_place_t, and Hex-Rays reads the
+    // rest of it (the function among other things). Jumping with a
+    // simpleline_place_t made IDA store that smaller object as the view's
+    // position, and Hex-Rays then read past its end: decompilations of
+    // "<garbage>: bad input ranges" on every step from pseudocode, crashes,
+    // and a database whose saved window position crashed IDA on reopening.
+    static void jump_to_line(TWidget *ct, int line, int x)
+    {
+        const place_t *cur = get_custom_viewer_place(ct, false, nullptr, nullptr);
+        if ( cur == nullptr )
+            return;
+        void *ud = get_viewer_user_data(ct);
+        place_t *pl = cur->makeplace(ud, (uval_t)line, 0);
+        if ( pl == nullptr )
+            return;
+        jumpto(ct, pl, x, 0);
+        // Whether makeplace() handed over a new object or a static one
+        // depends on the class.
+        int flags = 0;
+        if ( get_place_class(&flags, nullptr, pl->id()) != nullptr
+          && (flags & PCF_MAKEPLACE_ALLOCATES) != 0 )
+        {
+            delete pl;
+        }
+    }
+
     bool show_in_pseudocode(TWidget *view, ea_t ea)
     {
         if ( !g_hooked || view == nullptr )
@@ -390,10 +419,7 @@ namespace idattd
         int x = 0;
         int y = 0;
         if ( best != nullptr && vu->cfunc->find_item_coords(best, &x, &y) )
-        {
-            simpleline_place_t pl(y);
-            jumpto(vu->ct, &pl, x, 0);
-        }
+            jump_to_line(vu->ct, y, x);
         return true;
     }
 
