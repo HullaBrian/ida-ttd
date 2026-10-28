@@ -276,16 +276,23 @@ namespace idattd
 
     // A guessed start (the head of the executed run, often a loop head) moved
     // back over loose code that falls into it, to an instruction nothing
-    // falls into or one something calls: the function's real head.
+    // falls into, one something calls, or one another function jumps to (a
+    // tail call): the function's real head.
     static ea_t walk_back_to_head(ea_t ea, ea_t seg_start)
     {
         ea_t h = ea;
         for ( int guard = 0; guard < 0x1000; guard++ )
         {
+            const ea_t own = get_func_start(h);
             xrefblk_t xb;
             for ( bool ok = xb.first_to(h, XREF_CODE); ok; ok = xb.next_to() )
+            {
                 if ( xb.type == fl_CN || xb.type == fl_CF )
                     return h;
+                if ( (xb.type == fl_JN || xb.type == fl_JF)
+                  && get_func_start(xb.from) != BADADDR && get_func_start(xb.from) != own )
+                    return h;
+            }
             if ( !is_flow(get_flags(h)) )
                 return h;
             ea_t p = prev_head(h, seg_start);
@@ -561,7 +568,12 @@ namespace idattd
             m_failedDyn.erase(failed);      // the code there changed: try again
         }
 
+        // A frame entry inside a function that does not reach pc is the
+        // function called, which then tail-jumped here (ntdll does this into
+        // its leaf functions): its head is not this code's.
         ea_t start = find_dynamic_function_entry(playhead, pc);
+        if ( start != BADADDR && get_func_start(start) != BADADDR && get_func_start(start) != get_func_start(pc) )
+            start = BADADDR;
         if ( start == BADADDR || start > pc || get_segment_ea(start) != seg.start_ea )
             start = walk_back_to_head(find_dynamic_start(playhead, pc), seg.start_ea);
 
@@ -570,6 +582,12 @@ namespace idattd
         // disassemble, not just the executed path, as in WinDbg. Bounded to a
         // window from the head; IDA's cache for it is invalidated so
         // create_insn below reads the real bytes.
+        //
+        // Not for a leaf function of a module with an exception table: that
+        // is the module's own code, read like its other functions (recording,
+        // then file), and nothing wrote it. The rebuild replays from the
+        // start of the recording, found nothing there, and so ran again on
+        // every step.
         ea_t rlo  = start;
         ea_t aend = (pc > start ? pc : start) + DYN_LAYOUT_SPAN;
         ea_t rhi  = aend;
@@ -577,7 +595,7 @@ namespace idattd
         // the filler covering all of user space.
         if ( rhi > seg.end_ea )
             rhi = seg.end_ea;
-        if ( rhi > rlo && m_memory->reconstruct(playhead, rlo, rhi) )
+        if ( rhi > rlo && !m_modules->has_function_table(pc) && m_memory->reconstruct(playhead, rlo, rhi) )
             invalidate_dbgmem_contents(rlo, rhi - rlo);
 
         force_insn(start);                  // exact-boundary seed
@@ -594,6 +612,11 @@ namespace idattd
             qstring nm;
             if ( get_func_name(&nm, nfs) > 0 && !nm.empty() )
                 set_debug_name(nfs, nm.c_str());
+            // A system module's leaf function is library code, as its
+            // functions with table entries are.
+            if ( nfs == get_func_start(nfs) && m_modules->is_library_address(nfs)
+              && (get_func_flags(nfs) & FUNC_LIB) == 0 )
+                set_func_flag(nfs, FUNC_LIB, true);
 
             // Shellcode calls into real modules constantly (LoadLibrary,
             // VirtualProtect); defining the targets turns "call unk_7FF8xxxx"

@@ -247,6 +247,16 @@ namespace idattd
         return false;
     }
 
+    bool ModuleRegistry::has_function_table(ea_t ea) const
+    {
+        size_t mi = index_at(ea);
+        if ( mi == (size_t)-1 )
+            return false;
+        const_cast<ModuleRegistry *>(this)->function_ranges(m_spans[mi].base);
+        auto it = m_funcRanges.find(m_spans[mi].base);
+        return it != m_funcRanges.end() && !it->second.empty();
+    }
+
     bool ModuleRegistry::refresh_function_ranges(ea_t pc, ITraceCursor *now)
     {
         ea_t s, e;

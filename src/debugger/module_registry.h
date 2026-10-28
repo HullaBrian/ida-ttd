@@ -88,6 +88,10 @@ namespace idattd
         // exception table, worked out on first use. False outside any
         // recorded function.
         bool function_range_at(ea_t pc, ea_t &start, ea_t &end) const;
+        // True if 'ea' is in a module whose exception table was read (from
+        // the file or recorded memory). Code there outside every range is a
+        // leaf function, which x64 gives no entry, not unpacked code.
+        bool has_function_table(ea_t ea) const;
         // When no range covers 'pc' and its module's table was read from
         // recorded memory, read the table again as it stands at 'now': a
         // packer writes the real one when it unpacks, after the module
