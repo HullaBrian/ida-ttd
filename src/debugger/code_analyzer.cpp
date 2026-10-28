@@ -150,6 +150,22 @@ namespace idattd
         return true;
     }
 
+    // An unconditional jump to an operand (not a ret, which has none): a tail
+    // call when it leaves the function.
+    static bool is_module_tail_jump(const insn_t &insn)
+    {
+        if ( (insn.get_canon_feature(PH) & CF_STOP) == 0 )
+            return false;
+        const optype_t t = insn.ops[0].type;
+        return t == o_near || t == o_far || t == o_mem;
+    }
+
+    // Defining the targets matters for stepping from pseudocode as well: IDA
+    // decides whether a step landed in code it can show before it reports
+    // the stop, so before the stop's own analysis runs. A target with no
+    // function (kernelbase's VirtualProtect, reached by kernel32's jmp
+    // thunk) made it step back out with a breakpoint on the thunk, which
+    // this thread never ran again: the step ran to the end of the recording.
     void CodeAnalyzer::define_callees(ITraceCursor *playhead, ea_t lo, ea_t hi)
     {
         if ( lo == BADADDR || hi <= lo )
@@ -180,10 +196,20 @@ namespace idattd
             }
             ea_t   nxt = get_item_end(ip);
             insn_t insn;
-            if ( decode_insn(&insn, ip) > 0 && is_call_insn(insn) )
+            if ( decode_insn(&insn, ip) > 0 && (is_call_insn(insn) || is_module_tail_jump(insn)) )
             {
                 ea_t slot = BADADDR;
                 ea_t tgt  = call_target_of(playhead, insn, slot);
+                // A tail jump's target is defined only when it is another
+                // module's code (an import thunk like kernel32's
+                // VirtualProtect, a jmp through its import slot). A jump
+                // within the module may land in a chunk of a function.
+                if ( !is_call_insn(insn) && tgt != BADADDR
+                  && (m_modules->index_at(tgt) == (size_t)-1 || m_modules->index_at(tgt) == m_modules->index_at(ip)) )
+                {
+                    tgt  = BADADDR;
+                    slot = BADADDR;
+                }
 
                 if ( tgt != BADADDR && seen.insert(tgt).second )
                 {
