@@ -433,3 +433,6 @@ FodyWeavers.xsd
 
 # Local agent setup (machine-specific paths)
 CLAUDE.local.md
+
+# Local notes, kept out of the repository
+docs/code-review.md

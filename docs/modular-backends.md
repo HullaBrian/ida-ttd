@@ -37,7 +37,7 @@ change that touches the most files**, and nothing else can start until it is
 done.
 
 So the work is not evenly spread. `trace_manager.cpp` is most of it, and it is
-also the file the existing code review (`docs/code-review.md` §3.3) already
+also the file the earlier code review (its §3.3; not in the repository) already
 wants split into eight responsibilities. Those two jobs are the same job, which
 is why §3.3, §3.4 and §3.8 of that review were deliberately left open on the
 cleanup branch: the shape `ReplaySession` and `Navigator` should take is decided
@@ -337,7 +337,7 @@ ranges, symbol state), `MemoryReader` (`on_read_memory` and the image fill),
 `SegmentLayout` (the memory map and its two layout caches), `CodeAnalyzer` (the
 per-stop disassembly pipeline) and `Navigator`'s core half (the pending-request
 state). In the Microsoft backend: cursor and engine ownership, the `navigate_*`
-family, `reconstruct_region`, the frame search. This is `docs/code-review.md`
+family, `reconstruct_region`, the frame search. This is the code review's
 §3.3 with the dotted lines drawn in.
 
 ### Choosing a backend, and the database
@@ -528,7 +528,7 @@ boundary through `debugger/msttd_position.h`. `src/ui`, `src/plugin`,
 blobs are unchanged; memory-map blobs moved to version 7 because they can hold
 an absent position, whose bit pattern differs between the two representations.
 
-**Phase 2 — split `TraceManager`.** `docs/code-review.md` §3.3 and §3.4, with
+**Phase 2 — split `TraceManager`.** The code review's §3.3 and §3.4, with
 the core/backend line from §4 above as the guide. Still one backend; the split
 is justified by itself.
 

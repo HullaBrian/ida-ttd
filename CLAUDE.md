@@ -15,8 +15,7 @@ map, self-modifying code, strings, buffers, forks). Two kinds of recording:
 README.md is the user-facing description (features, usage, build, layout).
 `docs/` holds design notes; `docs/scripting.md` and `docs/licensing.md`
 (what each binary contains and the terms it ships under) are current, while
-`session-handoff.md`, `modular-backends.md` and `code-review.md` are historical
-and may be out of date.
+`modular-backends.md` is historical and may be out of date.
 
 **Local setup** (where things live on this machine and on the test machine,
 reference material, test recordings) is in `CLAUDE.local.md`, which is
