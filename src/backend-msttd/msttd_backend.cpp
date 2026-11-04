@@ -308,6 +308,69 @@ namespace idattd
         return c;
     }
 
+    QueryResult MsTtdBackend::read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
+                                             std::vector<uint8_t> *known, ProgressSink *progress)
+    {
+        QueryResult r;
+        if ( !m_engine || data == nullptr || known == nullptr )
+            return r;
+        size_t total = 0;
+        for ( const MemAt &m : reads )
+            total = std::max(total, m.offset + m.size);
+        data->assign(total, 0);
+        known->assign(total, ITTD_KNOWN_NO);
+        r.ran = true;
+
+        // The reads in position order, cut into runs that share a position:
+        // one seek a run.
+        std::vector<size_t> order(reads.size());
+        for ( size_t i = 0; i < order.size(); i++ )
+            order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return reads[a].pos < reads[b].pos; });
+        std::vector<size_t> starts;
+        for ( size_t i = 0; i < order.size(); i++ )
+            if ( i == 0 || reads[order[i]].pos != reads[order[i - 1]].pos )
+                starts.push_back(i);
+        const size_t runs = starts.size();
+        starts.push_back(order.size());
+
+        // Seeking is the cost (a replay forward from the previous position
+        // costs as much as a seek), and no single replay can stand in for it:
+        // memory queries from a replay's callbacks are thread-local only, and
+        // a syscall's position is reported from after the transition. So the
+        // positions are shared between cursors (msttd_parallel). Each worker
+        // writes only its own reads' bytes.
+        const bool complete = msttd_parallel(runs, 8, progress,
+            [&](size_t begin, size_t end, std::atomic<size_t> &done, const std::atomic<bool> &stop)
+        {
+            UniqueCursor exec = new_engine_cursor();
+            if ( !exec )
+                return;
+            exec->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
+            // Only ever positioned, never executed, so it serves the reads
+            // itself rather than through a second cursor.
+            MsTtdCursor c(this, std::move(exec), UniqueCursor{});
+            std::vector<uint8_t> k;
+            for ( size_t run = begin; run < end && !stop.load(); run++, done++ )
+            {
+                if ( !c.seek(reads[order[starts[run]]].pos) )
+                    continue;
+                for ( size_t j = starts[run]; j < starts[run + 1]; j++ )
+                {
+                    const MemAt &m = reads[order[j]];
+                    if ( m.size == 0 )
+                        continue;
+                    c.read_memory(m.addr, data->data() + m.offset, m.size, &k);
+                    for ( size_t b = 0; b < m.size && b < k.size(); b++ )
+                        (*known)[m.offset + b] = k[b];
+                }
+            }
+        });
+        r.cancelled = !complete;
+        return r;
+    }
+
     uint32_t MsTtdBackend::unique_thread_id(uint32_t tid, Position at) const
     {
         if ( !m_engine )

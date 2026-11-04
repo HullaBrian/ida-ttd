@@ -29,6 +29,134 @@ namespace idattd
     //=======================================================================
     // Every syscall decoded, once
     //=======================================================================
+    namespace
+    {
+        // Guest memory at many positions, fetched from the backend in
+        // batches (ITraceBackend::read_memory_at) instead of by seeking a
+        // cursor to each: on Microsoft TTD a seek costs about 15 ms, and
+        // decoding a recording's syscalls one seek at a time took minutes.
+        // A decoder reads through reader(), which serves what has been
+        // fetched and notes what has not; fetch() gets all of that at once,
+        // and the decoder runs again over the calls that missed something.
+        // A pointer followed to a structure followed to a string is three
+        // rounds.
+        class BatchedMemory
+        {
+        public:
+            GuestRead reader(Position at)
+            {
+                return [this, at](uint64_t addr, void *buf, size_t size) -> size_t
+                {
+                    return read(at, addr, buf, size);
+                };
+            }
+
+            // How many blocks reads have asked for and not found, ever: a
+            // caller compares it before and after a decode.
+            uint64_t misses() const { return m_misses; }
+
+            // Everything missed since the last fetch. False when cancelled.
+            bool fetch(ITraceBackend *b, ProgressSink *progress)
+            {
+                if ( m_wanted.empty() )
+                    return true;
+                std::vector<MemAt> reads;
+                reads.reserve(m_wanted.size());
+                for ( const Key &k : m_wanted )
+                {
+                    MemAt m;
+                    m.pos    = k.first;
+                    m.addr   = (ea_t)(k.second * kBlock);
+                    m.offset = reads.size() * kBlock;
+                    m.size   = kBlock;
+                    reads.push_back(m);
+                }
+                std::vector<uint8_t> data, known;
+                QueryResult r = b->read_memory_at(reads, &data, &known, progress);
+                if ( r.cancelled )
+                    return false;
+                // A block that could not be read is kept as unknown, so it is
+                // not asked for again.
+                size_t i = 0;
+                for ( const Key &k : m_wanted )
+                {
+                    Block &blk = m_blocks[k];
+                    const size_t off = i++ * kBlock;
+                    if ( r.ran && off + kBlock <= data.size() )
+                    {
+                        memcpy(blk.data, data.data() + off, kBlock);
+                        memcpy(blk.known, known.data() + off, kBlock);
+                    }
+                }
+                m_wanted.clear();
+                return true;
+            }
+
+        private:
+            static constexpr uint64_t kBlock = 0x100;
+            // A read longer than this asks for its first blocks only; the
+            // rest come in a later round if it still wants them.
+            static constexpr size_t kMaxMissesPerRead = 16;
+
+            struct Block
+            {
+                uint8_t data[kBlock]  = { 0 };
+                uint8_t known[kBlock] = { 0 };      // ITTD_KNOWN_NO
+            };
+            using Key = std::pair<Position, uint64_t>;      // (where, block number)
+
+            // As guest_read: the leading bytes known (a placeholder counts as
+            // a real zero), with buf zero-filled past what is available.
+            size_t read(Position at, uint64_t addr, void *buf, size_t size)
+            {
+                if ( buf == nullptr || size == 0 )
+                    return 0;
+                memset(buf, 0, size);
+                // Not past the top of the address space.
+                if ( addr + size < addr )
+                    size = (size_t)(0 - addr);
+                uint8_t *out = (uint8_t *)buf;
+                size_t prefix = 0, missed = 0, off = 0;
+                bool whole = true;
+                while ( off < size && missed < kMaxMissesPerRead )
+                {
+                    const uint64_t a       = addr + off;
+                    const uint64_t blockno = a / kBlock;
+                    const size_t   in      = (size_t)(a % kBlock);
+                    const size_t   n       = std::min<size_t>((size_t)kBlock - in, size - off);
+                    auto it = m_blocks.find(Key{ at, blockno });
+                    if ( it == m_blocks.end() )
+                    {
+                        m_wanted.insert(Key{ at, blockno });
+                        m_misses++;
+                        missed++;
+                        whole = false;
+                    }
+                    else
+                    {
+                        memcpy(out + off, it->second.data + in, n);
+                        for ( size_t j = 0; j < n && whole; j++ )
+                        {
+                            if ( it->second.known[in + j] == ITTD_KNOWN_NO )
+                                whole = false;
+                            else
+                                prefix++;
+                        }
+                    }
+                    off += n;
+                }
+                return prefix;
+            }
+
+            std::map<Key, Block> m_blocks;
+            std::set<Key>        m_wanted;
+            uint64_t             m_misses = 0;
+        };
+
+        // Rounds of fetching before a decode stands with what it has.
+        const int kMaxRounds = 8;
+    }
+
     bool decode_syscalls(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
                          std::vector<qstring> *decoded, bool *cancelled)
     {
@@ -68,68 +196,97 @@ namespace idattd
                     which.push_back(i);
                 }
             std::vector<ittd_regs> regs;
-            StageSink regs_stage(sink, 0, 20);
+            StageSink regs_stage(sink, 0, 10);
             b->registers_at(where, &regs, &regs_stage);
             if ( regs_stage.cancelled() )
             {
                 r.cancelled = true;
                 return r;
             }
-            CursorPtr cur = b->make_cursor();
-            if ( !cur )
-                return r;
-            const GuestRead read = guest_read(cur.get());
+            BatchedMemory mem;
+
+            // Decode 'todo' with 'once', fetching what the decodes missed and
+            // decoding again those that missed something, until nothing is
+            // missing or the rounds run out. Percentages lo..hi.
+            auto in_rounds = [&](std::vector<size_t> todo, const std::function<void(size_t)> &once,
+                                 uint32_t lo, uint32_t hi) -> bool
+            {
+                for ( int round = 0; !todo.empty(); round++ )
+                {
+                    std::vector<size_t> again;
+                    for ( size_t n = 0; n < todo.size(); n++ )
+                    {
+                        if ( (n & 255) == 0 && sink != nullptr && sink->cancelled() )
+                            return false;
+                        const uint64_t before = mem.misses();
+                        once(todo[n]);
+                        if ( mem.misses() != before )
+                            again.push_back(todo[n]);
+                    }
+                    if ( again.empty() || round + 1 == kMaxRounds )
+                        break;
+                    // The first fetch is most of the work; later ones share
+                    // the last fifth of the stage.
+                    const uint32_t mid = lo + (hi - lo) * 4 / 5;
+                    const uint32_t a = round == 0 ? lo : mid + (hi - mid) * (round - 1) / kMaxRounds;
+                    const uint32_t z = round == 0 ? mid : mid + (hi - mid) * round / kMaxRounds;
+                    StageSink fetch_stage(sink, a, z);
+                    if ( !mem.fetch(b, &fetch_stage) )
+                        return false;
+                    todo.swap(again);
+                }
+                return true;
+            };
 
             // ---- the arguments, at each call ----------------------------
+            // At the syscall instruction, rcx is in r10 and the stack is one
+            // return address deep (two on x86: into the stub, then the stub's
+            // own). Shown as the call site sees them, as the decoder expects.
             std::vector<DecodedCall> dc(which.size());
-            std::vector<OutSlot>     slots;
-            std::vector<std::pair<size_t, size_t>> slot_of;     // (call k, parameter)
+            std::vector<size_t> with_regs;
             for ( size_t k = 0; k < which.size(); k++ )
+                if ( k < regs.size() && (regs[k].have & ITTD_REGS_GP) != 0 )
+                    with_regs.push_back(k);
+            const bool args_done = in_rounds(with_regs, [&](size_t k)
             {
-                if ( (k & 31) == 0 && sink != nullptr )
-                {
-                    if ( sink->cancelled() )
-                    {
-                        r.cancelled = true;
-                        return r;
-                    }
-                    sink->report(uint32_t(20 + k * 30 / std::max<size_t>(which.size(), 1)));
-                }
-                if ( k >= regs.size() || (regs[k].have & ITTD_REGS_GP) == 0 )
-                    continue;
                 const SyscallEvent &c = calls[which[k]];
-                if ( !cur->seek(c.pos) )
-                    continue;
-                // At the syscall instruction, rcx is in r10 and the stack is one
-                // return address deep (two on x86: into the stub, then the
-                // stub's own). Shown as the call site sees them, as the decoder
-                // expects.
                 ittd_regs g = regs[k];
                 if ( wide )
                     g.gp[ITTD_REG_RCX] = g.gp[SYSCALL_ARG_REGS[0]];
                 g.gp[ITTD_REG_RSP] += 8;
                 GuestView v;
-                v.read = read;
+                v.read = mem.reader(c.pos);
                 v.regs = [g](ittd_regs *out) { *out = g; return true; };
-                decode_api_args(v, *sigs[which[k]], wide, &dc[k]);
-                for ( const auto &[param, width] : api_int_outs(dc[k]) )
-                {
-                    OutSlot s;
-                    s.call  = c.pos;
-                    s.addr  = (ea_t)dc[k].args[param].raw;
-                    s.tid   = c.tid;
-                    s.width = width;
-                    uint64_t before = 0;
-                    read(s.addr, &before, width);
-                    s.before = before;
-                    slots.push_back(s);
-                    slot_of.emplace_back(k, param);
-                }
+                DecodedCall d;
+                decode_api_args(v, *sigs[which[k]], wide, &d);
+                dc[k] = std::move(d);
+            }, 10, 50);
+            if ( !args_done )
+            {
+                r.cancelled = true;
+                return r;
             }
 
             // ---- what the kernel wrote back -------------------------------
             // Integers and handles from the backend's search where it has one
             // (Microsoft TTD); the rest from memory just after the call.
+            std::vector<OutSlot> slots;
+            std::vector<std::pair<size_t, size_t>> slot_of;     // (call k, parameter)
+            for ( size_t k : with_regs )
+            {
+                const SyscallEvent &c = calls[which[k]];
+                for ( const auto &[param, width] : api_int_outs(dc[k]) )
+                {
+                    OutSlot s;
+                    s.call   = c.pos;
+                    s.addr   = (ea_t)dc[k].args[param].raw;
+                    s.tid    = c.tid;
+                    s.width  = width;
+                    s.before = dc[k].args[param].pointee_before.value_or(0);
+                    slots.push_back(s);
+                    slot_of.emplace_back(k, param);
+                }
+            }
             std::vector<std::optional<uint64_t>> values;
             StageSink outs_stage(sink, 50, 75);
             const bool searched = !slots.empty() && b->query_out_values(slots, &values, &outs_stage);
@@ -146,31 +303,46 @@ namespace idattd
                     d.out_values[slot_of[i].second] = values[i];
                 }
 
-            for ( size_t k = 0; k < which.size(); k++ )
+            // ---- the out parameters, just after each call -----------------
+            std::vector<DecodedCall> after(dc.size());
+            std::vector<size_t> needs_memory;
+            for ( size_t k = 0; k < dc.size(); k++ )
             {
-                if ( (k & 31) == 0 && sink != nullptr )
-                {
-                    if ( sink->cancelled() )
-                    {
-                        r.cancelled = true;
-                        return r;
-                    }
-                    sink->report(uint32_t(75 + k * 25 / std::max<size_t>(which.size(), 1)));
-                }
-                DecodedCall &d = dc[k];
+                const DecodedCall &d = dc[k];
                 if ( d.sig == nullptr )
                     continue;
-                bool needs_memory = false;
+                bool needs = false;
                 for ( size_t p = 0; p < d.args.size(); p++ )
                     if ( d.args[p].out && d.args[p].raw != 0
                       && !(p < d.out_values.size() && d.out_values[p].has_value()) )
-                        needs_memory = true;
-                GuestView after;
-                if ( needs_memory && cur->seek(b->position_add(calls[which[k]].pos, 1)) )
-                    after = guest_view(cur.get());
-                decode_api_outs(after, &d);
-                (*decoded)[which[k]] = api_args_text(d);
+                        needs = true;
+                if ( needs )
+                {
+                    needs_memory.push_back(k);
+                    continue;
+                }
+                after[k] = d;
+                decode_api_outs(GuestView{}, &after[k]);
             }
+            std::vector<Position> one_on(dc.size(), Position::none());
+            for ( size_t k : needs_memory )
+                one_on[k] = b->position_add(calls[which[k]].pos, 1);
+            const bool outs_done = in_rounds(needs_memory, [&](size_t k)
+            {
+                GuestView v;
+                v.read = mem.reader(one_on[k]);
+                v.regs = [](ittd_regs *) { return false; };
+                after[k] = dc[k];
+                decode_api_outs(v, &after[k]);
+            }, 75, 100);
+            if ( !outs_done )
+            {
+                r.cancelled = true;
+                return r;
+            }
+            for ( size_t k = 0; k < after.size(); k++ )
+                if ( after[k].sig != nullptr )
+                    (*decoded)[which[k]] = api_args_text(after[k]);
             return r;
         });
         *cancelled = qr.cancelled;

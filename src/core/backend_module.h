@@ -93,6 +93,8 @@ namespace idattd
         QueryResult registers_at(const std::vector<Position> &positions,
                                  std::vector<ittd_regs> *out,
                                  ProgressSink *progress) override;
+        QueryResult read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
+                                   std::vector<uint8_t> *known, ProgressSink *progress) override;
 
         std::vector<Symbol> module_symbols(ea_t base) override;
         std::vector<std::pair<ea_t, ea_t>> module_functions(ea_t base) override;

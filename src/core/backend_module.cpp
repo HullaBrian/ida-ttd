@@ -1214,6 +1214,32 @@ namespace idattd
         return result_of(rc, 0);
     }
 
+    QueryResult BackendModule::read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
+                                              std::vector<uint8_t> *known, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.read_memory_at");
+        // A backend without the batch gets a cursor seeked to each position.
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, read_memory_at) )
+            return ITraceBackend::read_memory_at(reads, data, known, progress);
+        size_t total = 0;
+        std::vector<ittd_mem_read> in(reads.size());
+        for ( size_t i = 0; i < reads.size(); i++ )
+        {
+            in[i].pos    = to_abi(reads[i].pos);
+            in[i].addr   = (uint64_t)reads[i].addr;
+            in[i].offset = (uint64_t)reads[i].offset;
+            in[i].size   = (uint64_t)reads[i].size;
+            total = std::max(total, reads[i].offset + reads[i].size);
+        }
+        data->assign(total, 0);
+        known->assign(total, ITTD_KNOWN_NO);
+        ProgressBridge pb(progress);
+        int rc = m_api->read_memory_at(m_handle, in.data(), in.size(), data->data(), known->data(), pb.get());
+        if ( rc == ITTD_E_UNSUPPORTED )
+            return ITraceBackend::read_memory_at(reads, data, known, progress);
+        return result_of(rc, 0);
+    }
+
     std::vector<ITraceBackend::Symbol> BackendModule::module_symbols(ea_t base)
     {
         DiagTimer diag_timer("backend.module_symbols");

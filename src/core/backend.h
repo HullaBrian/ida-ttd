@@ -206,6 +206,15 @@ namespace idattd
         uint32_t width = 8;
     };
 
+    // One read of read_memory_at (ittd_mem_read).
+    struct MemAt
+    {
+        Position pos;
+        ea_t     addr = 0;
+        size_t   offset = 0;        // into the caller's buffers
+        size_t   size = 0;
+    };
+
     // The accesses to one page in one slice of time (ittd_heat_cell).
     struct HeatCell
     {
@@ -775,6 +784,60 @@ namespace idattd
                 }
                 if ( cursor->seek(positions[i]) && !cursor->read_registers(&(*out)[i]) )
                     (*out)[i].have = 0;
+            }
+            return r;
+        }
+
+        // Each of 'reads' as a cursor at its position would read it: the
+        // bytes into (*data)[offset, offset + size) and an ITTD_KNOWN_* a byte
+        // into (*known), both sized here to the furthest read. A batch for a
+        // backend whose seeks are dear (Microsoft TTD: about 15 ms each),
+        // which can spread the positions over several cursors at once. The
+        // default seeks a scratch cursor once per distinct position.
+        virtual QueryResult read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
+                                           std::vector<uint8_t> *known, ProgressSink *progress)
+        {
+            QueryResult r;
+            size_t total = 0;
+            for ( const MemAt &m : reads )
+                total = std::max(total, m.offset + m.size);
+            data->assign(total, 0);
+            known->assign(total, ITTD_KNOWN_NO);
+            CursorPtr cursor = make_cursor();
+            if ( cursor == nullptr )
+                return r;
+            r.ran = true;
+            std::vector<size_t> order(reads.size());
+            for ( size_t i = 0; i < order.size(); i++ )
+                order[i] = i;
+            std::stable_sort(order.begin(), order.end(),
+                             [&](size_t a, size_t b) { return reads[a].pos < reads[b].pos; });
+            std::vector<uint8_t> k;
+            bool started = false, at = false;
+            Position here = Position::none();
+            for ( size_t i = 0; i < order.size(); i++ )
+            {
+                const MemAt &m = reads[order[i]];
+                if ( !started || m.pos != here )
+                {
+                    started = true;
+                    if ( progress != nullptr )
+                    {
+                        if ( progress->cancelled() )
+                        {
+                            r.cancelled = true;
+                            break;
+                        }
+                        progress->report(uint32_t(i * 100 / order.size()));
+                    }
+                    here = m.pos;
+                    at   = cursor->seek(m.pos);
+                }
+                if ( !at || m.size == 0 )
+                    continue;
+                cursor->read_memory(m.addr, data->data() + m.offset, m.size, &k);
+                for ( size_t j = 0; j < m.size && j < k.size(); j++ )
+                    (*known)[m.offset + j] = k[j];
             }
             return r;
         }

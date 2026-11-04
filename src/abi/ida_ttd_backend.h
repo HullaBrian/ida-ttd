@@ -349,6 +349,16 @@ typedef struct ittd_out_slot
     uint32_t      width;            /* 4 or 8 bytes */
 } ittd_out_slot;
 
+/* One read of read_memory_at: 'size' bytes at 'addr' as they were at 'pos',
+ * into the caller's buffers at 'offset'. */
+typedef struct ittd_mem_read
+{
+    ittd_position pos;
+    uint64_t      addr;
+    uint64_t      offset;
+    uint64_t      size;
+} ittd_mem_read;
+
 /* One cell of query_access_heat: the accesses to one page in one slice of
  * the recording's time. */
 typedef struct ittd_heat_cell
@@ -1055,6 +1065,17 @@ typedef struct ittd_backend_api
      * none, ITTD_E_REGISTRY_MISMATCH when they are others (ittd_last_error
      * says so in words). Reads every hive, so it takes a moment. */
     int (*check_registry)(ittd_backend *b, const char *dir);
+
+    /* ---- memory at many positions -------------------------------------- */
+
+    /* Each of 'reads' as cursor_read_memory would answer it at its position:
+     * the bytes into buf[offset, offset + size) and one ITTD_KNOWN_* a byte
+     * into known[] at the same offsets. The reads may come in any order and
+     * share positions. A batch because a backend whose seeks are dear can
+     * spread the positions over several cursors at once. Optional: without
+     * it the core seeks a cursor to each position. */
+    int (*read_memory_at)(ittd_backend *b, const ittd_mem_read *reads, size_t count,
+                          uint8_t *buf, uint8_t *known, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */

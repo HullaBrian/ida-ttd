@@ -209,81 +209,91 @@ namespace idattd
     // slot, or where the program reads it. Each slot is watched on its thread
     // from the call, for a bounded number of steps. A program write first
     // means the kernel's value never surfaced: unknown, not the stale one.
+    // Each slot costs a seek, so they are shared between cursors
+    // (msttd_parallel).
     bool MsTtdBackend::query_out_values(const std::vector<OutSlot> &slots,
                                         std::vector<std::optional<uint64_t>> *out, ProgressSink *progress)
     {
         if ( !m_engine || out == nullptr )
             return false;
         out->assign(slots.size(), std::nullopt);
-        UniqueCursor cur = new_engine_cursor();
-        if ( !cur )
-            return false;
-        cur->SetReplayFlags(ReplayFlags::ReplayOnlyCurrentThread | ReplayFlags::ReplaySegmentsSequentially);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-
-        for ( size_t i = 0; i < slots.size(); i++ )
+        // The slots in call order, so each worker's stretch is close together.
+        std::vector<size_t> order(slots.size());
+        for ( size_t i = 0; i < order.size(); i++ )
+            order[i] = i;
+        std::stable_sort(order.begin(), order.end(),
+                         [&](size_t a, size_t b) { return slots[a].call < slots[b].call; });
+        std::atomic<bool> made{ false };
+        msttd_parallel(slots.size(), 8, progress,
+            [&](size_t begin, size_t end, std::atomic<size_t> &done, const std::atomic<bool> &stop)
         {
-            if ( progress != nullptr )
+            UniqueCursor cur = new_engine_cursor();
+            if ( !cur )
+                return;
+            made = true;
+            cur->SetReplayFlags(ReplayFlags::ReplayOnlyCurrentThread | ReplayFlags::ReplaySegmentsSequentially);
+            cur->SetEventMask(EventMask::MemoryWatchpoint);
+
+            for ( size_t n = begin; n < end && !stop.load(); n++, done++ )
             {
-                if ( progress->cancelled() )
-                    break;
-                progress->report(uint32_t(i * 100 / std::max<size_t>(slots.size(), 1)));
-            }
-            const OutSlot &sl = slots[i];
-            if ( sl.addr == 0 || (sl.width != 4 && sl.width != 8) )
-                continue;
-            // The thread that made the call, not another that had its id.
-            const uint32_t utid = unique_thread_id(sl.tid, sl.call);
-            if ( utid == 0 )
-                continue;
-            bool        got = false;
-            uint64_t    value = 0;
-            TtdPosition wrote = TtdPosition::Invalid;
-            auto on_hit = [&](ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept -> bool
-            {
-                const TtdPosition p = t->GetPosition();
-                // A write of the program's own, and nothing of the kernel's at
-                // the same position: the kernel's value is gone.
-                if ( wrote.IsValid() && !(p == wrote) )
-                    return true;
-                uint64_t v = 0;
-                const bool ok = msttd_read_word(t, sl.addr, sl.width, &v);
-                switch ( w.AccessType )
+                const size_t i = order[n];
+                const OutSlot &sl = slots[i];
+                if ( sl.addr == 0 || (sl.width != 4 && sl.width != 8) )
+                    continue;
+                // The thread that made the call, not another that had its id.
+                const uint32_t utid = unique_thread_id(sl.tid, sl.call);
+                if ( utid == 0 )
+                    continue;
+                bool        got = false;
+                uint64_t    value = 0;
+                TtdPosition wrote = TtdPosition::Invalid;
+                auto on_hit = [&](ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept -> bool
                 {
-                    case DataAccessType::DataMismatch:
-                    case DataAccessType::NewData:
-                    case DataAccessType::Read:
-                        if ( ok )
-                        {
-                            value = v;
-                            got = true;
-                        }
+                    const TtdPosition p = t->GetPosition();
+                    // A write of the program's own, and nothing of the kernel's at
+                    // the same position: the kernel's value is gone.
+                    if ( wrote.IsValid() && !(p == wrote) )
                         return true;
-                    case DataAccessType::Write:
-                    case DataAccessType::Overwrite:
-                        wrote = p;
-                        return false;
-                    default:
-                        return false;
-                }
-            };
-            MemoryWatchpointData wp{};
-            wp.Address    = GuestAddress{ (uint64_t)sl.addr };
-            wp.Size       = sl.width;
-            wp.AccessMask = (DataAccessMask)((uint8_t)DataAccessMask::Read | (uint8_t)DataAccessMask::Write
-                                           | (uint8_t)DataAccessMask::Overwrite | (uint8_t)DataAccessMask::DataMismatch
-                                           | (uint8_t)DataAccessMask::NewData);
-            wp.ThreadId   = (UniqueThreadId)utid;
-            cur->AddMemoryWatchpoint(wp);
-            cur->SetMemoryWatchpointCallback(on_hit);
-            cur->SetPositionOnThread((UniqueThreadId)utid, from_core(sl.call));
-            cur->ReplayForward(TtdPosition::Max, (StepCount)0x4000);
-            cur->SetMemoryWatchpointCallback(nullptr, 0);
-            cur->RemoveMemoryWatchpoint(wp);
-            if ( got )
-                (*out)[i] = value;
-        }
-        return true;
+                    uint64_t v = 0;
+                    const bool ok = msttd_read_word(t, sl.addr, sl.width, &v);
+                    switch ( w.AccessType )
+                    {
+                        case DataAccessType::DataMismatch:
+                        case DataAccessType::NewData:
+                        case DataAccessType::Read:
+                            if ( ok )
+                            {
+                                value = v;
+                                got = true;
+                            }
+                            return true;
+                        case DataAccessType::Write:
+                        case DataAccessType::Overwrite:
+                            wrote = p;
+                            return false;
+                        default:
+                            return false;
+                    }
+                };
+                MemoryWatchpointData wp{};
+                wp.Address    = GuestAddress{ (uint64_t)sl.addr };
+                wp.Size       = sl.width;
+                wp.AccessMask = (DataAccessMask)((uint8_t)DataAccessMask::Read | (uint8_t)DataAccessMask::Write
+                                               | (uint8_t)DataAccessMask::Overwrite | (uint8_t)DataAccessMask::DataMismatch
+                                               | (uint8_t)DataAccessMask::NewData);
+                wp.ThreadId   = (UniqueThreadId)utid;
+                cur->AddMemoryWatchpoint(wp);
+                cur->SetMemoryWatchpointCallback(on_hit);
+                cur->SetPositionOnThread((UniqueThreadId)utid, from_core(sl.call));
+                cur->ReplayForward(TtdPosition::Max, (StepCount)0x4000);
+                cur->SetMemoryWatchpointCallback(nullptr, 0);
+                cur->RemoveMemoryWatchpoint(wp);
+                if ( got )
+                    (*out)[i] = value;
+            }
+        });
+        // Cancelled, the slots not reached are unknown, as before.
+        return slots.empty() || made.load();
     }
 
     // What the census replay settled for the map (see SyscallCensus).

@@ -72,6 +72,10 @@ namespace idattd
         // From the syscall census where it has them, else by seeking.
         QueryResult registers_at(const std::vector<Position> &positions, std::vector<ittd_regs> *out,
                                  ProgressSink *progress) override;
+        // One cursor carried forward from position to position, rather than
+        // a seek to each.
+        QueryResult read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
+                                   std::vector<uint8_t> *known, ProgressSink *progress) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,
                                        std::vector<Access> *out, ProgressSink *progress) override;
         Position position_add(Position p, int64_t delta) const override;

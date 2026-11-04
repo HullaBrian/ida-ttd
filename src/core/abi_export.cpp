@@ -1285,6 +1285,40 @@ namespace idattd
         });
     }
 
+    static int x_read_memory_at(ittd_backend *hb, const ittd_mem_read *reads, size_t count,
+                                uint8_t *buf, uint8_t *known, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr || (count != 0 && (reads == nullptr || buf == nullptr || known == nullptr)) )
+            return ITTD_E_BAD_ARG;
+        return guarded(h, [&]()
+        {
+            std::vector<MemAt> in(count);
+            for ( size_t i = 0; i < count; i++ )
+            {
+                in[i].pos    = from_abi(reads[i].pos);
+                in[i].addr   = (ea_t)reads[i].addr;
+                in[i].offset = (size_t)reads[i].offset;
+                in[i].size   = (size_t)reads[i].size;
+            }
+            std::vector<uint8_t> data, k;
+            AbiSink sink(progress);
+            QueryResult r = h->b->read_memory_at(in, &data, &k, &sink);
+            if ( !r.ran )
+                return ITTD_E_UNSUPPORTED;
+            // Only the caller's own ranges are written: the buffers between
+            // them are theirs.
+            for ( const MemAt &m : in )
+            {
+                if ( m.size == 0 || m.offset + m.size > data.size() )
+                    continue;
+                memcpy(buf + m.offset, data.data() + m.offset, m.size);
+                memcpy(known + m.offset, k.data() + m.offset, m.size);
+            }
+            return r.cancelled ? ITTD_E_CANCELLED : ITTD_OK;
+        });
+    }
+
     static int x_query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
                                    ittd_heat_cell *buf, size_t cap, size_t *out_count,
                                    int *out_truncated, const ittd_progress *progress)
@@ -1392,6 +1426,7 @@ namespace idattd
         a.query_access_heat     = x_query_access_heat;
         a.heat_slice_position   = x_heat_slice_position;
         a.query_out_values      = x_query_out_values;
+        a.read_memory_at        = x_read_memory_at;
         // Only offered when the backend can count part of the recording; the
         // core reads a missing entry as "the heatmap cannot zoom".
         if ( g_identity->can_window_heat() )
