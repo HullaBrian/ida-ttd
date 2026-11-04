@@ -16,6 +16,12 @@ namespace idattd
 {
     static bool g_hooked           = false;
     static bool g_reported_missing = false;
+    static void (*g_edit_hook)(ea_t) = nullptr;
+
+    void set_function_edit_hook(void (*hook)(ea_t func_ea))
+    {
+        g_edit_hook = hook;
+    }
 
     // Every address a pseudocode line was decompiled from.
     //
@@ -246,6 +252,25 @@ namespace idattd
                 // The text has just been generated; sv may be coloured now.
                 paint(va_arg(va, cfunc_t *));
                 break;
+
+            // Variable edits: the view's function changed.
+            case lxe_lvar_name_changed:
+            case lxe_lvar_type_changed:
+            case lxe_lvar_cmt_changed:
+            case lxe_lvar_mapping_changed:
+            {
+                vdui_t *vu = va_arg(va, vdui_t *);
+                if ( g_edit_hook != nullptr && vu != nullptr && vu->cfunc != nullptr )
+                    g_edit_hook(vu->cfunc->entry_ea);
+                break;
+            }
+            case hxe_cmt_changed:
+            {
+                cfunc_t *cf = va_arg(va, cfunc_t *);
+                if ( g_edit_hook != nullptr && cf != nullptr )
+                    g_edit_hook(cf->entry_ea);
+                break;
+            }
 
             case hxe_open_pseudocode:
             case hxe_refresh_pseudocode:

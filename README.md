@@ -36,6 +36,9 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 - Runtime-only code is disassembled a whole function at a time, using the PE
   exception table for module code and the recorded execution for everything
   else. Self-modified regions are re-analyzed when their bytes change.
+- Your names, prototypes, comments and decompiler variables on functions
+  outside the modules are kept in the database and come back in later
+  sessions, wherever the same code is at the same address.
 - Symbols come from each module's export table read out of the trace, so names
   work with no symbol server. PDB names load on top when available: the
   exact PDB each recorded module was built with is downloaded and read in
@@ -296,6 +299,24 @@ frame in the program, up to eight. Building it replays the
 recording once and is saved in the database. Regions live at the current
 position become named IDA segments with their real permissions, so an RWX
 buffer is visible as one.
+
+### Keep your work on code outside the modules
+
+Memory no module covers (allocations, mapped views, the code a packer or
+loader wrote) exists in IDA only while the replay runs: IDA deletes those
+segments when the session ends, and rebuilds them when a travel changes the
+memory map. What you set on a function there is kept in the database instead:
+its bounds, name, prototype (calling convention, return and parameter types and
+names), comments, labels, and in the decompiler its variable names, types and
+comments and its pseudocode comments. When a function starts at the same
+address again, in a later session or after a travel, whether you define it or
+the plugin does when you stop in it, all of that comes back.
+
+A kept function comes back only where its bytes are the same as when you worked
+on it, so a region freed and reused for other code, or an unpacker's next stage
+at the same address, is never given the wrong names; each version of the code
+keeps its own. Work on a function is saved before every movement, when the
+session ends and when the database is saved.
 
 ### Re-read memory the database got wrong
 

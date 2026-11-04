@@ -15,6 +15,11 @@ namespace idattd
     bool init_decompiler();     // true when Hex-Rays is present and hooked
     void term_decompiler();
 
+    // Called with the function's entry when the user renames, retypes or
+    // comments a variable, or comments the pseudocode: edits Hex-Rays keeps
+    // itself, with no IDB event. Null to stop.
+    void set_function_edit_hook(void (*hook)(ea_t func_ea));
+
     // Decompile every open pseudocode view again: types changed under it.
     void redecompile_pseudocode_views();
 

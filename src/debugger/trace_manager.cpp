@@ -89,6 +89,9 @@ namespace idattd
         // First: the download workers hold no IDA state, but must not outlive
         // the session that asked for their work.
         symsrv_shutdown();
+        // Usually done already (on_exit_process); without it, this is the
+        // last chance before the segments go.
+        m_kept.capture_all();
         if ( m_hooks.on_end )
             m_hooks.on_end();
         set_current_trace(0);
@@ -120,6 +123,7 @@ namespace idattd
         end_travel_wait();
         // Everything that holds a cursor goes before the backend that made it.
         m_code.reset();
+        m_kept.reset();
         m_nav.reset();
         m_cursor.reset();
         m_modules.reset();
@@ -241,7 +245,8 @@ namespace idattd
 
         m_modules.bind(m_backend, m_is64, m_targetName.c_str());
         m_memory.bind(&m_modules);
-        m_code.bind(m_backend, &m_modules, &m_memory, m_is64);
+        m_kept.bind(&m_modules, &m_memory);
+        m_code.bind(m_backend, &m_modules, &m_memory, &m_kept, m_is64);
         m_layout.bind(&m_modules, m_is64);
 
         m_cursor = m_backend->make_cursor();
@@ -686,6 +691,11 @@ namespace idattd
         // nothing changes.
         {
             DiagTimer t("stop: memory layout");
+            // A new layout makes IDA rebuild its debugger segments, deleting
+            // every function in them: the user's work on those is copied
+            // first.
+            if ( m_layout.changes_at(m_cursor->position()) )
+                m_kept.capture_all();
             m_layout.refresh(m_cursor->position());
         }
 
@@ -711,6 +721,12 @@ namespace idattd
         {
             DiagTimer t("stop: code layout");
             m_code.on_stop(m_cursor.get(), program_counter());
+        }
+        {
+            // Before IDA decompiles the stop, so the pseudocode shows the
+            // names and types that came back.
+            DiagTimer t("stop: kept functions");
+            restore_kept();
         }
 
         // Tell the user when the movement ended at the first or last position.
@@ -803,6 +819,10 @@ namespace idattd
         // or trace edge, reported as a suspension).
         if ( event->eid() != BREAKPOINT && event->eid() != STEP && event->eid() != PROCESS_SUSPENDED )
             return DRC_OK;
+        // The movement can land where a function's bytes differ, and the
+        // stop's analysis then deletes it: what the user set on it while
+        // stopped is copied now.
+        m_kept.capture_dirty();
         if ( !m_nav )
             return DRC_OK;
 
@@ -955,8 +975,18 @@ namespace idattd
         return DRC_OK;
     }
 
+    bool TraceManager::restore_kept()
+    {
+        if ( !m_cursor || m_navigating || !m_kept.has_pending() )
+            return false;
+        return m_kept.restore_pending(m_cursor.get()) != 0;
+    }
+
     ssize_t TraceManager::on_exit_process()
     {
+        // The segments are still there; once the exit is reported, IDA
+        // deletes them.
+        m_kept.capture_all();
         m_events.add_process_exit(m_pid);
         return DRC_OK;
     }

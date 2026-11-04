@@ -65,6 +65,7 @@
     <ClInclude Include="$(SrcDir)\core\position.h" />
     <ClInclude Include="$(SrcDir)\core\diag.h" />
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h" />
+    <ClInclude Include="$(SrcDir)\debugger\kept_functions.h" />
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h" />
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h" />
     <ClInclude Include="$(SrcDir)\analysis\origin.h" />
@@ -109,6 +110,7 @@
     <ClCompile Include="$(SrcDir)\debugger\callconv.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\event_queue.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\code_analyzer.cpp" />
+    <ClCompile Include="$(SrcDir)\debugger\kept_functions.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\module_registry.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\registers.cpp" />

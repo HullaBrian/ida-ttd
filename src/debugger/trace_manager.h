@@ -7,6 +7,7 @@
 #include "debugger/module_registry.h"
 #include "debugger/memory_reader.h"
 #include "debugger/code_analyzer.h"
+#include "debugger/kept_functions.h"
 #include "debugger/segment_layout.h"
 #include "common/strings.h"
 
@@ -187,6 +188,13 @@ namespace idattd
         // Explicit, user-triggered deep analysis (CodeAnalyzer::analyze_whole_function).
         void                       analyze_whole_function();
 
+        // The user's work on functions outside every module, kept across
+        // sessions (KeptFunctions).
+        KeptFunctions             &kept() { return m_kept; }
+        // Apply what was kept to the functions defined since the last call.
+        // Only while stopped. True when anything was restored.
+        bool                       restore_kept();
+
     private:
         void   reset_session_state();
         // Replace the pending request with 'kind' and have IDA resume to carry
@@ -228,6 +236,7 @@ namespace idattd
         MemoryReader      m_memory;
         CodeAnalyzer      m_code;
         SegmentLayout     m_layout;
+        KeptFunctions     m_kept;
 
         ITraceBackend              *m_backend = nullptr;
         CursorPtr                   m_cursor;       // the playhead

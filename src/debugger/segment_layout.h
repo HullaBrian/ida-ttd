@@ -48,6 +48,11 @@ namespace idattd
         // Tell IDA to re-read the layout if the one at 'now' differs from what
         // it was last given. Called on every stop, hence the comparison.
         void refresh(Position now);
+        // Would refresh(now) make IDA rebuild its debugger segments?
+        bool changes_at(Position now) const
+        {
+            return m_haveLayout && !(build(now) == m_lastLayout);
+        }
 
     private:
         // The layout IDA should see at 'now'. The reference is to the fold

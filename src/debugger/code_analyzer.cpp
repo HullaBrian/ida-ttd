@@ -9,12 +9,13 @@ namespace idattd
     static const ea_t   MAX_INSN_LEN     = 15;        // longest x86 instruction
     static const size_t MAX_FAILED_DYN   = 4096;      // dynamic PCs remembered as not making a function
     void CodeAnalyzer::bind(ITraceBackend *backend, ModuleRegistry *modules,
-                            MemoryReader *memory, bool is64)
+                            MemoryReader *memory, KeptFunctions *kept, bool is64)
     {
         reset();
         m_backend = backend;
         m_modules = modules;
         m_memory  = memory;
+        m_kept    = kept;
         m_is64    = is64;
     }
 
@@ -23,6 +24,7 @@ namespace idattd
         m_backend = nullptr;
         m_modules = nullptr;
         m_memory  = nullptr;
+        m_kept    = nullptr;
         m_winLo          = BADADDR;
         m_winHi          = 0;
         m_calleeScanFunc = BADADDR;
@@ -572,6 +574,24 @@ namespace idattd
         // A PC where this already failed to make a function, with the same
         // bytes, would fail again after the same bounded frame query and
         // rebuild; only the cheap window layout is repeated.
+        // A function the user worked on in an earlier session (or before a
+        // travel rebuilt the segments), with these bytes: defined with its
+        // kept bounds, its work restored after the stop's analysis.
+        if ( m_kept != nullptr )
+        {
+            ea_t ks = m_kept->define_at(playhead, pc);
+            func_entry_info_t kfi;
+            if ( ks != BADADDR && get_func_start(pc) == ks && get_func_entry_info(&kfi, ks) )
+            {
+                m_dynFuncBytes[ks] = hash_mem(ks, DYN_HASH_BYTES);
+                qstring nm;
+                if ( get_func_name(&nm, ks) > 0 && !nm.empty() )
+                    set_debug_name(ks, nm.c_str());
+                define_callees(playhead, kfi.start_ea, kfi.end_ea);
+                return;
+            }
+        }
+
         // Code the function before it falls into: that function was cut short.
         ea_t grown = extend_into(playhead, pc, seg.start_ea);
         if ( grown != BADADDR )

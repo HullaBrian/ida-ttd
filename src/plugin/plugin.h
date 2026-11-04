@@ -80,6 +80,11 @@ namespace idattd
         // notification.
         void schedule_auto_coverage();
 
+        // Restore kept work on functions just defined outside the modules
+        // (KeptFunctions), from a timer: the definition is reported inside
+        // IDA's notification, where changing the function again is unsafe.
+        void schedule_kept_restore();
+
         // Install the decompiler hook if not installed yet. Cheap, idempotent,
         // and called from several places because Hex-Rays may load after this
         // plugin.
@@ -138,6 +143,7 @@ namespace idattd
         bool auto_coverage_wanted(ea_t start) const;
         bool auto_indirect_wanted(ea_t start) const;
         static int idaapi autocover_cb(void *ud);
+        static int idaapi kept_cb(void *ud);
         static int idaapi attach_cb(void *ud);  // timer body: wait for analysis, then offer
 
         // One TTD command, as registration, the menu and unregistration need
@@ -300,6 +306,7 @@ namespace idattd
         OneShotTimer    m_switchTimer;
         static int idaapi switch_cb(void *ud);
         OneShotTimer    m_pdbTimer;          // applies downloaded PDBs while paused
+        OneShotTimer    m_keptTimer;         // restores kept work (schedule_kept_restore)
         ea_t            m_autoCoverFunc  = BADADDR;   // function the timer will sweep
         std::set<ea_t>  m_autoCoverDeclined;
         bool            m_haveDecompiler = false;

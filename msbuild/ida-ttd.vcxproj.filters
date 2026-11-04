@@ -94,6 +94,9 @@
     <ClInclude Include="$(SrcDir)\debugger\code_analyzer.h">
       <Filter>debugger</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\debugger\kept_functions.h">
+      <Filter>debugger</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h">
       <Filter>debugger</Filter>
     </ClInclude>
@@ -226,6 +229,9 @@
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\code_analyzer.cpp">
+      <Filter>debugger</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\debugger\kept_functions.cpp">
       <Filter>debugger</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\memory_reader.cpp">

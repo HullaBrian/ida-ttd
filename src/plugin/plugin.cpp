@@ -202,6 +202,13 @@ namespace idattd
         // The backend DLLs (load_backend_modules lists where they are found).
         load_backend_modules();
         m_pdbTimer.arm(1000, pdb_poll_cb, this);
+        // Hex-Rays variable and comment edits mark their function for the
+        // kept-functions copy, as IDB events do for the rest.
+        set_function_edit_hook([](ea_t ea)
+        {
+            if ( g_live_plugin != nullptr )
+                g_live_plugin->manager().kept().note_changed(ea);
+        });
         // ttd("...") for scripts (plugin/script_api.h).
         install_script_api(this);
         // An idalib worker gets no ui_ready_to_run; there, IDAPython is
@@ -284,6 +291,8 @@ namespace idattd
         m_attachTimer.cancel();
         m_switchTimer.cancel();
         m_pdbTimer.cancel();
+        m_keptTimer.cancel();
+        set_function_edit_hook(nullptr);
         unhook_event_listener(HT_IDB, &m_idbEvents);
         unhook_event_listener(HT_UI,  &m_uiEvents);
         unhook_event_listener(HT_DBG, &m_dbgEvents);
@@ -1364,6 +1373,27 @@ namespace idattd
         m_srcProvidersOff.clear();
     }
 
+    int idaapi Plugin::kept_cb(void *ud)
+    {
+        Plugin *p = static_cast<Plugin *>(ud);
+        if ( !p->m_mgr.is_active() )
+            return -1;
+        // Only while stopped, as every database change from the recording.
+        if ( get_process_state() != DSTATE_SUSP || p->m_mgr.is_navigating() )
+            return 200;
+        if ( p->m_mgr.restore_kept() )
+        {
+            refresh_idaview_anyway();
+            redecompile_pseudocode_views();
+        }
+        return -1;
+    }
+
+    void Plugin::schedule_kept_restore()
+    {
+        m_keptTimer.arm(DEFER_MS, kept_cb, this);
+    }
+
     int idaapi Plugin::autocover_cb(void *ud)
     {
         static_cast<Plugin *>(ud)->do_auto_coverage();
@@ -1614,10 +1644,41 @@ namespace idattd
     {
         if ( p == nullptr || !p->manager().is_active() )
             return 0;
+        KeptFunctions &kept = p->manager().kept();
+        switch ( code )
+        {
+            // A function outside the modules may have been worked on before:
+            // its work comes back once the notification is over.
+            case idb_event::function_added:
+                if ( kept.note_added(va_arg(va, ea_t)) )
+                    p->schedule_kept_restore();
+                return 0;
+            // What the user can set on one, copied before the next movement.
+            case idb_event::ti_changed:
+            case idb_event::cmt_changed:
+            case idb_event::function_updated:
+                kept.note_changed(va_arg(va, ea_t));
+                return 0;
+            case idb_event::range_cmt_changed:
+            {
+                range_kind_t   kind = (range_kind_t)va_arg(va, int);
+                const range_t *r    = va_arg(va, const range_t *);
+                if ( kind == RANGE_KIND_FUNC && r != nullptr )
+                    kept.note_changed(r->start_ea);
+                return 0;
+            }
+            // A saved database must hold the work done so far.
+            case idb_event::savebase:
+                kept.capture_all();
+                return 0;
+            default:
+                break;
+        }
         if ( code == idb_event::renamed )
         {
             ea_t        ea       = va_arg(va, ea_t);
             const char *new_name = va_arg(va, const char *);
+            kept.note_changed(ea);
             // Debugger views (the call stack in particular) resolve
             // <name>+offset through the debug-name list, but exports and PDB
             // symbols only set IDB names, so frames showed raw addresses.

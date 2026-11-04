@@ -4,6 +4,7 @@
 #include "core/backend.h"
 #include "debugger/memory_reader.h"
 #include "debugger/module_registry.h"
+#include "debugger/kept_functions.h"
 
 namespace idattd
 {
@@ -40,7 +41,7 @@ namespace idattd
     {
     public:
         void bind(ITraceBackend *backend, ModuleRegistry *modules,
-                  MemoryReader *memory, bool is64);
+                  MemoryReader *memory, KeptFunctions *kept, bool is64);
         void reset();
 
         // The per-stop pipeline, for the function 'playhead' is standing in at
@@ -115,6 +116,7 @@ namespace idattd
         ITraceBackend              *m_backend = nullptr;
         ModuleRegistry             *m_modules = nullptr;
         MemoryReader               *m_memory  = nullptr;
+        KeptFunctions              *m_kept    = nullptr;
         bool                        m_is64    = false;
 
         ea_t m_winLo = BADADDR;          // last laid-out window range
