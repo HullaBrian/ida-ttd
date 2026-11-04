@@ -11,10 +11,10 @@ namespace idattd
     //=======================================================================
     // MemoryTimelineChooser
     //=======================================================================
-    static const int   g_mm_widths[] = { 16, 8, 11, 18, 20, 11, 32, 32 };
+    static const int   g_mm_widths[] = { 16, 8, 11, 18, 20, 11, 32, 32, 80 };
     static const char *g_mm_header[] = { "Position", "Thread", "Change",
                                          "Base", "Size", "Protection",
-                                         "Requested by", "API" };
+                                         "Requested by", "API", "Call chain" };
 
     // NtFreeVirtualMemory's "protection" argument is really its free type.
     static const uint32_t MEM_RELEASE_BIT  = 0x8000;
@@ -76,6 +76,18 @@ namespace idattd
         ea_t origin = chain_origin(m_mgr, c);
         cols->at(6) = origin != BADADDR ? describe_address(m_mgr, origin) : qstring();
         cols->at(7) = c.api != BADADDR ? describe_address(m_mgr, c.api) : qstring();
+        // Every recorded frame, innermost first. One call the program makes
+        // (loading a DLL, its malloc) can be behind dozens of changes that
+        // "Requested by" attributes alike; the library frames inside it, and
+        // the program's frames beyond it, are what tell them apart.
+        for ( uint8_t k = 0; k < c.chain_n; k++ )
+        {
+            if ( c.chain[k] == BADADDR )
+                continue;
+            if ( !cols->at(8).empty() )
+                cols->at(8).append(" <- ");
+            cols->at(8).append(describe_address(m_mgr, c.chain[k]));
+        }
     }
 
     ea_t idaapi MemoryTimelineChooser::get_ea(size_t n) const
@@ -350,10 +362,37 @@ namespace idattd
         return n < m_rows.size() ? m_rows[n].base : BADADDR;
     }
 
+    // The column of the cell double-clicked in the chooser titled 'title', -1
+    // when unknown: enter() is told the row only, and Qt knows the rest
+    // (scripts/ida_ttd_qt.py).
+    static int current_column(const char *title)
+    {
+        extlang_object_t py = find_extlang_by_name("Python");
+        idc_value_t rv;
+        qstring err, expr;
+        // The titles passed here are the plugin's own, with no quotes in them.
+        expr.sprnt("ida_ttd_qt.chooser_current_column('%s')", title);
+        if ( py != nullptr && py->eval_snippet != nullptr && py->eval_expr != nullptr
+          && py->eval_snippet("import ida_ttd_qt\n", &err)
+          && py->eval_expr(&rv, BADADDR, expr.c_str(), &err)
+          && rv.vtype == VT_LONG )
+        {
+            return (int)rv.num;
+        }
+        return -1;
+    }
+
+    static const int AM_COL_ALLOCATED = 6;      // "Allocated at"
+
+    // Double-click: on "Allocated at", travel there (as Ctrl+E); anywhere
+    // else, go to the region.
     chooser_t::cbret_t idaapi MemoryMapChooser::enter(size_t n)
     {
-        if ( n < m_rows.size() )
-            jumpto(m_rows[n].base);
+        if ( n >= m_rows.size() )
+            return cbret_t(n, NOTHING_CHANGED);
+        if ( current_column(TITLE) == AM_COL_ALLOCATED )
+            return edit(n);
+        jumpto(m_rows[n].base);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

@@ -3143,11 +3143,15 @@ namespace
     // Who asked for a recorded map change: the routine whose syscall made it
     // (the target of the call into the syscall stub, such as ntdll's
     // NtAllocateVirtualMemory) and the call sites that led there, innermost
-    // first and one per module crossed, as the Microsoft backend reports from
-    // the calls it watches. Sogen records the outcome, not the call, so the
-    // chain is walked back from the syscall instruction.
+    // first and one per library module crossed, but every frame in the
+    // program's own module ('main_base') and outside every module, as the
+    // Microsoft backend reports from the calls it watches: the program's
+    // innermost frame is often a helper every allocation goes through. Sogen
+    // records the outcome, not the call, so the chain is walked back from the
+    // syscall instruction.
     void syscall_chain(ttd::trace &t, uint64_t sys_step, uint32_t tid,
-                       const std::vector<std::pair<uint64_t, uint64_t>> &mods, ittd_mapping_change *m)
+                       const std::vector<std::pair<uint64_t, uint64_t>> &mods, uint64_t main_base,
+                       ittd_mapping_change *m)
     {
         static const uint64_t kWalk   = 1ull << 16;    // instructions back, per frame
         static const int      kFrames = 32;
@@ -3167,7 +3171,8 @@ namespace
         for ( int f = 0; call && f < kFrames && m->chain_n < ITTD_CHAIN_MAX; f++ )
         {
             size_t mi = module_of(call->ip);
-            if ( m->chain_n == 0 || mi != last )
+            const bool own = mi == (size_t)-1 || mods[mi].first == main_base;
+            if ( m->chain_n == 0 || mi != last || own )
             {
                 m->chain[m->chain_n++] = call->ip;
                 last = mi;
@@ -3201,6 +3206,8 @@ namespace
             std::vector<std::pair<uint64_t, uint64_t>> mods;
             for ( const ttd::module_entry &me : t.modules() )
                 mods.emplace_back(me.base, me.size);
+            const ttd::module_entry *mainm = main_module(t);
+            const uint64_t main_base = mainm != nullptr ? mainm->base : UINT64_MAX;
             const uint64_t start = first_position(t);
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [&](const ttd::memory_region &r)
@@ -3233,7 +3240,7 @@ namespace
                 if ( it != sys.end() && it->step == r.step )
                 {
                     m.call_pos = before_step(it->step);
-                    syscall_chain(reader.trace(), it->step, m.tid, mods, &m);
+                    syscall_chain(reader.trace(), it->step, m.tid, mods, main_base, &m);
                 }
                 return m;
             });

@@ -272,6 +272,14 @@ namespace idattd
             --lo;
             return ea < mods[lo].second ? lo : (size_t)-1;
         };
+        // The program's own module, whose frames a chain keeps all of.
+        size_t mainMod = (size_t)-2;
+        for ( const ModuleInfo &mi : backend->modules() )
+            if ( _stricmp(mi.name.c_str(), backend->info().main_module.c_str()) == 0 )
+            {
+                mainMod = module_of(mi.base);
+                break;
+            }
 
         std::vector<KernelCall> calls;
         bool truncated = false;
@@ -378,8 +386,12 @@ namespace idattd
                     {
                         // From the call into the stub (or the syscall itself,
                         // when the program made its own), then one frame per
-                        // module crossed: the innermost in each, the code
-                        // that called onward.
+                        // library module crossed: the innermost in each, the
+                        // code that called onward. In the program's own
+                        // module and in code outside every module, every
+                        // frame: the innermost there is often a helper (its
+                        // malloc) that every allocation goes through, and
+                        // only the frames beyond it tell the callers apart.
                         const std::vector<ShadowFrame> *sh = stack_for(k.utid);
                         if ( !sh->empty() )
                             k.frame_ret = sh->back().ret_addr;
@@ -396,7 +408,8 @@ namespace idattd
                             if ( k.stub != BADADDR && k.stub <= s && s < k.stub + kStubSpan )
                                 continue;
                             size_t mi = module_of(s);
-                            if ( k.chain_n != 0 && mi == lastMod )
+                            const bool own = mi == mainMod || mi == (size_t)-1;
+                            if ( k.chain_n != 0 && mi == lastMod && !own )
                                 continue;
                             k.chain[k.chain_n++] = s;
                             lastMod = mi;

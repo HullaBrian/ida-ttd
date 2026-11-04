@@ -283,10 +283,16 @@ region's base, size, protection, type and use, with writable-and-executable
 memory in bold and executable memory outside every loaded module (code the
 program allocated or mapped itself) coloured; the `memmap_flag_code` setting
 turns the colour off. It follows the playhead as you step. Double-click a region to go
-to it; Ctrl+E travels to where it was allocated.
+to it, or its "Allocated at" position to travel there (Ctrl+E does the same from any
+column).
 
 **TTD > Memory > Memory timeline** lists every allocation, protection change
-and free in order, with the code that requested it. Building it replays the
+and free in order, with the program code that requested it (the first frame
+outside library code) and the whole recorded call chain, innermost first: when
+one call of the program (loading a DLL, its malloc) is behind many changes, the
+library frames inside it and the program's frames beyond it tell them apart.
+The chain holds the innermost frame in each library module crossed and every
+frame in the program, up to eight. Building it replays the
 recording once and is saved in the database. Regions live at the current
 position become named IDA segments with their real permissions, so an RWX
 buffer is visible as one.

@@ -315,6 +315,8 @@ namespace idattd
     static const uchar MM_TAG     = 'M';
     static const uint32_t MM_MAGIC   = 0x50414D54;   // 'TMAP'
     // A map of any other version is rebuilt, not shown:
+    // 10: the chain keeps every frame in the program and outside modules,
+    //     so the listing can tell callers of one allocation helper apart.
     // 9: a Microsoft TTD change with no call chain carries its calling
     //    instruction as a one-frame chain, so a v8 map shows no caller there.
     // 8: RC_STATE entries, with their state, region type and allocation base.
@@ -326,7 +328,7 @@ namespace idattd
     // 2: RegionChange::pc is the caller, and the stack-argument offset comes
     //    from the stack rather than being assumed, so an older map can hold a
     //    wrong Protect value.
-    static const uint32_t MM_VERSION = 9;
+    static const uint32_t MM_VERSION = 10;
     // A recording that allocates in a loop can produce very many changes; past
     // this cap more rows add nothing, and the blob must fit the database.
     static const size_t MM_MAX_ITEMS = 200000;
@@ -516,7 +518,8 @@ namespace idattd
         // A PDB only where that code is in a library: there exports name the
         // wrong function (allocations come from internal helpers). Applying a
         // PDB blocks IDA (combase's takes a dozen seconds), so libraries the
-        // chains merely pass through get none.
+        // chains merely pass through get exports only, for the call chain
+        // column.
         {
             std::set<ea_t> exports, pdbs;
             for ( const RegionChange &c : changes )
@@ -524,6 +527,9 @@ namespace idattd
                 ea_t lo = 0, hi = 0;
                 if ( c.api != BADADDR && mgr->modules().range_at(c.api, lo, hi) )
                     exports.insert(lo);
+                for ( uint8_t k = 0; k < c.chain_n; k++ )
+                    if ( c.chain[k] != BADADDR && mgr->modules().range_at(c.chain[k], lo, hi) )
+                        exports.insert(lo);
                 ea_t origin = chain_origin(mgr, c);
                 if ( origin != BADADDR && mgr->modules().range_at(origin, lo, hi) )
                 {

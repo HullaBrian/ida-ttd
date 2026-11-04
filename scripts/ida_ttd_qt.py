@@ -63,6 +63,25 @@ def set_submenu_icon(menu, label, svg):
                 a.setIcon(QtGui.QIcon(pix))
 
 
+def chooser_current_column(title):
+    """The column of the current cell in the chooser titled 'title', -1 when
+    unknown. A double-click makes the clicked cell current before IDA calls
+    the chooser's enter(), which is told the row only."""
+    if QtWidgets is None:
+        return -1
+    import ida_kernwin
+    tw = ida_kernwin.find_widget(title)
+    if tw is None:
+        return -1
+    w = ida_kernwin.PluginForm.TWidgetToPySideWidget(tw)
+    if w is None:
+        return -1
+    for v in w.findChildren(QtWidgets.QAbstractItemView):
+        if shiboken6.isValid(v) and v.currentIndex().isValid():
+            return v.currentIndex().column()
+    return -1
+
+
 def theme_is_dark():
     """1 when IDA's theme is dark (Qt's palette), 0 when light or unknown."""
     app = QtWidgets.QApplication.instance() if QtWidgets is not None else None
