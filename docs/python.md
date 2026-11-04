@@ -150,7 +150,6 @@ s.origin("rdi", at=hop["by_pos"])   # follow one of them
 ```
 
 For memory, pass the input's address and size: `s.origin(i["addr"], i["size"], at=...)`.
-In the listing, Ctrl+E on a row does the same, appending the new chain.
 
 Or every chain at once, as the value origin graph draws it:
 

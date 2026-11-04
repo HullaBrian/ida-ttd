@@ -206,7 +206,6 @@ namespace idattd
         RereadHandler             m_reread;
         MemoryMapHandler          m_memMap;
         MemoryTimelineHandler     m_memTimeline;
-        ValueOriginHandler        m_valueOrigin;
         OriginGraphHandler        m_originGraph;
         HandlesHandler            m_handles;
         HeatmapHandler            m_heatmap;

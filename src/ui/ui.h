@@ -245,32 +245,6 @@ namespace idattd
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
     };
 
-    // Where a value came from: one row per hop, from the value asked about
-    // back to where it was made. Enter travels to the instruction that set
-    // the row's value, before it ran.
-    class ValueOriginChooser : public chooser_t
-    {
-    public:
-        ValueOriginChooser(TraceManager *mgr, std::vector<OriginHop> &&hops);
-        ~ValueOriginChooser() override;
-
-        size_t  idaapi get_count() const override;
-        void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        ea_t    idaapi get_ea(size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
-        // Edit (Ctrl+E): follow a value the row's instruction read, as a new
-        // chain appended to the list.
-        cbret_t idaapi edit(size_t n) override;
-
-    private:
-        TraceManager          *m_mgr;
-        std::vector<OriginHop> m_hops;
-        // For the first row of a chain added by edit(): the row whose
-        // instruction read it. -1 for every other row.
-        std::vector<ssize_t>   m_input_of;
-        qstring                m_title;  // owned: chooser_base_t keeps the pointer
-    };
-
     // The handles the program opened and closed. Enter travels to where one
     // was opened; Edit (Ctrl+E) to where it was closed.
     class HandlesChooser : public chooser_t
@@ -470,15 +444,10 @@ namespace idattd
 
     // Where did this value come from? A register (the registers window, or
     // one under the cursor) or memory (the hex view's selection, or data
-    // under the cursor), else asked for.
-    struct ValueOriginHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
-    // The same as a graph: every chain at once, following each input of an
-    // instruction that combined several values. From a value-origin listing's
-    // context menu it graphs the listing's starting value.
+    // under the cursor), else asked for, graphed: every chain at once,
+    // following each input of an instruction that combined several values.
     struct OriginGraphHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
-    bool is_value_origin_listing(TWidget *w);
     // Build the graph of 'what' as of 'at' and show it (the action, without
     // asking: ttd("ui.origingraph")).
     void show_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at);
@@ -633,7 +602,6 @@ namespace idattd
         constexpr const char *BUFFERS       = "idattd:recover_buffers";
         constexpr const char *MEM_MAP       = "idattd:memory_map";
         constexpr const char *MEM_TIMELINE  = "idattd:memory_timeline";
-        constexpr const char *VALUE_ORIGIN  = "idattd:value_origin";
         constexpr const char *ORIGIN_GRAPH  = "idattd:origin_graph";
         constexpr const char *HANDLES       = "idattd:handles";
         constexpr const char *HEATMAP       = "idattd:heatmap";

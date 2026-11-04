@@ -71,14 +71,12 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
 - Every handle the program opened and closed -- files, registry keys,
   sockets, pipes, processes, threads, sections and the rest -- with its name,
   where it was opened and where it was closed.
-- Where a value came from: a register or memory followed back through the
-  instructions that copied it -- moves, pushes and pops, string and SSE copies
-  -- and through computations made from a single value (`lea rax, [rdi+0Dh]`,
-  `inc rdi`), to the instruction that combined several values, a constant, or
-  the syscall whose result it was. There, Ctrl+E in the list follows the value
-  you pick, and so on back. Or see it all at once as a graph (Ctrl+Shift+Alt+W):
-  every value an instruction combined is followed, down to the constants,
-  syscalls and untouched memory it was made of.
+- Where a value came from (Ctrl+Shift+W), as a graph: a register or memory
+  followed back through the instructions that copied it -- moves, pushes and
+  pops, string and SSE copies -- and through computations made from a single
+  value (`lea rax, [rdi+0Dh]`, `inc rdi`). Every value an instruction combined
+  is followed in turn, down to the constants, syscalls and untouched memory it
+  was made of. Double-click a value to go to where it was written.
 - A memory heatmap: which pages the program read, wrote and ran from, and when.
   Drag across it, or type a start and end position, to count a shorter span
   at full resolution; Back and Whole recording zoom out again.

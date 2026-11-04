@@ -407,12 +407,8 @@ namespace idattd
             { actions::MEM_SEARCH, "Find memory accesses...", &m_memSearch, "Ctrl+Shift+M",
               "Find memory accesses: every read, write or execute of an address",
               m_icons[ICO_MEMORY], ITEM, MENU },
-            { actions::VALUE_ORIGIN, "Where did this value come from?...", &m_valueOrigin, "Ctrl+Shift+W",
-              "Where did this value come from: follow a register or memory back to where it was made",
-              m_icons[ICO_ORIGIN], ITEM, MENU },
-            { actions::ORIGIN_GRAPH, "Graph where this value came from...", &m_originGraph,
-              "Ctrl+Shift+Alt+W",
-              "Graph where this value came from: every chain back to its constants, syscalls and inputs",
+            { actions::ORIGIN_GRAPH, "Where did this value come from?...", &m_originGraph, "Ctrl+Shift+W",
+              "Where did this value come from: a graph of every chain back to its constants, syscalls and inputs",
               m_icons[ICO_ORIGIN], ITEM, MENU },
 
             // What the program did, over the whole recording: the system
@@ -1582,11 +1578,8 @@ namespace idattd
                 // Where a register's or memory's value came from.
                 if ( wt == BWN_CPUREGS || wt == BWN_HEXVIEW || wt == BWN_DISASM )
                 {
-                    attach_action_to_popup(widget, popup, actions::VALUE_ORIGIN, "TTD/");
                     attach_action_to_popup(widget, popup, actions::ORIGIN_GRAPH, "TTD/");
                 }
-                if ( is_value_origin_listing(widget) )
-                    attach_action_to_popup(widget, popup, actions::ORIGIN_GRAPH);
                 break;
             }
             case ui_ready_to_run:
