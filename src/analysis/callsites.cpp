@@ -84,26 +84,45 @@ namespace idattd
         return true;
     }
 
+    static bool named_type(qstring name, tinfo_t *out);
+
+    // The export the recording names at 'ea' ("WININET!InternetConnectA"),
+    // module dropped; empty when none.
+    static qstring export_name(TraceManager *mgr, ea_t ea)
+    {
+        qstring name = mgr != nullptr ? mgr->modules().export_name_at(ea) : qstring();
+        size_t bang = name.find('!');
+        if ( bang != qstring::npos )
+            name.remove(0, bang + 1);
+        return name;
+    }
+
     // The prototype of a called function: its own type (from a PDB or the
     // user), else the type library's entry for its name, as for an API export
-    // such as CreateFileW. A "_0"-style suffix IDA adds to a second export of
-    // a taken name is not part of the API's name and is dropped.
+    // such as CreateFileW.
     static bool callee_type(TraceManager *mgr, ea_t target, tinfo_t *out)
     {
         if ( get_tinfo(out, target) && out->is_func() )
             return true;
-        // IDA's name for the target, else the export the recording names there
-        // ("WININET!InternetConnectA", module dropped). The latter matters when
-        // system DLLs are debugger segments: one not loaded at the playhead has
-        // no segment and so no IDA name.
-        qstring name;
-        if ( get_name(&name, target) <= 0 || name.empty() )
-        {
-            name = mgr != nullptr ? mgr->modules().export_name_at(target) : qstring();
-            size_t bang = name.find('!');
-            if ( bang != qstring::npos )
-                name.remove(0, bang + 1);
-        }
+        // The export the recording names there first, then IDA's name. The
+        // export is the API's own name: IDA's may come from a PDB that calls
+        // it something else (kernel32's VirtualAlloc is VirtualAllocStub
+        // there), which no type library knows, and a system DLL that is a
+        // debugger segment not loaded at the playhead has no IDA name at all.
+        const qstring exp = export_name(mgr, target);
+        qstring ida;
+        if ( get_name(&ida, target) <= 0 )
+            ida.qclear();
+        if ( !exp.empty() && named_type(exp, out) )
+            return true;
+        return !ida.empty() && ida != exp && named_type(ida, out);
+    }
+
+    // The prototype for an API by name: the type library's entry, else one
+    // built from the API metadata. A "_0"-style suffix IDA adds to a second
+    // export of a taken name is not part of the API's name and is dropped.
+    static bool named_type(qstring name, tinfo_t *out)
+    {
         if ( name.empty() )
             return false;
         const qstring full_name = name;
@@ -215,14 +234,10 @@ namespace idattd
 
         if ( !has_user_name(get_flags(ptr)) )      // off_X, qword_X: IDA's own
         {
-            qstring api;
-            if ( get_name(&api, target) <= 0 || api.empty() )
-            {
-                api = mgr != nullptr ? mgr->modules().export_name_at(target) : qstring();
-                size_t bang = api.find('!');
-                if ( bang != qstring::npos )
-                    api.remove(0, bang + 1);
-            }
+            // The export's name first, as for its type (callee_type).
+            qstring api = export_name(mgr, target);
+            if ( api.empty() && get_name(&api, target) <= 0 )
+                api.qclear();
             // Drop IDA's "_0"-style suffix for a second export of a taken name
             // (kernel32's VirtualAlloc_0 forwards to kernelbase's), unless the
             // plain name is already used.
