@@ -227,36 +227,69 @@ namespace idattd
                 sc_cache->listed = !(sink != nullptr && sink->cancelled());
             }
             const std::vector<SyscallEvent> &calls = sc_cache->calls;
-            size_t checked = 0;
-            for ( auto it = calls.rbegin(); it != calls.rend() && checked < kSyscallsChecked; ++it )
+            // The candidates, newest first: syscalls before 'at' and after the
+            // program's own write.
+            std::vector<const SyscallEvent *> cand;
+            for ( auto it = calls.rbegin(); it != calls.rend() && cand.size() < kSyscallsChecked; ++it )
             {
                 if ( !(it->pos < at) )
                     continue;
                 if ( s->found && !(s->pos < it->pos) )
                     break;
-                if ( sink != nullptr && sink->cancelled() )
-                    return;
-                checked++;
-                CursorPtr c = b->make_cursor();
-                if ( !c || !c->seek(it->pos) )
-                    continue;
-                const bytevec_t before = read_value(c.get(), t, 0);
-                const ea_t      sys_pc = c->program_counter();
-                std::unique_ptr<INavigator> n = b->make_navigator(c.get());
-                if ( !n || n->step(true) != StopReason::Stepped )
-                    continue;
-                const bytevec_t after = read_value(c.get(), t, 0);
-                if ( after == value && before != after )
+                cand.push_back(&*it);
+            }
+            if ( cand.empty() || t.is_reg || t.size == 0 )
+                return;
+            // The value at each syscall and one position after it, in one
+            // batched read: a cursor, a seek and a step per candidate was
+            // about 600 seeks a hop on Microsoft TTD (17 ms each), and a
+            // graph repeats it per node. Memory is the process's, so "one
+            // position after" is after the syscall whichever thread runs
+            // next (the handle listing reads out parameters the same way).
+            std::vector<MemAt> reads;
+            reads.reserve(cand.size() * 2);
+            for ( size_t i = 0; i < cand.size(); i++ )
+                for ( int side = 0; side < 2; side++ )
                 {
-                    s->system   = true;
-                    s->sys_pos  = it->pos;
-                    s->sys_name = it->name.empty() ? qstring("a syscall") : it->name;
-                    s->found    = true;
-                    s->pos      = it->pos;
-                    s->pc       = sys_pc;
-                    s->tid      = it->tid;
-                    return;
+                    MemAt m;
+                    m.pos    = side == 0 ? cand[i]->pos : b->position_add(cand[i]->pos, 1);
+                    m.addr   = t.addr;
+                    m.size   = t.size;
+                    m.offset = reads.size() * t.size;
+                    reads.push_back(m);
                 }
+            std::vector<uint8_t> data, known;
+            const QueryResult rq = b->read_memory_at(reads, &data, &known, sink);
+            if ( rq.cancelled || !rq.ran || data.size() < reads.size() * t.size )
+                return;
+            auto value_in = [&](size_t r) -> bytevec_t
+            {
+                bytevec_t v;
+                const size_t off = r * t.size;
+                for ( size_t j = 0; j < t.size; j++ )
+                    if ( known[off + j] == ITTD_KNOWN_NO )
+                        return bytevec_t();
+                v.append(data.data() + off, t.size);
+                return v;
+            };
+            for ( size_t i = 0; i < cand.size(); i++ )
+            {
+                const bytevec_t before = value_in(2 * i), after = value_in(2 * i + 1);
+                if ( after.empty() || after != value || before == after )
+                    continue;
+                // Only the match needs a cursor: for its instruction.
+                ea_t sys_pc = BADADDR;
+                CursorPtr c = b->make_cursor();
+                if ( c && c->seek(cand[i]->pos) )
+                    sys_pc = c->program_counter();
+                s->system   = true;
+                s->sys_pos  = cand[i]->pos;
+                s->sys_name = cand[i]->name.empty() ? qstring("a syscall") : cand[i]->name;
+                s->found    = true;
+                s->pos      = cand[i]->pos;
+                s->pc       = sys_pc;
+                s->tid      = cand[i]->tid;
+                return;
             }
         }
 
