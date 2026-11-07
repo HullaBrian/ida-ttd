@@ -23,6 +23,7 @@
 #include "backend-msttd/msttd_sweep.h"
 #include "backend-msttd/msttd_host.h"
 #include "common/write_scans.h"
+#include <chrono>
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -200,6 +201,12 @@ namespace idattd
         // ---- 1: where the program writes ------------------------------------
         Ranges written;
         bool   capped = false;
+        // ITTD_MSTTD_SCAN_STATS=1: how large the engine's write events get,
+        // on stderr. Pass 2 takes at most 4096 bytes of a write; this says
+        // whether a recording ever has a larger one. Callbacks run one at a
+        // time (msttd_sweep replays segments sequentially).
+        const bool stats = getenv("ITTD_MSTTD_SCAN_STATS") != nullptr;
+        uint64_t writes = 0, over_4k = 0, largest = 0;
         {
             UniqueCursor cur = new_engine_cursor();
             if ( !cur )
@@ -208,6 +215,14 @@ namespace idattd
             {
                 if ( w.AccessType != DataAccessType::Write )
                     return false;
+                if ( stats )
+                {
+                    writes++;
+                    if ( w.Size > 4096 )
+                        over_4k++;
+                    if ( w.Size > largest )
+                        largest = w.Size;
+                }
                 try
                 {
                     add_range(written, (uint64_t)w.Address, (uint64_t)w.Address + w.Size, 16);
@@ -227,8 +242,15 @@ namespace idattd
             cur->SetEventMask(EventMask::MemoryWatchpoint);
             cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
             ScaledProgress stage(progress, 0, 30);
+            const auto t_pass = std::chrono::steady_clock::now();
             bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
+            if ( stats )
+                fprintf(stderr, "[msttd scans] %s: %.1f s\n", "pass 1",
+                        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count());
             cur->SetMemoryWatchpointCallback(nullptr, 0);
+            if ( stats )
+                fprintf(stderr, "[msttd scans] %llu write event(s), %llu over 4096 bytes, largest %llu\n",
+                        (unsigned long long)writes, (unsigned long long)over_4k, (unsigned long long)largest);
             if ( !complete )
             {
                 qr->cancelled = true;
@@ -400,7 +422,11 @@ namespace idattd
         cur->SetEventMask(EventMask::MemoryWatchpoint);
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
         ScaledProgress stage(progress, 30, 60);
+        const auto t_pass = std::chrono::steady_clock::now();
         bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
+        if ( stats )
+            fprintf(stderr, "[msttd scans] %s: %.1f s\n", "pass 2",
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count());
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         if ( !complete )
         {
