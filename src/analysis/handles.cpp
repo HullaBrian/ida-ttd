@@ -1,5 +1,6 @@
 #include "analysis/handles.h"
 #include "analysis/query_runner.h"
+#include "analysis/batched_memory.h"
 #include "analysis/syscalls.h"
 #include "analysis/trace_store.h"
 #include "debugger/trace_manager.h"
@@ -87,28 +88,21 @@ namespace idattd
             return nullptr;
         }
 
-        // Reads at one position of the recording, in the program's sizes.
+        // Reads at one position of the recording, in the program's sizes,
+        // through a BatchedMemory reader (use()): a cursor seek per syscall
+        // cost about 17 ms each on Microsoft TTD.
         class Reader
         {
         public:
-            Reader(ITraceBackend *b, bool wide) : m_b(b), m_wide(wide), m_cur(b->make_cursor()) {}
-            bool ok() const { return m_cur != nullptr; }
+            explicit Reader(bool wide) : m_wide(wide) {}
+            void use(GuestRead read) { m_read = std::move(read); }
             size_t ptr_size() const { return m_wide ? 8 : 4; }
-
-            bool at(Position p)
-            {
-                if ( m_have && m_pos == p )
-                    return true;
-                m_have = m_cur->seek(p);
-                m_pos  = p;
-                return m_have;
-            }
 
             bool read(uint64_t addr, void *buf, size_t n)
             {
-                if ( addr == 0 || !m_have )
+                if ( addr == 0 || !m_read )
                     return false;
-                return m_cur->read_memory((ea_t)addr, buf, n, &m_known) == n;
+                return m_read(addr, buf, n) == n;
             }
 
             uint64_t ptr(uint64_t addr)
@@ -145,12 +139,8 @@ namespace idattd
             }
 
         private:
-            ITraceBackend *m_b;
-            bool           m_wide;
-            CursorPtr      m_cur;
-            Position       m_pos;
-            bool           m_have = false;
-            std::vector<uint8_t> m_known;   // read_memory's mask, kept to reuse its buffer
+            bool      m_wide;
+            GuestRead m_read;
         };
 
         bool success(uint64_t status) { return (int32_t)(uint32_t)status >= 0; }
@@ -319,12 +309,8 @@ namespace idattd
                 return r;
             }
 
-            Reader rd(b, wide);
-            if ( !rd.ok() )
-            {
-                r.ran = false;
-                return r;
-            }
+            BatchedMemory mem;
+            Reader rd(wide);
             auto arg = [&](const ittd_regs &g, int n) -> uint64_t
             {
                 if ( wide )
@@ -349,6 +335,10 @@ namespace idattd
                 int          slot = -1;         // index into 'slots'
                 HandleRecord rec2;              // NtCreateUserProcess: its thread
                 int          slot2 = -1;
+                // Where the call's handles go, and what was there before:
+                // read during the rounds, made into slots once they are done.
+                uint64_t     out_addr = 0, out_before = 0;
+                uint64_t     out2_addr = 0, out2_before = 0;
                 uint64_t     handle = 0;        // Close: the handle
                 uint64_t     root = 0;          // the name is relative to this handle
                 uint64_t     file = 0;          // a section's file handle
@@ -357,37 +347,21 @@ namespace idattd
             };
             std::vector<Pending> pend;
             std::vector<OutSlot> slots;
-            auto add_slot = [&](const SyscallEvent &sc, uint64_t addr) -> int
+            std::vector<Pending> per_call(idx.size());
+            std::vector<char>    made(idx.size(), 0);
+            // One call, decoded afresh each round (decode_in_rounds runs it
+            // again once the memory it missed has been fetched).
+            auto decode_call = [&](size_t k)
             {
-                if ( addr == 0 )
-                    return -1;
-                OutSlot s;
-                s.call   = sc.pos;
-                s.addr   = (ea_t)addr;
-                s.before = rd.ptr(addr);
-                s.tid    = sc.tid;
-                s.width  = (uint32_t)rd.ptr_size();
-                slots.push_back(s);
-                return (int)slots.size() - 1;
-            };
-
-            for ( size_t k = 0; k < idx.size(); k++ )
-            {
-                if ( (k & 63) == 0 && sink != nullptr )
-                {
-                    if ( sink->cancelled() )
-                    {
-                        r.cancelled = true;
-                        return r;
-                    }
-                    sink->report(uint32_t(30 + k * 30 / std::max<size_t>(idx.size(), 1)));
-                }
-                if ( k >= regs.size() || (regs[k].have & ITTD_REGS_GP) == 0 )
-                    continue;
                 const SyscallEvent &sc = calls[idx[k]];
                 const ittd_regs &g = regs[k];
-                if ( !rd.at(sc.pos) )
-                    continue;
+                rd.use(mem.reader(sc.pos));
+                auto add_slot = [&](uint64_t addr, uint64_t *where, uint64_t *before) -> int
+                {
+                    *where  = addr;
+                    *before = addr != 0 ? rd.ptr(addr) : 0;
+                    return addr != 0 ? 0 : -1;      // numbered once the rounds are done
+                };
 
                 Pending p;
                 p.rec.opened    = sc.pos;
@@ -411,7 +385,7 @@ namespace idattd
                     if ( !p.dup_from_us )
                         p.rec.name.sprnt("handle 0x%llX of another process", (unsigned long long)p.dup_src);
                     if ( p.dup_into_us )
-                        p.slot = add_slot(sc, arg(g, 3));
+                        p.slot = add_slot(arg(g, 3), &p.out_addr, &p.out_before);
                 }
                 else if ( sc.name == "NtCreateUserProcess" )
                 {
@@ -427,8 +401,8 @@ namespace idattd
                     p.rec2.access = (uint32_t)arg(g, 3);
                     if ( !image.empty() )
                         p.rec2.name = qstring("first thread of ") + image;
-                    p.slot  = add_slot(sc, arg(g, 0));
-                    p.slot2 = add_slot(sc, arg(g, 1));
+                    p.slot  = add_slot(arg(g, 0), &p.out_addr, &p.out_before);
+                    p.slot2 = add_slot(arg(g, 1), &p.out2_addr, &p.out2_before);
                 }
                 else
                 {
@@ -462,8 +436,43 @@ namespace idattd
                         else if ( l.find("\\pipe\\") != qstring::npos || l.find("\\device\\namedpipe") == 0 )
                             hr.type = "Pipe";
                     }
-                    p.slot = add_slot(sc, arg(g, m->out));
+                    p.slot = add_slot(arg(g, m->out), &p.out_addr, &p.out_before);
                 }
+                per_call[k] = std::move(p);
+                made[k]     = 1;
+            };
+            std::vector<size_t> with_regs;
+            for ( size_t k = 0; k < idx.size(); k++ )
+                if ( k < regs.size() && (regs[k].have & ITTD_REGS_GP) != 0 )
+                    with_regs.push_back(k);
+            if ( !decode_in_rounds(mem, b, sink, with_regs, decode_call, 30, 60) )
+            {
+                r.cancelled = true;
+                return r;
+            }
+            // The out slots, numbered in call order now that each call's
+            // reads are final.
+            auto number_slot = [&](const SyscallEvent &sc, uint64_t addr, uint64_t before) -> int
+            {
+                if ( addr == 0 )
+                    return -1;
+                OutSlot s;
+                s.call   = sc.pos;
+                s.addr   = (ea_t)addr;
+                s.before = before;
+                s.tid    = sc.tid;
+                s.width  = (uint32_t)rd.ptr_size();
+                slots.push_back(s);
+                return (int)slots.size() - 1;
+            };
+            for ( size_t k = 0; k < idx.size(); k++ )
+            {
+                if ( !made[k] )
+                    continue;
+                Pending &p = per_call[k];
+                const SyscallEvent &sc = calls[idx[k]];
+                p.slot  = p.slot  >= 0 ? number_slot(sc, p.out_addr, p.out_before) : -1;
+                p.slot2 = p.slot2 >= 0 ? number_slot(sc, p.out2_addr, p.out2_before) : -1;
                 pend.push_back(std::move(p));
             }
 
@@ -473,19 +482,24 @@ namespace idattd
             if ( !b->query_out_values(slots, &values, &outs_stage) )
             {
                 // The backend has the kernel's writes where they happen: read
-                // the slot one position after the call.
+                // the slot one position after the call, batched like the rest.
                 values.assign(slots.size(), std::nullopt);
+                std::vector<size_t> all(slots.size());
+                std::vector<Position> one_on(slots.size());
                 for ( size_t i = 0; i < slots.size(); i++ )
                 {
-                    if ( (i & 63) == 0 )
-                    {
-                        if ( outs_stage.cancelled() )
-                            break;
-                        outs_stage.report(uint32_t(i * 100 / slots.size()));
-                    }
-                    if ( rd.at(b->position_add(slots[i].call, 1)) )
-                        values[i] = rd.ptr(slots[i].addr);
+                    all[i]    = i;
+                    one_on[i] = b->position_add(slots[i].call, 1);
                 }
+                decode_in_rounds(mem, b, &outs_stage, all, [&](size_t i)
+                {
+                    rd.use(mem.reader(one_on[i]));
+                    uint64_t v = 0;
+                    if ( rd.read(slots[i].addr, &v, rd.ptr_size()) )
+                        values[i] = v;
+                    else
+                        values[i] = std::nullopt;
+                }, 0, 100);
             }
             if ( sink != nullptr && sink->cancelled() )
             {

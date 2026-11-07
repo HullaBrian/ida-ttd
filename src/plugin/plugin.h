@@ -111,8 +111,13 @@ namespace idattd
         void reopen_fork_manager();
         // Start replaying 'path' (a fork of this database's recording). False
         // when the debugger could not be selected.
-        bool start_trace_at(const char *path);
-        void start_trace_session();     // the action body; no prompting
+        // 'quiet' shows no dialog (a script's call: a modal box would hang it).
+        bool start_trace_at(const char *path, bool quiet = false);
+        // The action body. With 'error' (a script's call) nothing is shown or
+        // asked: a failure, or a recording that moved, is returned in it
+        // instead of a dialog, which would hang the script. True when the
+        // process was started.
+        bool start_trace_session(qstring *error = nullptr);
         // Point IDA's debugger at this plugin and the trace, so Debugger >
         // Process options and Start process are correct whether or not the
         // replay starts now. False when the debugger could not be selected.

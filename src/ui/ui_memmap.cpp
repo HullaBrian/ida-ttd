@@ -193,25 +193,17 @@ namespace idattd
         if ( ask_yn(ASKBTN_YES, "%s", q.c_str()) != ASKBTN_YES )
             return false;
 
+        // The session's map, which IDA's segments and the scripts read too;
+        // saved and handed to IDA there.
         bool cancelled = false;
-        if ( !build_memory_map(mgr, &map, &cancelled) )
+        if ( !session_memory_map(mgr, false, &cancelled) )
             return false;
-        if ( map.empty() )
+        if ( mgr->memmap_for_update().empty() )
         {
             info("The recording made no memory allocations, protection changes "
                  "or frees that could be recovered.");
             return false;
         }
-        if ( !cancelled )
-            map.save(mgr->trace_fingerprint());
-        else
-            msg("[ida-ttd] memory map: the sweep was cancelled, so the partial "
-                "map is used for this session but not saved.\n");
-
-        // IDA has been treating all of user space as one segment; the regions
-        // at the current position are new to it.
-        invalidate_dbgmem_config();
-        refresh_idaview_anyway();
         return true;
     }
 

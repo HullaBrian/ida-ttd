@@ -812,7 +812,11 @@ namespace idattd
     {
         if ( get_process_state() != DSTATE_NOTASK )
             fail("a debugging session is already running");
-        g_plugin->start_trace_session();
+        // No dialogs from a script: a modal box (the recording moved, the
+        // debugger cannot be selected) would hang the caller.
+        qstring err;
+        if ( !g_plugin->start_trace_session(&err) )
+            fail("%s", err.c_str());
         wait_stop(a, 0, out);
     }
 
@@ -823,6 +827,9 @@ namespace idattd
     static void cmd_switch(const Args &a, JObj &out)
     {
         qstring path = a.at(0);
+        // Before ending anything: a mistyped path must not cost the session.
+        if ( !qfileexist(path.c_str()) )
+            fail("there is no recording at %s", path.c_str());
         if ( get_process_state() != DSTATE_NOTASK )
         {
             exit_process();
@@ -830,8 +837,8 @@ namespace idattd
         }
         if ( get_process_state() != DSTATE_NOTASK )
             fail("the running session did not end");
-        if ( !g_plugin->start_trace_at(path.c_str()) )
-            fail("the TTD debugger could not be selected for %s", path.c_str());
+        if ( !g_plugin->start_trace_at(path.c_str(), true) )
+            fail("the replay of %s did not start (see the output window)", path.c_str());
         Args rest;
         rest.v.push_back(a.v[0]);
         for ( size_t i = 1; i < a.count(); i++ )
@@ -1498,11 +1505,22 @@ namespace idattd
     static void cmd_an_memmap(const Args &a, JObj &out)
     {
         need_session();
-        uint64_t max = a.u64_or(0, 40);
-        MemoryMap mm;
+        // The session's map, as the Memory map window and IDA's segments
+        // have it: built when there is none, again with 'rebuild'.
+        bool rebuild = false;
+        uint64_t max = 40;
+        for ( size_t i = 0; i < a.count(); i++ )
+        {
+            if ( a.at(i) == "rebuild" )
+                rebuild = true;
+            else
+                max = a.u64(i);
+        }
         bool cancelled = false;
-        if ( !build_memory_map(&mgr(), &mm, &cancelled) )
-            fail("the memory map was not built");
+        qstring err;
+        if ( !session_memory_map(&mgr(), rebuild, &cancelled, &err) )
+            fail("%s", err.c_str());
+        const MemoryMap &mm = mgr().memmap_for_update();
         // The regions as they stand at the playhead.
         std::vector<Region> regions;
         mm.state_at(mgr().current_position(), regions);
@@ -1729,12 +1747,10 @@ namespace idattd
     {
         need_session();
         uint64_t max = a.u64_or(0, 200);
-        MemoryMap &mm = mgr().memmap_for_update();
-        if ( mm.empty() )
-        {
-            bool cancelled = false;
-            build_memory_map(&mgr(), &mm, &cancelled);
-        }
+        bool cancelled = false;
+        qstring err;
+        if ( !session_memory_map(&mgr(), false, &cancelled, &err) )
+            fail("%s", err.c_str());
         std::vector<AddressRegion> regions;
         address_space_at(&mgr(), &regions);
         JArr arr;
@@ -1750,7 +1766,7 @@ namespace idattd
              .str("since", r.since.is_valid() ? format_position(r.since) : qstring());
             arr.add(o.done());
         }
-        out.num("changes", (int64_t)mm.size()).num("count", (int64_t)regions.size())
+        out.num("changes", (int64_t)mgr().memmap_for_update().size()).num("count", (int64_t)regions.size())
            .raw("regions", arr.done());
     }
 
@@ -1790,7 +1806,7 @@ namespace idattd
         { "an.coverage",    cmd_an_coverage,    "LO HI [COLOR] measure and colour execution coverage" },
         { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
-        { "an.memmap",      cmd_an_memmap,      "[MAX] build the memory map; the regions at the playhead" },
+        { "an.memmap",      cmd_an_memmap,      "[MAX] [rebuild] the session's memory map (built if there is none); the regions at the playhead" },
         { "an.regions",     cmd_an_regions,     "[MAX] the Memory map listing at the playhead" },
         { "an.handles",     cmd_an_handles,     "[MAX] the handles the program opened and closed" },
         { "an.origin",      cmd_an_origin,      "REG | mem ADDR [SIZE] [from=POS] [stop] where the value at the playhead (or POS) came from; stop: at every computation" },
@@ -1906,7 +1922,9 @@ namespace idattd
         // command (a timer, another script, the user). The query then comes
         // back as not run, which most commands report as the backend being
         // unable to answer: say what really happened instead.
-        const bool was_active = g_plugin != nullptr && mgr().is_active();
+        // Not for the commands that end the session themselves.
+        const bool ends_session = a.v[0] == "stop" || a.v[0] == "switch" || a.v[0] == "start";
+        const bool was_active = !ends_session && g_plugin != nullptr && mgr().is_active();
         auto why = [&](const char *what) -> qstring
         {
             if ( was_active && (g_plugin == nullptr || !mgr().is_active()) )

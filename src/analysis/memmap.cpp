@@ -506,7 +506,7 @@ namespace idattd
     //=======================================================================
     // Building the map
     //=======================================================================
-    bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled)
+    bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled, qstring *error)
     {
         if ( out != nullptr )
             out->clear();
@@ -515,7 +515,10 @@ namespace idattd
 
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
         {
-            warning("The memory map can only be built while replaying a trace.");
+            if ( error != nullptr )
+                *error = "the memory map can only be built while replaying a trace";
+            else
+                warning("The memory map can only be built while replaying a trace.");
             return false;
         }
         ITraceBackend *backend = mgr->backend();
@@ -526,6 +529,11 @@ namespace idattd
         {
             return backend->query_mapping_changes(&found, &files, p);
         });
+        if ( !qr.ran && error != nullptr )
+        {
+            *error = "the memory map could not be built for this recording (the output window has the details)";
+            return false;
+        }
         if ( !qr.ran )
         {
             warning("The memory map could not be built for this recording.\n\n"
@@ -617,6 +625,44 @@ namespace idattd
             *cancelled = qr.cancelled;
         if ( qr.truncated )
             msg("[ida-ttd] memory map: hit the change limit; the map is incomplete.\n");
+        return true;
+    }
+
+    bool session_memory_map(TraceManager *mgr, bool rebuild, bool *cancelled, qstring *error)
+    {
+        if ( cancelled != nullptr )
+            *cancelled = false;
+        if ( mgr == nullptr || !mgr->is_active() )
+            return build_memory_map(mgr, nullptr, cancelled, error);    // says why
+        if ( !rebuild && !mgr->memmap_for_update().empty() )
+            return true;
+        // Built aside, so a failure keeps the map the session had.
+        MemoryMap fresh;
+        bool stopped = false;
+        if ( !build_memory_map(mgr, &fresh, &stopped, error) )
+            return false;
+        // The build pumps the UI, so the session may have ended meanwhile.
+        if ( !mgr->is_active() )
+        {
+            if ( error != nullptr )
+                *error = "the replay session ended while the memory map was built";
+            return false;
+        }
+        if ( cancelled != nullptr )
+            *cancelled = stopped;
+        MemoryMap &map = mgr->memmap_for_update();
+        map = std::move(fresh);
+        if ( map.empty() )
+            return true;
+        if ( !stopped )
+            map.save(mgr->trace_fingerprint());
+        else
+            msg("[ida-ttd] memory map: the sweep was cancelled, so the partial "
+                "map is used for this session but not saved.\n");
+        // The regions at the current position may be new to IDA (it had all
+        // of user space as one segment, or an older map's regions).
+        invalidate_dbgmem_config();
+        refresh_idaview_anyway();
         return true;
     }
 

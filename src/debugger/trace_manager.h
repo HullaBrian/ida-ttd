@@ -197,6 +197,10 @@ namespace idattd
 
     private:
         void   reset_session_state();
+        // Copy the user's work on functions outside every module as IDA shows
+        // it (at m_shownAt), before a new memory layout deletes them; the
+        // playhead is back at 'here' afterwards.
+        void   capture_kept_at_shown(Position here);
         // Replace the pending request with 'kind' and have IDA resume to carry
         // it out. Warns and does nothing without a session.
         void   queue_request(Request kind, bool forward, ea_t address = BADADDR);
@@ -240,6 +244,10 @@ namespace idattd
 
         ITraceBackend              *m_backend = nullptr;
         CursorPtr                   m_cursor;       // the playhead
+        // The position whose memory IDA shows: where the last stop was
+        // handled (on_suspended). A movement that changes the memory layout
+        // copies the user's work from there, not from where it landed.
+        Position                    m_shownAt = Position::none();
         std::unique_ptr<INavigator> m_nav;          // moves m_cursor
         std::vector<Breakpoint>     m_bpts;         // what IDA has set
 

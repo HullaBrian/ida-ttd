@@ -148,7 +148,17 @@ namespace idattd
     // Modifies the database so the listing can name callers: applies export
     // names to the modules holding the called stubs and the attributed callers
     // (chain_origin), and loads PDBs for those callers in library modules.
-    bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled);
+    //
+    // With 'error' (a script's call) a failure is returned in it rather than
+    // shown in a dialog, which would hang the script.
+    bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled, qstring *error = nullptr);
+
+    // The session's memory map: the one IDA's segments, the Memory map
+    // listings and every script command read. Built if the session has none
+    // (or 'rebuild'), then saved in the database unless cancelled, and IDA is
+    // told its segments may have changed. A failed build leaves the map the
+    // session had. 'error' as for build_memory_map.
+    bool session_memory_map(TraceManager *mgr, bool rebuild, bool *cancelled, qstring *error = nullptr);
 
     // Identity of the loaded trace, for the persistence check above.
     uint64_t trace_fingerprint(TraceManager *mgr);

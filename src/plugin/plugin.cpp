@@ -520,26 +520,39 @@ namespace idattd
 
     // Start replaying the recording this database was created from. No
     // prompting: this is the menu action's body, so the user already asked.
-    void Plugin::start_trace_session()
+    bool Plugin::start_trace_session(qstring *error)
     {
         TraceLink link;
         if ( !trace_link_read(&link) )
         {
             trace_link_mark_start(false);
-            warning("This database was not created from a TTD trace, so there is "
-                    "nothing to replay.\n\nUse Debugger > Switch debugger to attach "
-                    "a trace to it instead.");
-            return;
+            if ( error != nullptr )
+                *error = "this database was not created from a TTD trace, so there is nothing to replay";
+            else
+                warning("This database was not created from a TTD trace, so there is "
+                        "nothing to replay.\n\nUse Debugger > Switch debugger to attach "
+                        "a trace to it instead.");
+            return false;
         }
         if ( get_process_state() != DSTATE_NOTASK )
         {
             trace_link_mark_start(false);
-            warning("A debugging session is already running.");
-            return;
+            if ( error != nullptr )
+                *error = "a debugging session is already running";
+            else
+                warning("A debugging session is already running.");
+            return false;
         }
 
         // The recording may have moved since the database was made: ask
-        // where it went and remember the answer.
+        // where it went and remember the answer. A script is told instead.
+        if ( !qfileexist(link.trace_path.c_str()) && error != nullptr )
+        {
+            trace_link_mark_start(false);
+            error->sprnt("the recording is not at %s; start it once from the TTD menu to locate it, "
+                         "or use 'switch PATH'", link.trace_path.c_str());
+            return false;
+        }
         if ( !qfileexist(link.trace_path.c_str()) )
         {
             qstring prompt;
@@ -549,18 +562,26 @@ namespace idattd
             if ( chosen == nullptr )
             {
                 trace_link_mark_start(false);   // the user declined, nothing broke
-                return;
+                return false;
             }
             link.trace_path = chosen;
             trace_link_set_path(chosen);
         }
 
-        if ( !select_trace_debugger(link.trace_path.c_str()) )
+        if ( !select_trace_debugger(link.trace_path.c_str(), error != nullptr) )
         {
             trace_link_mark_start(false);       // reported already, nothing broke
-            return;
+            if ( error != nullptr )
+                *error = "IDA would not select the TTD trace replayer as the debugger (see the output window)";
+            return false;
         }
-        start_process(link.trace_path.c_str(), "", "");
+        if ( start_process(link.trace_path.c_str(), "", "") != 1 )
+        {
+            if ( error != nullptr )
+                *error = "IDA did not start the replay";
+            return false;
+        }
+        return true;
     }
 
     bool Plugin::select_trace_debugger(const char *trace_path, bool quiet)
@@ -711,7 +732,7 @@ namespace idattd
             }
             msg("[ida-ttd] switching the replay to %s\n", path.c_str());
             if ( !p->start_trace_at(path.c_str()) )
-                warning("Could not start the replay of %s: the TTD debugger could not be selected.", path.c_str());
+                warning("Could not start the replay of %s (see the output window).", path.c_str());
             return false;
         }
     };
@@ -766,12 +787,11 @@ namespace idattd
         }
     }
 
-    bool Plugin::start_trace_at(const char *path)
+    bool Plugin::start_trace_at(const char *path, bool quiet)
     {
-        if ( !select_trace_debugger(path) )
+        if ( !select_trace_debugger(path, quiet) )
             return false;
-        start_process(path, "", "");
-        return true;
+        return start_process(path, "", "") == 1;
     }
 
     void Plugin::schedule_trace_offer()

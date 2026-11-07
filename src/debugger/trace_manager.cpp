@@ -150,6 +150,7 @@ namespace idattd
         m_toldMods.clear();
         m_stepMode = false;
         m_draft    = ForkDraft{};
+        m_shownAt  = Position::none();
     }
 
     ssize_t TraceManager::on_get_processes(procinfo_vec_t *procs)
@@ -688,19 +689,25 @@ namespace idattd
         // This brings the disassembly view to the front, like IDA's own
         // post-stop handling; Plugin::keep_decompiler_focused() restores the
         // decompiler afterwards.
-        invalidate_dbgmem_contents(BADADDR, 0);
-
+        //
         // A travel can cross an allocation, protection change or free, so the
-        // regions here may differ from what IDA was given. Without a memory map
-        // nothing changes.
+        // regions here may differ from what IDA was given. A new layout makes
+        // IDA rebuild its debugger segments, deleting every function in them,
+        // so the user's work on those is copied first, from the position IDA
+        // was showing: the bytes are hashed to tell versions of the code
+        // apart, and hashed here they would be the new position's, filing the
+        // work under code it was never done on.
+        const Position here = m_cursor->position();
+        const bool relayout = m_layout.changes_at(here);
+        if ( relayout )
+        {
+            DiagTimer t("stop: kept functions before the new layout");
+            capture_kept_at_shown(here);
+        }
+        invalidate_dbgmem_contents(BADADDR, 0);
         {
             DiagTimer t("stop: memory layout");
-            // A new layout makes IDA rebuild its debugger segments, deleting
-            // every function in them: the user's work on those is copied
-            // first.
-            if ( m_layout.changes_at(m_cursor->position()) )
-                m_kept.capture_all();
-            m_layout.refresh(m_cursor->position());
+            m_layout.refresh(here);
         }
 
         // A short slice of PDB naming (downloads and reads run on worker
@@ -746,6 +753,32 @@ namespace idattd
         {
             info("%s", m_pendingNotice.c_str());
             m_pendingNotice.clear();
+        }
+        // IDA's views now show this position's memory.
+        m_shownAt = m_cursor->position();
+    }
+
+    void TraceManager::capture_kept_at_shown(Position here)
+    {
+        // Seeking the playhead itself, not a scratch cursor: bytes rebuilt
+        // from recorded writes are served by the cursor that rebuilt them,
+        // and a scratch cursor would read zeros there. A position belongs to
+        // one thread's instruction, so seeking back lands on the same state;
+        // the thread is checked anyway. Two seeks (about 17 ms each on
+        // Microsoft TTD), only on the stops that change the layout.
+        const uint32_t tid = m_cursor->thread_id();
+        const bool back = m_shownAt.is_valid() && m_shownAt != here && m_cursor->seek(m_shownAt);
+        // IDA's cache may hold reads made during the movement; the copy must
+        // read the shown position's bytes throughout.
+        invalidate_dbgmem_contents(BADADDR, 0);
+        m_kept.capture_all();
+        if ( back )
+        {
+            m_cursor->seek(here);
+            if ( m_cursor->position() != here || m_cursor->thread_id() != tid )
+                msg("[ida-ttd] after copying function work the playhead is at %s, thread %u, not %s, "
+                    "thread %u.\n", format_position(m_cursor->position()).c_str(), m_cursor->thread_id(),
+                    format_position(here).c_str(), tid);
         }
     }
 

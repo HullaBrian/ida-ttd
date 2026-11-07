@@ -69,6 +69,7 @@
     <ClInclude Include="$(SrcDir)\debugger\memory_reader.h" />
     <ClInclude Include="$(SrcDir)\debugger\module_registry.h" />
     <ClInclude Include="$(SrcDir)\analysis\origin.h" />
+    <ClInclude Include="$(SrcDir)\analysis\batched_memory.h" />
     <ClInclude Include="$(SrcDir)\analysis\address_space.h" />
     <ClInclude Include="$(SrcDir)\analysis\bookmarks.h" />
     <ClInclude Include="$(SrcDir)\analysis\callsites.h" />

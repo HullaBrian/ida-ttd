@@ -116,7 +116,7 @@ database. The scope is given here instead of in a dialog.
 | `an.coverage LO HI [COLOR]` | measure coverage and colour what ran |
 | `an.callsites LO HI` | annotate indirect calls; lists the comments it wrote |
 | `an.trace EA [MAX]` | find all calls to a function, with arguments and return values |
-| `an.memmap [MAX]` | build the memory map; the regions as they stand at the playhead |
+| `an.memmap [MAX] [rebuild]` | the session's memory map, the one IDA's segments and the Memory map window use: built (and saved) if the database has none, again with `rebuild`; the regions as they stand at the playhead |
 | `an.calltree [MAX]` | the calls the function at the playhead made during this run of it, nested (depth), from its entry to its return |
 | `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |

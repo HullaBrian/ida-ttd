@@ -106,6 +106,9 @@
     <ClInclude Include="$(SrcDir)\analysis\origin.h">
       <Filter>analysis</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\analysis\batched_memory.h">
+      <Filter>analysis</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\address_space.h">
       <Filter>analysis</Filter>
     </ClInclude>
