@@ -62,6 +62,22 @@ namespace idattd
         return false;
     }
 
+    void make_title_unique(qstring *title)
+    {
+        if ( title == nullptr || find_widget(title->c_str()) == nullptr )
+            return;
+        for ( int n = 2; n < 1000; n++ )
+        {
+            qstring t;
+            t.sprnt("%s (%d)", title->c_str(), n);
+            if ( find_widget(t.c_str()) == nullptr )
+            {
+                *title = t;
+                return;
+            }
+        }
+    }
+
     void travel_to(TraceManager *mgr, Position p, const RecordingStamp &made)
     {
         if ( mgr == nullptr || !mgr->is_active() || !p.is_valid() )

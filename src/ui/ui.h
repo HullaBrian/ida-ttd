@@ -49,6 +49,12 @@ namespace idattd
     // for a listing about to read the recording at one of its positions.
     bool listing_is_current(const RecordingStamp &made);
 
+    // Suffix ' (2)', ' (3)', ... while a widget already has 'title'. IDA keys
+    // widgets by title and focuses the open one instead of showing a second:
+    // two searches of one address with as many hits each, or a list made
+    // again after a fork switch, would never show.
+    void make_title_unique(qstring *title);
+
     // A non-modal "Timeline" chooser listing notable trace positions
     // (thread create/exit, module load/unload, exceptions). Double-clicking a
     // row moves the cursor to that position.
@@ -270,6 +276,13 @@ namespace idattd
         RecordingStamp m_made;     // the recording the rows come from
         std::vector<RegionChange> m_rows;   // frozen snapshot
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+        // describe_address per address: IDA asks for every row when the
+        // list is filtered or sorted, and each description is a name lookup,
+        // a function-table search and a walk of the names. Dropped when the
+        // database's name count changes (a PDB applied meanwhile).
+        const qstring &described(ea_t ea) const;
+        mutable std::map<ea_t, qstring> m_described;
+        mutable size_t                  m_namesSeen = 0;
     };
 
     // The handles the program opened and closed. Enter travels to where one

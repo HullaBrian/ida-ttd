@@ -23,6 +23,7 @@ namespace idattd
         else
             m_title.sprnt("TTD accesses: 0x%llX..0x%llX [%d]",
                           (uint64_t)lo, (uint64_t)hi, (int)m_hits.size());
+        make_title_unique(&m_title);
         title = m_title.c_str();
     }
 

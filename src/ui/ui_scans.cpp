@@ -22,6 +22,7 @@ namespace idattd
           m_mgr(mgr), m_hits(std::move(hits))
     {
         m_title.sprnt("TTD recovered strings [%d]", (int)m_hits.size());
+        make_title_unique(&m_title);
         title = m_title.c_str();
     }
 
@@ -72,6 +73,7 @@ namespace idattd
           m_mgr(mgr), m_hits(std::move(hits))
     {
         m_title.sprnt("TTD recovered buffers [%d]", (int)m_hits.size());
+        make_title_unique(&m_title);
         title = m_title.c_str();
     }
 

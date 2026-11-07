@@ -26,6 +26,7 @@ namespace idattd
     {
         // A member: chooser_base_t keeps the pointer, not a copy.
         m_title.sprnt("TTD memory timeline [%d]", (int)m_rows.size());
+        make_title_unique(&m_title);
         title = m_title.c_str();
     }
 
@@ -74,8 +75,8 @@ namespace idattd
         // DLL, so it is not a column; double-click travels there, with the
         // whole stack live.
         ea_t origin = chain_origin(m_mgr, c);
-        cols->at(6) = origin != BADADDR ? describe_address(m_mgr, origin) : qstring();
-        cols->at(7) = c.api != BADADDR ? describe_address(m_mgr, c.api) : qstring();
+        cols->at(6) = origin != BADADDR ? described(origin) : qstring();
+        cols->at(7) = c.api != BADADDR ? described(c.api) : qstring();
         // Every recorded frame, innermost first. One call the program makes
         // (loading a DLL, its malloc) can be behind dozens of changes that
         // "Requested by" attributes alike; the library frames inside it, and
@@ -86,8 +87,22 @@ namespace idattd
                 continue;
             if ( !cols->at(8).empty() )
                 cols->at(8).append(" <- ");
-            cols->at(8).append(describe_address(m_mgr, c.chain[k]));
+            cols->at(8).append(described(c.chain[k]));
         }
+    }
+
+    const qstring &MemoryTimelineChooser::described(ea_t ea) const
+    {
+        const size_t names = get_nlist_size();
+        if ( names != m_namesSeen )
+        {
+            m_described.clear();
+            m_namesSeen = names;
+        }
+        auto it = m_described.find(ea);
+        if ( it == m_described.end() )
+            it = m_described.emplace(ea, describe_address(m_mgr, ea)).first;
+        return it->second;
     }
 
     ea_t idaapi MemoryTimelineChooser::get_ea(size_t n) const

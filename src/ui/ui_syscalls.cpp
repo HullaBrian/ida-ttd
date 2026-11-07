@@ -22,6 +22,7 @@ namespace idattd
         popup_names[POPUP_EDIT]    = "Decode arguments";
         popup_names[POPUP_REFRESH] = "Rebuild from the recording";
         m_title.sprnt("TTD syscalls [%d]", (int)m_calls.size());
+        make_title_unique(&m_title);
         title = m_title.c_str();
         reset_rows();
     }

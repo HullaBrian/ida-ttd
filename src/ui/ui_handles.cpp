@@ -22,6 +22,7 @@ namespace idattd
         for ( const HandleRecord &h : m_rows )
             open += h.opened.is_valid() && !h.closed.is_valid();
         m_title.sprnt("TTD handles [%d, %d open at the end]", (int)m_rows.size(), (int)open);
+        make_title_unique(&m_title);
         title = m_title.c_str();
     }
 

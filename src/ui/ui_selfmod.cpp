@@ -16,6 +16,7 @@ namespace idattd
           m_mgr(mgr), m_hits(std::move(hits))
     {
         m_title.sprnt("TTD self-modifying code [%d]", (int)m_hits.size());
+        make_title_unique(&m_title);
         title = m_title.c_str();
     }
 
