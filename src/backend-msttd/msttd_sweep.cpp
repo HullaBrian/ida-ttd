@@ -25,9 +25,19 @@ namespace idattd
         // stores a number.
         const uint64_t from = first.IsValid() && first != TTD::Replay::Position::Min ? (uint64_t)first.Sequence : 0;
         // 'last' may be Position::Max; the cursor clamps a seek to the trace's
-        // real end, which is the number a percentage needs.
-        cursor->SetPosition(last);
-        const uint64_t to   = (uint64_t)cursor->GetPosition().Sequence;
+        // real end, which is the number a percentage needs. A real position
+        // already says it: the seek (about 17 ms) is only for Max, since
+        // callers such as query_register_change run many short sweeps.
+        uint64_t to = 0;
+        if ( last.IsValid() && last != TTD::Replay::Position::Max )
+        {
+            to = (uint64_t)last.Sequence;
+        }
+        else
+        {
+            cursor->SetPosition(last);
+            to = (uint64_t)cursor->GetPosition().Sequence;
+        }
         std::atomic<uint32_t> pct{ 0 };
         auto on_progress = [&pct, from, to](TTD::Replay::Position const &p) noexcept
         {

@@ -3211,7 +3211,7 @@ namespace
     // ITTD_MAP_STATE, which the core folds by overwriting the range. The
     // values are already Windows' own.
     int query_mapping_changes(ittd_backend *hb, ittd_mapping_change *buf, size_t cap,
-                              size_t *out_count, int *out_truncated, const ittd_progress *)
+                              size_t *out_count, int *out_truncated, const ittd_progress *progress)
     {
         backend_t *b = B(hb);
         if ( b == nullptr )
@@ -3234,7 +3234,7 @@ namespace
             const uint64_t main_base = mainm != nullptr ? mainm->base : UINT64_MAX;
             const uint64_t start = first_position(t);
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
-            return fill(v, buf, cap, out_count, [&](const ttd::memory_region &r)
+            auto conv = [&](const ttd::memory_region &r)
             {
                 ittd_mapping_change m{};
                 m.pos           = at(r.step);
@@ -3267,7 +3267,34 @@ namespace
                     syscall_chain(reader.trace(), it->step, m.tid, mods, main_base, &m);
                 }
                 return m;
-            });
+            };
+            if ( out_count != nullptr )
+                *out_count = v.size();
+            if ( buf == nullptr )
+                return ITTD_OK;
+            // Each change made by a syscall walks back for its call chain
+            // (syscall_chain), so thousands of allocations take a while:
+            // with progress and Cancel, unlike a plain fill().
+            const size_t n = std::min(v.size(), cap);
+            for ( size_t i = 0; i < n; i++ )
+            {
+                if ( (i & 63) == 0 && progress != nullptr )
+                {
+                    if ( progress->cancelled != nullptr && progress->cancelled(progress->ud) != 0 )
+                    {
+                        // What was filled, so the rest is not read as
+                        // (empty) changes.
+                        if ( out_count != nullptr )
+                            *out_count = i;
+                        b->error.set("cancelled");
+                        return ITTD_E_CANCELLED;
+                    }
+                    if ( progress->report != nullptr )
+                        progress->report(progress->ud, uint32_t(i * 1000 / n));
+                }
+                buf[i] = conv(v[i]);
+            }
+            return ITTD_OK;
         });
     }
 

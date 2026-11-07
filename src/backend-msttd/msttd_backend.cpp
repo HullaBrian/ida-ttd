@@ -704,6 +704,13 @@ namespace idattd
         const bool is_xmm = reg >= ITTD_ORIGIN_XMM0;
         if ( is_xmm ? reg - ITTD_ORIGIN_XMM0 >= 16 : reg >= ITTD_REG_GP_COUNT )
             return false;
+        // regs_from_context fills no XMM register for a 32-bit context, so
+        // the search would compare zeros with zeros and report "not found".
+        if ( is_xmm && !m_info.is64 )
+        {
+            set_error("the XMM registers are not read from this 32-bit recording");
+            return false;
+        }
         UniqueCursor cur = new_engine_cursor();
         if ( !cur )
             return false;
