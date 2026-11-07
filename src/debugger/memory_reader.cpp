@@ -67,27 +67,53 @@ namespace idattd
             while ( o + gap < size && known[o + gap] != ITTD_KNOWN_YES )
                 gap++;
 
-            if ( !have_pos && m_modules != nullptr )
-            {
-                pos      = playhead->position();
-                have_pos = true;
-            }
-            ea_t              base = BADADDR;
-            const ModuleImage *img = m_modules != nullptr ? m_modules->image_for(ea + o, pos, base) : nullptr;
-            if ( img == nullptr )
+            if ( m_modules == nullptr )
             {
                 o += gap;            // not image-backed: the gap stays as it is
                 continue;
             }
-            // Fill the gap one image run at a time (a run stops at a section edge).
+            if ( !have_pos )
+            {
+                pos      = playhead->position();
+                have_pos = true;
+            }
+            // Fill the gap one image run at a time. The image is looked up
+            // again where a run ends: a gap can run off one module into the
+            // next, or start in memory no module covers and enter one. Where
+            // nothing is backed the reader jumps (to the next section, the
+            // image's end, the next module) instead of trying byte by byte.
             size_t g = 0;
             while ( g < gap )
             {
-                uint32_t rva = (uint32_t)((uint64_t)(ea + o + g) - (uint64_t)base);
+                const ea_t at = ea + (ea_t)(o + g);
+                ea_t base = BADADDR;
+                const ModuleImage *img = m_modules->image_for(at, pos, base);
+                if ( img == nullptr )
+                {
+                    // To the next module's start, if it is inside the gap.
+                    size_t skip = gap - g;
+                    for ( const ModuleRegistry::Span &s : m_modules->spans() )
+                        if ( s.base > at && (uint64_t)(s.base - at) < skip )
+                        {
+                            skip = (size_t)(s.base - at);
+                            break;      // sorted by base: the first is nearest
+                        }
+                    g += skip;
+                    continue;
+                }
+                const uint32_t rva = (uint32_t)((uint64_t)at - (uint64_t)base);
                 size_t run = read_module_image_rva(*img, rva, out + o + g, gap - g);
                 if ( run == 0 )
                 {
-                    g++;             // zero-fill tail / unmapped rva
+                    // An rva the file has no bytes for (a section's
+                    // zero-filled tail, between sections, past the image):
+                    // on to the next section that starts above it.
+                    uint64_t next = img->sizeOfImage > rva ? img->sizeOfImage : (uint64_t)rva + 1;
+                    for ( const ModuleImage::Section &sec : img->sections )
+                        if ( sec.va > rva && sec.va < next )
+                            next = sec.va;
+                    const uint64_t step = next - rva;
+                    g += step < gap - g ? (size_t)step : gap - g;
                     continue;
                 }
                 for ( size_t i = 0; i < run; i++ )

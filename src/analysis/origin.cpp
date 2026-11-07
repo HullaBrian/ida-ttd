@@ -353,6 +353,22 @@ namespace idattd
                     out->note = "changed as a side effect of this instruction";
                     return false;
                 }
+                // A write to the low 8 or 16 bits (mov al, ...; mov ah, bl)
+                // keeps the rest of the register as it was, so the source is
+                // where only part of the value came from: following it would
+                // report the whole value as copied from a byte. A 32-bit
+                // write zero-extends, and movzx/movsx extend, so those copy
+                // the whole register.
+                const op_t &d0 = ins.ops[0];
+                if ( d0.type == o_reg && ittd_reg_of(d0.reg) == want
+                  && get_dtype_size(d0.dtype) < 4
+                  && ins.itype != NN_movzx && ins.itype != NN_movsx && ins.itype != NN_movsxd )
+                {
+                    out->kind = OriginKind::Computed;
+                    out->note.sprnt("only its low %u bits were written here; the rest kept an earlier value",
+                                    (unsigned)(8 * get_dtype_size(d0.dtype)));
+                    return false;
+                }
             }
 
             const op_t *src = nullptr;
