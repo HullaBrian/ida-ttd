@@ -11,8 +11,10 @@ namespace idattd
         {
             tinfo_t arg = func_tinfo.get_nth_arg((int)i);
             size_t sz = arg.get_size();
+            // An unknown size still takes a slot; skipping it shifted every
+            // later argument.
             if ( sz == BADSIZE )
-                continue;
+                sz = slot;
             if ( sz < slot )
                 sz = slot;                       // stack slots are pointer-sized minimum
             off += (sz + mask) & ~mask;
@@ -41,7 +43,7 @@ namespace idattd
         {
             size_t sz = fd[i].type.get_size();
             if ( sz == BADSIZE )
-                continue;
+                sz = slot;          // still a slot, as above
             if ( sz < slot )
                 sz = slot;
             off += (sz + mask) & ~mask;
@@ -109,9 +111,32 @@ namespace idattd
         size_t first_stack_arg = 0;
         if ( cc == CM_CC_FASTCALL )
         {
-            if ( n < 2 )
-                return (uint32_t)r.gp[n == 0 ? ITTD_REG_RCX : ITTD_REG_RDX];
-            first_stack_arg = 2;
+            // ECX and EDX go to the first two arguments that fit in 32 bits
+            // and are not floating point, in order; every other argument is
+            // on the stack in order, each taking its size rounded up to 4.
+            // So in fastcall(__int64 a, int b), b is in ECX and a on the
+            // stack.
+            int regs_used = 0;
+            size_t stack_off = 0;
+            for ( size_t i = 0; i <= n && i < fd.size(); i++ )
+            {
+                const size_t isz = fd[i].type.get_size();
+                const bool in_reg = regs_used < 2 && !fd[i].type.is_floating()
+                                 && isz != BADSIZE && isz <= 4;
+                if ( i == n )
+                {
+                    if ( in_reg )
+                        return (uint32_t)r.gp[regs_used == 0 ? ITTD_REG_RCX : ITTD_REG_RDX];
+                    uint64_t v = 0;
+                    view.read((uint32_t)r.gp[ITTD_REG_RSP] + stack_off, &v, isz == 8 ? 8 : 4);
+                    return v;
+                }
+                if ( in_reg )
+                    regs_used++;
+                else
+                    stack_off += isz == BADSIZE || isz == 0 ? 4 : (isz + 3) & ~size_t(3);
+            }
+            return 0;
         }
         else if ( cc == CM_CC_THISCALL )
         {

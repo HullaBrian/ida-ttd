@@ -1042,6 +1042,36 @@ int main(int argc, char **argv)
                         same++;
                 }
                 check(same == asked, "  registers at a syscall agree between regs_at and a seek");
+
+                /* And one batch of positions no syscall list has (just past
+                   each sampled syscall), in reverse order: what a backend
+                   reads itself rather than remembers. */
+                {
+                    size_t m = 0, j, agree_b = 0;
+                    ittd_position ps[64];
+                    ittd_regs rs[64];
+                    for ( k = 0; k < n && m < 64; k += n / 64 + 1 )
+                        ps[m++] = pos_plus(sc[k].pos, 3);
+                    for ( j = 0; j < m / 2; j++ )
+                    {
+                        ittd_position t = ps[j];
+                        ps[j] = ps[m - 1 - j];
+                        ps[m - 1 - j] = t;
+                    }
+                    t0 = now_ms();
+                    if ( api->regs_at(B, ps, m, rs, NULL) == ITTD_OK )
+                    {
+                        printf("  regs_at for %zu positions past syscalls: %.1f ms\n", m, now_ms() - t0);
+                        for ( j = 0; j < m; j++ )
+                        {
+                            ittd_regs b;
+                            if ( (rs[j].have & ITTD_REGS_GP) != 0 && api->cursor_seek(c, ps[j]) == ITTD_OK
+                              && api->cursor_regs(c, &b) == ITTD_OK && memcmp(rs[j].gp, b.gp, sizeof(b.gp)) == 0 )
+                                agree_b++;
+                        }
+                    }
+                    check(m > 0 && agree_b == m, "  a regs_at batch of other positions agrees with seeks");
+                }
             }
             check(came_back > 0 && agree == came_back, "  a syscall's result is rax once it returns");
         }

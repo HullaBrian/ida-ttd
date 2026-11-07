@@ -739,10 +739,19 @@ namespace idattd
 
     void Plugin::switch_exit()
     {
-        if ( m_switchTo.empty() || get_process_state() == DSTATE_NOTASK )
+        if ( m_switchTo.empty() )
             return;
         qstring path;
         path.swap(m_switchTo);
+        // The session ended between the request being queued and now: there
+        // is nothing to exit, so start the switch's replay directly, as
+        // switch_cb does without a session. Returning here instead dropped
+        // the switch and left the Fork manager to reopen in a later session.
+        if ( get_process_state() == DSTATE_NOTASK )
+        {
+            execute_ui_requests(new switch_start_request_t(this, path), nullptr);
+            return;
+        }
         // Close the Fork manager while the session is still ordinary rather
         // than let IDA tear it down at session end; it reopens at the new
         // session's first stop.

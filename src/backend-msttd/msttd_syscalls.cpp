@@ -547,36 +547,52 @@ namespace idattd
             return r;
         r.ran = true;
         out->assign(positions.size(), ittd_regs{});
-        std::lock_guard<std::mutex> lock(m_regsMtx);
-        for ( size_t i = 0; i < positions.size(); i++ )
+
+        // The census's registers first; what it does not have (past its cap,
+        // or not a syscall) is read below.
+        std::vector<size_t> missing;
         {
-            if ( progress != nullptr && (i & 0xF) == 0 )
+            std::lock_guard<std::mutex> lock(m_regsMtx);
+            for ( size_t i = 0; i < positions.size(); i++ )
             {
-                if ( progress->cancelled() )
+                TtdPosition p = from_core(positions[i]);
+                auto it = m_syscallRegs.find({ (uint64_t)p.Sequence, (uint64_t)p.Steps });
+                if ( it == m_syscallRegs.end() )
                 {
-                    r.cancelled = true;
-                    break;
+                    missing.push_back(i);
+                    continue;
                 }
-                progress->report(uint32_t(i * 100 / positions.size()));
-            }
-            TtdPosition p = from_core(positions[i]);
-            auto it = m_syscallRegs.find({ (uint64_t)p.Sequence, (uint64_t)p.Steps });
-            ittd_regs &o = (*out)[i];
-            if ( it != m_syscallRegs.end() )
-            {
+                ittd_regs &o = (*out)[i];
                 memcpy(o.gp, it->second.gp, sizeof(o.gp));
                 o.rflags = it->second.rflags;
                 o.have   = ITTD_REGS_GP;
-                continue;
             }
-            // One scratch cursor for every call, rather than one per batch.
-            if ( !m_regsScratch )
-                m_regsScratch = new_engine_cursor();
-            if ( !m_regsScratch )
-                break;
-            m_regsScratch->SetPosition(p);
-            regs_from_context(m_regsScratch->GetCrossPlatformContext(), m_info.is64, &o);
         }
+        if ( missing.empty() )
+            return r;
+
+        // A seek each, about 17 ms: a million syscalls past the cache was
+        // hours on one cursor. Spread over worker cursors like
+        // read_memory_at, in position order so neighbours share a worker.
+        std::sort(missing.begin(), missing.end(), [&](size_t a, size_t b)
+        {
+            return positions[a] < positions[b];
+        });
+        const bool complete = msttd_parallel(missing.size(), 16, progress,
+            [&](size_t begin, size_t end, std::atomic<size_t> &done, const std::atomic<bool> &stop)
+        {
+            UniqueCursor cur = new_engine_cursor();
+            if ( !cur )
+                return;
+            for ( size_t k = begin; k < end && !stop.load(); k++, done++ )
+            {
+                const size_t i = missing[k];
+                cur->SetPosition(from_core(positions[i]));
+                regs_from_context(cur->GetCrossPlatformContext(), m_info.is64, &(*out)[i]);
+            }
+        });
+        if ( !complete )
+            r.cancelled = true;
         return r;
     }
 
