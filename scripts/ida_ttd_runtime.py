@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import threading
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -306,6 +307,16 @@ def _finish(staging, target, version, source, license_note):
     if os.path.exists(old):
         if os.path.exists(target):
             shutil.rmtree(old, ignore_errors=True)
+            if os.path.exists(old):
+                # Not all of it could go (a DLL in it is still loaded by an
+                # IDA): moved aside under a name of its own, or the rename
+                # of the target onto it below would fail and every later
+                # install would say the runtime is in use.
+                aside = "%s.%d" % (old, int(time.time()))
+                try:
+                    os.rename(old, aside)
+                except OSError:
+                    pass
         else:
             # An earlier install stopped between its two renames: the old
             # folder is the only working copy, so it is put back rather

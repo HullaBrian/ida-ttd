@@ -84,6 +84,49 @@ def submodule_commits(git, commit):
     return found
 
 
+def tree_mismatches(sogen, git, commit, subdir="src/windows-ttd"):
+    """Files under 'subdir' of the tree at 'sogen' that differ from Sogen at
+    'commit' (in the git checkout 'git'), as a list of paths; None when there
+    is no checkout to compare with.
+
+    The README says the source is Sogen at the pinned commit, and the source
+    archive is whatever tree --sogen names: a snapshot of another commit
+    would ship source that does not match its own README (GPL source
+    correspondence). The backend is built from src/windows-ttd, so that is
+    what is compared, by git blob hash, which needs no .git in the snapshot.
+    """
+    import hashlib
+    if git is None or not (git / ".git").exists():
+        return None
+    out = subprocess.run(["git", "-C", str(git), "ls-tree", "-r", commit, "--", subdir],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return None
+    want = {}
+    for line in out.stdout.splitlines():
+        meta, path = line.split("\t", 1)
+        mode, kind, sha = meta.split()
+        if kind == "blob" and mode != "120000":     # symlinks do not extract on Windows
+            want[path] = sha
+    bad = []
+    for path, sha in want.items():
+        f = sogen / path
+        if not f.is_file():
+            bad.append(path + " (missing)")
+            continue
+        data = f.read_bytes()
+        # As stored, or as git archive writes it with core.autocrlf (CRLF
+        # line ends): both are the committed file.
+        ok = False
+        for d in (data, data.replace(b"\r\n", b"\n")):
+            if hashlib.sha1(b"blob %d\0" % len(d) + d).hexdigest() == sha:
+                ok = True
+                break
+        if not ok:
+            bad.append(path)
+    return bad
+
+
 def submodule_urls(sogen):
     urls, path = {}, None
     gm = sogen / ".gitmodules"
@@ -214,7 +257,16 @@ def main():
                              % "\n  ".join(dirty))
     sogen = pathlib.Path(args.sogen)
     pin = read_pin()
-    commits = submodule_commits(pathlib.Path(args.git) if args.git else sogen, pin["commit"])
+    git = pathlib.Path(args.git) if args.git else sogen
+    bad = tree_mismatches(sogen, git, pin["commit"])
+    if bad is None:
+        print("warning: no git checkout to check that %s is Sogen at %s (pass --git)"
+              % (sogen, pin["commit"]))
+    elif bad and not args.allow_dirty:
+        raise SystemExit("%s is not Sogen at the pinned commit %s; these differ:\n  %s\n"
+                         "Make a fresh snapshot at the pin, or pass --allow-dirty."
+                         % (sogen, pin["commit"], "\n  ".join(bad[:20])))
+    commits = submodule_commits(git, pin["commit"])
     urls = submodule_urls(sogen)
 
     lic = pathlib.Path(args.build) / "backends" / LICENSES
