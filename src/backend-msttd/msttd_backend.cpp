@@ -256,6 +256,10 @@ namespace idattd
         m_caps.syscalls       = true;      // KernelCall gaps (msttd_syscalls.cpp)
         m_caps.self_modifying = true;      // replays watching writes (msttd_scans.cpp)
         m_caps.replay_scans   = true;      // strings and buffers, from the same replays
+        // registers_at spreads its seeks over worker cursors, so a batch is
+        // cheaper than a seek per position: the tracer then reads the calls'
+        // memory in batches too.
+        m_caps.batch_regs     = true;
         return true;
     }
 

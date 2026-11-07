@@ -1,4 +1,5 @@
 #include "analysis/tracer.h"
+#include "analysis/batched_memory.h"
 #include "debugger/callconv.h"
 #include "debugger/apidecode.h"
 #include "analysis/query_runner.h"
@@ -562,7 +563,7 @@ namespace idattd
 
             // A backend that rebuilds registers by replay (Sogen) does each
             // stretch once for a batch, but once per visit through the cursor.
-            // Memory is still read through the cursor, which is cheap.
+            // With the batch's registers, memory is batched too (below).
             std::vector<ittd_regs> pre;
             bool regs_cancelled = false;
             if ( backend->capabilities().batch_regs && !visits.empty() )
@@ -595,41 +596,33 @@ namespace idattd
                 return gv;
             };
 
-            size_t done = 0;
-            for ( size_t k = 0; k < visits.size() && !regs_cancelled; k++ )
+            // One visit, read through 'view' (memory and registers there). Run
+            // again from scratch when a batched read missed something, so it
+            // starts from the call's decode as it was ('at_call').
+            std::vector<DecodedCall> at_call;
+            auto visit_one = [&](size_t k, GuestView view)
             {
                 const Visit &v = visits[k];
-                if ( user_cancelled() )
-                {
-                    cancelled = true;
-                    break;
-                }
-                if ( (done & 0x3F) == 0 )
-                    replace_wait_box("Resolving calls: %d of %d values... (Cancel to stop)",
-                                     (int)done + 1, (int)visits.size());
-                done++;
-                if ( !cur->seek(v.where) )
-                    continue;
                 FunctionInvocation &ev = slot[v.call];
                 if ( v.ret )
                 {
                     ev.end_pos = v.where;
                     ev.has_ret = true;
                     DecodedCall &dc = decoded[v.call];
+                    if ( v.call < at_call.size() )
+                        dc = at_call[v.call];
                     if ( dc.sig != nullptr )
                     {
-                        GuestView rv = view_at(k);
-                        decode_api_outs(rv, &dc);
+                        decode_api_outs(view, &dc);
                         ev.args.clear();
                         for ( const DecodedArg &a : dc.args )
                             ev.args.push_back(a.text);
-                        ev.retval = decode_api_return(dc, get_return_value(rv, m_is64));
-                        continue;
+                        ev.retval = decode_api_return(dc, get_return_value(view, m_is64));
+                        return;
                     }
-                    ev.retval  = render_return(view_at(k), proto_of(ev.func_ea), m_is64);
-                    continue;
+                    ev.retval  = render_return(view, proto_of(ev.func_ea), m_is64);
+                    return;
                 }
-                GuestView view = view_at(k);
                 const CallEvent &c = calls[v.call];
                 if ( !(c.is_call && c.pos.is_valid()) )
                 {
@@ -647,13 +640,106 @@ namespace idattd
                 const TracedProto &proto = proto_of(ev.func_ea);
                 if ( proto.sig != nullptr )
                 {
+                    decoded[v.call] = DecodedCall{};
                     decode_api_args(view, *proto.sig, m_is64, &decoded[v.call]);
                     ev.args.clear();
                     for ( const DecodedArg &a : decoded[v.call].args )
                         ev.args.push_back(a.text);
-                    continue;
+                    return;
                 }
+                ev.args.clear();
                 extract_args(view, proto, m_is64, ev.args);
+            };
+
+            // A call both of whose visits have the batch's registers reads its
+            // memory in batches (BatchedMemory) instead of seeking the cursor
+            // to each visit: about 17 ms a seek on Microsoft TTD, two per call,
+            // so a traced API called ten thousand times took minutes. The
+            // rest are read through the cursor as before.
+            const uint32_t need = ITTD_REGS_GP | ITTD_REGS_XMM;
+            std::vector<char> call_batched(calls.size(), 1);
+            for ( size_t k = 0; k < visits.size(); k++ )
+                if ( !(k < pre.size() && (pre[k].have & need) == need) )
+                    call_batched[visits[k].call] = 0;
+            std::vector<size_t> batched_calls, batched_rets, seeked;
+            for ( size_t k = 0; k < visits.size(); k++ )
+            {
+                if ( !call_batched[visits[k].call] )
+                    seeked.push_back(k);
+                else
+                    (visits[k].ret ? batched_rets : batched_calls).push_back(k);
+            }
+
+            BatchedMemory mem;
+            auto batched_view = [&](size_t k)
+            {
+                GuestView gv;
+                gv.read = mem.reader(visits[k].where);
+                const ittd_regs *r = &pre[k];
+                gv.regs = [r](ittd_regs *out) { *out = *r; return true; };
+                return gv;
+            };
+            // Decode 'todo', fetch what it missed (behind a wait box, through
+            // run_query), and decode again those that missed something.
+            auto in_rounds = [&](std::vector<size_t> todo) -> bool
+            {
+                for ( int round = 0; !todo.empty(); round++ )
+                {
+                    std::vector<size_t> again;
+                    for ( size_t k : todo )
+                    {
+                        const uint64_t before = mem.misses();
+                        visit_one(k, batched_view(k));
+                        if ( mem.misses() != before )
+                            again.push_back(k);
+                    }
+                    if ( again.empty() || round + 1 == kMaxFetchRounds )
+                        break;
+                    bool fetched = true;
+                    const QueryResult fq = run_query("Reading memory at the calls", [&](ProgressSink *p)
+                    {
+                        fetched = mem.fetch(backend, p);
+                        QueryResult q;
+                        q.ran = true;
+                        q.cancelled = !fetched;
+                        return q;
+                    });
+                    if ( fq.cancelled || !fetched )
+                        return false;
+                    todo.swap(again);
+                }
+                return true;
+            };
+            if ( !regs_cancelled )
+            {
+                // Calls before returns: a return's decode starts from its
+                // call's.
+                if ( !in_rounds(batched_calls) )
+                    cancelled = true;
+                at_call = decoded;
+                if ( !cancelled && !in_rounds(batched_rets) )
+                    cancelled = true;
+            }
+
+            size_t done = 0;
+            for ( size_t idx = 0; idx < seeked.size() && !regs_cancelled && !cancelled; idx++ )
+            {
+                const size_t k = seeked[idx];
+                if ( user_cancelled() )
+                {
+                    cancelled = true;
+                    break;
+                }
+                if ( (done & 0x3F) == 0 )
+                    replace_wait_box("Resolving calls: %d of %d values... (Cancel to stop)",
+                                     (int)done + 1, (int)seeked.size());
+                done++;
+                if ( !cur->seek(visits[k].where) )
+                    continue;
+                // A seeked return starts from its call's decode as it is now.
+                if ( visits[k].ret && visits[k].call < at_call.size() )
+                    at_call[visits[k].call] = decoded[visits[k].call];
+                visit_one(k, view_at(k));
             }
 
             // An integer out parameter unchanged at the return may be the
