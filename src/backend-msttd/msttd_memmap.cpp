@@ -705,6 +705,16 @@ namespace idattd
                 exact = false;
                 snapped++;
             }
+            else if ( !rc.d->deferred && rc.d->iSize >= 0 && rc.size != 0 )
+            {
+                // A free's base and size are the caller's request, which the
+                // kernel rounds out to whole pages (base down, end up) before
+                // acting on it: that rounding is the region it freed, and
+                // still exact. Size 0 (the whole region) is left as it is.
+                uint64_t nb = page_floor(rc.base);
+                rc.size = page_ceiling(rc.size + (rc.base - nb));
+                rc.base = nb;
+            }
 
             ittd_mapping_change c{};
             Position p  = to_core(rc.retPos);
