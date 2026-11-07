@@ -2812,8 +2812,15 @@ namespace
                 // Scanned at the shortest length likely to be asked for, and
                 // filtered for this request.
                 bool cut = false;
-                const std::vector<ittd_string_hit> &all =
-                    recorded_strings(b, std::min<size_t>(min_length, 4), progress, &cut);
+                const std::vector<ittd_string_hit> *scanned =
+                    &recorded_strings(b, std::min<size_t>(min_length, 4), progress, &cut);
+                // The short scan filled the scanner's cap: 4 to 7 character
+                // strings may have crowded out longer ones asked for. A scan
+                // at the length asked for has the cap to itself. Only then,
+                // as it is another full pass.
+                if ( cut && min_length > 4 )
+                    scanned = &recorded_strings(b, min_length, progress, &cut);
+                const std::vector<ittd_string_hit> &all = *scanned;
                 std::vector<ittd_string_hit> v;
                 for ( const ittd_string_hit &h : all )
                     if ( h.length >= min_length )
