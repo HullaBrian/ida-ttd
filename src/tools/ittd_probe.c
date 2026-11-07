@@ -67,6 +67,39 @@ static const char *pos_text(ittd_position p)
 
 static int is_none(ittd_position p) { return p.hi == UINT64_MAX && p.lo == UINT64_MAX; }
 
+/* The position num/den of the way from a to b. Interpolating 'lo' alone is
+   only right when both share 'hi' (Sogen: hi is 0); on a Microsoft recording
+   hi is the sequence and lo the steps within it, so a position taken from
+   one end's hi and an interpolated lo is not in the middle, and can wrap.
+   Interpolates the sequence then, at its first step. */
+static ittd_position pos_between(ittd_position a, ittd_position b, uint64_t num, uint64_t den)
+{
+    ittd_position p = a;
+    if ( den == 0 || b.hi < a.hi || (b.hi == a.hi && b.lo <= a.lo) )
+        return a;
+    if ( b.hi == a.hi )
+    {
+        p.lo = a.lo + (b.lo - a.lo) / den * num;
+        return p;
+    }
+    p.hi = a.hi + (uint64_t)((double)(b.hi - a.hi) * (double)num / (double)den);
+    p.lo = p.hi == a.hi ? a.lo : 0;
+    if ( p.hi == b.hi && p.lo > b.lo )
+        p.lo = b.lo;
+    return p;
+}
+
+/* About 'delta' instructions after p, through position_add when the backend
+   has it; otherwise p itself. */
+static ittd_position pos_plus(ittd_position p, int64_t delta)
+{
+    ittd_position out = p;
+    if ( offsetof(ittd_backend_api, position_add) + sizeof(api->position_add) <= api->size
+      && api->position_add != NULL && api->position_add(B, p, delta, &out) == ITTD_OK )
+        return out;
+    return p;
+}
+
 static uint64_t rip_at(ittd_cursor *c, ittd_position p)
 {
     ittd_regs r;
@@ -219,16 +252,22 @@ int main(int argc, char **argv)
     /* ---- positions and registers ------------------------------------------ */
     printf("\npositions\n");
     {
-        ittd_position mid = info.last, here;
+        ittd_position mid = pos_between(info.first, info.last, 1, 2), here;
         ittd_regs r;
         uint32_t tid = 0;
         int stop = -1;
         uint8_t bytes[16], known[16];
         size_t nk = 0;
 
-        mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
-        t0 = now_ms();
         check(api->cursor_seek(c, mid) == ITTD_OK, "seek to the middle");
+        /* The middle may be a sequence's first step (Microsoft: a key frame,
+           where the next instruction can be in another sequence): the checks
+           below start a few instructions on, where a step is one position. */
+        api->nav_step(c, 4, &stop);
+        api->cursor_position(c, &mid);
+        stop = -1;
+        t0 = now_ms();
+        check(api->cursor_seek(c, mid) == ITTD_OK, "seek to a position near the middle");
         memset(&r, 0, sizeof(r));
         if ( api->cursor_regs(c, &r) != ITTD_OK )
             printf("  registers: %s\n", api->last_error(B));
@@ -285,7 +324,10 @@ int main(int argc, char **argv)
 
         api->nav_step(c, 1, &stop);
         api->cursor_position(c, &here);
-        check(here.lo == mid.lo + 1 && stop == ITTD_STOP_STEPPED, "a forward step moves one position");
+        printf("  a step from %s", pos_text(mid));
+        printf(" lands at %s (stop %d)\n", pos_text(here), stop);
+        check(here.hi == mid.hi && here.lo == mid.lo + 1 && stop == ITTD_STOP_STEPPED,
+              "a forward step moves one position");
         api->nav_step(c, 0, &stop);
         api->cursor_position(c, &here);
         check(here.lo == mid.lo, "and a backward step moves back");
@@ -755,7 +797,7 @@ int main(int argc, char **argv)
         ittd_regs r;
         uint8_t page[4096], known[4096];
         size_t nk = 0;
-        mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+        mid = pos_between(info.first, info.last, 1, 2);
         api->cursor_seek(c, mid);
         if ( api->cursor_regs(c, &r) == ITTD_OK )
         {
@@ -775,7 +817,7 @@ int main(int argc, char **argv)
             {
                 ittd_position at = info.first;
                 double t1;
-                at.lo = info.first.lo + (info.last.lo - info.first.lo) / 10 * j;
+                at = pos_between(info.first, info.last, (uint64_t)j, 10);
                 api->cursor_seek(c, at);
                 if ( api->cursor_regs(c, &r) != ITTD_OK )
                     continue;
@@ -798,7 +840,7 @@ int main(int argc, char **argv)
             for ( j = 0; j < 5; j++ )
             {
                 double t1, t2;
-                at.lo = info.first.lo + (info.last.lo - info.first.lo) / 2 + (uint64_t)j * 1000;
+                at = pos_plus(pos_between(info.first, info.last, 1, 2), (int64_t)j * 1000);
                 api->cursor_seek(c, at);
                 t1 = now_ms();
                 api->cursor_regs(c, &r);
@@ -1124,7 +1166,7 @@ int main(int argc, char **argv)
             fs.size = sizeof(fs);
             fs.flags = ITTD_FORK_ALLOW_HOST;
             fs.registry_dir = getenv("ITTD_PROBE_OTHER_REGISTRY");
-            mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+            mid = pos_between(info.first, info.last, 1, 2);
             rc = api->fork_open(B, mid, &fs, NULL, &fk);
             if ( rc == ITTD_OK )
                 api->fork_close(fk);
@@ -1153,7 +1195,7 @@ int main(int argc, char **argv)
         fs.size = sizeof(fs);
         fs.flags = ITTD_FORK_ALLOW_HOST;   /* the reference traces were recorded against the host */
         fs.registry_dir = getenv("ITTD_PROBE_FORK_REGISTRY");
-        mid.lo = info.first.lo + (info.last.lo - info.first.lo) / 2;
+        mid = pos_between(info.first, info.last, 1, 2);
         parent_rip = rip_at(c, mid);
 
         /* Without consent, a recording made against the host is not replayed

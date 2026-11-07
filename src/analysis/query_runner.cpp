@@ -97,6 +97,17 @@ namespace idattd
     // Main-thread state only: run_query and movements both run there.
     static bool g_queryRunning = false;
     static bool g_traceMoving  = false;
+    // The running query's sink and completion flag, for stop_running_query.
+    // They live on run_query's stack and are set only while it waits.
+    static AtomicSink        *g_runningSink = nullptr;
+    static std::atomic<bool> *g_runningDone = nullptr;
+    static bool               g_runningStopped = false;
+
+    static const PythonGil &python_gil()
+    {
+        static const PythonGil gil;
+        return gil;
+    }
 
     void set_trace_moving(bool moving)
     {
@@ -128,18 +139,31 @@ namespace idattd
             refused.cancelled = true;
             return refused;
         }
-        struct RunningFlag
-        {
-            RunningFlag()  { g_queryRunning = true; }
-            ~RunningFlag() { g_queryRunning = false; }
-        } running;
-
-        static const PythonGil gil;
+        const PythonGil &gil = python_gil();
         const char *hide = cancellable ? "" : "HIDECANCEL\n";
         const char *ask  = cancellable ? " (Cancel to stop)" : "";
         AtomicSink sink;
         QueryResult result;
         std::atomic<bool> done{ false };
+
+        // Declared after the sink and flag it publishes, so it is destroyed
+        // (and stops publishing them) first.
+        struct RunningFlag
+        {
+            RunningFlag(AtomicSink *s, std::atomic<bool> *d)
+            {
+                g_queryRunning   = true;
+                g_runningSink    = s;
+                g_runningDone    = d;
+                g_runningStopped = false;
+            }
+            ~RunningFlag()
+            {
+                g_queryRunning = false;
+                g_runningSink  = nullptr;
+                g_runningDone  = nullptr;
+            }
+        } running(&sink, &done);
 
         std::thread worker([&]()
         {
@@ -190,9 +214,38 @@ namespace idattd
         worker.join();
         flush_backend_log();
         hide_wait_box();
+        // Stopped because the session ended under it: whatever the worker
+        // got is from a backend that is gone, so callers must keep nothing.
+        if ( g_runningStopped )
+        {
+            result.ran = false;
+            cancelled  = true;
+        }
         if ( cancelled )
             result.cancelled = true;
         return result;
+    }
+
+    void stop_running_query()
+    {
+        if ( !g_queryRunning || g_runningSink == nullptr || g_runningDone == nullptr )
+            return;
+        // This runs nested inside run_query's wait loop (the session ended
+        // from a UI action, a script or an execute_sync request it pumped).
+        // The worker never calls IDA or Python, so blocking the main thread
+        // until it returns cannot deadlock; a query that cannot stop
+        // part-way (preparing the recording) is simply waited for.
+        msg("[ida-ttd] the session is ending: stopping the running trace query.\n");
+        g_runningStopped = true;
+        g_runningSink->cancel();
+        const PythonGil &gil = python_gil();
+        while ( !g_runningDone->load(std::memory_order_acquire) )
+        {
+            flush_backend_log();
+            void *py = gil.release();
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            gil.resume(py);
+        }
     }
 
     // Visible top-level windows of the calling thread. Called only on the main

@@ -304,16 +304,27 @@ namespace idattd
                 where.push_back(calls[i].pos);
             std::vector<ittd_regs> regs;
             StageSink regs_stage(sink, 0, 30);
-            b->registers_at(where, &regs, &regs_stage);
-            if ( regs_stage.cancelled() )
+            QueryResult rq = b->registers_at(where, &regs, &regs_stage);
+            if ( regs_stage.cancelled() || rq.cancelled )
             {
                 r.cancelled = true;
+                return r;
+            }
+            // Without the registers, or a cursor to read the arguments with,
+            // the list would come out empty and be saved as complete: report
+            // the run as failed instead, so nothing is kept.
+            if ( !rq.ran || regs.size() != where.size() )
+            {
+                r.ran = false;
                 return r;
             }
 
             Reader rd(b, wide);
             if ( !rd.ok() )
+            {
+                r.ran = false;
                 return r;
+            }
             auto arg = [&](const ittd_regs &g, int n) -> uint64_t
             {
                 if ( wide )

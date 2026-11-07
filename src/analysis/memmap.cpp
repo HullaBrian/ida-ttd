@@ -34,6 +34,13 @@ namespace idattd
         M_FREE               = 0x10000,
     };
 
+    // NtFreeVirtualMemory's FreeType, carried in an RC_FREE's 'protect'.
+    enum : uint32_t
+    {
+        MEM_DECOMMIT_TYPE    = 0x4000,
+        MEM_RELEASE_TYPE     = 0x8000,
+    };
+
     uchar protection_perm(uint32_t protect)
     {
         uint32_t a = protect & P_ACCESS_MASK;
@@ -146,6 +153,7 @@ namespace idattd
                 r.origin  = c.kind;
                 r.type    = c.kind == RC_MAPVIEW ? ITTD_REGION_MAPPED : ITTD_REGION_PRIVATE;
                 r.since   = c.call_pos.is_valid() ? c.call_pos : c.pos;
+                r.alloc   = c.base;
                 live[r.base] = r;
                 break;
             }
@@ -171,6 +179,7 @@ namespace idattd
                     r.protect = c.protect;
                     r.origin  = RC_PROTECT;
                     r.since   = c.call_pos.is_valid() ? c.call_pos : c.pos;
+                    r.alloc   = lo;
                     live[r.base] = r;
                     return;
                 }
@@ -223,6 +232,7 @@ namespace idattd
                           ? RC_MAPVIEW : RC_ALLOC;
                 r.type     = c.region_type;
                 r.reserved = c.state != M_COMMIT;
+                r.alloc    = c.alloc_base != 0 ? c.alloc_base : c.base;
                 // A commit or protection change inside a region keeps the
                 // position the region first appeared at.
                 r.since    = c.pos;
@@ -236,19 +246,64 @@ namespace idattd
             case RC_FREE:
             case RC_UNMAPVIEW:
             {
+                // A decommit leaves the range reserved, not free.
+                const bool decommit = c.kind == RC_FREE && (c.protect & MEM_DECOMMIT_TYPE) != 0
+                                   && (c.protect & MEM_RELEASE_TYPE) == 0;
+                std::vector<Region> gone;
                 if ( c.size != 0 )
                 {
-                    carve(live, c.base, (ea_t)(c.base + c.size), nullptr);
-                    return;
+                    carve(live, c.base, (ea_t)(c.base + c.size), &gone);
+                    // carve() keeps the parts outside the range; only the
+                    // parts inside are reserved now.
+                    for ( Region &g : gone )
+                    {
+                        ea_t lo = g.base > c.base ? g.base : c.base;
+                        ea_t hi = g.end() < (ea_t)(c.base + c.size) ? g.end() : (ea_t)(c.base + c.size);
+                        g.base = lo;
+                        g.size = hi > lo ? (uint64_t)(hi - lo) : 0;
+                    }
                 }
-                // Size zero releases the whole region (MEM_RELEASE, every
-                // unmap): drop the region containing the address.
-                LiveMap::iterator it = live.upper_bound(c.base);
-                if ( it == live.begin() )
-                    return;
-                --it;
-                if ( it->second.end() > c.base )
-                    live.erase(it);
+                else
+                {
+                    // Size zero acts on the whole region (MEM_RELEASE, every
+                    // unmap, a whole-region decommit): every piece of the
+                    // allocation holding the address, which protection
+                    // changes may have split.
+                    LiveMap::iterator it = live.upper_bound(c.base);
+                    if ( it == live.begin() )
+                        return;
+                    --it;
+                    if ( it->second.end() <= c.base )
+                        return;
+                    const ea_t alloc = it->second.alloc != 0 ? it->second.alloc : it->second.base;
+                    for ( it = live.lower_bound(alloc); it != live.end(); )
+                    {
+                        const ea_t a = it->second.alloc != 0 ? it->second.alloc : it->second.base;
+                        if ( a != alloc )
+                        {
+                            // Pieces of one allocation are contiguous, so
+                            // the first foreign region past the address ends
+                            // it; one before the address is just skipped.
+                            if ( it->first > c.base )
+                                break;
+                            ++it;
+                            continue;
+                        }
+                        gone.push_back(it->second);
+                        it = live.erase(it);
+                    }
+                }
+                if ( decommit )
+                {
+                    for ( Region g : gone )
+                    {
+                        if ( g.size == 0 )
+                            continue;
+                        g.protect  = P_NOACCESS;
+                        g.reserved = true;
+                        live[g.base] = g;
+                    }
+                }
                 break;
             }
 

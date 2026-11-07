@@ -1552,7 +1552,24 @@ namespace
                 std::snprintf(text, sizeof(text), "Thread %u first runs", s.tid);
                 add(before_step(s.first_step), ITTD_EV_THREAD_START, s.tid, text);
             }
-            for ( const ttd::exception_event &e : t.exceptions() )
+            // Only where info() offers exceptions: trace::exceptions() throws
+            // for a recording without the events it needs (an older,
+            // unchunked one), which would lose the modules and threads too.
+            const uint64_t xhw = (uint64_t)ttd::access_kind::execute | (uint64_t)ttd::access_kind::host_write;
+            const bool has_exceptions = t.has_access_data() && (t.access_mask() & xhw) == xhw;
+            std::vector<ttd::exception_event> exceptions;
+            if ( has_exceptions )
+            {
+                try
+                {
+                    exceptions = t.exceptions();
+                }
+                catch ( const std::exception & )
+                {
+                    exceptions.clear();
+                }
+            }
+            for ( const ttd::exception_event &e : exceptions )
             {
                 char text[96];
                 std::snprintf(text, sizeof(text), "Exception 0x%08X at 0x%llX",
@@ -2586,11 +2603,18 @@ namespace
                     strings.inspect(address + b, window, step);
                     continue;
                 }
-                for ( uint64_t page = b; page < e; page += kPage )
+                // Part of the window is unreadable: read it a page at a time,
+                // on whole-page boundaries. Pieces taken from the window's
+                // own (unaligned) start would each straddle the unmapped page
+                // and fail too, losing everything near it.
+                const uint64_t hi = address + e;
+                for ( uint64_t p = address + b; p < hi; )
                 {
-                    window.resize(size_t(std::min<uint64_t>(kPage, e - page)));
-                    if ( shadow.read(address + page, window.size(), window.data(), read_at) )
-                        strings.inspect(address + page, window, step);
+                    const uint64_t next = std::min<uint64_t>(hi, (p & ~uint64_t(kPage - 1)) + kPage);
+                    window.resize(size_t(next - p));
+                    if ( shadow.read(p, window.size(), window.data(), read_at) )
+                        strings.inspect(p, window, step);
+                    p = next;
                 }
             }
         };

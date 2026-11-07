@@ -7,7 +7,10 @@ namespace idattd
     {
         // As UTF-16: CF_TEXT uses the ANSI code page and garbles anything
         // outside it. Windows synthesizes CF_TEXT from this for readers.
-        if ( text == nullptr || !OpenClipboard(nullptr) )
+        // Opened for a window of this (the UI) thread: with no owner,
+        // EmptyClipboard leaves the clipboard ownerless and SetClipboardData
+        // then fails, so the copy would silently do nothing.
+        if ( text == nullptr || !OpenClipboard(GetActiveWindow()) )
             return;
         EmptyClipboard();
         const std::wstring w = to_wstring(text);

@@ -29,6 +29,11 @@ namespace idattd
 
     // A query is running (run_query is waiting for it).
     bool query_in_progress();
+    // Cancel the running query, if any, and block until its worker returns:
+    // for the session's end, which can run nested inside run_query's wait
+    // loop and must not close the backend under the worker. That run_query
+    // then reports the query as not run and cancelled.
+    void stop_running_query();
     // TraceManager marks a movement through the recording, during which
     // run_query refuses to start.
     void set_trace_moving(bool moving);

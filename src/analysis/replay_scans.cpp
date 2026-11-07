@@ -140,6 +140,16 @@ namespace idattd
         return mgr->backend();
     }
 
+    // Why a replay did not run. The session can end during it (its wait box
+    // pumps the UI), closing the backend: its last error is then not this
+    // replay's, and must not be read.
+    static qstring replay_error(TraceManager *mgr, ITraceBackend *backend)
+    {
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() != backend )
+            return qstring("the replay session ended during the replay");
+        return backend->last_error();
+    }
+
     bool recover_strings(TraceManager *mgr, const ReplaySettings &settings, uint32_t min_length,
                          std::vector<StringHit> *out, bool *cancelled, qstring *error)
     {
@@ -155,7 +165,7 @@ namespace idattd
         });
         *cancelled = qr.cancelled;
         if ( !qr.ran )
-            *error = backend->last_error();
+            *error = replay_error(mgr, backend);
         return qr.ran;
     }
 
@@ -174,7 +184,7 @@ namespace idattd
         });
         *cancelled = qr.cancelled;
         if ( !qr.ran )
-            *error = backend->last_error();
+            *error = replay_error(mgr, backend);
         return qr.ran;
     }
 }

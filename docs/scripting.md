@@ -67,7 +67,8 @@ ida_ttd.call("drv.seek", "f4240")    # 1,000,000: numbers are hex
   take `registry=DIR` (the hives, for a recording made against the host),
   `root=DIR` (the emulation root, where it is elsewhere on this machine),
   `host` (consent to replay a host recording), `strict`, and `anyregistry`
-  (replay with hives that are not the recording's).
+  (replay with hives that are not the recording's). Any other word is an
+  error, so a misspelt option is not silently ignored.
 - **Answers** are JSON objects with `"ok"`; a failure also carries `"error"`.
   Addresses and positions are strings (`"0x..."`, or the backend's own position
   text), so 64-bit values survive a JSON reader that uses doubles.
@@ -120,8 +121,8 @@ database. The scope is given here instead of in a dialog.
 | `an.syscalls [MAX]` | the recording's syscalls (Sogen), with result and first four arguments |
 | `an.selfmod [MAX]` | code the program wrote and then ran (Sogen), with the write and the first run |
 | `an.registry` | where the recording's registry hives are looked for (the chosen folder, `registry\` beside the recording, the emulation root's, `ida-ttd\registry`), whether each holds the recording's own hives, and the folder a replay would use |
-| `an.strings [MIN [MAX]] [registry=DIR] [strict]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
-| `an.buffers [MAX] [registry=DIR] [strict]` | replay the recording (Sogen) and list the buffers it filled |
+| `an.strings [MIN [MAX]] [registry=DIR] [strict] [host]` | replay the recording (Sogen) and list the strings it had in memory; MIN and MAX in hex |
+| `an.buffers [MAX] [registry=DIR] [strict] [host]` | replay the recording (Sogen) and list the buffers it filled |
 | `switch PATH [TIMEOUT]` | end the session and replay PATH (a fork of the recording) in this database, as the Fork manager's "Switch here" does |
 | `an.forks` | the forks recorded in this database (the Fork manager's graph): path, parent, position, changes |
 | `an.forget PATH` | take a fork out of the graph; its file stays |
@@ -129,7 +130,7 @@ database. The scope is given here instead of in a dialog.
 | `an.forkdraft` | the fork being prepared: its position, whether the playhead is there, and its register and memory changes |
 | `an.forkrecord PATH N [registry=DIR] [strict] [host]` | record the fork being prepared: replay to it, apply its changes, record N (hex) instructions (0: to the end) into PATH. The error says `(needs host)`, `(needs registry=DIR)` or `(wrong hives: ...)` when that is what stopped it; `anyregistry` replays with hives that are not the recording's |
 | `an.forkdiscard` | drop the fork being prepared |
-| `an.fork PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
+| `an.fork PATH N [registry=DIR] [strict] [host] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
 
 `help` lists every command with its arguments, `backends` lists the loaded
 backend DLLs, and `settings` shows the plugin's settings as it holds them

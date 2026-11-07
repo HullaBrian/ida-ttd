@@ -269,6 +269,9 @@ namespace idattd
         return p;
     }
 
+    // What replay_option accepts, for the message refusing anything else.
+    static const char REPLAY_OPTIONS[] = "registry=DIR, root=DIR, strict, host or anyregistry";
+
     // A word that sets up a Sogen replay: registry=DIR, root=DIR (the
     // emulation root, when it is elsewhere here), strict, host, or
     // anyregistry (accept hives that are not the recording's). ForkRequest
@@ -1211,12 +1214,13 @@ namespace idattd
         {
             const qstring &t = a.at(i);
             if ( !replay_option(t, &req) )
-                fail("'%s' is not registry=DIR, root=DIR, strict, host or anyregistry", t.c_str());
+                fail("'%s' is not %s", t.c_str(), REPLAY_OPTIONS);
         }
         req.note = "ida-ttd script";
         ForkResult r = run_fork(&mgr(), req);
         if ( !r.ok )
         {
+            need_session();     // the session may have ended during the fork
             ReplayBlock b = mgr().backend()->last_replay_block();
             fail("the fork failed%s: %s",
                  b == ReplayBlock::HostConsent ? " (needs host)"
@@ -1229,31 +1233,37 @@ namespace idattd
            .num("regs", (int64_t)req.regs.size()).num("writes", (int64_t)req.memory.size());
     }
 
-    // Replay options (replay_option) from argument 'from' on.
+    // Replay options (replay_option) from argument 'from' on. Any other word
+    // is refused, so a typo (registy=) is not silently ignored.
     static ReplaySettings replay_args(const Args &a, size_t from)
     {
         ReplaySettings rs;
         rs.registry_dir = find_registry_dir(&mgr());
         rs.emulation_root = chosen_emulation_root(&mgr());
         for ( size_t i = from; i < a.count(); i++ )
-            replay_option(a.at(i), &rs);
+            if ( !replay_option(a.at(i), &rs) )
+                fail("'%s' is not %s", a.at(i).c_str(), REPLAY_OPTIONS);
         return rs;
     }
 
-    // How many arguments come before the first replay option.
-    static size_t plain_args(const Args &a)
+    // How many arguments come before the first replay option; more than
+    // 'most' is refused, so a stray word is not silently ignored.
+    static size_t plain_args(const Args &a, size_t most)
     {
         ReplaySettings scratch;
         size_t n = 0;
         while ( n < a.count() && !replay_option(a.at(n), &scratch) )
             n++;
+        if ( n > most )
+            fail("'%s': at most %d number(s) come before the options, which are %s",
+                 a.at(most).c_str(), (int)most, REPLAY_OPTIONS);
         return n;
     }
 
     static void cmd_an_strings(const Args &a, JObj &out)
     {
         need_session();
-        size_t np = plain_args(a);
+        size_t np = plain_args(a, 2);
         uint32_t min_len = np > 0 ? (uint32_t)a.u64(0) : 6;
         uint64_t max = np > 1 ? a.u64(1) : 50;
         std::vector<StringHit> v;
@@ -1269,6 +1279,7 @@ namespace idattd
              .boolean("wide", v[i].wide).str("text", v[i].text);
             arr.add(o.done());
         }
+        need_session();         // the session may have ended during the replay
         out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("strings", arr.done())
            .str("notice", mgr().backend()->scan_notice());
     }
@@ -1276,7 +1287,7 @@ namespace idattd
     static void cmd_an_buffers(const Args &a, JObj &out)
     {
         need_session();
-        size_t np = plain_args(a);
+        size_t np = plain_args(a, 1);
         uint64_t max = np > 0 ? a.u64(0) : 50;
         std::vector<BufferHit> v;
         bool cancelled = false;
@@ -1292,6 +1303,7 @@ namespace idattd
              .hex("writer", v[i].writer_ip).num("writes", (int64_t)v[i].writes).str("preview", v[i].preview);
             arr.add(o.done());
         }
+        need_session();         // the session may have ended during the replay
         out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("buffers", arr.done())
            .str("notice", mgr().backend()->scan_notice());
     }
@@ -1792,8 +1804,8 @@ namespace idattd
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
         { "an.registry",    cmd_an_registry,    "where the recording's registry hives are looked for, and what each place holds" },
-        { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] strings recovered by a replay" },
-        { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] buffers recovered by a replay" },
+        { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] [host] strings recovered by a replay" },
+        { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] [host] buffers recovered by a replay" },
         { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
         { "ui.calltree",    cmd_ui_calltree,    "the call tree last built by the TTD menu (for its window)" },
         { "ui.heat",        cmd_ui_heat,        "the memory heatmap's counts (for its window)" },
@@ -1809,7 +1821,7 @@ namespace idattd
         { "an.forkdraft",   cmd_an_forkdraft,   "the fork being prepared and its changes" },
         { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },
         { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] record the fork being prepared" },
-        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [REG=V ...] [mem:EA=HEX ...] fork here" },
+        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [host] [REG=V ...] [mem:EA=HEX ...] fork here" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },
@@ -1890,6 +1902,17 @@ namespace idattd
         a.v = tokenize(line != nullptr ? line : "");
         if ( a.v.empty() )
             a.v.push_back("help");
+        // A query's wait box pumps the UI, so the session can end under a
+        // command (a timer, another script, the user). The query then comes
+        // back as not run, which most commands report as the backend being
+        // unable to answer: say what really happened instead.
+        const bool was_active = g_plugin != nullptr && mgr().is_active();
+        auto why = [&](const char *what) -> qstring
+        {
+            if ( was_active && (g_plugin == nullptr || !mgr().is_active()) )
+                return qstring("the replay session ended while the command ran");
+            return qstring(what);
+        };
         try
         {
             const Command *found = nullptr;
@@ -1923,11 +1946,11 @@ namespace idattd
         }
         catch ( const ScriptError &e )
         {
-            out.boolean("ok", false).str("command", a.v[0]).str("error", e.what);
+            out.boolean("ok", false).str("command", a.v[0]).str("error", why(e.what.c_str()));
         }
         catch ( const std::exception &e )
         {
-            out.boolean("ok", false).str("command", a.v[0]).str("error", e.what());
+            out.boolean("ok", false).str("command", a.v[0]).str("error", why(e.what()));
         }
         return out.done();
     }

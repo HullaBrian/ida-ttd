@@ -18,8 +18,9 @@ Open the trace (File > Open, or the MCP's open_database), then:
 Each line of the result is "ok" or "FAIL" with the check's name.
 
 On a Sogen recording, run_sogen() also checks the Sogen-only commands
-(syscalls, self-modifying code, and with a registry folder recovered strings
-and a fork); see its docstring.
+(syscalls, self-modifying code, and, when the recording carries its registry
+hives or a folder of them is given, recovered strings and a fork); see its
+docstring.
 """
 import json
 import os
@@ -180,11 +181,14 @@ def run_sogen(registry=None, host=False, fork_path=None):
     """The Sogen-only commands, on a Sogen recording of the same sample.
 
     registry: a folder of registry hives (SYSTEM, SOFTWARE, ...) for the checks
-    that replay the program (recovered strings, forks); without it they are
-    skipped. host: allow replaying a recording made against the host, which
-    reruns the program's file and network operations on this machine (the
-    reference recordings were made that way). fork_path: where the fork goes
-    (default: next to the database).
+    that replay the program (recovered strings, forks). Not needed when the
+    recording carries its own hives (an.registry's registry_carried); with
+    neither, those checks are skipped. host: allow replaying a recording made
+    against the host, which reruns the program's file and network operations
+    on this machine (the reference recordings were made that way). fork_path:
+    where the fork goes (default: next to the database, named for this run;
+    the forks this test makes are deleted at the end unless fork_path is
+    given).
     """
     A = sample_addresses()
     res, fails = [], []
@@ -201,18 +205,25 @@ def run_sogen(registry=None, host=False, fork_path=None):
     s = T("an.syscalls 5")
     chk("syscalls listed and named", s.get("ok") and s.get("count", 0) > 0 and s["syscalls"][0]["name"] != "",
         (s.get("count"), s.get("error")))
-    chk("syscall arguments read", s.get("ok") and "args" in s["syscalls"][0], s.get("error"))
+    chk("syscall arguments read", s.get("ok") and bool(s.get("syscalls")) and "args" in s["syscalls"][0],
+        s.get("error"))
 
     m = T("an.selfmod 5")
     chk("self-modifying code search runs", m.get("ok"), (m.get("count"), m.get("error")))
 
-    if registry:
-        extra = ' registry="%s"%s' % (registry, " host" if host else "")
+    carried = bool(T("an.registry").get("registry_carried"))
+    if registry or carried:
+        extra = (' registry="%s"' % registry if registry else "") + (" host" if host else "")
+        if not registry:
+            res.append("note: using the hives the recording carries")
         st = T("an.strings 8 5" + extra)
         chk("strings recovered by a replay", st.get("ok") and st.get("count", 0) > 0,
             (st.get("count"), st.get("error")))
         T("runto %X" % A["main"])
-        path = fork_path or os.path.join(os.path.dirname(idc.get_idb_path()), "selftest-fork.sogttd")
+        # A name of its own per run, so an earlier run's forks (an.forget
+        # leaves the files) are never overwritten.
+        path = fork_path or os.path.join(os.path.dirname(idc.get_idb_path()),
+                                         "selftest-fork-%s.sogttd" % time.strftime("%Y%m%d-%H%M%S"))
         f = T('an.fork "%s" 4E20 rax=1%s' % (path, extra))
         chk("a fork records", f.get("ok") and f.get("instructions") == 0x4E20 and os.path.exists(path),
             (f.get("instructions"), f.get("error")))
@@ -261,8 +272,13 @@ def run_sogen(registry=None, host=False, fork_path=None):
             (sw.get("trace"), sw.get("error")))
         for x in (path, path2):
             T('an.forget "%s"' % x)
+            if not fork_path:
+                try:
+                    os.remove(x)
+                except OSError:
+                    pass
     else:
-        res.append("skip strings and fork: no registry folder given")
+        res.append("skip strings and fork: the recording carries no registry hives and no folder was given")
 
     r = T("stop")
     chk("stop", r.get("process_state") == 0, r.get("process_state"))

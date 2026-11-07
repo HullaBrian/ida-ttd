@@ -92,6 +92,10 @@ namespace idattd
         // by the call that made it.
         uint32_t type = 0;
         bool     reserved = false;    // reserved, not committed (when known)
+        // Base of the allocation or view this is (part of): a protection
+        // change splits a region into pieces, and a whole-region release must
+        // drop every one of them, not just the piece holding the address.
+        ea_t     alloc = 0;
         // Position of the call that made the region (what a listing travels
         // to); for RC_STATE, the position the region first appeared at.
         Position since = Position::none();

@@ -120,6 +120,10 @@ namespace idattd
 
     void TraceManager::reset_session_state()
     {
+        // A query's wait loop pumps the UI, so the session can end while its
+        // worker is inside the backend (and may hold cursors from it): stop
+        // it before anything below is torn down.
+        stop_running_query();
         end_travel_wait();
         // Everything that holds a cursor goes before the backend that made it.
         m_code.reset();

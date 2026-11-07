@@ -124,8 +124,9 @@ namespace idattd
         if ( m_mgr == nullptr || !m_mgr->is_active()
           || !list_syscalls(m_mgr, &calls, &cancelled) || cancelled )
             return cbret_t(n, NOTHING_CHANGED);
-        decode_syscalls(m_mgr, calls, &decoded, &cancelled);
-        if ( !cancelled )
+        // Saved only when the decode ran to the end: a failed one leaves
+        // every row blank, which would then be kept as the final answer.
+        if ( decode_syscalls(m_mgr, calls, &decoded, &cancelled) && !cancelled )
             save_syscalls(calls, decoded);
         m_calls   = std::move(calls);
         m_decoded = std::move(decoded);
@@ -171,10 +172,11 @@ namespace idattd
                 msg("[ida-ttd] syscalls: stopped.\n");
                 return 1;
             }
-            decode_syscalls(mgr(), calls, &decoded, &cancelled);
-            if ( cancelled )
-                msg("[ida-ttd] %d syscall(s); decoding their arguments was stopped, so they are shown "
-                    "undecoded and not saved (Ctrl+E decodes one).\n", (int)calls.size());
+            const bool ran = decode_syscalls(mgr(), calls, &decoded, &cancelled);
+            if ( cancelled || !ran )
+                msg("[ida-ttd] %d syscall(s); decoding their arguments %s, so they are shown "
+                    "undecoded and not saved (Ctrl+E decodes one).\n", (int)calls.size(),
+                    cancelled ? "was stopped" : "failed");
             else
                 save_syscalls(calls, decoded);
         }
