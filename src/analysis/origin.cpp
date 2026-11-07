@@ -272,10 +272,48 @@ namespace idattd
                 v.append(data.data() + off, t.size);
                 return v;
             };
+            // On Microsoft TTD a syscall's write to memory surfaces only where
+            // the program later reads it, so "one position after" still shows
+            // the old value. Where the backend can find that write
+            // (query_out_values, as for handles), it is asked about every
+            // candidate whose value did not visibly change.
+            std::vector<std::optional<uint64_t>> surfaced;
+            if ( t.size <= 8 && value.size() == t.size )
+            {
+                std::vector<OutSlot> slots;
+                std::vector<size_t>  slot_of;
+                for ( size_t i = 0; i < cand.size(); i++ )
+                {
+                    const bytevec_t before = value_in(2 * i), after = value_in(2 * i + 1);
+                    if ( before.empty() || before != after )
+                        continue;
+                    OutSlot o;
+                    o.call  = cand[i]->pos;
+                    o.addr  = t.addr;
+                    o.tid   = cand[i]->tid;
+                    o.width = t.size;
+                    memcpy(&o.before, before.begin(), t.size);
+                    slots.push_back(o);
+                    slot_of.push_back(i);
+                }
+                std::vector<std::optional<uint64_t>> vals;
+                if ( !slots.empty() && b->query_out_values(slots, &vals, sink) )
+                {
+                    surfaced.assign(cand.size(), std::nullopt);
+                    for ( size_t j = 0; j < slot_of.size() && j < vals.size(); j++ )
+                        surfaced[slot_of[j]] = vals[j];
+                }
+            }
+            uint64_t want_u = 0;
+            if ( value.size() <= 8 )
+                memcpy(&want_u, value.begin(), value.size());
             for ( size_t i = 0; i < cand.size(); i++ )
             {
                 const bytevec_t before = value_in(2 * i), after = value_in(2 * i + 1);
-                if ( after.empty() || after != value || before == after )
+                const bool by_search = i < surfaced.size() && surfaced[i].has_value()
+                                    && *surfaced[i] == want_u && !before.empty()
+                                    && memcmp(before.begin(), &want_u, before.size()) != 0;
+                if ( !by_search && (after.empty() || after != value || before == after) )
                     continue;
                 // Only the match needs a cursor: for its instruction.
                 ea_t sys_pc = BADADDR;
