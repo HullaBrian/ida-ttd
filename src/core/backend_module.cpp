@@ -50,7 +50,8 @@ namespace idattd
     struct ProgressBridge
     {
         ProgressSink *sink = nullptr;
-        uint32_t      last = UINT32_MAX;
+        // Atomic: the ABI lets a backend report from any of its threads.
+        std::atomic<uint32_t> last{ UINT32_MAX };
         ittd_progress abi{};
 
         explicit ProgressBridge(ProgressSink *s) : sink(s)
@@ -68,11 +69,8 @@ namespace idattd
         {
             ProgressBridge *b = static_cast<ProgressBridge *>(ud);
             uint32_t pct = permille >= 1000 ? 100 : permille / 10;
-            if ( pct != b->last )
-            {
-                b->last = pct;
+            if ( b->last.exchange(pct, std::memory_order_relaxed) != pct )
                 b->sink->report(pct);
-            }
         }
         static int cancelled(void *ud)
         {
@@ -429,15 +427,19 @@ namespace idattd
         m_info.backend_name = fixed_str(ti.backend_name);
 
         uint32_t c = ti.capabilities;
-        m_caps.access_queries   = (c & ITTD_CAP_ACCESS_QUERIES) != 0;
-        m_caps.call_queries     = (c & ITTD_CAP_CALL_QUERIES) != 0;
-        m_caps.mapping_changes  = (c & ITTD_CAP_MAPPING_CHANGES) != 0;
+        // Each bit only with the entries it promises, as the header says the
+        // bits are for: a backend setting one without them would offer
+        // commands that can only fail.
+        m_caps.access_queries   = (c & ITTD_CAP_ACCESS_QUERIES) != 0
+                               && ITTD_HAS(m_api, query_accesses) && ITTD_HAS(m_api, query_executed);
+        m_caps.call_queries     = (c & ITTD_CAP_CALL_QUERIES) != 0 && ITTD_HAS(m_api, query_calls);
+        m_caps.mapping_changes  = (c & ITTD_CAP_MAPPING_CHANGES) != 0 && ITTD_HAS(m_api, query_mapping_changes);
         m_caps.syscalls         = (c & ITTD_CAP_SYSCALLS) != 0 && ITTD_HAS(m_api, query_syscalls);
         m_caps.recorded_exports = (c & ITTD_CAP_RECORDED_EXPORTS) != 0;
         m_caps.cheap_seek       = (c & ITTD_CAP_CHEAP_SEEK) != 0;
         m_caps.batch_regs       = (c & ITTD_CAP_BATCH_REGS) != 0 && ITTD_HAS(m_api, regs_at);
         m_caps.reverse_step     = (c & ITTD_CAP_REVERSE_STEP) != 0;
-        m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;
+        m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0 && ITTD_HAS(m_api, query_exceptions);
         m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0
                                && ITTD_HAS(m_api, query_self_modifying);
         m_caps.fork             = (c & ITTD_CAP_FORK) != 0

@@ -421,6 +421,11 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
             ea_t first  = mainBase + pe.sections[0].va;
             if ( hdrEnd > first )
                 hdrEnd = first;
+            // And to the image, like every section: a hostile SizeOfHeaders
+            // with a far first section would cover other modules' memory
+            // (and read it page by page from the recording).
+            if ( hdrEnd > imageEnd )
+                hdrEnd = imageEnd;
             add_one(mainBase, hdrEnd, "HEADER", CLASS_CONST, SEGPERM_READ);
         }
 
@@ -432,12 +437,15 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
                 continue;
             ea_t lo = mainBase + s.va;
             ea_t hi = lo + span;
-            // Clamp a section running into the next so segments never
-            // overlap (sections are normally in ascending order).
-            if ( i + 1 < pe.sections.size() )
+            if ( lo >= imageEnd )
+                continue;
+            // Clamp a section running into the next one above it, so
+            // segments never overlap. The next by address, not by table
+            // order: a malformed image can list them out of order.
+            for ( size_t k = 0; k < pe.sections.size(); k++ )
             {
-                ea_t next = mainBase + pe.sections[i + 1].va;
-                if ( hi > next )
+                ea_t next = mainBase + pe.sections[k].va;
+                if ( next > lo && hi > next )
                     hi = next;
             }
             if ( hi > imageEnd )

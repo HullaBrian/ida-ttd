@@ -104,7 +104,7 @@ namespace idattd
         // The call, not the return: the return is inside the syscall stub,
         // not the function the row names.
         if ( n < m_rows.size() )
-            travel_to(m_mgr, m_rows[n].call_pos.is_valid() ? m_rows[n].call_pos : m_rows[n].pos);
+            travel_to(m_mgr, m_rows[n].call_pos.is_valid() ? m_rows[n].call_pos : m_rows[n].pos, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -398,7 +398,7 @@ namespace idattd
                  "kernel made it, or it existed before the recording started.");
             return cbret_t(n, NOTHING_CHANGED);
         }
-        travel_to(m_mgr, m_rows[n].since);
+        travel_to(m_mgr, m_rows[n].since, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

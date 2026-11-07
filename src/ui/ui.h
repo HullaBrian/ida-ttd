@@ -12,6 +12,7 @@
 #include "analysis/syscalls.h"
 #include "analysis/replay_scans.h"
 #include "analysis/calltree.h"
+#include "analysis/trace_store.h"
 
 #include <map>
 
@@ -30,6 +31,24 @@ namespace idattd
     // does. No-op when no trace is replayed or 'p' is not a position.
     void travel_to(TraceManager *mgr, Position p);
 
+    // The recording a listing was made from, taken when the listing is
+    // built. A listing stays open after its session ends, and the Fork
+    // manager can switch this database to a fork, whose positions mean other
+    // things: a listing's positions must only be used on its own recording.
+    struct RecordingStamp
+    {
+        uint64_t fingerprint = current_trace();
+        // The session replays the recording this was taken from.
+        bool current() const { return fingerprint == 0 || fingerprint == current_trace(); }
+    };
+
+    // travel_to, refused with a message when the listing ('made') is from
+    // another recording than the one being replayed.
+    void travel_to(TraceManager *mgr, Position p, const RecordingStamp &made);
+    // False, with that message, when 'made' is not the replayed recording:
+    // for a listing about to read the recording at one of its positions.
+    bool listing_is_current(const RecordingStamp &made);
+
     // A non-modal "Timeline" chooser listing notable trace positions
     // (thread create/exit, module load/unload, exceptions). Double-clicking a
     // row moves the cursor to that position.
@@ -44,6 +63,7 @@ namespace idattd
 
     private:
         TraceManager                            *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<TraceManager::NamedPosition> m_positions;
     };
 
@@ -95,6 +115,7 @@ namespace idattd
         };
 
         TraceManager                    *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<FunctionInvocation>  m_events;  // frozen snapshot
         std::map<ea_t, FuncLabel>        m_labels;  // by FunctionInvocation::func_ea
     };
@@ -137,6 +158,7 @@ namespace idattd
 
     private:
         TraceManager           *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<MemAccess>  m_hits;   // frozen snapshot
         qstring                 m_title;  // owned: chooser_base_t keeps the pointer
     };
@@ -164,6 +186,7 @@ namespace idattd
         void reset_rows();
 
         TraceManager              *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<SyscallEvent>  m_calls;
         std::vector<qstring>       m_decoded;
         // Read a chunk at a time as rows are drawn; see ARG_CHUNK.
@@ -186,6 +209,7 @@ namespace idattd
 
     private:
         TraceManager             *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<SelfModHit>   m_hits;
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
     };
@@ -204,6 +228,7 @@ namespace idattd
 
     private:
         TraceManager            *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<StringHit>   m_hits;
         qstring                  m_title;  // owned: chooser_base_t keeps the pointer
     };
@@ -222,6 +247,7 @@ namespace idattd
 
     private:
         TraceManager            *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<BufferHit>   m_hits;
         qstring                  m_title;  // owned: chooser_base_t keeps the pointer
     };
@@ -241,6 +267,7 @@ namespace idattd
 
     private:
         TraceManager             *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<RegionChange> m_rows;   // frozen snapshot
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
     };
@@ -263,6 +290,7 @@ namespace idattd
         void set_title();
 
         TraceManager             *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         std::vector<HandleRecord> m_rows;
         qstring                   m_title;  // owned: chooser_base_t keeps the pointer
     };
@@ -289,6 +317,7 @@ namespace idattd
         void rebuild() const;
 
         TraceManager *m_mgr;
+        RecordingStamp m_made;     // the recording the rows come from
         mutable std::vector<AddressRegion> m_rows;
         // What m_rows was built from: the playhead and the change timeline's
         // size (it grows if the map is built with the listing open).

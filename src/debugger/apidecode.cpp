@@ -609,7 +609,9 @@ namespace idattd
             else if ( have_offs )
             {
                 size_t n = x86_footprint(p) == 8 ? 8 : 4;
-                a.raw = read_uint(v, r.gp[ITTD_REG_RSP] + offs[i], n, &ok);
+                // ESP: a backend's 32-bit context may carry upper bits, and
+                // callconv.cpp truncates the same way.
+                a.raw = read_uint(v, (uint32_t)r.gp[ITTD_REG_RSP] + (uint64_t)offs[i], n, &ok);
             }
             else
             {

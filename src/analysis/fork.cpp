@@ -246,14 +246,27 @@ namespace idattd
             full.registry_dir = find_registry_dir(mgr);
         if ( full.emulation_root.empty() )
             full.emulation_root = chosen_emulation_root(mgr);
+        bool started = false;
         run_query("Forking the recording: replaying to the position, then recording", [&](ProgressSink *p)
         {
+            started = true;
             result = backend->record_fork(full, p);
             QueryResult q;
             q.ran = result.ok;
             q.cancelled = result.cancelled;
             return q;
         });
+        // Refused before it ran (another query, a movement), or the session
+        // ended during it: the backend's last error is not this fork's.
+        if ( !started )
+        {
+            result.ok    = false;
+            result.error = "not started: another trace query or a movement is in progress";
+        }
+        else if ( !result.ok && (!mgr->is_active() || mgr->backend() != backend) )
+        {
+            result.error = "the replay session ended during the fork";
+        }
         // A failure without a message (the backend threw, say) still needs one.
         if ( !result.ok && !result.cancelled && result.error.empty() )
         {

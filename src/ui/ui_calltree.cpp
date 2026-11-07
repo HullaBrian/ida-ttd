@@ -93,6 +93,7 @@ namespace idattd
 
     private:
         TraceManager           *m_mgr;
+        RecordingStamp          m_made;     // the recording the tree comes from
         CallTree                m_tree;
         qstring                 m_title;
         TWidget                *m_view = nullptr;
@@ -182,7 +183,7 @@ namespace idattd
         void travel(size_t node)
         {
             if ( node != size_t(-1) )
-                travel_to(m_mgr, node == 0 ? m_tree.from : m_tree.rows[node - 1].pos);
+                travel_to(m_mgr, node == 0 ? m_tree.from : m_tree.rows[node - 1].pos, m_made);
         }
 
         static CallTreeView *self(void *ud) { return static_cast<CallTreeView *>(ud); }
@@ -263,6 +264,10 @@ namespace idattd
         else
             j.append(",\"root\":\"\",\"from\":");
         json_str(&j, format_position(t.from).c_str());
+        // Which recording the positions belong to: the window passes it back
+        // with each travel (ui.travel), so a tree left open across a switch to
+        // a fork does not travel into the fork.
+        j.cat_sprnt(",\"recording\":\"0x%llX\"", (unsigned long long)current_trace());
         j.append(",\"to\":");
         json_str(&j, format_position(t.to).c_str());
         j.cat_sprnt(",\"tid\":\"0x%X\",\"from_cursor\":%s,\"truncated\":%s,\"rows\":[",

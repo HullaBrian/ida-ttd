@@ -1310,7 +1310,9 @@ namespace idattd
             // them are theirs.
             for ( const MemAt &m : in )
             {
-                if ( m.size == 0 || m.offset + m.size > data.size() )
+                // Written so it cannot wrap: offset + size could, for huge
+                // values, and pass the check.
+                if ( m.size == 0 || m.offset > data.size() || m.size > data.size() - m.offset )
                     continue;
                 memcpy(buf + m.offset, data.data() + m.offset, m.size);
                 memcpy(known + m.offset, k.data() + m.offset, m.size);

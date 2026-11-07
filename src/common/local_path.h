@@ -23,9 +23,52 @@
 
 namespace idattd
 {
+    // A legacy DOS device name (CON, PRN, AUX, NUL, COM0-9, LPT0-9), with or
+    // without an extension: Win32 opens the device, whatever folder it is
+    // in ("C:\x\CON.txt" is the console), and a read of the console waits
+    // for keyboard input. Case-insensitive, trailing dots and blanks
+    // ignored, as Win32 does.
+    template <typename C>
+    inline bool is_dos_device_name(const C *s, size_t n)
+    {
+        size_t stem = 0;
+        while ( stem < n && s[stem] != C('.') )
+            stem++;
+        while ( stem > 0 && (s[stem - 1] == C(' ') || s[stem - 1] == C('.')) )
+            stem--;
+        auto up = [](C c) { return (c >= C('a') && c <= C('z')) ? C(c - C('a') + C('A')) : c; };
+        auto is3 = [&](const char *w)
+        {
+            return up(s[0]) == C(w[0]) && up(s[1]) == C(w[1]) && up(s[2]) == C(w[2]);
+        };
+        if ( stem == 3 )
+            return is3("CON") || is3("PRN") || is3("AUX") || is3("NUL");
+        if ( stem == 4 && s[3] >= C('0') && s[3] <= C('9') )
+            return is3("COM") || is3("LPT");
+        return false;
+    }
+
+    // Any component of 'p' (separated by '\' or '/') is a DOS device name.
+    template <typename C>
+    inline bool has_dos_device_component(const C *p, size_t n)
+    {
+        size_t i = 0;
+        while ( i < n )
+        {
+            size_t j = i;
+            while ( j < n && p[j] != C('\\') && p[j] != C('/') )
+                j++;
+            if ( j > i && is_dos_device_name(p + i, j - i) )
+                return true;
+            i = j + 1;
+        }
+        return false;
+    }
+
     // True when 'path' is an absolute path on a local (non-network) drive:
     // "X:\..." or "\\?\X:\...". UNC, device and relative paths are refused,
-    // and so is a drive letter mapped to a network share.
+    // and so is a drive letter mapped to a network share, and a path naming
+    // a DOS device (has_dos_device_component).
     inline bool is_local_drive_path(const std::wstring &path)
     {
         std::wstring p = path;
@@ -38,6 +81,8 @@ namespace idattd
             return false;
         wchar_t d = p[0];
         if ( !((d >= L'A' && d <= L'Z') || (d >= L'a' && d <= L'z')) )
+            return false;
+        if ( has_dos_device_component(p.c_str() + 3, p.size() - 3) )
             return false;
         const wchar_t root[4] = { d, L':', L'\\', 0 };
         UINT type = GetDriveTypeW(root);

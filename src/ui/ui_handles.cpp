@@ -62,7 +62,7 @@ namespace idattd
     chooser_t::cbret_t idaapi HandlesChooser::enter(size_t n)
     {
         if ( n < m_rows.size() )
-            travel_to(m_mgr, m_rows[n].opened.is_valid() ? m_rows[n].opened : m_rows[n].closed);
+            travel_to(m_mgr, m_rows[n].opened.is_valid() ? m_rows[n].opened : m_rows[n].closed, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -71,7 +71,7 @@ namespace idattd
         if ( n < m_rows.size() )
         {
             if ( m_rows[n].closed.is_valid() )
-                travel_to(m_mgr, m_rows[n].closed);
+                travel_to(m_mgr, m_rows[n].closed, m_made);
             else
                 info("This handle was still open when the recording ended.");
         }

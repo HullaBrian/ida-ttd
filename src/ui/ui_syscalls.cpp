@@ -91,7 +91,7 @@ namespace idattd
     chooser_t::cbret_t idaapi SyscallChooser::enter(size_t n)
     {
         if ( n < m_calls.size() )
-            travel_to(m_mgr, m_calls[n].pos);
+            travel_to(m_mgr, m_calls[n].pos, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -108,6 +108,10 @@ namespace idattd
                  why.empty() ? "" : ": ", why.c_str());
             return cbret_t(n, NOTHING_CHANGED);
         }
+        // Its registers are read at the row's position: only on its own
+        // recording.
+        if ( !listing_is_current(m_made) )
+            return cbret_t(n, NOTHING_CHANGED);
         std::vector<SyscallEvent> one{ m_calls[n] };
         std::vector<qstring> text;
         bool cancelled = false;

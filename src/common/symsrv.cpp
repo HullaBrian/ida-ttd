@@ -1,5 +1,6 @@
 #include "common/symsrv.h"
 #include "common/strings.h"
+#include "common/local_path.h"
 
 #include <condition_variable>
 #include <winhttp.h>
@@ -315,6 +316,9 @@ namespace idattd
     {
         size_t n = strlen(s);
         if ( n == 0 || n > 128 || strcmp(s, ".") == 0 || strcmp(s, "..") == 0 )
+            return false;
+        // "nul.pdb" would name a device, not a file in the store.
+        if ( is_dos_device_name(s, n) )
             return false;
         for ( size_t i = 0; i < n; i++ )
         {

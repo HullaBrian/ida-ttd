@@ -133,7 +133,9 @@ def _ida_ttd_call_tree():
         def travel(self, item):
             pos = item.data(0, POS_ROLE)
             if pos:
-                ttd("ui.travel %s" % pos)
+                # With the tree's recording, so a tree left open across a
+                # switch to a fork does not travel into the fork.
+                ttd("ui.travel %s %s" % (pos, tree.get("recording", "")))
 
         def menu(self, point):
             item = self.view.itemAt(point)

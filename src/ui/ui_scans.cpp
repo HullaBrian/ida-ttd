@@ -55,7 +55,8 @@ namespace idattd
     chooser_t::cbret_t idaapi StringsChooser::enter(size_t n)
     {
         if ( n < m_hits.size() )
-            travel_and_show_bytes(m_mgr, m_hits[n].pos, m_hits[n].address);
+            if ( listing_is_current(m_made) )
+                travel_and_show_bytes(m_mgr, m_hits[n].pos, m_hits[n].address);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -104,7 +105,8 @@ namespace idattd
     chooser_t::cbret_t idaapi BuffersChooser::enter(size_t n)
     {
         if ( n < m_hits.size() )
-            travel_and_show_bytes(m_mgr, m_hits[n].last_pos, m_hits[n].address);
+            if ( listing_is_current(m_made) )
+                travel_and_show_bytes(m_mgr, m_hits[n].last_pos, m_hits[n].address);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

@@ -57,6 +57,11 @@ namespace idattd
         }
         if ( key == "fork_instructions" )
         {
+            // Digits only: strtoull also takes leading blanks and a sign, and
+            // turns "-1" into 2^64-1, a fork that runs to the recording's end.
+            for ( size_t i = 0; i < value.length(); i++ )
+                if ( !qisdigit(value[i]) )
+                    return false;
             char *end = nullptr;
             errno = 0;
             unsigned long long n = strtoull(value.c_str(), &end, 10);

@@ -228,6 +228,19 @@ namespace idattd
         std::streamoff len = f.tellg();
         if ( len <= 0 )
             return false;
+        // The path comes from the recording: it can name any local file (a
+        // disk image, a dump). Read only what can be a module: a PE header
+        // first, and nothing larger than any real DLL.
+        const std::streamoff MAX_IMAGE_FILE = std::streamoff(1) << 30;     // 1 GiB
+        if ( len > MAX_IMAGE_FILE || len < (std::streamoff)sizeof(IMAGE_DOS_HEADER) )
+            return false;
+        {
+            char mz[2] = { 0, 0 };
+            f.seekg(0, std::ios::beg);
+            f.read(mz, 2);
+            if ( f.gcount() != 2 || mz[0] != 'M' || mz[1] != 'Z' )
+                return false;
+        }
         out.file.resize((size_t)len);
         f.seekg(0, std::ios::beg);
         f.read((char *)out.file.data(), (std::streamsize)len);

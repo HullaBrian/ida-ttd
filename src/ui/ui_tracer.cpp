@@ -151,7 +151,7 @@ namespace idattd
     chooser_t::cbret_t idaapi TraceEventsChooser::enter(size_t n)
     {
         if ( n < m_events.size() )
-            travel_to(m_mgr, m_events[n].pos);
+            travel_to(m_mgr, m_events[n].pos, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

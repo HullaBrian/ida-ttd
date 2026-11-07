@@ -39,7 +39,7 @@ namespace idattd
     chooser_t::cbret_t idaapi PositionChooser::enter(size_t n)
     {
         if ( n < m_positions.size() )
-            travel_to(m_mgr, m_positions[n].pos);
+            travel_to(m_mgr, m_positions[n].pos, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -50,6 +50,24 @@ namespace idattd
         mgr->set_next_position(p);
         request_continue_process();
         run_requests();
+    }
+
+    bool listing_is_current(const RecordingStamp &made)
+    {
+        if ( made.current() )
+            return true;
+        warning("This list was made from another recording than the one being replayed "
+                "(the session ended, or switched to a fork or back).\n\n"
+                "Open it again to list this recording.");
+        return false;
+    }
+
+    void travel_to(TraceManager *mgr, Position p, const RecordingStamp &made)
+    {
+        if ( mgr == nullptr || !mgr->is_active() || !p.is_valid() )
+            return;
+        if ( listing_is_current(made) )
+            travel_to(mgr, p);
     }
 
     //=======================================================================

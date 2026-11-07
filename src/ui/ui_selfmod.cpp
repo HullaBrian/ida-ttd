@@ -48,7 +48,7 @@ namespace idattd
     chooser_t::cbret_t idaapi SelfModChooser::enter(size_t n)
     {
         if ( n < m_hits.size() )
-            travel_to(m_mgr, m_hits[n].write_pos);
+            travel_to(m_mgr, m_hits[n].write_pos, m_made);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

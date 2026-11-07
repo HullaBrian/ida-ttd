@@ -35,6 +35,8 @@ static ittd_backend *B;
  * past the backend's 'size' is not there, whatever the memory beyond holds. */
 #define HAS(f) (offsetof(ittd_backend_api, f) + sizeof(api->f) <= api->size && api->f != NULL)
 static int failures;
+/* The capacity each count-then-fill below was given (clamp_count). */
+static size_t n_cap, m_cap, nn_cap, wn_cap;
 
 static double now_ms(void)
 {
@@ -98,6 +100,20 @@ static ittd_position pos_plus(ittd_position p, int64_t delta)
       && api->position_add != NULL && api->position_add(B, p, delta, &out) == ITTD_OK )
         return out;
     return p;
+}
+
+/* A count-then-fill answer must not report more entries than the buffer
+   given holds (query_all clamps the same way): loops over the answer would
+   read past it. Clamps, and fails a check when it had to. Always 1, so it
+   can sit in a condition. */
+static int clamp_count(size_t *n, size_t cap)
+{
+    if ( *n > cap )
+    {
+        check(0, "a fill reports no more entries than the buffer it was given holds");
+        *n = cap;
+    }
+    return 1;
 }
 
 static uint64_t rip_at(ittd_cursor *c, ittd_position p)
@@ -443,8 +459,10 @@ int main(int argc, char **argv)
         printf("\ncalls to %s\n", want);
         t0 = now_ms();
         api->query_calls(B, &target, 1, all, NULL, 0, &n, &trunc, NULL);
+        n_cap = n;
         calls = (ittd_call *)calloc(n ? n : 1, sizeof(ittd_call));
         api->query_calls(B, &target, 1, all, calls, n, &n, &trunc, NULL);
+        clamp_count(&n, n_cap);
         for ( k = 0; k < n; k++ )
             if ( !is_none(calls[k].ret_pos) )
                 with_ret++;
@@ -670,8 +688,10 @@ int main(int argc, char **argv)
                 check(0, "  every call in a window can be listed");
                 break;
             }
+            m_cap = m;
             ev = (ittd_call *)calloc(m ? m : 1, sizeof(ittd_call));
             api->query_calls(B, NULL, 0, win, ev, m, &m, &trunc, NULL);
+            clamp_count(&m, m_cap);
             for ( j = 0; j < m; j++ )
                 if ( ev[j].pos.lo == e->pos.lo && ev[j].entry_pos.lo == e->entry_pos.lo
                   && ev[j].ret_pos.lo == e->ret_pos.lo && ev[j].target == e->target )
@@ -709,8 +729,10 @@ int main(int argc, char **argv)
         printf("\nindirect calls in %s\n", mods[m].name);
         t0 = now_ms();
         api->query_indirect(B, &r, 1, 0, NULL, 0, &n, &trunc, NULL);
+        n_cap = n;
         tg = (ittd_call_target *)calloc(n ? n : 1, sizeof(ittd_call_target));
         api->query_indirect(B, &r, 1, 0, tg, n, &n, &trunc, NULL);
+        clamp_count(&n, n_cap);
         printf("  %zu edge(s), %.1f ms\n", n, now_ms() - t0);
         for ( k = 0; k < n && k < 5; k++ )
         {
@@ -734,14 +756,18 @@ int main(int argc, char **argv)
         printf("\nmemory map\n");
         t0 = now_ms();
         api->query_mapping_changes(B, NULL, 0, &n, &trunc, NULL);
+        n_cap = n;
         mc = (ittd_mapping_change *)calloc(n ? n : 1, sizeof(ittd_mapping_change));
         api->query_mapping_changes(B, mc, n, &n, &trunc, NULL);
+        clamp_count(&n, n_cap);
         printf("  %zu entr%s, %.1f ms\n", n, n == 1 ? "y" : "ies", now_ms() - t0);
         if ( api->query_mapping_files != NULL )
         {
             api->query_mapping_files(B, NULL, 0, &nn);
+            nn_cap = nn;
             names = (ittd_name *)calloc(nn ? nn : 1, sizeof(ittd_name));
             api->query_mapping_files(B, names, nn, &nn);
+            clamp_count(&nn, nn_cap);
         }
         for ( k = 0; k < n; k++ )
         {
@@ -950,8 +976,10 @@ int main(int argc, char **argv)
         int trunc = 0;
         t0 = now_ms();
         api->query_syscalls(B, NULL, 0, &n, &trunc, NULL);
+        n_cap = n;
         sc = (ittd_syscall *)calloc(n ? n : 1, sizeof(*sc));
         api->query_syscalls(B, sc, n, &n, &trunc, NULL);
+        clamp_count(&n, n_cap);
         printf("\nsyscalls: %zu, %.1f ms\n", n, now_ms() - t0);
         for ( k = 0; k < n; k++ )
         {
@@ -1088,9 +1116,11 @@ int main(int argc, char **argv)
         int trunc = 0, rc;
         t0 = now_ms();
         rc = api->query_self_modifying(B, NULL, 0, &n, &trunc, NULL);
+        n_cap = n;
         sm = (ittd_selfmod *)calloc(n ? n : 1, sizeof(*sm));
         if ( rc == ITTD_OK )
             rc = api->query_self_modifying(B, sm, n, &n, &trunc, NULL);
+        clamp_count(&n, n_cap);
         printf("\nself-modifying code: %zu instruction(s), %.1f ms%s%s\n", rc == ITTD_OK ? n : 0,
                now_ms() - t0, rc == ITTD_OK ? "" : ", failed: ", rc == ITTD_OK ? "" : api->last_error(B));
         if ( rc == ITTD_OK )
@@ -1285,9 +1315,10 @@ int main(int argc, char **argv)
         printf("\nstrings (8+): %zu, %.1f ms%s%s\n", n, now_ms() - t0,
                rc == ITTD_OK ? "" : ", failed: ", rc == ITTD_OK ? "" : api->last_error(B));
         check(rc == ITTD_OK, "  the string scan replays the recording");
+        n_cap = n;
         sh = (ittd_string_hit *)calloc(n ? n : 1, sizeof(*sh));
         t0 = now_ms();
-        if ( rc == ITTD_OK && api->query_strings(B, &fs, 8, sh, n, &n, &trunc, NULL) == ITTD_OK )
+        if ( rc == ITTD_OK && api->query_strings(B, &fs, 8, sh, n, &n, &trunc, NULL) == ITTD_OK && clamp_count(&n, n_cap) )
         {
             printf("  again: %.1f ms (kept)\n", now_ms() - t0);
             for ( k = 0; k < n && k < 5; k++ )
@@ -1337,8 +1368,9 @@ int main(int argc, char **argv)
         printf("buffers: %zu, %.1f ms%s%s\n", n, now_ms() - t0,
                rc == ITTD_OK ? "" : ", failed: ", rc == ITTD_OK ? "" : api->last_error(B));
         check(rc == ITTD_OK, "  the buffer scan replays the recording");
+        n_cap = n;
         bh = (ittd_buffer_hit *)calloc(n ? n : 1, sizeof(*bh));
-        if ( rc == ITTD_OK && api->query_buffers(B, &fs, bh, n, &n, &trunc, NULL) == ITTD_OK )
+        if ( rc == ITTD_OK && api->query_buffers(B, &fs, bh, n, &n, &trunc, NULL) == ITTD_OK && clamp_count(&n, n_cap) )
             for ( k = 0; k < n && k < 5; k++ )
                 printf("  %llx +%llx  %s  written %s..%s by %llx (%llu)  %.50s\n",
                        (unsigned long long)bh[k].address, (unsigned long long)bh[k].size, bh[k].kind,
@@ -1376,8 +1408,9 @@ int main(int argc, char **argv)
         t0 = now_ms();
         rc = api->query_access_heat(B, 12, 256, NULL, 0, &n, &trunc, NULL);
         printf("\nheatmap: %zu cell(s), %.1f ms%s\n", n, now_ms() - t0, rc == ITTD_OK ? "" : " (failed)");
+        n_cap = n;
         cells = (ittd_heat_cell *)calloc(n ? n : 1, sizeof(*cells));
-        if ( rc == ITTD_OK && api->query_access_heat(B, 12, 256, cells, n, &n, &trunc, NULL) == ITTD_OK )
+        if ( rc == ITTD_OK && api->query_access_heat(B, 12, 256, cells, n, &n, &trunc, NULL) == ITTD_OK && clamp_count(&n, n_cap) )
         {
             for ( k = 0; k < n; k++ )
             {
@@ -1419,9 +1452,11 @@ int main(int argc, char **argv)
             w.last = p1;
             t0 = now_ms();
             rc = api->query_access_heat_window(B, 12, 64, w, NULL, 0, &wn, &trunc, NULL);
+            wn_cap = wn;
             wc = (ittd_heat_cell *)calloc(wn ? wn : 1, sizeof(*wc));
             if ( rc == ITTD_OK )
                 rc = api->query_access_heat_window(B, 12, 64, w, wc, wn, &wn, &trunc, NULL);
+            clamp_count(&wn, wn_cap);
             for ( k = 0; rc == ITTD_OK && k < wn; k++ )
                 got += (uint64_t)wc[k].reads + wc[k].writes + wc[k].executes;
             printf("  window %s..%s: %zu cell(s), %llu accesses (whole count: %llu..%llu), %.1f ms\n",

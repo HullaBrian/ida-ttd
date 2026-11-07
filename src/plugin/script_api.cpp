@@ -1407,7 +1407,20 @@ namespace idattd
     static void cmd_ui_travel(const Args &a, JObj &out)
     {
         need_session();
-        travel_to(&mgr(), position_arg(a.at(0)));
+        // ui.travel POS [RECORDING]: with the fingerprint of the recording
+        // the position came from (a window's data), refused on another one.
+        if ( a.count() > 1 && !a.at(1).empty() )
+        {
+            RecordingStamp made;
+            made.fingerprint = a.u64(1);
+            if ( !made.current() )
+                fail("the position is from another recording than the one being replayed");
+            travel_to(&mgr(), position_arg(a.at(0)), made);
+        }
+        else
+        {
+            travel_to(&mgr(), position_arg(a.at(0)));
+        }
         out.str("queued", a.at(0));
     }
 

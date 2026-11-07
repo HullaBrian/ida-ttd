@@ -440,10 +440,21 @@ namespace idattd
                 rec.ev.target    = callee;
                 rec.ev.is_call   = true;
                 rec.retAddr      = (uint64_t)fall_through;
+                // The record first: an index pushed before a push_back that
+                // throws would point one past the end, and the next RET on
+                // this thread would write through it.
                 try
                 {
-                    inflight[tid].push_back(recs.size());
                     recs.push_back(rec);
+                    try
+                    {
+                        inflight[tid].push_back(recs.size() - 1);
+                    }
+                    catch ( ... )
+                    {
+                        recs.pop_back();
+                        throw;
+                    }
                 }
                 catch ( ... )
                 {
