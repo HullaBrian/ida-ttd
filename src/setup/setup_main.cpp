@@ -22,6 +22,7 @@
 #include <diskio.hpp>
 #include <expr.hpp>
 
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -130,13 +131,45 @@ namespace
         if ( !fs::is_regular_file(bundled, ec) )
             return;
 
-        // A loader the user put in the IDA directory wins; a second copy would
-        // list the format twice in File > Open.
-        if ( fs::is_regular_file(utf8_path(idadir(LDR_SUBDIR)) / LOADER_NAME, ec) )
-            return;
-
         const fs::path loaders = utf8_path(get_user_idadir()) / L"loaders";
         const fs::path target = loaders / LOADER_NAME;
+
+        // What an install that stopped between copy and rename left behind
+        // (LOADER_NAME.<pid>.new), once it is old enough not to be another
+        // IDA's install in progress.
+        {
+            const std::wstring prefix = std::wstring(LOADER_NAME) + L".";
+            for ( fs::directory_iterator it(loaders, ec), end; !ec && it != end; it.increment(ec) )
+            {
+                const std::wstring name = it->path().filename().wstring();
+                if ( name.size() <= prefix.size() + 4 || name.compare(0, prefix.size(), prefix) != 0
+                  || name.compare(name.size() - 4, 4, L".new") != 0 )
+                    continue;
+                std::error_code tec;
+                const auto age = fs::file_time_type::clock::now() - fs::last_write_time(it->path(), tec);
+                if ( !tec && age > std::chrono::hours(1) )
+                    fs::remove(it->path(), tec);
+            }
+            ec.clear();
+        }
+
+        // A loader the user put in the IDA directory wins; a second copy would
+        // list the format twice in File > Open. A copy this component put in
+        // $IDAUSR\loaders\ earlier is removed then, but only one it can tell
+        // is a copy (the same bytes as this package's, or as the IDA
+        // directory's): never a file it does not know.
+        const fs::path ida_copy = utf8_path(idadir(LDR_SUBDIR)) / LOADER_NAME;
+        if ( fs::is_regular_file(ida_copy, ec) )
+        {
+            if ( fs::is_regular_file(target, ec)
+              && (same_contents(bundled, target) || same_contents(ida_copy, target)) )
+            {
+                if ( fs::remove(target, ec) )
+                    msg("[ida-ttd] removed %s: the trace loader in %s takes its place.\n",
+                        display(target).c_str(), display(ida_copy.parent_path()).c_str());
+            }
+            return;
+        }
         if ( same_contents(bundled, target) )
         {
             fs::remove(fs::path(target).concat(L".old"), ec);

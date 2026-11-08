@@ -102,7 +102,16 @@ namespace idattd
     {
         if ( !plain(kind) || !graph_is_open(kind) )
             return;
+        // Redrawn only when what the window shows changed. The Fork manager
+        // is refreshed at every stop, and a redraw re-runs the window's
+        // script, lays the graph out again and drops the selection; with
+        // the same model the node ids also stay what a pending click names.
+        qstring before;
+        const bool had = graph_json(kind, &before);
         g_models[kind] = std::move(model);
+        qstring after;
+        if ( had && graph_json(kind, &after) && after == before )
+            return;
         qstring call;
         call.sprnt("_ida_ttd_graph_show('%s', False)", kind);
         run_python(call.c_str());

@@ -83,13 +83,16 @@ namespace idattd
         Position call_pos = Position::none();
         ea_t entry = BADADDR;
         bool found = false;
+        // Without Cancel: query_frame_entry takes no progress sink (the ABI
+        // has none for it), so a Cancel would show "Stopping..." while the
+        // search ran on regardless.
         QueryResult qr = run_query("Finding where this function was entered", [&](ProgressSink *)
         {
             found = backend->query_frame_entry(here, out->tid, kMaxBack, &call_pos, &entry);
             QueryResult q;
             q.ran = true;
             return q;
-        });
+        }, false);
         if ( qr.cancelled )
         {
             out->cancelled = true;
@@ -102,8 +105,18 @@ namespace idattd
         {
             out->root = entry;
             out->from = call_pos;
+            // A replay on Microsoft TTD: behind a wait box, off the UI thread.
             std::vector<CallEvent> self;
-            backend->query_calls({ entry }, PositionRange{ call_pos, call_pos }, &self, nullptr);
+            const QueryResult rq = run_query("Finding where this function returned", [&](ProgressSink *p)
+            {
+                return backend->query_calls({ entry }, PositionRange{ call_pos, call_pos }, &self, p);
+            });
+            if ( rq.cancelled )
+            {
+                out->cancelled = true;
+                *err = "cancelled";
+                return false;
+            }
             for ( const CallEvent &c : self )
                 if ( c.pos == call_pos && c.ret_pos.is_valid() )
                     out->to = c.ret_pos;

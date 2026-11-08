@@ -91,6 +91,20 @@ def main():
         if not any(p.name == "COPYING.txt" for p in found):
             raise SystemExit("%s has no licenses beside it (%s): run scripts/sogen_dist.py"
                              % (sogen, licenses))
+        # Written for this build, not left from an older one: its README
+        # names the Sogen commit, which must be the pin, and it is not older
+        # than the DLL (sogen_dist.py runs after the build).
+        readme = licenses / "README.txt"
+        pin = ""
+        for line in (REPO / "msbuild" / "sogen.pin").read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("commit="):
+                pin = line.split("=", 1)[1].strip()
+        text = readme.read_text(encoding="utf-8") if readme.is_file() else ""
+        if not pin or pin not in text:
+            raise SystemExit("%s does not name the pinned Sogen commit %s: run scripts/sogen_dist.py again"
+                             % (readme, pin or "(none in msbuild/sogen.pin)"))
+        if readme.stat().st_mtime < sogen.stat().st_mtime:
+            raise SystemExit("%s is older than %s: run scripts/sogen_dist.py again" % (licenses, sogen))
         files.append(("ida-ttd-backends/ida-ttd-sogen.dll", sogen))
         files += [("ida-ttd-backends/ida-ttd-sogen-licenses/" + p.name, p) for p in found]
     elif args.require_sogen:

@@ -30,6 +30,38 @@ namespace idattd
 
     static const nodeidx_t TL_VERSION = 1;
 
+    // A supval holds at most MAXSPECSIZE bytes, so a longer path (a deep
+    // folder, or a few hundred non-Latin characters in UTF-8) went
+    // unstored and the database lost its recording. One that fits keeps its
+    // supstr slot, which every build reads; a longer one goes in a blob at
+    // the same index (tag TL_BLOB), read first, with the supstr emptied.
+    static const uchar TL_BLOB = 'B';
+
+    static void put_str(netnode &nn, nodeidx_t slot, const char *s)
+    {
+        const size_t n = qstrlen(s);
+        nn.delblob(slot, TL_BLOB);
+        if ( n + 1 <= MAXSPECSIZE )
+        {
+            nn.supset(slot, s, n + 1, TL_STR);
+            return;
+        }
+        nn.supset(slot, "", 1, TL_STR);
+        nn.setblob(s, n, slot, TL_BLOB);
+    }
+
+    static void get_str(netnode &nn, nodeidx_t slot, qstring *out)
+    {
+        out->qclear();
+        bytevec_t b;
+        if ( nn.getblob(&b, slot, TL_BLOB) > 0 )
+        {
+            out->append((const char *)b.begin(), b.size());
+            return;
+        }
+        nn.supstr(out, slot, TL_STR);
+    }
+
     bool trace_link_present()
     {
         netnode nn(TL_NODE);
@@ -50,9 +82,9 @@ namespace idattd
             return false;
 
         *out = TraceLink();
-        nn.supstr(&out->trace_path,  S_TRACE_PATH,  TL_STR);
-        nn.supstr(&out->module_path, S_MODULE_PATH, TL_STR);
-        nn.supstr(&out->module_name, S_MODULE_NAME, TL_STR);
+        get_str(nn, S_TRACE_PATH,  &out->trace_path);
+        get_str(nn, S_MODULE_PATH, &out->module_path);
+        get_str(nn, S_MODULE_NAME, &out->module_name);
         out->module_base = (ea_t)nn.altval(N_MODULE_BASE, TL_NUM);
         out->module_size = (uint64_t)nn.altval(N_MODULE_SIZE, TL_NUM);
 
@@ -66,9 +98,9 @@ namespace idattd
     {
         netnode nn(TL_NODE, 0, true);   // create on first write
         nn.altset(N_VERSION, TL_VERSION, TL_NUM);
-        nn.supset(S_TRACE_PATH,  link.trace_path.c_str(),  link.trace_path.length() + 1,  TL_STR);
-        nn.supset(S_MODULE_PATH, link.module_path.c_str(), link.module_path.length() + 1, TL_STR);
-        nn.supset(S_MODULE_NAME, link.module_name.c_str(), link.module_name.length() + 1, TL_STR);
+        put_str(nn, S_TRACE_PATH,  link.trace_path.c_str());
+        put_str(nn, S_MODULE_PATH, link.module_path.c_str());
+        put_str(nn, S_MODULE_NAME, link.module_name.c_str());
         nn.altset(N_MODULE_BASE, (nodeidx_t)link.module_base, TL_NUM);
         nn.altset(N_MODULE_SIZE, (nodeidx_t)link.module_size, TL_NUM);
         nn.altset(N_BITNESS, link.bitness == 32 ? 1 : link.bitness == 64 ? 2 : 0, TL_NUM);
@@ -79,7 +111,7 @@ namespace idattd
         if ( path == nullptr )
             return;
         netnode nn(TL_NODE, 0, true);
-        nn.supset(S_TRACE_PATH, path, qstrlen(path) + 1, TL_STR);
+        put_str(nn, S_TRACE_PATH, path);
     }
 
     // Settings subkey for the start mark. One value per database, so one that

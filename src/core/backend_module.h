@@ -155,6 +155,11 @@ namespace idattd
     // Clear every registered module's log callback and print what is queued.
     // Call on the main thread, after the backends' work has finished.
     void detach_backend_log();
+    // detach_backend_log for this binary's unloading (the plugin's term), and
+    // stop posting requests: if one is still in IDA's queue, which cannot be
+    // withdrawn, this binary is pinned in memory so the request does not run
+    // unmapped code.
+    void backend_log_unloading();
     // Print what backends logged from other threads, when called on the main
     // thread (run_query's wait loop calls it).
     void flush_backend_log();

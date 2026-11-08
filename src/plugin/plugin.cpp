@@ -302,6 +302,9 @@ namespace idattd
         // on it are already unhooked).
         if ( ::dbg == &m_debugger )
             ::dbg = nullptr;
+        // The backends stay loaded, this DLL does not: their log callback
+        // goes, and a log request still in IDA's queue keeps this DLL mapped.
+        backend_log_unloading();
         hide_actions();     // toolbar + actions, if a session was still open
         // After hide_actions(), which closes pseudocode views of runtime code;
         // that needs the Hex-Rays hook.

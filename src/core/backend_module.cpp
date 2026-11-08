@@ -119,6 +119,13 @@ namespace idattd
             catch ( const std::exception & )
             {
                 out->clear();
+                // Close the question anyway: a backend keeps a counted answer
+                // until its fill (abi_export does), and without one a large
+                // answer stayed pinned until another query replaced it. A
+                // fill into a buffer of no entries copies nothing.
+                T none{};
+                size_t ignored = 0;
+                call(&none, (size_t)0, &ignored);
                 return ITTD_E_FAILED;
             }
             size_t got = n;
@@ -1316,6 +1323,11 @@ namespace idattd
     // request. The loader turns it off: IDA unloads ttd-loader.dll after
     // load_file, and a request still queued then would run unmapped code.
     static std::atomic<bool>    g_post_requests{ true };
+    // PrintQueuedLines requests posted and not yet run. IDA owns a posted
+    // request and calls its run() through a vtable in this binary, so one
+    // still queued when the binary is unloaded would call unmapped code;
+    // backend_log_unloading() pins the binary then.
+    static std::atomic<int>     g_requests_queued{ 0 };
 
     // The tables of the registered modules, whose log callbacks this binary
     // sets and clears. They live in backend DLLs that are never unloaded.
@@ -1338,6 +1350,7 @@ namespace idattd
     {
         bool idaapi run() override
         {
+            g_requests_queued--;
             print_queued_lines();
             return false;
         }
@@ -1361,7 +1374,10 @@ namespace idattd
         }
         // One request per batch; IDA owns and deletes it.
         if ( first && g_post_requests )
+        {
+            g_requests_queued++;
             execute_ui_requests(new PrintQueuedLines, nullptr);
+        }
     }
 
     void flush_backend_log()
@@ -1391,6 +1407,19 @@ namespace idattd
     {
         clear_backend_log();
         flush_backend_log();
+    }
+
+    void backend_log_unloading()
+    {
+        g_post_requests = false;
+        detach_backend_log();
+        if ( g_requests_queued.load() <= 0 )
+            return;
+        // A request is still in IDA's queue and there is no withdrawing it:
+        // this binary stays mapped for the rest of the process instead.
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(&print_queued_lines), &self);
     }
 
     // When this binary is unloaded (the plugin at the end of a session, the

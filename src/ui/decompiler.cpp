@@ -202,10 +202,15 @@ namespace idattd
     // A line is covered when an address it came from carries one of the
     // plugin's coverage colours, and takes that colour, so a database
     // highlighted in two shades reads the same here as in the disassembly.
-    static void paint(cfunc_t *cf)
+    //
+    // True when a line lost its coverage colour: its text was brightened in
+    // place (brighten_dim_text), and only regenerating it brings back the
+    // dim argument names.
+    static bool paint(cfunc_t *cf)
     {
         if ( cf == nullptr )
-            return;
+            return false;
+        bool uncovered = false;
         std::set<bgcolor_t> ours = coverage_colors();
         std::vector<ea_t>   eas;              // reused; no per-line allocation
         // Call sites whose note is already placed (see append_ttd_comments).
@@ -218,7 +223,8 @@ namespace idattd
             // Clear only the plugin's colours first: a line no longer covered
             // (sweep cleared, shade changed) loses a stale highlight, and a
             // colour set by something else is left alone.
-            if ( ours.find(sl.bgcolor) != ours.end() )
+            const bool was_ours = ours.find(sl.bgcolor) != ours.end();
+            if ( was_ours )
                 sl.bgcolor = DEFCOLOR;
 
             line_addresses(cf, sl.line.c_str(), eas);
@@ -239,9 +245,12 @@ namespace idattd
             }
             if ( sl.bgcolor != DEFCOLOR )
                 brighten_dim_text(sl.line);
+            else if ( was_ours )
+                uncovered = true;
 
             append_ttd_comments(sl, eas, annotated);
         }
+        return uncovered;
     }
 
     static ssize_t idaapi hx_callback(void *, hexrays_event_t ev, va_list va)
@@ -342,7 +351,11 @@ namespace idattd
             // A decompiler refresh only regenerates the text, so the highlight
             // did not appear until something else redrew the window; and only
             // colours and notes changed, so regenerating would be wasted work.
-            paint(vu->cfunc);
+            // A line that lost its highlight (coverage cleared) keeps the
+            // brightened text: regenerate the text then, which paints it
+            // again from scratch (hxe_func_printed), no decompiling.
+            if ( paint(vu->cfunc) )
+                vu->refresh_ctext(false);
             refresh_custom_viewer(vu->ct);
         }
     }
