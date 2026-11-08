@@ -1160,6 +1160,22 @@ int main(int argc, char **argv)
                        (unsigned long long)sm[k].address, (unsigned long long)sm[k].size,
                        pos_text(sm[k].write_pos), (unsigned long long)sm[k].write_ip,
                        pos_text(sm[k].execute_pos), (unsigned long long)sm[k].executions);
+            if ( getenv("ITTD_PROBE_SCAN_DUMP") != NULL )
+            {
+                char path[1024];
+                FILE *f;
+                snprintf(path, sizeof(path), "%s.selfmod.tsv", getenv("ITTD_PROBE_SCAN_DUMP"));
+                f = fopen(path, "w");
+                for ( k = 0; f != NULL && k < n; k++ )
+                {
+                    fprintf(f, "%llx\t%llu\t%s\t%llx\t", (unsigned long long)sm[k].address,
+                            (unsigned long long)sm[k].size, pos_text(sm[k].write_pos),
+                            (unsigned long long)sm[k].write_ip);
+                    fprintf(f, "%s\t%llu\n", pos_text(sm[k].execute_pos), (unsigned long long)sm[k].executions);
+                }
+                if ( f != NULL )
+                    fclose(f);
+            }
             /* The positions mean what the ABI says: at the write, RIP is the
                writer; at the first run, RIP is the instruction. */
             for ( k = 0; k < n; k += n / 32 + 1 )
