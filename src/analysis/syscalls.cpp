@@ -31,9 +31,21 @@ namespace idattd
     // Every syscall decoded, once
     //=======================================================================
 
+    static DecodeStats g_decodeStats;
+    const DecodeStats &last_decode_stats() { return g_decodeStats; }
+
+    static double seconds_since(std::chrono::steady_clock::time_point t0)
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    }
+
     bool decode_syscalls(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
                          std::vector<qstring> *decoded, bool *cancelled)
     {
+        const auto t_start = std::chrono::steady_clock::now();
+        DecodeStats &st = g_decodeStats;
+        st = DecodeStats{};
+        st.calls = calls.size();
         decoded->assign(calls.size(), qstring());
         *cancelled = false;
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
@@ -69,9 +81,12 @@ namespace idattd
                     where.push_back(calls[i].pos);
                     which.push_back(i);
                 }
+            st.with_sig = where.size();
             std::vector<ittd_regs> regs;
             StageSink regs_stage(sink, 0, 10);
+            auto t0 = std::chrono::steady_clock::now();
             b->registers_at(where, &regs, &regs_stage);
+            st.t_regs = seconds_since(t0);
             if ( regs_stage.cancelled() )
             {
                 r.cancelled = true;
@@ -89,6 +104,8 @@ namespace idattd
             for ( size_t k = 0; k < which.size(); k++ )
                 if ( k < regs.size() && (regs[k].have & ITTD_REGS_GP) != 0 )
                     with_regs.push_back(k);
+            st.with_regs = with_regs.size();
+            t0 = std::chrono::steady_clock::now();
             const bool args_done = decode_in_rounds(mem, b, sink, with_regs, [&](size_t k)
             {
                 const SyscallEvent &c = calls[which[k]];
@@ -102,7 +119,8 @@ namespace idattd
                 DecodedCall d;
                 decode_api_args(v, *sigs[which[k]], wide, &d);
                 dc[k] = std::move(d);
-            }, 10, 50);
+            }, 10, 50, &st.rounds_args);
+            st.t_args = seconds_since(t0);
             if ( !args_done )
             {
                 r.cancelled = true;
@@ -131,7 +149,10 @@ namespace idattd
             }
             std::vector<std::optional<uint64_t>> values;
             StageSink outs_stage(sink, 50, 75);
+            st.out_slots = slots.size();
+            t0 = std::chrono::steady_clock::now();
             const bool searched = !slots.empty() && b->query_out_values(slots, &values, &outs_stage);
+            st.t_search = seconds_since(t0);
             if ( sink != nullptr && sink->cancelled() )
             {
                 r.cancelled = true;
@@ -169,6 +190,8 @@ namespace idattd
             std::vector<Position> one_on(dc.size(), Position::none());
             for ( size_t k : needs_memory )
                 one_on[k] = b->position_add(calls[which[k]].pos, 1);
+            st.needs_after = needs_memory.size();
+            t0 = std::chrono::steady_clock::now();
             const bool outs_done = decode_in_rounds(mem, b, sink, needs_memory, [&](size_t k)
             {
                 GuestView v;
@@ -176,7 +199,12 @@ namespace idattd
                 v.regs = [](ittd_regs *) { return false; };
                 after[k] = dc[k];
                 decode_api_outs(v, &after[k]);
-            }, 75, 100);
+            }, 75, 100, &st.rounds_after);
+            st.t_after = seconds_since(t0);
+            st.fetches   = mem.stats().fetches;
+            st.blocks    = mem.stats().blocks;
+            st.positions = mem.stats().positions;
+            st.t_fetch   = mem.stats().seconds;
             if ( !outs_done )
             {
                 r.cancelled = true;
@@ -190,6 +218,7 @@ namespace idattd
         *cancelled = qr.cancelled;
         if ( qr.cancelled )
             decoded->assign(calls.size(), qstring());
+        st.t_total = seconds_since(t_start);
         return qr.ran;
     }
 

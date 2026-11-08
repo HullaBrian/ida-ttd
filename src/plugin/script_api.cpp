@@ -1000,6 +1000,86 @@ namespace idattd
            .num("count", (int64_t)v.size()).raw("accesses", arr.done());
     }
 
+    // an.decode [MAX]: list and decode every syscall's arguments as the
+    // Syscalls window does when nothing is saved (without saving), and say
+    // where the time went (DecodeStats); MAX decoded rows are returned.
+    static void cmd_an_decode(const Args &a, JObj &out)
+    {
+        need_session();
+        // an.decode [MAX] [file=PATH] [saved]: file= writes every decoded row
+        // ("pos<TAB>name<TAB>args") to PATH, for comparing two builds;
+        // saved writes what the database holds instead of decoding.
+        uint64_t max = 5;
+        qstring file;
+        bool saved = false;
+        for ( size_t i = 0; i < a.count(); i++ )
+        {
+            if ( a.at(i).starts_with("file=") )
+                file = a.at(i).substr(5);
+            else if ( a.at(i) == "saved" )
+                saved = true;
+            else
+                max = a.u64(i);
+        }
+        std::vector<SyscallEvent> v;
+        std::vector<qstring> decoded;
+        bool cancelled = false;
+        auto dump = [&]()
+        {
+            if ( file.empty() )
+                return;
+            FILE *f = qfopen(file.c_str(), "w");
+            if ( f == nullptr )
+                fail("cannot write %s", file.c_str());
+            for ( size_t i = 0; i < v.size(); i++ )
+                qfprintf(f, "%s\t%s\t%s\n", format_position(v[i].pos).c_str(), v[i].name.c_str(),
+                         i < decoded.size() ? decoded[i].c_str() : "");
+            qfclose(f);
+        };
+        if ( saved )
+        {
+            if ( !load_syscalls(&v, &decoded) )
+                fail("this database has no saved syscalls");
+            dump();
+            out.num("count", (int64_t)v.size());
+            return;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        if ( !list_syscalls(&mgr(), &v, &cancelled) || cancelled )
+            fail("this recording's syscalls were not listed");
+        const double t_list = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const bool ran = decode_syscalls(&mgr(), v, &decoded, &cancelled);
+        need_session();
+        dump();
+        const DecodeStats &st = last_decode_stats();
+        JObj s;
+        s.num("calls", (int64_t)st.calls).num("with_signature", (int64_t)st.with_sig)
+         .num("with_registers", (int64_t)st.with_regs).num("out_slots", (int64_t)st.out_slots)
+         .num("needs_after", (int64_t)st.needs_after)
+         .num("rounds_args", st.rounds_args).num("rounds_after", st.rounds_after)
+         .num("fetches", (int64_t)st.fetches).num("blocks", (int64_t)st.blocks)
+         .num("positions", (int64_t)st.positions);
+        auto secs = [](double x) { qstring t; t.sprnt("%.2f", x); return t; };
+        s.str("t_list", secs(t_list)).str("t_regs", secs(st.t_regs)).str("t_args", secs(st.t_args))
+         .str("t_search", secs(st.t_search)).str("t_after", secs(st.t_after))
+         .str("t_fetch", secs(st.t_fetch)).str("t_total", secs(st.t_total));
+        size_t nonempty = 0;
+        for ( const qstring &d : decoded )
+            nonempty += !d.empty();
+        JArr rows;
+        for ( size_t i = 0, shown = 0; i < v.size() && shown < max; i++ )
+        {
+            if ( decoded[i].empty() )
+                continue;
+            JObj o;
+            o.str("pos", format_position(v[i].pos)).str("name", v[i].name).str("args", decoded[i]);
+            rows.add(o.done());
+            shown++;
+        }
+        out.boolean("ran", ran).boolean("cancelled", cancelled).num("decoded", (int64_t)nonempty)
+           .raw("stats", s.done()).raw("rows", rows.done());
+    }
+
     static void cmd_an_syscalls(const Args &a, JObj &out)
     {
         need_session();
@@ -1829,6 +1909,7 @@ namespace idattd
         { "ui.graphact",    cmd_ui_graphact,    "KIND NODE ACTION run a graph node's action (NODE in hex, as every number)" },
         { "an.inputs",      cmd_an_inputs,      "[POS] the values the instruction about to run there read" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
+        { "an.decode",      cmd_an_decode,      "[MAX] decode every syscall's arguments as the Syscalls window does (not saved), with where the time went" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },

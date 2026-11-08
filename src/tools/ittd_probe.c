@@ -1072,6 +1072,95 @@ int main(int argc, char **argv)
                     }
                     check(m > 0 && agree_b == m, "  a regs_at batch of other positions agrees with seeks");
                 }
+
+                /* ITTD_PROBE_BENCH_READS=1: what reading memory at every
+                   syscall costs, as the syscall decoder does it: registers in
+                   one batch, then one 256-byte block of stack each in one
+                   read_memory_at; and, for comparison, a cursor seeked to
+                   each of the first hundred and read there. */
+                if ( getenv("ITTD_PROBE_BENCH_READS") != NULL && HAS(read_memory_at) )
+                {
+                    ittd_position *bp = (ittd_position *)calloc(n ? n : 1, sizeof(*bp));
+                    ittd_regs *br = (ittd_regs *)calloc(n ? n : 1, sizeof(*br));
+                    ittd_mem_read *rd = (ittd_mem_read *)calloc(n ? n : 1, sizeof(*rd));
+                    uint8_t *buf = (uint8_t *)calloc(n ? n * 256 : 1, 1), *kn = (uint8_t *)calloc(n ? n * 256 : 1, 1);
+                    size_t j, nr = 0, serial = n < 100 ? n : 100, known_bytes = 0;
+                    double t1;
+                    for ( j = 0; j < n; j++ )
+                        bp[j] = sc[j].pos;
+                    t1 = now_ms();
+                    api->regs_at(B, bp, n, br, NULL);
+                    printf("  bench: regs_at for %zu syscalls: %.1f ms\n", n, now_ms() - t1);
+                    for ( j = 0; j < n; j++ )
+                    {
+                        if ( (br[j].have & ITTD_REGS_GP) == 0 )
+                            continue;
+                        rd[nr].pos = sc[j].pos;
+                        rd[nr].addr = br[j].gp[ITTD_REG_RSP] & ~0xFFull;
+                        rd[nr].offset = nr * 256;
+                        rd[nr].size = 256;
+                        nr++;
+                    }
+                    t1 = now_ms();
+                    api->read_memory_at(B, rd, nr, buf, kn, NULL);
+                    t1 = now_ms() - t1;
+                    for ( j = 0; j < nr * 256; j++ )
+                        known_bytes += kn[j] != ITTD_KNOWN_NO;
+                    printf("  bench: read_memory_at, %zu positions x 256 bytes: %.1f ms (%.2f ms a position), %zu bytes known\n",
+                           nr, t1, nr ? t1 / (double)nr : 0.0, known_bytes);
+                    /* The cursor's answer at each of the first 'serial'
+                       positions (ITTD_PROBE_BENCH_READS=N, default 100), timed
+                       and compared byte for byte with the batch's. */
+                    if ( atoi(getenv("ITTD_PROBE_BENCH_READS")) > 1 )
+                        serial = (size_t)atoi(getenv("ITTD_PROBE_BENCH_READS"));
+                    {
+                        uint8_t one[256], onek[256];
+                        size_t differ = 0, compared = 0;
+                        t1 = now_ms();
+                        for ( j = 0; j < serial && j < nr; j++ )
+                        {
+                            size_t got = 0, b2;
+                            api->cursor_seek(c, rd[j].pos);
+                            api->cursor_read_memory(c, rd[j].addr, one, onek, 256, &got);
+                            compared++;
+                            for ( b2 = 0; b2 < 256; b2++ )
+                                if ( (onek[b2] != 0) != (kn[j * 256 + b2] != ITTD_KNOWN_NO)
+                                  || (onek[b2] != 0 && one[b2] != buf[j * 256 + b2]) )
+                                {
+                                    differ++;
+                                    break;
+                                }
+                        }
+                        t1 = now_ms() - t1;
+                        printf("  bench: one cursor, seek and read, %zu positions: %.1f ms (%.2f ms a position)\n",
+                               compared, t1, compared ? t1 / (double)compared : 0.0);
+                        check(differ == 0, "  read_memory_at gives what a cursor reads at each position");
+                        if ( differ != 0 )
+                            printf("  %zu of %zu blocks differ\n", differ, compared);
+                    }
+                    /* A second position near the first: a syscall, then just
+                       after it, as the decoder reads arguments then results. */
+                    {
+                        uint8_t one[256], onek[256];
+                        double t_next = 0, t_at = 0;
+                        size_t m = nr < 100 ? nr : 100;
+                        for ( j = 0; j < m; j++ )
+                        {
+                            size_t got = 0;
+                            double t2 = now_ms();
+                            api->cursor_seek(c, rd[j].pos);
+                            api->cursor_read_memory(c, rd[j].addr, one, onek, 256, &got);
+                            t_at += now_ms() - t2;
+                            t2 = now_ms();
+                            api->cursor_seek(c, pos_plus(rd[j].pos, 1));
+                            api->cursor_read_memory(c, rd[j].addr, one, onek, 256, &got);
+                            t_next += now_ms() - t2;
+                        }
+                        printf("  bench: %zu syscalls, seek and read there %.2f ms, then one position on %.2f ms (each)\n",
+                               m, m ? t_at / m : 0.0, m ? t_next / m : 0.0);
+                    }
+                    free(bp); free(br); free(rd); free(buf); free(kn);
+                }
             }
             check(came_back > 0 && agree == came_back, "  a syscall's result is rax once it returns");
         }

@@ -30,6 +30,15 @@ namespace idattd
         // compares it before and after a decode.
         uint64_t misses() const { return m_misses; }
 
+        // What the fetches cost, for measuring: fetches made, blocks and
+        // distinct positions asked for, and the time spent in them.
+        struct Stats
+        {
+            uint64_t fetches = 0, blocks = 0, positions = 0;
+            double   seconds = 0;
+        };
+        const Stats &stats() const { return m_stats; }
+
         // Everything missed since the last fetch. False when cancelled.
         bool fetch(ITraceBackend *b, ProgressSink *progress)
         {
@@ -47,7 +56,17 @@ namespace idattd
                 reads.push_back(m);
             }
             std::vector<uint8_t> data, known;
+            m_stats.fetches++;
+            m_stats.blocks += reads.size();
+            {
+                std::set<Position> at;
+                for ( const MemAt &m : reads )
+                    at.insert(m.pos);
+                m_stats.positions += at.size();
+            }
+            const auto t0 = std::chrono::steady_clock::now();
             QueryResult r = b->read_memory_at(reads, &data, &known, progress);
+            m_stats.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if ( r.cancelled )
                 return false;
             // A block that could not be read is kept as unknown, so it is not
@@ -126,6 +145,7 @@ namespace idattd
         std::map<Key, Block> m_blocks;
         std::set<Key>        m_wanted;
         uint64_t             m_misses = 0;
+        Stats                m_stats;
     };
 
     // Rounds of fetching before a decode stands with what it has.
@@ -138,10 +158,12 @@ namespace idattd
     // goes to 'sink' as lo..hi. False when cancelled.
     inline bool decode_in_rounds(BatchedMemory &mem, ITraceBackend *b, ProgressSink *sink,
                                  std::vector<size_t> todo, const std::function<void(size_t)> &once,
-                                 uint32_t lo, uint32_t hi)
+                                 uint32_t lo, uint32_t hi, int *rounds_out = nullptr)
     {
         for ( int round = 0; !todo.empty(); round++ )
         {
+            if ( rounds_out != nullptr )
+                *rounds_out = round + 1;
             std::vector<size_t> again;
             for ( size_t n = 0; n < todo.size(); n++ )
             {

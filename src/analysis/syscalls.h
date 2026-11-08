@@ -32,6 +32,17 @@ namespace idattd
     // a cancellable wait box; cancelling leaves 'decoded' empty.
     bool decode_syscalls(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
                          std::vector<qstring> *decoded, bool *cancelled);
+
+    // Where the last decode_syscalls spent its time (an.decode reports it).
+    struct DecodeStats
+    {
+        size_t   calls = 0, with_sig = 0, with_regs = 0, out_slots = 0, needs_after = 0;
+        int      rounds_args = 0, rounds_after = 0;
+        double   t_regs = 0, t_args = 0, t_search = 0, t_after = 0, t_total = 0;
+        uint64_t fetches = 0, blocks = 0, positions = 0;
+        double   t_fetch = 0;
+    };
+    const DecodeStats &last_decode_stats();
     // The list and its decoding, kept in the database against the recording.
     void save_syscalls(const std::vector<SyscallEvent> &calls, const std::vector<qstring> &decoded);
     bool load_syscalls(std::vector<SyscallEvent> *calls, std::vector<qstring> *decoded);
