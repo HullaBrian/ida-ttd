@@ -597,77 +597,80 @@ namespace idattd
         bool stopped = kr.cancelled;
 
         // ---- whatever the in-replay retry did not catch ----------------------
-        size_t viaPolicy = 0, viaReplay = 0, snapped = 0, dropped = 0;
+        size_t snapped = 0, dropped = 0;
+        std::atomic<size_t> viaPolicy{ 0 }, viaReplay{ 0 };
         {
-            UniqueCursor cur;
-            UniqueCursor readback;      // recover_by_readback's, kept apart from 'cur'
-            size_t n = st.recs.size();
-            for ( size_t i = 0; i < n && !stopped; i++ )
+            // The records whose kernel values the replay did not catch, each
+            // needing a seek and maybe a replay of its own (17 ms and up on
+            // Microsoft TTD): independent, so spread over worker cursors.
+            std::vector<size_t> todo;
+            for ( size_t i = 0; i < st.recs.size(); i++ )
             {
-                if ( progress != nullptr && progress->cancelled() )
-                {
-                    stopped = true;
-                    break;
-                }
-                if ( progress != nullptr && (i & 0x3F) == 0 )
-                    progress->report((uint32_t)(i * 100 / n));
-
-                Rec &rc = st.recs[i];
-                if ( (rc.baseOk && rc.sizeOk) || rc.d == nullptr || !rc.d->deferred )
-                    continue;
-
-                uint32_t width = rc.is64 ? 8 : 4;
+                const Rec &rc = st.recs[i];
+                if ( !((rc.baseOk && rc.sizeOk) || rc.d == nullptr || !rc.d->deferred) )
+                    todo.push_back(i);
+            }
+            const bool complete = stopped || todo.empty() || msttd_parallel(todo.size(), 8, progress,
+                [&](size_t begin, size_t end, std::atomic<size_t> &done, const std::atomic<bool> &stop)
+            {
+                UniqueCursor cur = new_engine_cursor();
+                UniqueCursor readback;      // recover_by_readback's, kept apart from 'cur'
                 if ( !cur )
-                    cur = new_engine_cursor();
-                if ( !cur )
-                    break;
-                cur->SetPosition(rc.retPos);
+                    return;
+                for ( size_t k = begin; k < end && !stop.load(); k++, done++ )
+                {
+                    Rec &rc = st.recs[todo[k]];
+                    uint32_t width = rc.is64 ? 8 : 4;
+                    cur->SetPosition(rc.retPos);
 
-                // InFragmentAggressive searches the whole fragment, including
-                // future steps where the caller's read-back usually is;
-                // GloballyAggressive widens that at lower confidence. Both are
-                // accepted only when page-granular (see page_granular).
-                static const QueryMemoryPolicy pols[] =
-                {
-                    QueryMemoryPolicy::InFragmentAggressive,
-                    QueryMemoryPolicy::GloballyAggressive,
-                };
-                for ( QueryMemoryPolicy pol : pols )
-                {
-                    uint64_t v = 0;
-                    if ( !rc.baseOk && rc.pBase != 0
-                      && read_ptr_policy(cur.get(), rc.pBase, width, pol, &v)
-                      && page_granular(v) )
+                    // InFragmentAggressive searches the whole fragment, including
+                    // future steps where the caller's read-back usually is;
+                    // GloballyAggressive widens that at lower confidence. Both are
+                    // accepted only when page-granular (see page_granular).
+                    static const QueryMemoryPolicy pols[] =
                     {
-                        rc.base = v; rc.baseOk = true; viaPolicy++;
+                        QueryMemoryPolicy::InFragmentAggressive,
+                        QueryMemoryPolicy::GloballyAggressive,
+                    };
+                    for ( QueryMemoryPolicy pol : pols )
+                    {
+                        uint64_t v = 0;
+                        if ( !rc.baseOk && rc.pBase != 0
+                          && read_ptr_policy(cur.get(), rc.pBase, width, pol, &v)
+                          && page_granular(v) )
+                        {
+                            rc.base = v; rc.baseOk = true; viaPolicy++;
+                        }
+                        if ( !rc.sizeOk && rc.pSize != 0
+                          && read_ptr_policy(cur.get(), rc.pSize, width, pol, &v)
+                          && page_granular(v) )
+                        {
+                            rc.size = v; rc.sizeOk = true; viaPolicy++;
+                        }
+                        if ( rc.baseOk && rc.sizeOk )
+                            break;
+                    }
+
+                    if ( (rc.baseOk || rc.pBase == 0) && (rc.sizeOk || rc.pSize == 0) )
+                        continue;
+                    if ( !readback )
+                        readback = new_engine_cursor();
+                    if ( !readback )
+                        continue;
+                    if ( !rc.baseOk && rc.pBase != 0
+                      && recover_by_readback(readback.get(), rc.retPos, rc.tid, rc.pBase, width, &rc.base) )
+                    {
+                        rc.baseOk = true; viaReplay++;
                     }
                     if ( !rc.sizeOk && rc.pSize != 0
-                      && read_ptr_policy(cur.get(), rc.pSize, width, pol, &v)
-                      && page_granular(v) )
+                      && recover_by_readback(readback.get(), rc.retPos, rc.tid, rc.pSize, width, &rc.size) )
                     {
-                        rc.size = v; rc.sizeOk = true; viaPolicy++;
+                        rc.sizeOk = true; viaReplay++;
                     }
-                    if ( rc.baseOk && rc.sizeOk )
-                        break;
                 }
-
-                if ( (rc.baseOk || rc.pBase == 0) && (rc.sizeOk || rc.pSize == 0) )
-                    continue;
-                if ( !readback )
-                    readback = new_engine_cursor();
-                if ( !readback )
-                    break;
-                if ( !rc.baseOk && rc.pBase != 0
-                  && recover_by_readback(readback.get(), rc.retPos, rc.tid, rc.pBase, width, &rc.base) )
-                {
-                    rc.baseOk = true; viaReplay++;
-                }
-                if ( !rc.sizeOk && rc.pSize != 0
-                  && recover_by_readback(readback.get(), rc.retPos, rc.tid, rc.pSize, width, &rc.size) )
-                {
-                    rc.sizeOk = true; viaReplay++;
-                }
-            }
+            });
+            if ( !complete )
+                stopped = true;
         }
 
         // ---- the records as changes -----------------------------------------

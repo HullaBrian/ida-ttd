@@ -21,7 +21,14 @@ namespace idattd
     qstring MsTtdBackend::last_error() const
     {
         std::lock_guard<std::mutex> lock(m_errorMtx);
-        return qstring(m_error.c_str());
+        auto it = m_error.find(std::this_thread::get_id());
+        return it != m_error.end() ? qstring(it->second.c_str()) : qstring();
+    }
+
+    void MsTtdBackend::clear_error()
+    {
+        std::lock_guard<std::mutex> lock(m_errorMtx);
+        m_error.erase(std::this_thread::get_id());
     }
 
     void MsTtdBackend::set_error(const char *fmt, ...) const
@@ -32,7 +39,9 @@ namespace idattd
         vsnprintf(buf, sizeof(buf), fmt, va);
         va_end(va);
         std::lock_guard<std::mutex> lock(m_errorMtx);
-        m_error = buf;
+        // A thread that fails often still holds one entry; ended threads'
+        // entries are few (the core's workers) and small.
+        m_error[std::this_thread::get_id()] = buf;
     }
 
     MsTtdBackend::~MsTtdBackend()
@@ -283,7 +292,10 @@ namespace idattd
             std::lock_guard<std::mutex> lock(m_censusMtx);
             m_census.reset();
         }
-        m_scans.reset();
+        {
+            std::lock_guard<std::mutex> lock(m_scansMtx);
+            m_scans.reset();
+        }
         m_engine.reset();
         m_info = TraceInfo{};
         m_caps = Capabilities{};

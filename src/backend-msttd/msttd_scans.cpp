@@ -194,8 +194,11 @@ namespace idattd
 
     bool MsTtdBackend::run_scans(ProgressSink *progress, QueryResult *qr)
     {
-        if ( m_scans.p != nullptr )
-            return true;
+        {
+            std::lock_guard<std::mutex> lock(m_scansMtx);
+            if ( m_scans.p != nullptr )
+                return true;
+        }
         const uint64_t space = user_space_end();
 
         // ---- 1: where the program writes ------------------------------------
@@ -554,7 +557,9 @@ namespace idattd
         msttd_log("[ida-ttd] write scan: %d range(s) written, %d watched for execution%s; %d self-modifying "
                   "instruction(s), %d buffer(s).\n", (int)written.size(), (int)exec.size(),
                   exec_capped ? " (capped)" : "", (int)res->selfmod.size(), (int)res->buffers.size());
-        m_scans.p = res.release();
+        std::lock_guard<std::mutex> lock(m_scansMtx);
+        if ( m_scans.p == nullptr )
+            m_scans.p = res.release();
         return true;
     }
 

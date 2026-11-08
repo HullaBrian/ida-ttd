@@ -135,6 +135,10 @@ namespace idattd
     {
         try
         {
+            // This call's reason only: the backend keeps one per thread, and
+            // what an earlier call on this thread left must not answer for
+            // this one (a failure that sets no reason reported a stale one).
+            h->b->clear_error();
             int rc = f();
             if ( rc != ITTD_OK && rc != ITTD_E_CANCELLED )
                 h->error.set(h->b->last_error().c_str());

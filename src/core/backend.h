@@ -619,6 +619,10 @@ namespace idattd
 
         // Why the last call failed, when the backend says; empty otherwise.
         virtual qstring last_error() const { return qstring(); }
+        // Forget the calling thread's last error, before a call whose own
+        // reason last_error() should then give (abi_export does this), so an
+        // earlier failure's text never answers for a later one.
+        virtual void clear_error() {}
 
         // Why the last replay (record_fork, query_strings, query_buffers) was
         // refused, when the user can fix it: consent to replay a recording made

@@ -5,6 +5,9 @@
 #include "core/backend.h"
 #include "backend-msttd/msttd_position.h"
 
+#include <thread>
+#include <unordered_map>
+
 namespace idattd
 {
     struct SyscallCensus;
@@ -101,6 +104,7 @@ namespace idattd
         // Why the last call failed. Queries run on worker threads while the
         // main thread asks this, so the text is mutex-guarded and copied out.
         qstring last_error() const override;
+        void    clear_error() override;
 
         // ---- Microsoft-only, for the rest of this backend ----
         // Set the text last_error() gives. Const: a failure found in a const
@@ -153,7 +157,10 @@ namespace idattd
         TTD::Replay::UniqueReplayEngine m_engine;
         MsttdErrorReporting             m_err;
         mutable std::mutex              m_errorMtx;
-        mutable std::string             m_error;           // last_error()
+        // last_error(), per thread: a query on a worker and a cursor call on
+        // the main thread fail independently, and each caller (abi_export)
+        // reads its own right after its own call.
+        mutable std::unordered_map<std::thread::id, std::string> m_error;
         // Sequential, unfiltered: query_frame_entry's call/return callback
         // mutates an unsynchronized map, and the engine's default parallel
         // replay would dispatch it from several threads at once.
@@ -199,6 +206,10 @@ namespace idattd
             void reset();
         };
         ScanResultsPtr                  m_scans;
+        // Guards only reading and publishing m_scans.p, never the scan: two
+        // scans that finish together keep the first's results, and the
+        // second's are dropped instead of leaked.
+        std::mutex                      m_scansMtx;
         bool run_scans(ProgressSink *progress, QueryResult *qr);
         TraceInfo                       m_info;
         Capabilities                    m_caps;
