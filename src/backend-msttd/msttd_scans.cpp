@@ -206,6 +206,14 @@ namespace idattd
         // whether a recording ever has a larger one. Callbacks run one at a
         // time (msttd_sweep replays segments sequentially).
         const bool stats = getenv("ITTD_MSTTD_SCAN_STATS") != nullptr;
+        // ITTD_MSTTD_SCAN_SKIP=writes|exec, for measuring pass 2 only: skip
+        // its per-write work, or its execute watchpoints. The results are
+        // wrong while it is set, and it is only read with the stats switch.
+        const char *skip = stats ? getenv("ITTD_MSTTD_SCAN_SKIP") : nullptr;
+        const bool skip_writes = skip != nullptr && strstr(skip, "writes") != nullptr;
+        const bool skip_exec   = skip != nullptr && strstr(skip, "exec") != nullptr;
+        if ( skip_writes || skip_exec )
+            fprintf(stderr, "[msttd scans] ITTD_MSTTD_SCAN_SKIP=%s: the scan results are not valid\n", skip);
         uint64_t writes = 0, over_4k = 0, largest = 0;
         {
             UniqueCursor cur = new_engine_cursor();
@@ -301,6 +309,8 @@ namespace idattd
         };
 
         uint64_t clock = 0;
+        uint64_t exec_events = 0;       // ITTD_MSTTD_SCAN_STATS only
+        std::vector<uint64_t> range_hits(stats ? exec.size() : 0);
         // A write too long for the callback's stack buffer is read into
         // this, which keeps its capacity from one such write to the next.
         std::vector<uint8_t> large_write;
@@ -314,6 +324,13 @@ namespace idattd
                 const uint64_t a = (uint64_t)w.Address;
                 if ( w.AccessType == DataAccessType::Execute )
                 {
+                    if ( stats )
+                    {
+                        exec_events++;
+                        auto r = std::upper_bound(exec.begin(), exec.end(), std::make_pair(a, UINT64_MAX));
+                        if ( r != exec.begin() )
+                            range_hits[size_t(r - exec.begin()) - 1]++;
+                    }
                     const size_t n = w.Size != 0 ? (size_t)w.Size : 1;
                     buffers.executed(a, n);
                     auto hit = selfmod.find(a);
@@ -345,6 +362,8 @@ namespace idattd
                     return false;
                 }
                 if ( w.AccessType != DataAccessType::Write || w.Size == 0 )
+                    return false;
+                if ( skip_writes )
                     return false;
                 const size_t n = (size_t)std::min<uint64_t>(w.Size, 4096);
                 uint8_t stack[64];
@@ -410,8 +429,19 @@ namespace idattd
         wp.Size       = space;
         wp.AccessMask = DataAccessMask::Write;
         cur->AddMemoryWatchpoint(wp);
+        if ( stats )
+        {
+            uint64_t span = 0;
+            for ( const auto &[lo, hi] : exec )
+                span += hi - lo;
+            fprintf(stderr, "[msttd scans] pass 2: %zu execute range(s), %llu bytes%s%s\n", exec.size(),
+                    (unsigned long long)span, skip_writes ? ", per-write work skipped" : "",
+                    skip_exec ? ", execute watchpoints skipped" : "");
+        }
         for ( const auto &[lo, hi] : exec )
         {
+            if ( skip_exec )
+                break;
             MemoryWatchpointData x{};
             x.Address    = GuestAddress{ lo };
             x.Size       = hi - lo;
@@ -425,8 +455,27 @@ namespace idattd
         const auto t_pass = std::chrono::steady_clock::now();
         bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
         if ( stats )
+        {
             fprintf(stderr, "[msttd scans] %s: %.1f s\n", "pass 2",
                     std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count());
+            fprintf(stderr, "[msttd scans] pass 2: %llu execute event(s), %zu self-modifying address(es)\n",
+                    (unsigned long long)exec_events, selfmod.size());
+            std::vector<size_t> order(range_hits.size());
+            for ( size_t i = 0; i < order.size(); i++ )
+                order[i] = i;
+            std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return range_hits[x] > range_hits[y]; });
+            for ( size_t k = 0; k < order.size() && k < 8 && range_hits[order[k]] != 0; k++ )
+            {
+                const auto &[lo, hi] = exec[order[k]];
+                const char *mod = "(no module)";
+                for ( const ModuleInfo &m : mods )
+                    if ( m.base <= lo && lo < m.base + m.size )
+                        mod = m.name.c_str();
+                fprintf(stderr, "[msttd scans]   %llx..%llx (%llu bytes, %s): %llu execute event(s)\n",
+                        (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(hi - lo), mod,
+                        (unsigned long long)range_hits[order[k]]);
+            }
+        }
         cur->SetMemoryWatchpointCallback(nullptr, 0);
         if ( !complete )
         {
