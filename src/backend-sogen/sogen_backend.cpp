@@ -1941,7 +1941,7 @@ namespace
         return guarded(b->error, [&]()
         {
             std::lock_guard<std::mutex> lock(b->mtx);
-            const ttd::trace &t = *b->trace;
+            ttd::trace &t = *b->trace;
             std::span<const ttd::syscall_entry> v = t.syscalls();
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [&](const ttd::syscall_entry &e)
@@ -1951,6 +1951,31 @@ namespace
                 x.result = e.result;
                 x.number = e.id;
                 x.tid    = t.thread_at(e.step).value_or(0);
+                // A syscall that can block (a wait, a delay, a completion
+                // port) is recorded with the status its handler gave at once,
+                // STATUS_SUCCESS, though the thread resumes with the real one
+                // (STATUS_TIMEOUT for an expired wait) in rax: so for those
+                // the result is rax where the thread resumes. cpu_view at a
+                // position shows the thread that runs the next instruction.
+                // Only for those, as a view costs about a millisecond.
+                const std::optional<std::string_view> name = t.syscall_name(e.id);
+                const bool may_block = name.has_value()
+                    && (name->find("Wait") != std::string_view::npos || name->find("Delay") != std::string_view::npos
+                     || name->find("RemoveIoCompletion") != std::string_view::npos);
+                if ( buf != nullptr && x.tid != 0 && may_block )
+                {
+                    if ( std::optional<ttd::access_event> resume = t.next_instruction(e.step, x.tid) )
+                    {
+                        if ( resume->step > 0 )
+                        {
+                            ttd::cpu_view view(t, resume->step - 1);
+                            ittd_regs r{};
+                            read_regs(view, &r);
+                            if ( (r.have & ITTD_REGS_GP) != 0 )
+                                x.result = r.gp[ITTD_REG_RAX];
+                        }
+                    }
+                }
                 if ( std::optional<std::string_view> n = t.syscall_name(e.id) )
                 {
                     size_t len = std::min(n->size(), sizeof(x.name) - 1);
@@ -2470,6 +2495,30 @@ namespace
             return all;
         }
 
+        // As cursor_read_memory answers: [addr, addr + n) as of 'position',
+        // known[i] 1 where the byte is mapped (out[i] its value), else 0
+        // (out[i] 0).
+        void read_known(uint64_t addr, size_t n, uint8_t *out, uint8_t *known, uint64_t position)
+        {
+            while ( n != 0 )
+            {
+                const uint64_t page = addr / kPage;
+                const size_t   off  = size_t(addr % kPage);
+                const size_t   take = std::min<size_t>(n, kPage - off);
+                const Page &p = fetch(page, position);
+                for ( size_t i = 0; i < take; i++ )
+                {
+                    const bool k = p.all_mapped(off + i, 1);
+                    known[i] = k ? 1 : 0;
+                    out[i]   = k ? p.bytes[off + i] : 0;
+                }
+                out += take;
+                known += take;
+                addr += take;
+                n -= take;
+            }
+        }
+
         // A write, applied to the pages held; pages not held already have it
         // when fetched later.
         void apply(uint64_t addr, const uint8_t *b, size_t n)
@@ -2563,6 +2612,147 @@ namespace
             return m_pages.emplace(page, std::move(p)).first->second;
         }
     };
+
+    // ittd_backend_api::read_memory_at: many reads, each at its own position,
+    // in one forward pass over the recording's writes instead of a cursor
+    // seek and read per position. A cursor read at a position walks back from
+    // it to the writes there, which for the stack pages a syscall decoder
+    // reads is a fresh walk per syscall (about 6 ms each: 35 s for the 5,599
+    // syscalls of a test recording). Here each page is read once, where it is
+    // first needed, and kept up to date by applying the writes that follow,
+    // as the string scan does (ShadowMemory).
+    //
+    // Exact only with checkpoint memory, where a position's bytes are the
+    // latest write or host write before it, else the checkpoint's: a pass of
+    // writes reproduces that. Without it memory_at also takes bytes from reads
+    // and executions, which the pass would not see, so such a recording is
+    // refused (ITTD_E_UNSUPPORTED) and the core reads per position as
+    // before. MMIO pages, which no write describes, are read directly.
+    int read_memory_at(ittd_backend *hb, const ittd_mem_read *reads, size_t count,
+                       uint8_t *buf, uint8_t *known, const ittd_progress *progress)
+    {
+        backend_t *b = B(hb);
+        if ( b == nullptr || (count != 0 && (reads == nullptr || buf == nullptr || known == nullptr)) )
+            return ITTD_E_BAD_ARG;
+        return guarded(b->error, [&]()
+        {
+            std::vector<std::pair<uint64_t, uint64_t>> mmio;
+            {
+                std::lock_guard<std::mutex> lock(b->mtx);
+                if ( !b->trace->has_checkpoint_memory() )
+                {
+                    b->error.set("read_memory_at needs checkpoint memory; read per position instead");
+                    return ITTD_E_UNSUPPORTED;
+                }
+                mmio = b->mmio;
+            }
+            if ( count == 0 )
+                return ITTD_OK;
+
+            // The pass's own readers: one for the events, one for memory_at,
+            // so neither disturbs the other (as scan_recorded_writes).
+            std::unique_ptr<ttd::trace> t = open_forward_trace(b->path);
+            std::unique_ptr<ttd::trace> mem_trace = open_forward_trace(b->path);
+            ShadowMemory shadow(*mem_trace);
+
+            struct Item
+            {
+                uint64_t pos = 0;
+                size_t   index = 0;
+            };
+            std::vector<Item> items;
+            items.reserve(count);
+            for ( size_t i = 0; i < count; i++ )
+            {
+                if ( reads[i].size == 0 )
+                    continue;
+                memset(known + reads[i].offset, 0, (size_t)reads[i].size);
+                Item it;
+                if ( !resolve(*t, reads[i].pos, &it.pos) )
+                    continue;           // not a position: stays unknown
+                it.index = i;
+                items.push_back(it);
+            }
+            std::stable_sort(items.begin(), items.end(), [](const Item &x, const Item &y) { return x.pos < y.pos; });
+
+            auto in_mmio = [&](uint64_t lo, uint64_t hi)
+            {
+                for ( const auto &[mlo, mhi] : mmio )
+                    if ( lo < mhi && mlo < hi )
+                        return true;
+                return false;
+            };
+            size_t next = 0;
+            // Every read at a position before 'limit' (all of them for
+            // UINT64_MAX): the writes at or before it are applied by now.
+            auto answer = [&](uint64_t limit)
+            {
+                for ( ; next < items.size() && items[next].pos < limit; next++ )
+                {
+                    const ittd_mem_read &r = reads[items[next].index];
+                    uint8_t *out = buf + r.offset;
+                    uint8_t *kn  = known + r.offset;
+                    if ( in_mmio(r.addr, r.addr + r.size) )
+                    {
+                        std::vector<std::optional<uint8_t>> v = mem_trace->memory_at(items[next].pos, r.addr, r.size);
+                        for ( size_t k = 0; k < (size_t)r.size; k++ )
+                        {
+                            const bool have = k < v.size() && v[k].has_value();
+                            out[k] = have ? *v[k] : 0;
+                            kn[k]  = have ? 1 : 0;
+                        }
+                        continue;
+                    }
+                    shadow.read_known(r.addr, (size_t)r.size, out, kn, items[next].pos);
+                }
+            };
+
+            std::span<const ttd::mapping_change> maps =
+                t->has_mapping_changes() ? t->mapping_changes() : std::span<const ttd::mapping_change>();
+            size_t next_map = 0;
+            const uint64_t kinds = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+            const uint64_t total_events = std::max<uint64_t>(t->metadata().event_count, 1);
+            const ttd::operation_control ctl = control(progress);
+            ttd::event_reader reader(*t, 0);
+            uint64_t seen = 0;
+            while ( next < items.size() )
+            {
+                std::optional<ttd::access_event> ev = reader.next(kinds);
+                if ( !ev )
+                    break;
+                const uint64_t number = reader.last_number();
+                if ( (++seen & 0xFFFF) == 0 )
+                {
+                    ctl.check();
+                    ctl.report(number, total_events);
+                }
+                // Mapping changes up to this event drop what the pages held
+                // (dropping early only means reading a page again, exactly).
+                while ( next_map < maps.size() && maps[next_map].event_number <= number )
+                {
+                    const ttd::mapping_change &m = maps[next_map++];
+                    shadow.drop(m.address, m.size);
+                }
+                // The reads before this write's instruction see everything up
+                // to and including their own (memory_at's "after the
+                // instruction at the position").
+                answer(ev->step);
+                if ( ev->size == 0 )
+                    continue;
+                std::vector<std::byte> data = t->access_data(*ev);
+                if ( data.size() != ev->size )
+                    continue;
+                shadow.apply(ev->address, reinterpret_cast<const uint8_t *>(data.data()), data.size());
+            }
+            while ( next_map < maps.size() )
+            {
+                const ttd::mapping_change &m = maps[next_map++];
+                shadow.drop(m.address, m.size);
+            }
+            answer(UINT64_MAX);
+            return ITTD_OK;
+        });
+    }
 
     // One pass over the recording for both answers. 'string_minimum' is the
     // shortest string kept.
@@ -3537,6 +3727,7 @@ namespace
         a.heat_window_slice_position = heat_window_slice_position;
         a.scan_notice        = scan_notice;
         a.regs_at            = regs_at;
+        a.read_memory_at     = read_memory_at;
         a.query_instructions = query_instructions;
         a.position_add       = position_add;
         a.query_frame_entry  = query_frame_entry;
