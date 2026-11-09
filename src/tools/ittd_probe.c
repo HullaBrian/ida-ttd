@@ -116,6 +116,26 @@ static int clamp_count(size_t *n, size_t cap)
     return 1;
 }
 
+/* visit_positions bench: each visit reads its stack block into its slot
+   (phase 0) and the same block just after it (phase 1). */
+typedef struct visit_bench
+{
+    const ittd_mem_read *rd;
+    uint8_t *at, *after, *at_known, *after_known;
+    volatile long visits, afters;
+} visit_bench;
+
+static void visit_bench_fn(void *ud, size_t index, int phase, ittd_read_fn read, void *read_ctx)
+{
+    visit_bench *vb = (visit_bench *)ud;
+    uint8_t *dst = phase == 0 ? vb->at : vb->after;
+    uint8_t *kn  = phase == 0 ? vb->at_known : vb->after_known;
+    size_t got = read(read_ctx, vb->rd[index].addr, dst + index * 256, 256), k;
+    for ( k = 0; k < 256; k++ )
+        kn[index * 256 + k] = k < got ? 1 : 0;
+    InterlockedIncrement(phase == 0 ? &vb->visits : &vb->afters);
+}
+
 static uint64_t rip_at(ittd_cursor *c, ittd_position p)
 {
     ittd_regs r;
@@ -1138,6 +1158,43 @@ int main(int argc, char **argv)
                         if ( differ != 0 )
                             printf("  %zu of %zu blocks differ\n", differ, compared);
                     }
+                    /* visit_positions: the same blocks read in one visit each,
+                       and again just after each syscall; the first must be
+                       what read_memory_at gave, as far as it is known. */
+                    if ( HAS(visit_positions) )
+                    {
+                        visit_bench vb;
+                        ittd_position *nx = (ittd_position *)calloc(nr ? nr : 1, sizeof(*nx));
+                        ittd_position *ps2 = (ittd_position *)calloc(nr ? nr : 1, sizeof(*ps2));
+                        size_t bad = 0;
+                        int vrc;
+                        memset(&vb, 0, sizeof(vb));
+                        vb.rd = rd;
+                        vb.at = (uint8_t *)calloc(nr ? nr * 256 : 1, 1);
+                        vb.after = (uint8_t *)calloc(nr ? nr * 256 : 1, 1);
+                        vb.at_known = (uint8_t *)calloc(nr ? nr * 256 : 1, 1);
+                        vb.after_known = (uint8_t *)calloc(nr ? nr * 256 : 1, 1);
+                        for ( j = 0; j < nr; j++ )
+                        {
+                            ps2[j] = rd[j].pos;
+                            nx[j] = pos_plus(rd[j].pos, 1);
+                        }
+                        t1 = now_ms();
+                        vrc = api->visit_positions(B, ps2, nx, nr, visit_bench_fn, &vb, NULL);
+                        t1 = now_ms() - t1;
+                        for ( j = 0; j < nr * 256; j++ )
+                            if ( vb.at_known[j] && kn[j] != ITTD_KNOWN_NO && vb.at[j] != buf[j] )
+                            {
+                                bad++;
+                                break;
+                            }
+                        printf("  bench: visit_positions, %zu positions and one on from each: %.1f ms (%.2f ms a syscall), rc %d, %ld + %ld visits\n",
+                               nr, t1, nr ? t1 / (double)nr : 0.0, vrc, vb.visits, vb.afters);
+                        check(vrc == ITTD_OK && (size_t)vb.visits == nr && bad == 0,
+                              "  visit_positions reads what read_memory_at does");
+                        free(nx); free(ps2); free(vb.at); free(vb.after); free(vb.at_known); free(vb.after_known);
+                    }
+
                     /* A second position near the first: a syscall, then just
                        after it, as the decoder reads arguments then results. */
                     {

@@ -387,6 +387,99 @@ namespace idattd
         return r;
     }
 
+    // Each position once, on worker cursors set up as read_memory_at's: one
+    // engine cursor each, read directly. A reader that must follow pointers
+    // (a syscall's arguments to a structure to a string) does it all at one
+    // seek, where read_memory_at would need a round, and a seek, per level;
+    // and 'after' (just past a syscall, say) is a step of the same cursor,
+    // about a third of a seek. An ordinary cursor would not do: it reads
+    // through a second engine cursor that has to follow the first.
+    QueryResult MsTtdBackend::visit_positions(const std::vector<Position> &at, const std::vector<Position> *after,
+                                              const VisitFn &fn, ProgressSink *progress)
+    {
+        QueryResult r;
+        if ( !m_engine )
+            return r;
+        r.ran = true;
+        if ( at.empty() )
+            return r;
+        const bool complete = msttd_parallel(at.size(), 8, progress,
+            [&](size_t begin, size_t end, std::atomic<size_t> &done, const std::atomic<bool> &stop)
+        {
+            UniqueCursor exec = new_engine_cursor();
+            if ( !exec )
+                return;
+            exec->SetDefaultMemoryPolicy(QueryMemoryPolicy::GloballyAggressive);
+            MsTtdCursor c(this, std::move(exec), UniqueCursor{});
+            // The memory of this visit, by 256-byte block: a decoder reads a
+            // pointer, then a length, then a few bytes of string, and each
+            // engine query costs far more than its bytes (a visit that read
+            // one block a syscall took 19 s for 2,232 syscalls, the decoder's
+            // many small reads 34 s). Dropped at every move.
+            struct Block
+            {
+                uint8_t data[256];
+                uint8_t known[256];
+            };
+            std::unordered_map<uint64_t, Block> blocks;
+            std::vector<uint8_t> k;
+            auto block_at = [&](uint64_t base) -> const Block &
+            {
+                auto it = blocks.find(base);
+                if ( it != blocks.end() )
+                    return it->second;
+                Block blk;
+                memset(blk.data, 0, sizeof(blk.data));
+                c.read_memory((ea_t)base, blk.data, sizeof(blk.data), &k);
+                for ( size_t j = 0; j < sizeof(blk.known); j++ )
+                    blk.known[j] = j < k.size() ? k[j] : ITTD_KNOWN_NO;
+                return blocks.emplace(base, blk).first->second;
+            };
+            const VisitRead read = [&](uint64_t addr, void *buf, size_t size) -> size_t
+            {
+                if ( buf == nullptr || size == 0 )
+                    return 0;
+                memset(buf, 0, size);
+                // Not past the top of the address space.
+                if ( addr + size < addr )
+                    size = (size_t)(0 - addr);
+                uint8_t *out = static_cast<uint8_t *>(buf);
+                size_t n = 0;
+                bool whole = true;
+                for ( size_t off = 0; off < size; )
+                {
+                    const uint64_t a    = addr + off;
+                    const uint64_t base = a & ~uint64_t(0xFF);
+                    const size_t   in   = (size_t)(a - base);
+                    const size_t   take = std::min<size_t>(256 - in, size - off);
+                    const Block &blk = block_at(base);
+                    memcpy(out + off, blk.data + in, take);
+                    for ( size_t j = 0; j < take && whole; j++ )
+                    {
+                        if ( blk.known[in + j] == ITTD_KNOWN_NO )
+                            whole = false;
+                        else
+                            n++;
+                    }
+                    off += take;
+                }
+                return n;
+            };
+            for ( size_t i = begin; i < end && !stop.load(); i++, done++ )
+            {
+                blocks.clear();
+                if ( !c.seek(at[i]) )
+                    continue;
+                fn(i, 0, read);
+                blocks.clear();
+                if ( after != nullptr && i < after->size() && (*after)[i].is_valid() && c.seek((*after)[i]) )
+                    fn(i, 1, read);
+            }
+        });
+        r.cancelled = !complete;
+        return r;
+    }
+
     uint32_t MsTtdBackend::unique_thread_id(uint32_t tid, Position at) const
     {
         if ( !m_engine )

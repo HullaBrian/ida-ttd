@@ -77,6 +77,8 @@ namespace idattd
                                  ProgressSink *progress) override;
         // One cursor carried forward from position to position, rather than
         // a seek to each.
+        QueryResult visit_positions(const std::vector<Position> &at, const std::vector<Position> *after,
+                                    const VisitFn &fn, ProgressSink *progress) override;
         QueryResult read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
                                    std::vector<uint8_t> *known, ProgressSink *progress) override;
         QueryResult query_instructions(PositionRange when, uint32_t tid, size_t max,

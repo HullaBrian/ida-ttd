@@ -576,6 +576,18 @@ namespace idattd
         return out->create_func(fd);
     }
 
+    bool api_has_out_params(const win32meta::FuncSig &sig)
+    {
+        // The same test decode_api_args makes for DecodedArg::out.
+        for ( uint8_t i = 0; i < sig.paramCount; i++ )
+        {
+            const ParamSig &p = sig.params[i];
+            if ( p.isOut() && is_pointer_kind(p.kind) && !type_is(p, "OBJECT_ATTRIBUTES*") )
+                return true;
+        }
+        return false;
+    }
+
     void decode_api_args(const GuestView &v, const FuncSig &sig, bool is64, DecodedCall *out)
     {
         out->sig  = &sig;

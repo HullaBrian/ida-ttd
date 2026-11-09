@@ -105,21 +105,97 @@ namespace idattd
                 if ( k < regs.size() && (regs[k].have & ITTD_REGS_GP) != 0 )
                     with_regs.push_back(k);
             st.with_regs = with_regs.size();
-            t0 = std::chrono::steady_clock::now();
-            const bool args_done = decode_in_rounds(mem, b, sink, with_regs, [&](size_t k)
+            // The registers a call's arguments are read with: at the syscall
+            // instruction rcx is in r10 and the stack one return address deep.
+            auto call_regs = [&](size_t k)
             {
-                const SyscallEvent &c = calls[which[k]];
                 ittd_regs g = regs[k];
                 if ( wide )
                     g.gp[ITTD_REG_RCX] = g.gp[SYSCALL_ARG_REGS[0]];
                 g.gp[ITTD_REG_RSP] += 8;
-                GuestView v;
-                v.read = mem.reader(c.pos);
-                v.regs = [g](ittd_regs *out) { *out = g; return true; };
-                DecodedCall d;
-                decode_api_args(v, *sigs[which[k]], wide, &d);
-                dc[k] = std::move(d);
-            }, 10, 50, &st.rounds_args);
+                return g;
+            };
+
+            // Where the backend can visit positions (Microsoft TTD), each call
+            // is read once: its arguments at the call, every pointer followed
+            // there, then just after it (a short step of the same cursor) the
+            // reads its results take, recorded and replayed once the
+            // out-value search below is done. The batched reads instead pay a
+            // round of seeks per level of pointers, and another for the
+            // results: 55 s for test-sample.run's 2,232 syscalls. Others keep
+            // the rounds (Sogen answers a batch in one pass of the recording).
+            using ReadKey  = std::pair<uint64_t, size_t>;
+            using ReadMemo = std::map<ReadKey, std::pair<std::vector<uint8_t>, size_t>>;
+            std::vector<ReadMemo> after_reads(dc.size());
+            bool visited = false;
+            t0 = std::chrono::steady_clock::now();
+            bool args_done = true;
+            {
+                std::vector<Position> at, next;
+                at.reserve(with_regs.size());
+                next.reserve(with_regs.size());
+                // The step past a call only where its signature has out
+                // parameters: the rest have no results to read there.
+                for ( size_t k : with_regs )
+                {
+                    at.push_back(calls[which[k]].pos);
+                    next.push_back(api_has_out_params(*sigs[which[k]])
+                                   ? b->position_add(calls[which[k]].pos, 1) : Position::none());
+                }
+                StageSink visit_stage(sink, 10, 75);
+                const QueryResult vr = b->visit_positions(at, &next,
+                    [&](size_t i, int phase, const ITraceBackend::VisitRead &read)
+                {
+                    const size_t k = with_regs[i];
+                    if ( phase == 0 )
+                    {
+                        const ittd_regs g = call_regs(k);
+                        GuestView v;
+                        v.read = read;
+                        v.regs = [g](ittd_regs *out) { *out = g; return true; };
+                        DecodedCall d;
+                        decode_api_args(v, *sigs[which[k]], wide, &d);
+                        dc[k] = std::move(d);
+                        return;
+                    }
+                    bool outs = false;
+                    for ( const DecodedArg &a : dc[k].args )
+                        outs = outs || (a.out && a.raw != 0);
+                    if ( !outs )
+                        return;
+                    // What decoding the results reads here, kept for later.
+                    ReadMemo &memo = after_reads[k];
+                    GuestView v;
+                    v.read = [&memo, &read](uint64_t addr, void *buf, size_t size) -> size_t
+                    {
+                        const size_t got = read(addr, buf, size);
+                        const uint8_t *q = static_cast<const uint8_t *>(buf);
+                        memo[ReadKey(addr, size)] = { std::vector<uint8_t>(q, q + size), got };
+                        return got;
+                    };
+                    v.regs = [](ittd_regs *) { return false; };
+                    DecodedCall probe = dc[k];
+                    decode_api_outs(v, &probe);
+                }, &visit_stage);
+                if ( vr.ran )
+                {
+                    visited = true;
+                    args_done = !vr.cancelled;
+                    st.rounds_args = 1;
+                }
+            }
+            if ( !visited )
+                args_done = decode_in_rounds(mem, b, sink, with_regs, [&](size_t k)
+                {
+                    const SyscallEvent &c = calls[which[k]];
+                    const ittd_regs g = call_regs(k);
+                    GuestView v;
+                    v.read = mem.reader(c.pos);
+                    v.regs = [g](ittd_regs *out) { *out = g; return true; };
+                    DecodedCall d;
+                    decode_api_args(v, *sigs[which[k]], wide, &d);
+                    dc[k] = std::move(d);
+                }, 10, 50, &st.rounds_args);
             st.t_args = seconds_since(t0);
             if ( !args_done )
             {
@@ -192,14 +268,41 @@ namespace idattd
                 one_on[k] = b->position_add(calls[which[k]].pos, 1);
             st.needs_after = needs_memory.size();
             t0 = std::chrono::steady_clock::now();
-            const bool outs_done = decode_in_rounds(mem, b, sink, needs_memory, [&](size_t k)
+            bool outs_done = true;
+            if ( visited )
             {
-                GuestView v;
-                v.read = mem.reader(one_on[k]);
-                v.regs = [](ittd_regs *) { return false; };
-                after[k] = dc[k];
-                decode_api_outs(v, &after[k]);
-            }, 75, 100, &st.rounds_after);
+                // From what the visits read just after each call. The
+                // search's values only spare reads, never add any, so what was
+                // recorded covers this decoding; a read not recorded reads as
+                // unknown.
+                for ( size_t k : needs_memory )
+                {
+                    const ReadMemo &memo = after_reads[k];
+                    GuestView v;
+                    v.read = [&memo](uint64_t addr, void *buf, size_t size) -> size_t
+                    {
+                        memset(buf, 0, size);
+                        auto it = memo.find(ReadKey(addr, size));
+                        if ( it == memo.end() )
+                            return 0;
+                        memcpy(buf, it->second.first.data(), std::min(size, it->second.first.size()));
+                        return it->second.second;
+                    };
+                    v.regs = [](ittd_regs *) { return false; };
+                    after[k] = dc[k];
+                    decode_api_outs(v, &after[k]);
+                }
+                st.rounds_after = 1;
+            }
+            else
+                outs_done = decode_in_rounds(mem, b, sink, needs_memory, [&](size_t k)
+                {
+                    GuestView v;
+                    v.read = mem.reader(one_on[k]);
+                    v.regs = [](ittd_regs *) { return false; };
+                    after[k] = dc[k];
+                    decode_api_outs(v, &after[k]);
+                }, 75, 100, &st.rounds_after);
             st.t_after = seconds_since(t0);
             st.fetches   = mem.stats().fetches;
             st.blocks    = mem.stats().blocks;

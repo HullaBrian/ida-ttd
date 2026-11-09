@@ -65,6 +65,10 @@ namespace idattd
     // At the call site, before the call: every parameter of 'sig'. 'is64' is
     // the calling convention (x64, or x86 stdcall/cdecl).
     void decode_api_args(const GuestView &v, const win32meta::FuncSig &sig, bool is64, DecodedCall *out);
+    // Whether decode_api_args would mark any of sig's arguments 'out' (so
+    // decode_api_outs may read memory after the call), from the signature
+    // alone.
+    bool api_has_out_params(const win32meta::FuncSig &sig);
     // At the return: what the callee wrote through its out parameters.
     void decode_api_outs(const GuestView &v, DecodedCall *call);
     // The return value: an NTSTATUS by name for a native API, else hex.

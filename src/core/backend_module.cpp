@@ -1249,6 +1249,48 @@ namespace idattd
         return result_of(rc, 0);
     }
 
+    // visit_positions' callback, through the C ABI: 'ud' is the VisitFn, and
+    // the backend's reader is wrapped as a VisitRead for the call.
+    static void visit_trampoline(void *ud, size_t index, int phase, ittd_read_fn read, void *read_ctx) noexcept
+    {
+        try
+        {
+            const ITraceBackend::VisitFn &fn = *static_cast<const ITraceBackend::VisitFn *>(ud);
+            ITraceBackend::VisitRead r = [read, read_ctx](uint64_t addr, void *buf, size_t size) -> size_t
+            {
+                return read != nullptr ? read(read_ctx, addr, buf, size) : 0;
+            };
+            fn(index, phase, r);
+        }
+        catch ( ... )
+        {
+            // Nothing may unwind into the backend.
+        }
+    }
+
+    QueryResult BackendModule::visit_positions(const std::vector<Position> &at, const std::vector<Position> *after,
+                                               const VisitFn &fn, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.visit_positions");
+        if ( m_handle == nullptr || !ITTD_HAS(m_api, visit_positions) || at.empty() )
+            return QueryResult{};
+        std::vector<ittd_position> a(at.size()), b;
+        for ( size_t i = 0; i < at.size(); i++ )
+            a[i] = to_abi(at[i]);
+        if ( after != nullptr )
+        {
+            b.resize(at.size(), to_abi(Position::none()));
+            for ( size_t i = 0; i < at.size() && i < after->size(); i++ )
+                b[i] = to_abi((*after)[i]);
+        }
+        ProgressBridge pb(progress);
+        const int rc = m_api->visit_positions(m_handle, a.data(), after != nullptr ? b.data() : nullptr, a.size(),
+                                              visit_trampoline, const_cast<VisitFn *>(&fn), pb.get());
+        if ( rc == ITTD_E_UNSUPPORTED )
+            return QueryResult{};
+        return result_of(rc, 0);
+    }
+
     std::vector<ITraceBackend::Symbol> BackendModule::module_symbols(ea_t base)
     {
         DiagTimer diag_timer("backend.module_symbols");

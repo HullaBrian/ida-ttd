@@ -792,6 +792,21 @@ namespace idattd
             return r;
         }
 
+        // ittd_backend_api::visit_positions: fn(i, 0, read) with memory
+        // readable at at[i], then fn(i, 1, read) at (*after)[i] when 'after'
+        // is given and that is a position. Calls come in no particular order
+        // and may come from several threads at once; 'read' is valid only
+        // during the call (returns the leading bytes known, as guest_read).
+        // ran false: the backend has no such visit, use read_memory_at.
+        using VisitRead = std::function<size_t(uint64_t addr, void *buf, size_t size)>;
+        using VisitFn   = std::function<void(size_t index, int phase, const VisitRead &read)>;
+        virtual QueryResult visit_positions(const std::vector<Position> &at, const std::vector<Position> *after,
+                                            const VisitFn &fn, ProgressSink *progress)
+        {
+            qnotused(at); qnotused(after); qnotused(fn); qnotused(progress);
+            return QueryResult{};
+        }
+
         // Each of 'reads' as a cursor at its position would read it: the
         // bytes into (*data)[offset, offset + size) and an ITTD_KNOWN_* a byte
         // into (*known), both sized here to the furthest read. A batch for a

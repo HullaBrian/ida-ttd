@@ -658,6 +658,10 @@ typedef struct ittd_buffer_hit
  * query may ignore the sink. A null sink means "no progress, never
  * cancelled".
  */
+/* visit_positions: memory at the position being visited, and the callback. */
+typedef size_t (*ittd_read_fn)(void *read_ctx, uint64_t addr, void *buf, size_t size);
+typedef void (*ittd_visit_fn)(void *ud, size_t index, int phase, ittd_read_fn read, void *read_ctx);
+
 typedef struct ittd_progress
 {
     void *ud;
@@ -1076,6 +1080,24 @@ typedef struct ittd_backend_api
      * it the core seeks a cursor to each position. */
     int (*read_memory_at)(ittd_backend *b, const ittd_mem_read *reads, size_t count,
                           uint8_t *buf, uint8_t *known, const ittd_progress *progress);
+
+    /* ---- reading at many positions, as the reader goes ------------------- */
+
+    /* Visit at[0..count), each with memory readable there, for reads that
+     * depend on what was read (a pointer followed to a structure followed to
+     * a string), which read_memory_at would need a round each for. For each
+     * i, in no particular order and possibly from several threads at once:
+     * fn(ud, i, 0, read, read_ctx) with the backend positioned at at[i];
+     * then, when 'after' is given and after[i] is a position, fn(ud, i, 1,
+     * read, read_ctx) at after[i] (the same cursor, moved on: cheap when
+     * near). read(read_ctx, addr, buf, size) fills buf as cursor_read_memory
+     * would and returns how many leading bytes are known (a placeholder
+     * counts); it is valid only during that call of fn. fn must not call the
+     * backend. Optional: a backend whose seeks are cheap, or that has no
+     * cursor to spare per thread, leaves it NULL and the core uses
+     * read_memory_at in rounds. ITTD_E_CANCELLED when 'progress' asked. */
+    int (*visit_positions)(ittd_backend *b, const ittd_position *at, const ittd_position *after,
+                           size_t count, ittd_visit_fn fn, void *ud, const ittd_progress *progress);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */

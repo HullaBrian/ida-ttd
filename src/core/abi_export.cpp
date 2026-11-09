@@ -1325,6 +1325,49 @@ namespace idattd
         });
     }
 
+    // visit_positions' reader, through the C ABI: 'read_ctx' is the
+    // backend's VisitRead for the visit being made.
+    static size_t x_visit_read(void *read_ctx, uint64_t addr, void *buf, size_t size)
+    {
+        try
+        {
+            return (*static_cast<const ITraceBackend::VisitRead *>(read_ctx))(addr, buf, size);
+        }
+        catch ( ... )
+        {
+            return 0;
+        }
+    }
+
+    static int x_visit_positions(ittd_backend *hb, const ittd_position *at, const ittd_position *after,
+                                 size_t count, ittd_visit_fn fn, void *ud, const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr || fn == nullptr || (count != 0 && at == nullptr) )
+            return ITTD_E_BAD_ARG;
+        return guarded(h, [&]()
+        {
+            std::vector<Position> a(count), b;
+            for ( size_t i = 0; i < count; i++ )
+                a[i] = from_abi(at[i]);
+            if ( after != nullptr )
+            {
+                b.resize(count);
+                for ( size_t i = 0; i < count; i++ )
+                    b[i] = from_abi(after[i]);
+            }
+            AbiSink sink(progress);
+            QueryResult r = h->b->visit_positions(a, after != nullptr ? &b : nullptr,
+                [fn, ud](size_t index, int phase, const ITraceBackend::VisitRead &read)
+                {
+                    fn(ud, index, phase, x_visit_read, const_cast<ITraceBackend::VisitRead *>(&read));
+                }, &sink);
+            if ( !r.ran )
+                return ITTD_E_UNSUPPORTED;
+            return r.cancelled ? ITTD_E_CANCELLED : ITTD_OK;
+        });
+    }
+
     static int x_query_access_heat(ittd_backend *hb, uint32_t page_shift, uint32_t slices,
                                    ittd_heat_cell *buf, size_t cap, size_t *out_count,
                                    int *out_truncated, const ittd_progress *progress)
@@ -1433,6 +1476,7 @@ namespace idattd
         a.heat_slice_position   = x_heat_slice_position;
         a.query_out_values      = x_query_out_values;
         a.read_memory_at        = x_read_memory_at;
+        a.visit_positions       = x_visit_positions;
         // Only offered when the backend can count part of the recording; the
         // core reads a missing entry as "the heatmap cannot zoom".
         if ( g_identity->can_window_heat() )
