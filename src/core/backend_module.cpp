@@ -1032,14 +1032,25 @@ namespace idattd
     }
 
     bool BackendModule::query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
-                                          Position *call_pos, ea_t *entry)
+                                          Position *call_pos, ea_t *entry, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_frame_entry");
         ittd_position cp{};
         uint64_t e = 0;
-        if ( m_handle == nullptr || m_api->query_frame_entry == nullptr
-          || m_api->query_frame_entry(m_handle, to_abi(at), tid, max_back, &cp, &e) != ITTD_OK )
+        if ( m_handle == nullptr )
             return false;
+        // The cancellable entry when there is a sink to answer to.
+        if ( progress != nullptr && ITTD_HAS(m_api, query_frame_entry_progress) )
+        {
+            ProgressBridge pb(progress);
+            if ( m_api->query_frame_entry_progress(m_handle, to_abi(at), tid, max_back, &cp, &e, pb.get()) != ITTD_OK )
+                return false;
+        }
+        else if ( m_api->query_frame_entry == nullptr
+               || m_api->query_frame_entry(m_handle, to_abi(at), tid, max_back, &cp, &e) != ITTD_OK )
+        {
+            return false;
+        }
         if ( call_pos != nullptr )
             *call_pos = from_abi(cp);
         if ( entry != nullptr )

@@ -694,11 +694,13 @@ namespace idattd
 
         // The call that entered thread 'tid''s frame at 'at', searching back at
         // most about 'max_back' instructions: its position and the function
-        // entry it went to. False when not found within the bound.
+        // entry it went to. False when not found within the bound, or when
+        // 'progress' (optional) asked to stop.
         virtual bool query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
-                                       Position *call_pos, ea_t *entry)
+                                       Position *call_pos, ea_t *entry, ProgressSink *progress = nullptr)
         {
             qnotused(at); qnotused(tid); qnotused(max_back); qnotused(call_pos); qnotused(entry);
+            qnotused(progress);
             return false;
         }
 

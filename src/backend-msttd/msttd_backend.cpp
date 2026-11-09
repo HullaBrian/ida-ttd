@@ -1105,9 +1105,12 @@ namespace idattd
 
     // Runs on every stop in code outside any module, so the look-back is
     // short and grows only up to 'max_back' of the thread's instructions.
+    // 'progress' is not needed: the search is three fixed windows, at most
+    // 65,536 steps back, whatever 'max_back' asks.
     bool MsTtdBackend::query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
-                                         Position *call_pos, ea_t *entry)
+                                         Position *call_pos, ea_t *entry, ProgressSink *progress)
     {
+        qnotused(progress);
         if ( !m_engine || !at.is_valid() )
             return false;
         std::lock_guard<std::mutex> lock(m_frameMtx);

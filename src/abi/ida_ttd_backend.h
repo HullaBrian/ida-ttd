@@ -1098,6 +1098,14 @@ typedef struct ittd_backend_api
      * read_memory_at in rounds. ITTD_E_CANCELLED when 'progress' asked. */
     int (*visit_positions)(ittd_backend *b, const ittd_position *at, const ittd_position *after,
                            size_t count, ittd_visit_fn fn, void *ud, const ittd_progress *progress);
+
+    /* query_frame_entry with progress and Cancel, for a search the caller
+     * bounds far back (the call tree asks for tens of millions of steps).
+     * ITTD_E_CANCELLED when 'progress' asked. Optional: without it the core
+     * calls query_frame_entry, which cannot be stopped. */
+    int (*query_frame_entry_progress)(ittd_backend *b, ittd_position at, uint32_t tid, uint64_t max_back,
+                                      ittd_position *out_call, uint64_t *out_entry,
+                                      const ittd_progress *progress);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */

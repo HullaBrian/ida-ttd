@@ -83,16 +83,18 @@ namespace idattd
         Position call_pos = Position::none();
         ea_t entry = BADADDR;
         bool found = false;
-        // Without Cancel: query_frame_entry takes no progress sink (the ABI
-        // has none for it), so a Cancel would show "Stopping..." while the
-        // search ran on regardless.
-        QueryResult qr = run_query("Finding where this function was entered", [&](ProgressSink *)
+        // Cancellable where the backend's search takes a sink
+        // (query_frame_entry_progress); elsewhere Cancel waits for the
+        // search, which is then bounded (Microsoft TTD looks back 65,536
+        // steps at most).
+        QueryResult qr = run_query("Finding where this function was entered", [&](ProgressSink *p)
         {
-            found = backend->query_frame_entry(here, out->tid, kMaxBack, &call_pos, &entry);
+            found = backend->query_frame_entry(here, out->tid, kMaxBack, &call_pos, &entry, p);
             QueryResult q;
             q.ran = true;
+            q.cancelled = p != nullptr && p->cancelled();
             return q;
-        }, false);
+        });
         if ( qr.cancelled )
         {
             out->cancelled = true;

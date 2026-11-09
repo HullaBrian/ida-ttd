@@ -96,7 +96,7 @@ namespace idattd
         bool query_register_change(Position at, uint32_t tid, uint32_t reg, uint64_t max_back,
                                    Position *where, bool *found, ProgressSink *progress) override;
         bool query_frame_entry(Position at, uint32_t tid, uint64_t max_back,
-                               Position *call_pos, ea_t *entry) override;
+                               Position *call_pos, ea_t *entry, ProgressSink *progress = nullptr) override;
 
         // The engine records neither, and the core parses exports and .pdata
         // out of guest memory or the file itself.

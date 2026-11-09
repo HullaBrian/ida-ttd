@@ -513,6 +513,15 @@ int main(int argc, char **argv)
                        rc, pos_text(fc), (unsigned long long)fe);
                 check(rc == ITTD_OK && fc.lo == e->pos.lo && fe == e->target,
                       "  the frame at entry_pos was entered by this call");
+                /* The cancellable entry answers the same. */
+                if ( HAS(query_frame_entry_progress) )
+                {
+                    ittd_position fc2;
+                    uint64_t fe2 = 0;
+                    int rc2 = api->query_frame_entry_progress(B, e->entry_pos, e->tid, 0x10000, &fc2, &fe2, NULL);
+                    check(rc2 == rc && fc2.hi == fc.hi && fc2.lo == fc.lo && fe2 == fe,
+                          "  query_frame_entry_progress answers as query_frame_entry");
+                }
             }
             /* A write breakpoint on the slot the call pushes its return address
                into stops at the call, run forward from just before it. */

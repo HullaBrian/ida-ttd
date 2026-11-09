@@ -743,15 +743,25 @@ namespace idattd
         // Tell the user when the movement ended at the first or last position.
         // Done here, after the stop, because a modal box inside on_resume is
         // unsafe.
+        // A ttd() command waiting for this stop gets them in the output window
+        // instead: a modal box would leave the script (or an MCP caller)
+        // waiting on someone to dismiss it.
+        auto tell = [this](const char *text)
+        {
+            if ( m_quietStops > 0 )
+                msg("[ida-ttd] %s\n", text);
+            else
+                info("%s", text);
+        };
         if ( m_pendingBoundary == BOUNDARY_START )
-            info("Reached the start of the trace.");
+            tell("Reached the start of the trace.");
         else if ( m_pendingBoundary == BOUNDARY_END )
-            info("Reached the end of the trace.");
+            tell("Reached the end of the trace.");
         m_pendingBoundary = BOUNDARY_NONE;
 
         if ( !m_pendingNotice.empty() )
         {
-            info("%s", m_pendingNotice.c_str());
+            tell(m_pendingNotice.c_str());
             m_pendingNotice.clear();
         }
         // IDA's views now show this position's memory.

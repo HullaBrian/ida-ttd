@@ -2025,6 +2025,14 @@ namespace idattd
                 return qstring("the replay session ended while the command ran");
             return qstring(what);
         };
+        // No modal box from a stop this command waits for (the trace's edge,
+        // a notice): the caller is a script.
+        struct QuietStops
+        {
+            TraceManager *m;
+            explicit QuietStops(TraceManager *t) : m(t) { if ( m != nullptr ) m->quiet_stops(true); }
+            ~QuietStops() { if ( m != nullptr ) m->quiet_stops(false); }
+        } quiet(g_plugin != nullptr ? &mgr() : nullptr);
         try
         {
             const Command *found = nullptr;

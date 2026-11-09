@@ -195,6 +195,11 @@ namespace idattd
         // Only while stopped. True when anything was restored.
         bool                       restore_kept();
 
+        // While positive, the messages a stop shows (an edge of the trace, a
+        // navigator's notice) go to the output window rather than a modal
+        // box: the script api raises it around each ttd() command.
+        void                       quiet_stops(bool on) { m_quietStops += on ? 1 : -1; }
+
     private:
         void   reset_session_state();
         // Copy the user's work on functions outside every module as IDA shows
@@ -248,6 +253,7 @@ namespace idattd
         // handled (on_suspended). A movement that changes the memory layout
         // copies the user's work from there, not from where it landed.
         Position                    m_shownAt = Position::none();
+        int                         m_quietStops = 0;   // quiet_stops()
         std::unique_ptr<INavigator> m_nav;          // moves m_cursor
         std::vector<Breakpoint>     m_bpts;         // what IDA has set
 

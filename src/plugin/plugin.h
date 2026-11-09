@@ -297,6 +297,8 @@ namespace idattd
         // The position readout only grows within a session, so the toolbar
         // does not shift each time the position gains a digit.
         size_t m_posLabelChars = 0;
+        // The sample the position button was last pinned for while stopped.
+        qstring m_posPinned;
 
         // Automatic per-function coverage. Functions whose sweep the user
         // cancelled are remembered for the session only, so the next step

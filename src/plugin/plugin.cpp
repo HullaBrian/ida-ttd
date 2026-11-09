@@ -201,7 +201,6 @@ namespace idattd
         g_live_plugin = this;
         // The backend DLLs (load_backend_modules lists where they are found).
         load_backend_modules();
-        m_pdbTimer.arm(1000, pdb_poll_cb, this);
         // Hex-Rays variable and comment edits mark their function for the
         // kept-functions copy, as IDB events do for the rest.
         set_function_edit_hook([](ea_t ea)
@@ -223,7 +222,13 @@ namespace idattd
         // The session's only way back to the plugin, so debugger/ does not
         // depend on plugin/.
         m_mgr.set_session_hooks({
-            [this]() { show_actions(); },
+            [this]()
+            {
+                show_actions();
+                // PDB names are applied while a session is paused; the timer
+                // runs only then, not in every database for the plugin's life.
+                m_pdbTimer.arm(1000, pdb_poll_cb, this);
+            },
             [this]()
             {
                 hide_actions();
@@ -270,7 +275,7 @@ namespace idattd
     {
         Plugin *p = static_cast<Plugin *>(ud);
         if ( !p->manager().is_active() )
-            return 1000;
+            return -1;                  // armed again at the next session's start
         if ( get_process_state() == DSTATE_SUSP
           && p->manager().modules().advance_pdbs(15) != 0 )
             refresh_idaview_anyway();
@@ -1057,6 +1062,7 @@ namespace idattd
     // registered native movement actions exist to attach.
     void Plugin::show_actions()
     {
+        m_posPinned.clear();        // a new toolbar button: pin it again
         register_actions();
         try_hook_decompiler();
         suspend_source_debugging();
@@ -1096,6 +1102,7 @@ namespace idattd
     // ev_term_debugger both come here).
     void Plugin::hide_actions()
     {
+        m_posPinned.clear();
         // First: a pseudocode view of runtime-allocated code cannot survive
         // the session, and IDA would save it in the desktop and restore it
         // broken.
@@ -1159,8 +1166,22 @@ namespace idattd
         for ( size_t n = label.length(); n < m_posLabelChars; n++ )
             label.append(FIGURE_SPACE);
         update_action_label(actions::POS_LABEL, label.c_str());
+        // The pin is a Python call, and this runs at every stop, every module
+        // load (a hundred at a session's start) and every register write. So
+        // once it has been made while stopped, when the toolbar's button is
+        // certainly there, it is made again only for a wider sample. The
+        // toolbar is rebuilt at each session's start and end, which resets
+        // this (show_actions, hide_actions).
         if ( m_mgr.is_active() )
-            pin_position_width(format_position(m_mgr.last_position()));
+        {
+            const qstring widest = format_position(m_mgr.last_position());
+            if ( widest != m_posPinned )
+            {
+                pin_position_width(widest);
+                if ( get_process_state() == DSTATE_SUSP )
+                    m_posPinned = widest;
+            }
+        }
     }
 
     // Every open disassembly view, by title: the user's (A-Z) and the

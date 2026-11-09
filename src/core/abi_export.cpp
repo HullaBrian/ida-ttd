@@ -1200,6 +1200,28 @@ namespace idattd
         });
     }
 
+    static int x_query_frame_entry_progress(ittd_backend *hb, ittd_position at, uint32_t tid, uint64_t max_back,
+                                            ittd_position *out_call, uint64_t *out_entry,
+                                            const ittd_progress *progress)
+    {
+        ExportedBackend *h = B(hb);
+        if ( h == nullptr )
+            return ITTD_E_BAD_ARG;
+        return guarded(h, [&]()
+        {
+            Position cp;
+            ea_t e = BADADDR;
+            AbiSink sink(progress);
+            if ( !h->b->query_frame_entry(from_abi(at), tid, max_back, &cp, &e, &sink) )
+                return sink.cancelled() ? ITTD_E_CANCELLED : ITTD_E_FAILED;
+            if ( out_call != nullptr )
+                *out_call = to_abi(cp);
+            if ( out_entry != nullptr )
+                *out_entry = (uint64_t)e;
+            return ITTD_OK;
+        });
+    }
+
     static int x_query_register_change(ittd_backend *hb, ittd_position at, uint32_t tid, uint32_t reg,
                                        uint64_t max_back, ittd_position *out_pos, int *out_found,
                                        const ittd_progress *progress)
@@ -1461,6 +1483,7 @@ namespace idattd
         a.query_instructions    = x_query_instructions;
         a.position_add          = x_position_add;
         a.query_frame_entry     = x_query_frame_entry;
+        a.query_frame_entry_progress = x_query_frame_entry_progress;
         a.set_log               = x_set_log;
         a.prepared              = x_prepared;
         a.cursor_thread_regs    = x_cursor_thread_regs;

@@ -1256,8 +1256,19 @@ namespace
         return std::nullopt;
     }
 
+    int query_frame_entry_progress(ittd_backend *hb, ittd_position where, uint32_t tid, uint64_t max_back,
+                                   ittd_position *out_call, uint64_t *out_entry, const ittd_progress *progress);
+
     int query_frame_entry(ittd_backend *hb, ittd_position where, uint32_t tid, uint64_t max_back,
                           ittd_position *out_call, uint64_t *out_entry)
+    {
+        return query_frame_entry_progress(hb, where, tid, max_back, out_call, out_entry, nullptr);
+    }
+
+    // The walk back checks 'progress' every 16,384 instructions
+    // (entering_call), so a call tree's search of tens of millions can stop.
+    int query_frame_entry_progress(ittd_backend *hb, ittd_position where, uint32_t tid, uint64_t max_back,
+                                   ittd_position *out_call, uint64_t *out_entry, const ittd_progress *progress)
     {
         backend_t *b = B(hb);
         if ( b == nullptr )
@@ -1269,7 +1280,7 @@ namespace
             uint64_t pos = 0;
             if ( !resolve(t, where, &pos) )
                 return ITTD_E_NO_POSITION;
-            std::optional<ttd::access_event> call = entering_call(t, pos, tid, max_back);
+            std::optional<ttd::access_event> call = entering_call(t, pos, tid, max_back, true, progress);
             if ( !call )
             {
                 b->error.set("no entering call within the search bound");
@@ -2781,10 +2792,17 @@ namespace
         // One buffer reused for every read: this runs after each instruction
         // that wrote, and shadow.read fills all of what it is given.
         std::vector<uint8_t> window;
+        // Cancel is checked per chunk while the start's memory is scanned:
+        // every committed region, which can be hundreds of megabytes, before
+        // the event loop's own checks begin.
+        const ttd::operation_control start_ctl = control(progress);
+        bool at_start = false;
         auto scan_range = [&](uint64_t address, uint64_t size, uint64_t read_at, uint64_t step)
         {
             for ( uint64_t off = 0; off < size; off += kScanChunk )
             {
+                if ( at_start )
+                    start_ctl.check();
                 const uint64_t b = off > kStringContext ? off - kStringContext : 0;
                 const uint64_t e = std::min<uint64_t>(size, off + kScanChunk + kStringContext);
                 window.resize(size_t(e - b));
@@ -2812,6 +2830,7 @@ namespace
         // ---- what memory held at the start ------------------------------------
         if ( t.has_memory_regions() )
         {
+            at_start = true;
             for ( const ttd::memory_region &r : t.memory_regions().regions )
             {
                 if ( r.event_number != 0 || r.step != start )
@@ -2821,6 +2840,7 @@ namespace
                     continue;                           // MMIO, host-reserved
                 scan_range(r.address, r.size, start, start);
             }
+            at_start = false;
         }
 
         // ---- the writes, in order ----------------------------------------------
@@ -3731,6 +3751,7 @@ namespace
         a.query_instructions = query_instructions;
         a.position_add       = position_add;
         a.query_frame_entry  = query_frame_entry;
+        a.query_frame_entry_progress = query_frame_entry_progress;
         a.query_mapping_files = query_mapping_files;
         a.replay_env         = replay_env;
         a.check_registry     = check_registry;
