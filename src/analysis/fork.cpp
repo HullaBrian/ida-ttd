@@ -7,6 +7,7 @@
 #include "core/backend_registry.h"
 
 #include <filesystem>
+#include <fstream>
 
 namespace idattd
 {
@@ -298,6 +299,111 @@ namespace idattd
             if ( b->can_record() )
                 return b;
         return nullptr;
+    }
+
+    static std::filesystem::path wide_path(const char *utf8)
+    {
+        qwstring w;
+        utf8_utf16(&w, utf8 != nullptr ? utf8 : "");
+        return std::filesystem::path(w.c_str());
+    }
+
+    static qstring utf8_of(const std::filesystem::path &p)
+    {
+        qstring s;
+        utf16_utf8(&s, p.wstring().c_str());
+        return s;
+    }
+
+    static qstring root_filesys(const char *root)
+    {
+        qstring fs = root;
+        while ( !fs.empty() && (fs.last() == '\\' || fs.last() == '/') )
+            fs.remove_last();
+        fs.append("\\filesys\\");
+        return fs;
+    }
+
+    bool visible_in_emulation_root(const char *root, const char *path)
+    {
+        const qstring fs = root_filesys(root);
+        if ( strnicmp(path, fs.c_str(), fs.length()) == 0 )
+            return true;
+        if ( qisalpha(path[0]) && path[1] == ':' )
+        {
+            qstring mapped = fs;
+            mapped.append((char)qtolower(path[0]));
+            mapped.append(path + 2);
+            return qfileexist(mapped.c_str()) || qisdir(mapped.c_str());
+        }
+        return false;
+    }
+
+    // Two files with the same bytes.
+    static bool same_file_contents(const std::filesystem::path &a, const std::filesystem::path &b)
+    {
+        std::error_code ec;
+        if ( std::filesystem::file_size(a, ec) != std::filesystem::file_size(b, ec) || ec )
+            return false;
+        std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+        std::vector<char> ba(1 << 16), bb(1 << 16);
+        while ( fa && fb )
+        {
+            fa.read(ba.data(), (std::streamsize)ba.size());
+            fb.read(bb.data(), (std::streamsize)bb.size());
+            if ( fa.gcount() != fb.gcount() || memcmp(ba.data(), bb.data(), (size_t)fa.gcount()) != 0 )
+                return false;
+        }
+        return fa.eof() && fb.eof();
+    }
+
+    PlaceResult place_in_emulation_root(const char *root, const char *program, const char *guest_dir,
+                                        bool replace, qstring *placed, qstring *err)
+    {
+        // "C:\samples" -> drive c, "samples"; "\samples" and "samples" are on C:.
+        qstring dir = guest_dir != nullptr ? guest_dir : "";
+        dir.trim2();
+        char drive = 'c';
+        if ( dir.length() >= 2 && qisalpha(dir[0]) && dir[1] == ':' )
+        {
+            drive = (char)qtolower(dir[0]);
+            dir.remove(0, 2);
+        }
+        dir.replace("/", "\\");
+        std::filesystem::path rel = wide_path(dir.c_str()).relative_path();
+        for ( const auto &part : rel )
+        {
+            if ( part == L".." )
+            {
+                err->sprnt("the folder %s climbs out of the emulation root", guest_dir);
+                return PlaceResult::Failed;
+            }
+        }
+        const std::filesystem::path src = wide_path(program);
+        const std::filesystem::path folder = wide_path(root) / L"filesys" / std::wstring(1, (wchar_t)drive) / rel;
+        const std::filesystem::path dst = folder / src.filename();
+        *placed = utf8_of(dst.lexically_normal());
+        std::error_code ec;
+        if ( std::filesystem::exists(dst, ec) )
+        {
+            if ( same_file_contents(src, dst) )
+                return PlaceResult::Same;
+            if ( !replace )
+                return PlaceResult::Differs;
+        }
+        std::filesystem::create_directories(folder, ec);
+        if ( ec )
+        {
+            err->sprnt("could not create %s: %s", utf8_of(folder).c_str(), ec.message().c_str());
+            return PlaceResult::Failed;
+        }
+        std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+        if ( ec )
+        {
+            err->sprnt("could not copy %s to %s: %s", program, placed->c_str(), ec.message().c_str());
+            return PlaceResult::Failed;
+        }
+        return PlaceResult::Placed;
     }
 
     ForkResult run_record(const RecordRequest &req)

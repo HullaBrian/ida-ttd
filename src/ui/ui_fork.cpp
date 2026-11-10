@@ -345,28 +345,6 @@ namespace idattd
         return !dir.empty() && qfileexist(system.c_str());
     }
 
-    // Whether 'path' (a file or folder the user picked) is inside the
-    // emulation root's file system, <root>\filesys\, or is a guest path the
-    // root has (c:\x.exe as <root>\filesys\c\x.exe): what a program running
-    // in the root can see. The backend turns the first into the second.
-    static bool visible_in_root(const char *root, const char *path)
-    {
-        qstring fs = root;
-        while ( !fs.empty() && (fs.last() == '\\' || fs.last() == '/') )
-            fs.remove_last();
-        fs.append("\\filesys\\");
-        if ( strnicmp(path, fs.c_str(), fs.length()) == 0 )
-            return true;
-        if ( qisalpha(path[0]) && path[1] == ':' )
-        {
-            qstring mapped = fs;
-            mapped.append((char)qtolower(path[0]));
-            mapped.append(path + 2);
-            return qfileexist(mapped.c_str()) || qisdir(mapped.c_str());
-        }
-        return false;
-    }
-
     // Why 'root' cannot be an emulation root, or empty when it can: it must
     // hold filesys\ and registry\ (with hives). Picking one of those two
     // instead of the root is the likely mistake, so the parent is suggested.
@@ -429,6 +407,7 @@ namespace idattd
             "Sogen recording (.sogttd). It runs headless: a program's windows are not shown.\n"
             "\n"
             "<~P~rogram:f:0:64::>\n"
+            "<Outside the root, copy it into the root's ~f~older (guest path):q::64::>\n"
             "<~A~rguments:q::64::>\n"
             "<~W~orking directory (empty for the program's folder):F::64::>\n"
             "<~N~ew recording:f:1:64::>\n"
@@ -444,7 +423,9 @@ namespace idattd
             "\n";
         // The last answers this session; the program starts as the database's
         // own executable, the hives as the first folder that has some.
-        static qstring s_program, s_args, s_cwd, s_root, s_hives;
+        // The guest folder a program from outside the root is copied to: one
+        // of its own, so the root's own files are not replaced unasked.
+        static qstring s_program, s_args, s_cwd, s_root, s_hives, s_place = "C:\\ida-ttd";
         static sval_t s_count = 0;
         if ( s_program.empty() )
             s_program = database_program();
@@ -467,12 +448,14 @@ namespace idattd
             set_file_ext(out, sizeof(out), o.c_str(), "sogttd");
         }
         qstring args = s_args;
+        qstring place = s_place;
+        qstring run_program;        // the program as recorded: a copy in the root, or itself
         sval_t count = s_count;
         const RecordOptions defaults = recording_options();
         ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0);
         for ( ;; )
         {
-            if ( ask_form(form, program, &args, cwd, out, &count, root, hives, &checks) <= 0 )
+            if ( ask_form(form, program, &place, &args, cwd, out, &count, root, hives, &checks) <= 0 )
                 return 1;
             if ( program[0] == '\0' || !qfileexist(program) )
             {
@@ -492,15 +475,16 @@ namespace idattd
                     warning("%s", problem.c_str());
                     continue;
                 }
-                if ( !visible_in_root(root, program) )
+                place.trim2();
+                if ( !visible_in_emulation_root(root, program) && place.empty() )
                 {
                     warning("The program is outside the emulation root, and a program running in the root "
                             "sees only its filesys folder (filesys\\c is its C: drive).\n\n"
-                            "Copy %s into %s\\filesys\\c (or a folder in it) and choose that copy.",
-                            program, root);
+                            "Name a folder in the root to copy it to (such as C:\\ida-ttd), or choose a "
+                            "program inside %s\\filesys.", root);
                     continue;
                 }
-                if ( cwd[0] != '\0' && !visible_in_root(root, cwd) )
+                if ( cwd[0] != '\0' && !visible_in_emulation_root(root, cwd) )
                 {
                     warning("The working directory must be inside the emulation root's filesys folder too.");
                     continue;
@@ -516,6 +500,28 @@ namespace idattd
             if ( qfileexist(out)
               && ask_yn(ASKBTN_NO, "HIDECANCEL\n%s already exists. Replace it?", out) != ASKBTN_YES )
                 continue;
+            // Last, once everything else holds: the copy into the root.
+            run_program = program;
+            if ( root[0] != '\0' && !visible_in_emulation_root(root, program) )
+            {
+                qstring placed, err;
+                PlaceResult pr = place_in_emulation_root(root, program, place.c_str(), false, &placed, &err);
+                if ( pr == PlaceResult::Differs )
+                {
+                    if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nThe emulation root already has a different\n%s\n\n"
+                                           "Replace it with %s?", placed.c_str(), program) != ASKBTN_YES )
+                        continue;
+                    pr = place_in_emulation_root(root, program, place.c_str(), true, &placed, &err);
+                }
+                if ( pr == PlaceResult::Failed )
+                {
+                    warning("The program could not be copied into the emulation root: %s", err.c_str());
+                    continue;
+                }
+                if ( pr == PlaceResult::Placed )
+                    msg("[ida-ttd] copied %s into the emulation root: %s\n", program, placed.c_str());
+                run_program = placed;
+            }
             break;
         }
         s_program = program;
@@ -523,12 +529,13 @@ namespace idattd
         s_cwd     = cwd;
         s_root    = root;
         s_hives   = hives;
+        s_place   = place;
         s_count   = count;
         if ( root[0] == '\0' )
             save_registry_dir(hives);
 
         RecordRequest req;
-        req.application      = program;
+        req.application      = run_program;
         req.arguments        = args;
         req.working_dir      = cwd;
         req.path             = out;
@@ -560,7 +567,7 @@ namespace idattd
                 warning("The program was not recorded: %s", r.error.c_str());
             return 1;
         }
-        msg("[ida-ttd] recorded %s: %llu instruction(s) into %s%s.\n", program,
+        msg("[ida-ttd] recorded %s: %llu instruction(s) into %s%s.\n", run_program.c_str(),
             (unsigned long long)r.instructions, out,
             r.cancelled ? " (stopped early; what ran is a complete recording)" : "");
         if ( ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) into\n%s\n\n"

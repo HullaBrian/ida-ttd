@@ -35,6 +35,27 @@ namespace idattd
     // (Sogen's), or nullptr. Loads the backend modules if need be.
     ITraceBackend *find_recorder();
 
+    // Whether a program in emulation root 'root' can see 'path' (a file or
+    // folder): it is inside <root>\filesys\, or it is a guest path the root
+    // has (c:\x.exe as <root>\filesys\c\x.exe). The backend turns the first
+    // into the second.
+    bool visible_in_emulation_root(const char *root, const char *path);
+
+    enum class PlaceResult
+    {
+        Placed,     // copied there
+        Same,       // an identical copy was there already
+        Differs,    // another file is there; nothing done (replace to overwrite)
+        Failed,     // 'err' says why
+    };
+    // Copy 'program' into emulation root 'root' at guest folder 'guest_dir'
+    // ("C:\samples"; "\samples" and "samples" are on C:), creating the folder:
+    // a program recorded in the root sees only the root. '*placed' is the
+    // copy's host path (inside <root>\filesys). A folder climbing out of the
+    // root ("..") is refused.
+    PlaceResult place_in_emulation_root(const char *root, const char *program, const char *guest_dir,
+                                        bool replace, qstring *placed, qstring *err);
+
     // Record a program behind a cancellable wait box (see RecordRequest).
     // Cancelling keeps what ran so far as a complete recording.
     ForkResult run_record(const RecordRequest &req);

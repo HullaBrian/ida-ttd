@@ -1385,13 +1385,19 @@ namespace idattd
         req.rec         = recording_options();
         req.application = a.at(0);
         req.path        = a.at(1);
+        qstring place;
+        bool replace = false;
         for ( size_t i = 2; i < a.count(); i++ )
         {
             const qstring &t = a.at(i);
             uint64_t n = 0;
             if ( record_option(t, &req.rec) )
                 continue;
-            if ( t.starts_with("args=") )
+            if ( t.starts_with("place=") )
+                place = t.substr(6);
+            else if ( t == "replace" )
+                replace = true;
+            else if ( t.starts_with("args=") )
                 req.arguments = t.substr(5);
             else if ( t.starts_with("cwd=") )
                 req.working_dir = t.substr(4);
@@ -1404,8 +1410,24 @@ namespace idattd
             else if ( i == 2 && parse_u64(t, &n) )
                 req.max_instructions = n;
             else
-                fail("'%s' is not N, args=, cwd=, registry=, root=, host, net, ckpt=N, access=rwx, "
-                     "elevated or log", t.c_str());
+                fail("'%s' is not N, args=, cwd=, registry=, root=, place=, replace, host, net, ckpt=N, "
+                     "access=rwx, elevated or log", t.c_str());
+        }
+        // place=DIR: a program outside the emulation root is copied into it
+        // first (the guest sees only the root).
+        qstring placed_note;
+        if ( !place.empty() && !req.emulation_root.empty()
+          && !visible_in_emulation_root(req.emulation_root.c_str(), req.application.c_str()) )
+        {
+            qstring placed, err;
+            PlaceResult pr = place_in_emulation_root(req.emulation_root.c_str(), req.application.c_str(),
+                                                     place.c_str(), replace, &placed, &err);
+            if ( pr == PlaceResult::Differs )
+                fail("the emulation root already has a different %s; add 'replace' to overwrite it", placed.c_str());
+            if ( pr == PlaceResult::Failed )
+                fail("%s", err.c_str());
+            placed_note = pr == PlaceResult::Placed ? "copied" : "already there";
+            req.application = placed;
         }
         if ( req.emulation_root.empty() && req.registry_dir.empty() )
         {
@@ -1427,7 +1449,8 @@ namespace idattd
                  : r.block == ReplayBlock::Registry ? " (needs registry=DIR)" : "",
                  r.error.c_str());
         out.boolean("cancelled", r.cancelled).num("instructions", (int64_t)r.instructions)
-           .str("path", req.path).boolean("network", req.rec.network);
+           .str("path", req.path).boolean("network", req.rec.network)
+           .str("program", req.application).str("placed", placed_note);
     }
 
     // Replay options (replay_option) from argument 'from' on. Any other word
@@ -2043,7 +2066,7 @@ namespace idattd
         { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },
         { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] record the fork being prepared" },
         { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] [REG=V ...] [mem:EA=HEX ...] fork here" },
-        { "an.record",      cmd_an_record,      "PROGRAM PATH [N] [args=\"...\"] [cwd=DIR] [registry=DIR] [root=DIR] [host] [net] [ckpt=N] [access=rwx] [elevated] [log] record a program with Sogen" },
+        { "an.record",      cmd_an_record,      "PROGRAM PATH [N] [args=\"...\"] [cwd=DIR] [registry=DIR] [root=DIR] [place=DIR] [replace] [host] [net] [ckpt=N] [access=rwx] [elevated] [log] record a program with Sogen" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },

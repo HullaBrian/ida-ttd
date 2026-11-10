@@ -121,8 +121,10 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   limit, network access and an administrator's token. It runs headless (a
   program's windows are not shown). An emulation root is Sogen's folder
   holding `filesys\` (the program's drives: `filesys\c` is its C:) and
-  `registry\` (its hives); a program recorded in one must be inside its
-  `filesys` folder, since that is all it sees. The checkpoint interval and what is
+  `registry\` (its hives). A program recorded in one must be inside its
+  `filesys` folder, since that is all it sees: the dialog copies a program
+  from elsewhere into the root, to a guest folder you name (`C:\ida-ttd`
+  at first), and asks before replacing a different file there. The checkpoint interval and what is
   recorded (reads, writes, instruction fetches) are settings, and apply to
   forks too.
 
