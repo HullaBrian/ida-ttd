@@ -656,8 +656,11 @@ typedef struct ittd_record_request
 {
     uint32_t    size;               /* sizeof(ittd_record_request) */
     uint32_t    reserved0;
-    /* The executable, as a path on this machine (UTF-8). In an emulation root
-     * it is looked for under the root's filesystem as well. */
+    /* The executable (UTF-8): a path on this machine, or with an emulation
+     * root, one inside <root>\filesys (taken as the guest path it stands
+     * for, <root>\filesys\c\x.exe as c:\x.exe) or a guest path the root has.
+     * A program outside the root is refused: the guest sees only the root.
+     * working_dir likewise. */
     const char *application;
     /* The command line after the program's name, split as Windows does;
      * NULL or empty for none. */

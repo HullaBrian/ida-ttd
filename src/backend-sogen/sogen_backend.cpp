@@ -2612,6 +2612,83 @@ namespace
         return std::u16string(w.begin(), w.end());
     }
 
+    std::wstring lower(std::wstring s)
+    {
+        for ( wchar_t &c : s )
+            c = (wchar_t)towlower(c);
+        return s;
+    }
+
+    // The guest path ("c:\dir\x.exe") of a host path inside an emulation
+    // root's file system (<root>\filesys\c\dir\x.exe), or nothing when it is
+    // not in there. Windows paths compare without case.
+    std::optional<std::filesystem::path> guest_path(const std::filesystem::path &root,
+                                                    const std::filesystem::path &host)
+    {
+        std::wstring base = (root / L"filesys").lexically_normal().native();
+        if ( !base.empty() && base.back() != L'\\' )
+            base += L'\\';
+        const std::wstring h = host.lexically_normal().native();
+        if ( h.size() <= base.size() || lower(h).compare(0, base.size(), lower(base)) != 0 )
+            return std::nullopt;
+        const std::wstring rest = h.substr(base.size());
+        const size_t slash = rest.find(L'\\');
+        const std::wstring drive = rest.substr(0, slash);
+        if ( drive.size() != 1 )
+            return std::nullopt;
+        return std::filesystem::path(drive + L":\\" + (slash == std::wstring::npos ? L"" : rest.substr(slash + 1)));
+    }
+
+    // Where a guest path lives in an emulation root: c:\dir\x -> <root>\filesys\c\dir\x.
+    std::filesystem::path in_root(const std::filesystem::path &root, const std::filesystem::path &guest)
+    {
+        const std::wstring g = guest.native();
+        if ( g.size() < 2 || g[1] != L':' )
+            return {};
+        std::wstring rest = g.substr(2);
+        while ( !rest.empty() && (rest.front() == L'\\' || rest.front() == L'/') )
+            rest.erase(rest.begin());
+        return root / L"filesys" / std::wstring(1, (wchar_t)towlower(g[0])) / rest;
+    }
+
+    // A program or folder for a run in an emulation root, as the guest sees
+    // it: a host path inside the root's file system becomes its guest path; a
+    // path the root has (a guest path typed as such) is taken as it is; a
+    // file elsewhere on this machine is refused, since the program sees only
+    // the root.
+    std::filesystem::path guest_for(const std::filesystem::path &root, const std::filesystem::path &given,
+                                    const char *what)
+    {
+        if ( std::optional<std::filesystem::path> g = guest_path(root, given) )
+            return *g;
+        std::error_code ec;
+        if ( std::filesystem::exists(in_root(root, given), ec) )
+            return given;
+        const std::string fs_dir = path_utf8(root / L"filesys");
+        if ( std::filesystem::exists(given, ec) )
+            throw coded_error(ITTD_E_BAD_ARG, std::string("the ") + what + " " + path_utf8(given)
+                              + " is outside the emulation root, and a program running in it sees only "
+                              + fs_dir + " (its C: drive is " + fs_dir + "\\c). Copy it in there and choose that copy");
+        throw coded_error(ITTD_E_BAD_ARG, std::string("there is no ") + what + " " + path_utf8(given)
+                          + " in the emulation root (" + fs_dir + ")");
+    }
+
+    // An emulation root is the folder holding filesys\ (the guest's drives)
+    // and registry\ (its hives). Picking either of those instead of the root
+    // is the likely mistake, so the message names the parent then.
+    void check_emulation_root(const std::filesystem::path &root)
+    {
+        std::error_code ec;
+        if ( std::filesystem::is_directory(root / L"filesys", ec) )
+            return;
+        std::string msg = path_utf8(root) + " is not an emulation root: an emulation root is the folder that "
+                          "holds filesys\\ (the program's drives) and registry\\ (its hives)";
+        const std::filesystem::path parent = root.parent_path();
+        if ( std::filesystem::is_directory(parent / L"filesys", ec) )
+            msg += ". Did you mean " + path_utf8(parent) + "?";
+        throw coded_error(ITTD_E_BAD_ARG, msg);
+    }
+
     // The program run from its start the way analyzer --ttd-record runs it
     // (one vCPU, Unicorn, the relative clock), against an emulation root or
     // this machine's files, recorded until it exits or the limit.
@@ -2631,7 +2708,10 @@ namespace
             if ( const char *const *v = setting_registry_dir(settings); v != nullptr && *v != nullptr && **v != '\0' )
                 registry = utf8_path(*v);
             if ( !root.empty() )
+            {
+                check_emulation_root(root);
                 registry = root / "registry";
+            }
             const uint32_t *flags = setting_flags(settings);
             if ( root.empty() && (flags == nullptr || (*flags & ITTD_FORK_ALLOW_HOST) == 0) )
                 throw coded_error(ITTD_E_HOST_REPLAY, "without an emulation root the program runs against this "
@@ -2645,13 +2725,25 @@ namespace
                                                       + path_utf8(registry) + ": Sogen runs the program "
                                                         "against a copy of the registry, which it needs");
 
-            sogen::application_settings app{};
-            app.application = sogen::windows_path(utf8_path(req->application));
+            // In an emulation root the program and its folder are guest paths.
+            std::filesystem::path program = utf8_path(req->application);
+            std::filesystem::path cwd;
             if ( req->working_dir != nullptr && *req->working_dir != '\0' )
-                app.working_directory = sogen::windows_path(utf8_path(req->working_dir));
+                cwd = utf8_path(req->working_dir);
+            if ( !root.empty() )
+            {
+                program = guest_for(root, program, "program");
+                if ( !cwd.empty() )
+                    cwd = guest_for(root, cwd, "working directory");
+            }
+            sogen::application_settings app{};
+            app.application = sogen::windows_path(program);
+            if ( !cwd.empty() )
+                app.working_directory = sogen::windows_path(cwd);
             // The command line as given, after the program's quoted name: the
             // program splits it itself, so it gets exactly what was typed.
-            std::u16string line = u"\"" + utf16(req->application) + u"\"";
+            const std::wstring pw = program.wstring();
+            std::u16string line = u"\"" + std::u16string(pw.begin(), pw.end()) + u"\"";
             if ( req->arguments != nullptr && *req->arguments != '\0' )
                 line += u" " + utf16(req->arguments);
             app.command_line = line;

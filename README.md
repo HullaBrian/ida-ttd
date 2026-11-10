@@ -119,7 +119,10 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   database's executable; you choose its arguments, working directory, an
   emulation root or the registry hives it runs against, the instruction
   limit, network access and an administrator's token. It runs headless (a
-  program's windows are not shown). The checkpoint interval and what is
+  program's windows are not shown). An emulation root is Sogen's folder
+  holding `filesys\` (the program's drives: `filesys\c` is its C:) and
+  `registry\` (its hives); a program recorded in one must be inside its
+  `filesys` folder, since that is all it sees. The checkpoint interval and what is
   recorded (reads, writes, instruction fetches) are settings, and apply to
   forks too.
 

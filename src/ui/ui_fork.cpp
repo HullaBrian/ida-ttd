@@ -345,6 +345,61 @@ namespace idattd
         return !dir.empty() && qfileexist(system.c_str());
     }
 
+    // Whether 'path' (a file or folder the user picked) is inside the
+    // emulation root's file system, <root>\filesys\, or is a guest path the
+    // root has (c:\x.exe as <root>\filesys\c\x.exe): what a program running
+    // in the root can see. The backend turns the first into the second.
+    static bool visible_in_root(const char *root, const char *path)
+    {
+        qstring fs = root;
+        while ( !fs.empty() && (fs.last() == '\\' || fs.last() == '/') )
+            fs.remove_last();
+        fs.append("\\filesys\\");
+        if ( strnicmp(path, fs.c_str(), fs.length()) == 0 )
+            return true;
+        if ( qisalpha(path[0]) && path[1] == ':' )
+        {
+            qstring mapped = fs;
+            mapped.append((char)qtolower(path[0]));
+            mapped.append(path + 2);
+            return qfileexist(mapped.c_str()) || qisdir(mapped.c_str());
+        }
+        return false;
+    }
+
+    // Why 'root' cannot be an emulation root, or empty when it can: it must
+    // hold filesys\ and registry\ (with hives). Picking one of those two
+    // instead of the root is the likely mistake, so the parent is suggested.
+    static qstring emulation_root_problem(const char *root)
+    {
+        qstring dir = root;
+        while ( !dir.empty() && (dir.last() == '\\' || dir.last() == '/') )
+            dir.remove_last();
+        qstring fs = dir + "\\filesys";
+        if ( !qisdir(fs.c_str()) )
+        {
+            qstring s;
+            s.sprnt("%s is not an emulation root. An emulation root is the folder that holds "
+                    "filesys (the program's drives) and registry (its hives).", dir.c_str());
+            ssize_t slash = dir.rfind('\\');
+            if ( slash > 0 )
+            {
+                qstring parent = dir.substr(0, slash);
+                if ( qisdir((parent + "\\filesys").c_str()) )
+                    s.cat_sprnt("\n\nDid you mean %s?", parent.c_str());
+            }
+            return s;
+        }
+        if ( !has_hives(dir + "\\registry") )
+        {
+            qstring s;
+            s.sprnt("The emulation root %s has no registry hives in its registry folder "
+                    "(SYSTEM, SOFTWARE, NTUSER.DAT, ...), which Sogen needs to run the program.", dir.c_str());
+            return s;
+        }
+        return qstring();
+    }
+
     // The executable this database was made from, if it is one (a
     // recording's database has the recording as its input file).
     static qstring database_program()
@@ -379,7 +434,7 @@ namespace idattd
             "<~N~ew recording:f:1:64::>\n"
             "<~I~nstructions to record, 0 until it exits:D::18::>\n"
             "\n"
-            "<~E~mulation root (empty for this machine's own files):F::64::>\n"
+            "<~E~mulation root, the folder holding filesys and registry (empty for this machine's own files):F::64::>\n"
             "<Registry ~h~ives, without an emulation root:F::64::>\n"
             "\n"
             "<~G~ive the program network access:C>\n"
@@ -429,7 +484,29 @@ namespace idattd
                 warning("Name the file the recording goes into.");
                 continue;
             }
-            if ( root[0] == '\0' && !has_hives(hives) )
+            if ( root[0] != '\0' )
+            {
+                const qstring problem = emulation_root_problem(root);
+                if ( !problem.empty() )
+                {
+                    warning("%s", problem.c_str());
+                    continue;
+                }
+                if ( !visible_in_root(root, program) )
+                {
+                    warning("The program is outside the emulation root, and a program running in the root "
+                            "sees only its filesys folder (filesys\\c is its C: drive).\n\n"
+                            "Copy %s into %s\\filesys\\c (or a folder in it) and choose that copy.",
+                            program, root);
+                    continue;
+                }
+                if ( cwd[0] != '\0' && !visible_in_root(root, cwd) )
+                {
+                    warning("The working directory must be inside the emulation root's filesys folder too.");
+                    continue;
+                }
+            }
+            else if ( !has_hives(hives) )
             {
                 warning("Sogen runs the program against a copy of the registry: choose a folder "
                         "holding the hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...), such as an emulation "
