@@ -182,6 +182,25 @@ static int f_timeline(void *b, size_t cap, size_t *n) { return api->timeline(B, 
 static uint64_t g_symbase;
 static int f_symbols(void *b, size_t cap, size_t *n) { return api->module_symbols(B, g_symbase, (ittd_symbol *)b, cap, n); }
 
+/* The emulator's log (ittd_fork_settings::log): counted, and printed with
+   ITTD_PROBE_LOG=1. */
+static size_t g_log_lines;
+
+static void probe_log(void *ctx, const char *line)
+{
+    ++*(size_t *)ctx;
+    if ( getenv("ITTD_PROBE_LOG") != NULL )
+        printf("  | %s\n", line);
+}
+
+static long long file_size_of(const char *path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA a;
+    if ( !GetFileAttributesExA(path, GetFileExInfoStandard, &a) )
+        return -1;
+    return ((long long)a.nFileSizeHigh << 32) | a.nFileSizeLow;
+}
+
 int main(int argc, char **argv)
 {
     const char *want = argc > 3 ? argv[3] : "RtlAllocateHeap";
@@ -216,6 +235,57 @@ int main(int argc, char **argv)
         return 1;
     }
     printf("backend: %s (%s), filter \"%s\"\n", api->id(), api->display_name(), api->file_filter());
+
+    /* ---- a new recording ----------------------------------------------------------
+       ITTD_PROBE_RECORD=<exe>: record that program from its start into TRACE
+       first (record_program), then probe the result. Its hives come from
+       ITTD_PROBE_FORK_REGISTRY, or ITTD_PROBE_RECORD_ROOT names an emulation
+       root; ITTD_PROBE_RECORD_ARGS, ITTD_PROBE_RECORD_MAX (instructions),
+       ITTD_PROBE_NET=1 (the real network) and ITTD_PROBE_LOG=1 (print the
+       emulator's log) as named. */
+    if ( getenv("ITTD_PROBE_RECORD") != NULL )
+    {
+        ittd_record_request rq;
+        ittd_fork_settings rs;
+        uint64_t ran = 0;
+        int rc;
+        if ( !HAS(record_program) || api->record_program == NULL )
+        {
+            fprintf(stderr, "this backend cannot record\n");
+            return 1;
+        }
+        memset(&rq, 0, sizeof(rq));
+        rq.size = sizeof(rq);
+        rq.application = getenv("ITTD_PROBE_RECORD");
+        rq.arguments = getenv("ITTD_PROBE_RECORD_ARGS");
+        rq.out_path = argv[2];
+        rq.max_instructions = getenv("ITTD_PROBE_RECORD_MAX") != NULL
+                            ? strtoull(getenv("ITTD_PROBE_RECORD_MAX"), NULL, 0) : 0;
+        memset(&rs, 0, sizeof(rs));
+        rs.size = sizeof(rs);
+        rs.flags = ITTD_FORK_ALLOW_HOST;
+        rs.registry_dir = getenv("ITTD_PROBE_FORK_REGISTRY");
+        rs.emulation_root = getenv("ITTD_PROBE_RECORD_ROOT");
+        rs.network = getenv("ITTD_PROBE_NET") != NULL ? ITTD_NET_LIVE : ITTD_NET_OFFLINE;
+        rs.log = probe_log;
+        rs.log_ctx = &g_log_lines;
+        /* Without consent, nothing runs against this machine. */
+        if ( rs.emulation_root == NULL )
+        {
+            rs.flags = 0;
+            rc = api->record_program(&rq, &rs, NULL, &ran);
+            check(rc == ITTD_E_HOST_REPLAY, "record_program against the host needs ITTD_FORK_ALLOW_HOST");
+            rs.flags = ITTD_FORK_ALLOW_HOST;
+        }
+        t0 = now_ms();
+        rc = api->record_program(&rq, &rs, NULL, &ran);
+        printf("record %s into %s: %s, %llu instruction(s), %zu log line(s), %.1f ms\n", rq.application, rq.out_path,
+               rc == ITTD_OK ? "ok" : api->last_error(NULL), (unsigned long long)ran, g_log_lines, now_ms() - t0);
+        check(rc == ITTD_OK && ran > 0, "record_program records the program");
+        if ( rc != ITTD_OK )
+            return 1;
+    }
+
     printf("can_open: %d\n", api->can_open(argv[2]));
 
     t0 = now_ms();
@@ -232,6 +302,50 @@ int main(int argc, char **argv)
            info.backend_name, info.main_module, info.is64 ? 64 : 32,
            pos_text(info.first), pos_text(info.last),
            (unsigned long long)info.fingerprint, info.capabilities);
+
+    /* ---- ITTD_PROBE_PEEK=ADDR,POS: what touched 32 bytes at ADDR, and what
+       they hold just before, at and after the position POS (its low part,
+       as the probe prints positions), for chasing one address by hand. */
+    if ( getenv("ITTD_PROBE_PEEK") != NULL )
+    {
+        char *end = NULL;
+        uint64_t addr = strtoull(getenv("ITTD_PROBE_PEEK"), &end, 16);
+        uint64_t lo = end != NULL && *end == ',' ? strtoull(end + 1, NULL, 0) : 0;
+        ittd_access acc[64];
+        ittd_position_range all;
+        size_t na = 0, k;
+        int trunc = 0;
+        ittd_cursor *pc = api->cursor_open(B);
+        /* The accesses in the 200 steps before POS and a few after. */
+        all.first = info.first;
+        all.last = info.last;
+        all.first.lo = lo > 200 ? lo - 200 : 0;
+        all.last.lo = lo + 5;
+        if ( api->query_accesses(B, addr, addr + 32, ITTD_ACCESS_ALL, all, acc, 64, &na, &trunc, NULL) == ITTD_OK )
+        {
+            printf("peek %llx: %zu access(es)%s\n", (unsigned long long)addr, na, trunc ? " (first 64)" : "");
+            for ( k = 0; k < na && k < 64; k++ )
+                printf("  %s  %c %llx +%u by %llx tid %u\n", pos_text(acc[k].pos),
+                       acc[k].kind == ITTD_ACCESS_READ ? 'r' : acc[k].kind == ITTD_ACCESS_WRITE ? 'w' : 'x',
+                       (unsigned long long)acc[k].addr, acc[k].size, (unsigned long long)acc[k].pc, acc[k].tid);
+        }
+        for ( k = 0; pc != NULL && k < 3; k++ )
+        {
+            ittd_position p = info.first;
+            uint8_t mem[32], kn[32];
+            size_t j;
+            p.lo = lo + k - 1;
+            if ( api->cursor_seek(pc, p) != ITTD_OK
+              || api->cursor_read_memory(pc, addr, mem, kn, sizeof(mem), NULL) != ITTD_OK )
+                continue;
+            printf("  at %s:", pos_text(p));
+            for ( j = 0; j < sizeof(mem); j++ )
+                printf(kn[j] ? " %02x" : " ??", mem[j]);
+            printf("\n");
+        }
+        if ( pc != NULL )
+            api->cursor_close(pc);
+    }
 
     /* ---- modules, threads, timeline ---------------------------------- */
     mods = (ittd_module *)query_all(f_modules, sizeof(ittd_module), &nmods);
@@ -1491,6 +1605,55 @@ int main(int argc, char **argv)
                 api->close(child);
             }
         }
+
+        /* The recording settings: the same fork again, keeping writes and
+           executes only, with a shorter checkpoint interval and the log; with
+           ITTD_PROBE_NET=1 the network opens past the position. Without
+           reads the file must come out smaller. ITTD_PROBE_FORK_AT (the low
+           part of a position) and ITTD_PROBE_FORK_MAX (instructions, 0 to
+           the end) move it, e.g. to before a network call. */
+        if ( rc == ITTD_OK )
+        {
+            char out2[MAX_PATH];
+            size_t lines_before = g_log_lines;
+            uint64_t ran2 = 0;
+            uint64_t max2 = getenv("ITTD_PROBE_FORK_MAX") != NULL
+                          ? strtoull(getenv("ITTD_PROBE_FORK_MAX"), NULL, 0) : 20000;
+            ittd_position at2 = mid;
+            if ( getenv("ITTD_PROBE_FORK_AT") != NULL )
+                at2.lo = strtoull(getenv("ITTD_PROBE_FORK_AT"), NULL, 0);
+            snprintf(out2, sizeof(out2), "%s.wx.sogttd", out_path);
+            fs.access_mask = ITTD_ACCESS_WRITE | ITTD_ACCESS_EXEC;
+            fs.checkpoint_interval = 100000;
+            fs.network = getenv("ITTD_PROBE_NET") != NULL ? ITTD_NET_LIVE : ITTD_NET_OFFLINE;
+            fs.log = probe_log;
+            fs.log_ctx = &g_log_lines;
+            fk = NULL;
+            t0 = now_ms();
+            rc = api->fork_open(B, at2, &fs, NULL, &fk);
+            check(rc == ITTD_OK, "  a fork with recording settings opens");
+            if ( rc == ITTD_OK )
+            {
+                rc = api->fork_record(fk, out2, max2, "probe: settings", NULL, &ran2);
+                api->fork_close(fk);
+                printf("  writes+executes only%s: %llu instruction(s), %lld bytes against %lld, %zu log line(s), %.1f ms\n",
+                       fs.network == ITTD_NET_LIVE ? ", network after the fork" : "",
+                       (unsigned long long)ran2, file_size_of(out2), file_size_of(out_path),
+                       g_log_lines - lines_before, now_ms() - t0);
+                check(rc == ITTD_OK && ran2 > 0, "  it records");
+                /* Only comparable when both cover the same stretch. */
+                if ( getenv("ITTD_PROBE_FORK_AT") == NULL && getenv("ITTD_PROBE_FORK_MAX") == NULL )
+                    check(file_size_of(out2) > 0 && file_size_of(out2) < file_size_of(out_path),
+                          "  without reads the recording is smaller");
+                {
+                    ittd_backend *child = api->open(out2);
+                    check(child != NULL, "  and opens");
+                    if ( child != NULL )
+                        api->close(child);
+                }
+            }
+            memset(&fs.network, 0, sizeof(fs) - offsetof(ittd_fork_settings, network));
+        }
     }
 
     /* ---- replay scans: strings and buffers --------------------------------------
@@ -1532,9 +1695,17 @@ int main(int argc, char **argv)
                 ittd_position after = sh[k].pos;
                 if ( sh[k].wide || (sh[k].pos.hi == info.first.hi && sh[k].pos.lo == info.first.lo) )
                     continue;
-                after.lo++;
                 sampled++;
+                /* The Sogen scans give the step after the completing write
+                   (as Sogen's own scanner counts), so the string is there
+                   at the position itself; one step later as well, unless it
+                   lived a single step (a memset cutting a longer string, then
+                   clearing it). Either counts. */
                 if ( api->cursor_seek(c, after) == ITTD_OK
+                  && api->cursor_read_memory(c, sh[k].address, mem, kn, 4, &got) == ITTD_OK
+                  && got == 4 && memcmp(mem, sh[k].text, 4) == 0 )
+                    there++;
+                else if ( (after.lo++, api->cursor_seek(c, after) == ITTD_OK)
                   && api->cursor_read_memory(c, sh[k].address, mem, kn, 4, &got) == ITTD_OK
                   && got == 4 && memcmp(mem, sh[k].text, 4) == 0 )
                     there++;
@@ -1542,7 +1713,7 @@ int main(int argc, char **argv)
                     printf("  not there: %s  %llx  \"%.40s\" (read %zu: %02x %02x %02x %02x)\n", pos_text(after),
                            (unsigned long long)sh[k].address, sh[k].text, got, mem[0], mem[1], mem[2], mem[3]);
             }
-            printf("  %zu of %zu sampled ASCII strings in memory just after their position\n", there, sampled);
+            printf("  %zu of %zu sampled ASCII strings in memory at or just after their position\n", there, sampled);
             if ( getenv("ITTD_PROBE_FIND") != NULL )
                 for ( k = 0; k < n; k++ )
                     if ( strstr(sh[k].text, getenv("ITTD_PROBE_FIND")) != NULL )

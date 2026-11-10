@@ -196,6 +196,7 @@ namespace idattd
         TracePatternHandler m_tracePat;
         InstallRuntimeHandler m_installRuntime;
         InstallSogenHandler   m_installSogen;
+        RecordProgramHandler  m_recordProgram;
         // Bookmarks + execution coverage
         AddBookmarkHandler   m_addBookmark;
         OpenBookmarksHandler m_bookmarksView;

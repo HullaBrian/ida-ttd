@@ -64,9 +64,11 @@ extern "C" {
  *
  * Not published yet, so every change still bumps it rather than keeping an old
  * layout alive. 2: ittd_module gained timestamp and checksum; the table gained
- * 'size' and the entries after query_frame_entry.
+ * 'size' and the entries after query_frame_entry. 3: ittd_fork_settings
+ * gained the network, checkpoint, access, elevation and log fields; the table
+ * gained record_program.
  */
-#define ITTD_ABI_VERSION 2u
+#define ITTD_ABI_VERSION 3u
 
 #define ITTD_BADADDR 0xFFFFFFFFFFFFFFFFull
 
@@ -559,8 +561,10 @@ typedef struct ittd_fork ittd_fork;   /* opaque */
  * divergence, instead of taking the recorded result. */
 #define ITTD_FORK_STRICT      0x1u
 /* Replay a recording made against the host (no emulation root). Its program
- * runs again against this machine's files and network, repeating whatever it
- * created, renamed, deleted or sent. Without the flag a backend refuses. */
+ * runs again against this machine's files, repeating whatever it created,
+ * renamed or deleted (and its network operations too, where the backend's
+ * emulator has network access: ittd_fork_settings::network). Without the flag
+ * a backend refuses. */
 #define ITTD_FORK_ALLOW_HOST  0x2u
 /* Replay with registry hives that are not the ones the recording was made
  * with (check_registry). The replay then diverges wherever the program reads
@@ -617,7 +621,54 @@ typedef struct ittd_fork_settings
     /* The emulation root. NULL: the one the recording was made with (empty
      * for the host). Set it when that root lives elsewhere on this machine. */
     const char *emulation_root;
+
+    /* ---- since ABI 3; a backend reads these only when 'size' covers them */
+
+    /* ITTD_NET_*: whether the emulated program reaches the real network.
+     * Replays of the recording itself (the scans, and a fork's way to its
+     * position) stay offline whatever this says: the recorded results stand
+     * in for what the network answered. */
+    uint32_t    network;
+    /* ITTD_ACCESS_* kinds a recording keeps (fork_record, record_program).
+     * 0: all of them. */
+    uint32_t    access_mask;
+    /* Instructions between full checkpoints in a recording. 0: the backend's
+     * default. Fewer checkpoints make a smaller file and slower seeks. */
+    uint64_t    checkpoint_interval;
+    /* Non-zero: the program runs with an administrator's token. */
+    uint32_t    elevated;
+    uint32_t    reserved0;
+    /* When set, the emulator's log (and the program's console output) goes
+     * here a line at a time, from the backend's thread, instead of being
+     * discarded. 'line' is UTF-8 and valid only during the call. */
+    void      (*log)(void *log_ctx, const char *line);
+    void       *log_ctx;
 } ittd_fork_settings;
+
+#define ITTD_NET_OFFLINE    0u  /* a loopback-only network, and no name resolves */
+/* The real network, from the fork's position on (fork_open), or from the
+ * start (record_program). Sockets a fork's program opened before its position
+ * stay on the loopback network. */
+#define ITTD_NET_LIVE       1u
+
+/* A program to record from its start (record_program). */
+typedef struct ittd_record_request
+{
+    uint32_t    size;               /* sizeof(ittd_record_request) */
+    uint32_t    reserved0;
+    /* The executable, as a path on this machine (UTF-8). In an emulation root
+     * it is looked for under the root's filesystem as well. */
+    const char *application;
+    /* The command line after the program's name, split as Windows does;
+     * NULL or empty for none. */
+    const char *arguments;
+    /* The working directory; NULL or empty: the executable's folder. */
+    const char *working_dir;
+    /* Where the recording goes (UTF-8). */
+    const char *out_path;
+    /* Instructions to record; 0 runs until the program exits. */
+    uint64_t    max_instructions;
+} ittd_record_request;
 
 /* A string the program had in memory at some point: ASCII or UTF-16LE text
  * of at least the asked-for length, found by watching every write during a
@@ -1106,6 +1157,20 @@ typedef struct ittd_backend_api
     int (*query_frame_entry_progress)(ittd_backend *b, ittd_position at, uint32_t tid, uint64_t max_back,
                                       ittd_position *out_call, uint64_t *out_entry,
                                       const ittd_progress *progress);
+
+    /* ---- recording, with nothing open (ABI 3) ----------------------------- */
+
+    /* Run 'req->application' from its start in the backend's emulator and
+     * record it into 'req->out_path', until it exits, the instruction limit,
+     * or 'progress' asks to stop (the recording so far is then complete and
+     * readable, and the call returns ITTD_OK). 'settings' as for fork_open:
+     * registry_dir and emulation_root say what the program runs against, with
+     * ITTD_FORK_ALLOW_HOST required to run it against this machine's files.
+     * '*out_instructions' gets how many instructions ran. Errors go to
+     * last_error(NULL). Optional: a backend that cannot record leaves it
+     * NULL. */
+    int (*record_program)(const ittd_record_request *req, const ittd_fork_settings *settings,
+                          const ittd_progress *progress, uint64_t *out_instructions);
 } ittd_backend_api;
 
 /* query_register_change: xmm registers follow the general-purpose ones. */

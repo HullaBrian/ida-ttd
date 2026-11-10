@@ -234,6 +234,19 @@ namespace idattd
         uint64_t executions  = 0;
     };
 
+    // How a recording is made (a fork's, or a new one), and what its program
+    // may reach: ittd_fork_settings' ABI 3 fields.
+    struct RecordOptions
+    {
+        // The real network (ITTD_NET_LIVE): past a fork's position, or from
+        // a new recording's start. Otherwise a loopback-only one.
+        bool     network = false;
+        uint32_t access_mask = 0;           // ITTD_ACCESS_* kept; 0: all
+        uint64_t checkpoint_interval = 0;   // 0: the backend's default
+        bool     elevated = false;          // an administrator's token (new recordings)
+        bool     log = false;               // the emulator's log to the output window
+    };
+
     // What replaying the recording needs beyond the recording itself.
     struct ReplaySettings
     {
@@ -241,10 +254,12 @@ namespace idattd
         qstring emulation_root;             // empty: the recording's own
         bool    strict = false;
         // Replay a recording made against the host, whose program then touches
-        // this machine's files and network again (ITTD_FORK_ALLOW_HOST).
+        // this machine's files again (ITTD_FORK_ALLOW_HOST).
         bool    allow_host = false;
         // Replay with hives that are not the recording's (ITTD_FORK_ANY_REGISTRY).
         bool    any_registry = false;
+        // Only 'log' matters to a replay of the recording itself (the scans).
+        RecordOptions rec;
     };
 
     // What replaying the recording needs, as far as it says (ittd_replay_env).
@@ -316,6 +331,7 @@ namespace idattd
         std::vector<std::pair<int, uint64_t>>   regs;     // ITTD_REG_* index (or FORK_REG_RFLAGS), value
         std::vector<std::pair<ea_t, bytevec_t>> memory;   // address, bytes
         qstring  note;                      // goes into the new trace's manifest
+        RecordOptions rec;                  // 'elevated' does not apply: the fork's token is the recording's
     };
     constexpr int FORK_REG_RFLAGS = 100;
 
@@ -325,6 +341,22 @@ namespace idattd
         bool     cancelled = false;
         uint64_t instructions = 0;          // how many the fork ran
         qstring  error;
+        // Why it was refused before anything ran, when the user can fix it.
+        ReplayBlock block = ReplayBlock::None;
+    };
+
+    // A program to record from its start (ITraceBackend::record_program).
+    struct RecordRequest
+    {
+        qstring  application;               // the executable
+        qstring  arguments;                 // the command line after its name, as typed
+        qstring  working_dir;               // empty: the executable's folder
+        qstring  path;                      // the new recording
+        uint64_t max_instructions = 0;      // 0: until the program exits
+        qstring  registry_dir;              // the hives it runs against (no emulation root)
+        qstring  emulation_root;            // empty: against this machine's files
+        bool     allow_host = false;        // consent to run against this machine's files
+        RecordOptions rec;
     };
 
     // Reported by a query that could not return everything it found.
@@ -661,6 +693,19 @@ namespace idattd
             qnotused(req); qnotused(progress);
             ForkResult r;
             r.error = "this recording's backend cannot fork it";
+            return r;
+        }
+
+        // Whether record_program works: the backend can run a program in its
+        // emulator and record it, with nothing open.
+        virtual bool can_record() const { return false; }
+        // Record a program from its start (see RecordRequest). Long: the
+        // whole run. A refusal the user can fix sets ForkResult::block.
+        virtual ForkResult record_program(const RecordRequest &req, ProgressSink *progress)
+        {
+            qnotused(req); qnotused(progress);
+            ForkResult r;
+            r.error = "this backend cannot record programs";
             return r;
         }
 

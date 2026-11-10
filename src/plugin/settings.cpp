@@ -14,9 +14,29 @@ namespace idattd
         return g_settings;
     }
 
+    RecordOptions recording_options()
+    {
+        const Settings &s = g_settings;
+        RecordOptions o;
+        o.network = s.sogen_network;
+        o.access_mask = (s.sogen_record_reads ? ITTD_ACCESS_READ : 0u)
+                      | (s.sogen_record_writes ? ITTD_ACCESS_WRITE : 0u)
+                      | (s.sogen_record_executes ? ITTD_ACCESS_EXEC : 0u);
+        // None at all reads as "all" in the ABI; keep the executes then,
+        // the least a recording can be stepped through with.
+        if ( o.access_mask == 0 )
+            o.access_mask = ITTD_ACCESS_EXEC;
+        o.checkpoint_interval = s.sogen_checkpoint_interval;
+        o.elevated = s.sogen_elevated;
+        o.log = s.sogen_log;
+        return o;
+    }
+
     // Every key, for ida_ttd_settings.dump().
     static const char ALL_KEYS[] = "replay_on_open symbol_downloads symbol_server auto_coverage auto_callsites "
-                                   "fork_instructions registry_folder diagnostics_log memmap_flag_code";
+                                   "fork_instructions registry_folder diagnostics_log memmap_flag_code "
+                                   "sogen_network sogen_checkpoint_interval sogen_record_reads "
+                                   "sogen_record_writes sogen_record_executes sogen_elevated sogen_log";
 
     static bool parse_bool(const qstring &v, bool *out)
     {
@@ -26,6 +46,23 @@ namespace idattd
             *out = false;
         else
             return false;
+        return true;
+    }
+
+    // Digits only: strtoull also takes leading blanks and a sign, and turns
+    // "-1" into 2^64-1 (for fork_instructions, a fork that runs to the
+    // recording's end).
+    static bool parse_count(const qstring &value, uint64 *out)
+    {
+        for ( size_t i = 0; i < value.length(); i++ )
+            if ( !qisdigit(value[i]) )
+                return false;
+        char *end = nullptr;
+        errno = 0;
+        unsigned long long n = strtoull(value.c_str(), &end, 10);
+        if ( value.empty() || end == nullptr || *end != '\0' || errno == ERANGE )
+            return false;
+        *out = n;
         return true;
     }
 
@@ -56,20 +93,21 @@ namespace idattd
             return true;
         }
         if ( key == "fork_instructions" )
-        {
-            // Digits only: strtoull also takes leading blanks and a sign, and
-            // turns "-1" into 2^64-1, a fork that runs to the recording's end.
-            for ( size_t i = 0; i < value.length(); i++ )
-                if ( !qisdigit(value[i]) )
-                    return false;
-            char *end = nullptr;
-            errno = 0;
-            unsigned long long n = strtoull(value.c_str(), &end, 10);
-            if ( value.empty() || end == nullptr || *end != '\0' || errno == ERANGE )
-                return false;
-            s->fork_instructions = n;
-            return true;
-        }
+            return parse_count(value, &s->fork_instructions);
+        if ( key == "sogen_checkpoint_interval" )
+            return parse_count(value, &s->sogen_checkpoint_interval);
+        if ( key == "sogen_network" )
+            return parse_bool(value, &s->sogen_network);
+        if ( key == "sogen_record_reads" )
+            return parse_bool(value, &s->sogen_record_reads);
+        if ( key == "sogen_record_writes" )
+            return parse_bool(value, &s->sogen_record_writes);
+        if ( key == "sogen_record_executes" )
+            return parse_bool(value, &s->sogen_record_executes);
+        if ( key == "sogen_elevated" )
+            return parse_bool(value, &s->sogen_elevated);
+        if ( key == "sogen_log" )
+            return parse_bool(value, &s->sogen_log);
         if ( key == "registry_folder" )
         {
             s->registry_folder = value;

@@ -40,8 +40,8 @@ target again.
 cmake -S %SOGEN% -B %SOGEN_BUILD% -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
       -DSOGEN_BUILD_STATIC=ON -DSOGEN_BUILD_TOOLS=OFF -DSOGEN_ENABLE_PYTHON_BINDINGS=OFF ^
       -DSOGEN_ENABLE_RUST_CODE=OFF -DSOGEN_DISABLE_FEX=ON -DSOGEN_ENABLE_SDL3=OFF ^
-      -DSOGEN_ENABLE_LTO=OFF
-cmake --build %SOGEN_BUILD% --target windows-ttd
+      -DSOGEN_ENABLE_LTO=OFF -DSOGEN_ENABLE_SCCACHE=OFF
+cmake --build %SOGEN_BUILD% --target windows-ttd windows-ttd-view
 ```
 
 That builds about 260 objects into 22 static libraries under
@@ -60,6 +60,24 @@ build `windows-ttd`.
 Since 2026-10-14 the backend needs `ttd/next` at `9fa4e1a3` or later, for
 `cpu_views_at` (registers at many positions, each register snapshot interval
 replayed once for all of them) and `cpu_view::read_register`.
+
+Since 2026-11-09 it is built from TTD-Club/sogen `main` at `253c9488`
+(`msbuild/sogen.pin`), and needs it or later:
+
+- **Use a fresh build directory.** Unicorn is now built for x86 and AArch64
+  (`UNICORN_ARCH "x86;aarch64"`, a cache value): an older build directory
+  keeps `x86`, and the backend then fails to link `uc_init_aarch64`. The
+  backend links `aarch64-softmmu.lib` and `iphlpapi.lib` as well.
+- `windows_emulator::emu()` is the architecture-neutral `guest_machine`
+  now; the backend reaches registers through `x64_emu()`.
+- The trace format is version 9. Version 8 recordings (Sogen before
+  2026-11-07) still open and answer every query, but cannot be forked: their
+  checkpoints hold the old emulator state, and the replay stops with
+  "Reading from serialized buffer mismatches written data!".
+- `emulator_settings::disable_logging` is no longer read; the backend
+  silences the logger itself (and forwards it when asked, `ittd_fork_settings::log`).
+- Pass `-DSOGEN_ENABLE_SCCACHE=OFF` to build without sccache even where it
+  is installed.
 
 - **The cache values matter.** `backend-sogen.vcxproj` compiles Sogen's headers
   with the defines this configuration produces (`SOGEN_BUILD_STATIC=1`,
@@ -119,11 +137,25 @@ With `ITTD_PROBE_FORK_REGISTRY` naming a folder of registry hives, it also
 replays: a fork in the middle of the recording with a changed register,
 recorded into `ITTD_PROBE_FORK_OUT` (default `fork.sogttd`) and opened again
 (it starts at the fork's position, with the parent's RIP and the changed
-register), and the string and buffer scans (a sampled string is in memory
-just after its position). It also checks that a recording made against the
-host is not replayed without `ITTD_FORK_ALLOW_HOST`. The reference traces were
-all recorded against the host, so these runs re-run their file operations on
-the machine running the probe.
+register), a second fork with the recording settings (writes and executes
+only, a shorter checkpoint interval, the log callback; `ITTD_PROBE_NET=1`
+opens the network past the position, `ITTD_PROBE_FORK_AT` and
+`ITTD_PROBE_FORK_MAX` move it and set its length), and the string and buffer
+scans (a sampled string is in memory at or just after its position: the scan
+gives the step after the completing write, as Sogen's scanner does, and a
+string that lived one step is gone a step later). It also checks that a
+recording made against the host is not replayed without
+`ITTD_FORK_ALLOW_HOST`. The reference traces were all recorded against the
+host, so these runs re-run their file operations on the machine running the
+probe.
+
+`ITTD_PROBE_RECORD=<exe>` first records that program from its start into the
+TRACE path (`record_program`, against the host with the hives in
+`ITTD_PROBE_FORK_REGISTRY`, or in `ITTD_PROBE_RECORD_ROOT`;
+`ITTD_PROBE_RECORD_ARGS`, `ITTD_PROBE_RECORD_MAX`, `ITTD_PROBE_NET`,
+`ITTD_PROBE_LOG=1` to print the emulator's log), then probes the result.
+`ITTD_PROBE_PEEK=ADDR,POS` lists what touched 32 bytes at ADDR in the 200
+steps before POS and shows them around it.
 
 It exits 0 when every check passes. It is written in C, which also keeps the
 ABI header honest about being C.
@@ -174,6 +206,29 @@ its hives holds only their 340-byte headers unless the program opened them;
 delete them from a root you mean to share.
 
 ## Results
+
+Run on 2026-11-09 against TTD-Club/sogen `253c9488`, Release, on recordings
+made with the backend's own `record_program` (`ITTD_PROBE_RECORD`, offline,
+against the host, hives from the emulation root's `registry`). All checks
+pass; the 2026-10-21 v8 recording gives the same strings, buffers and
+self-modifying code as before, byte for byte, and only its fork fails.
+
+| Check | ttd-step-sample (6.0M) | test-sample (30.8M, offline) |
+| --- | --- | --- |
+| record from the start | 1.6 s | 9.3 s |
+| syscalls | 578, all named | 5,156, all named |
+| self-modifying code | 11 hits, 0.6 s | 1 hit, 3.3 s |
+| fork in the middle, open | 380 ms | 551 ms |
+| strings (8+ characters) | 28,076, 1.6 s | 122,137, 9.1 s |
+| buffers | 520 | 926 |
+
+test-sample's reference recording was made with `--network live --root-mode
+rw`; offline it takes other paths (fewer syscalls, one self-modifying hit).
+
+**Network access.** A program that resolves `example.com` and connects:
+recorded offline, the lookup fails (11001); a fork of that recording from
+near its start with `ITTD_NET_LIVE` resolves and connects, and so does a new
+recording with it. The replay to the fork's position stays offline.
 
 Run on 2026-10-13 against Sogen `ttd/next` at `86158936`, Release, with the
 backend linking `windows-ttd`:

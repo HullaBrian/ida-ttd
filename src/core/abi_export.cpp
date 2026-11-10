@@ -932,8 +932,10 @@ namespace idattd
 
     static ReplaySettings replay_settings(const ittd_fork_settings *s)
     {
+        // Each field only when the caller's struct is new enough to carry it.
+        auto has = [s](size_t offset, size_t size) { return s != nullptr && offset + size <= s->size; };
         ReplaySettings rs;
-        if ( s != nullptr )
+        if ( has(offsetof(ittd_fork_settings, emulation_root), sizeof(s->emulation_root)) )
         {
             rs.registry_dir = s->registry_dir != nullptr ? s->registry_dir : "";
             rs.emulation_root = s->emulation_root != nullptr ? s->emulation_root : "";
@@ -941,11 +943,21 @@ namespace idattd
             rs.allow_host   = (s->flags & ITTD_FORK_ALLOW_HOST) != 0;
             rs.any_registry = (s->flags & ITTD_FORK_ANY_REGISTRY) != 0;
         }
+        if ( has(offsetof(ittd_fork_settings, log_ctx), sizeof(s->log_ctx)) )
+        {
+            rs.rec.network             = s->network == ITTD_NET_LIVE;
+            rs.rec.access_mask         = s->access_mask;
+            rs.rec.checkpoint_interval = s->checkpoint_interval;
+            rs.rec.elevated            = s->elevated != 0;
+            rs.rec.log                 = s->log != nullptr;
+        }
         return rs;
     }
 
     // A replay scan's settings, for its cache key: the same scan against other
-    // hives or another root is another question.
+    // hives or another root is another question. The ABI 3 fields are left
+    // out: a scan replays the recording itself, offline whatever 'network'
+    // says, and the others shape only a new recording or the log.
     static void add_settings(Key *k, const ittd_fork_settings *s)
     {
         uint32_t flags = s != nullptr ? s->flags : 0;

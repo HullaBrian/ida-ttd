@@ -41,10 +41,15 @@
 #include <ttd_ui.hpp>
 #include <unicorn_x86_64_emulator.hpp>
 #include <platform/ui_backend.hpp>
+#include <platform/console_backend.hpp>
+#include <network/dns_lookup.hpp>
+#include <network/socket_factory.hpp>
+#include <network/socket_wrapper.hpp>
 #include <ttd_string_scan.hpp>
 #include <ttd_buffer_scan.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -201,6 +206,12 @@ namespace
         std::unique_ptr<sogen::windows_emulator> emu;
         uint64_t position = 0;
         bool     recorded = false;                       // fork_record runs once
+        // From fork_open's settings, for fork_record (which has none).
+        uint64_t access_kinds = ttd::all_access_kinds;
+        uint64_t checkpoint_interval = 0;                // 0: Sogen's default
+        // Set when the settings asked for the network: opened once the
+        // replay has reached the position.
+        std::shared_ptr<struct net_gate> net;
     };
 
     text_slot g_module_error;       // last_error(NULL)
@@ -2174,11 +2185,211 @@ namespace
         return setting<uint32_t>(s, offsetof(ittd_fork_settings, flags));
     }
 
+    // The ABI 3 settings, each with what an older caller (a smaller struct)
+    // gets.
+    uint32_t setting_network(const ittd_fork_settings *s)
+    {
+        const uint32_t *v = setting<uint32_t>(s, offsetof(ittd_fork_settings, network));
+        return v != nullptr && *v == ITTD_NET_LIVE ? ITTD_NET_LIVE : ITTD_NET_OFFLINE;
+    }
+
+    bool setting_elevated(const ittd_fork_settings *s)
+    {
+        const uint32_t *v = setting<uint32_t>(s, offsetof(ittd_fork_settings, elevated));
+        return v != nullptr && *v != 0;
+    }
+
+    // What a recording keeps, as Sogen's access kinds. The kernel's writes
+    // into the program (host_write) are always kept: a replay of the result
+    // puts them back where a syscall's live result differs from the recorded
+    // one, so a recording without them could not be forked reliably.
+    uint64_t setting_access_kinds(const ittd_fork_settings *s)
+    {
+        const uint32_t *v = setting<uint32_t>(s, offsetof(ittd_fork_settings, access_mask));
+        const uint32_t mask = v != nullptr ? *v : 0;
+        if ( mask == 0 )
+            return ttd::all_access_kinds;
+        uint64_t kinds = static_cast<uint64_t>(ttd::access_kind::host_write);
+        if ( (mask & ITTD_ACCESS_READ) != 0 )
+            kinds |= static_cast<uint64_t>(ttd::access_kind::read);
+        if ( (mask & ITTD_ACCESS_WRITE) != 0 )
+            kinds |= static_cast<uint64_t>(ttd::access_kind::write);
+        if ( (mask & ITTD_ACCESS_EXEC) != 0 )
+            kinds |= static_cast<uint64_t>(ttd::access_kind::execute);
+        return kinds;
+    }
+
+    // 0 keeps ttd::record_settings' own default.
+    uint64_t setting_checkpoint_interval(const ittd_fork_settings *s, uint64_t fallback)
+    {
+        const uint64_t *v = setting<uint64_t>(s, offsetof(ittd_fork_settings, checkpoint_interval));
+        return v != nullptr && *v != 0 ? *v : fallback;
+    }
+
+    // Sogen's log and the program's console output, a line at a time, to the
+    // caller's callback. The logger hands over text as printed, a line or
+    // less or several at once, so whole lines are cut out here; what is left
+    // at the end goes out when the emulator (which holds the relay through
+    // its logger and callbacks) is destroyed.
+    struct log_relay
+    {
+        void (*fn)(void *, const char *) = nullptr;
+        void *ctx = nullptr;
+        std::mutex lock;
+        std::string pending;
+
+        void add(std::string_view text)
+        {
+            std::lock_guard<std::mutex> g(lock);
+            pending.append(text.data(), text.size());
+            size_t start = 0;
+            for ( size_t nl; (nl = pending.find('\n', start)) != std::string::npos; start = nl + 1 )
+            {
+                std::string line = pending.substr(start, nl - start);
+                if ( !line.empty() && line.back() == '\r' )
+                    line.pop_back();
+                fn(ctx, line.c_str());
+            }
+            pending.erase(0, start);
+        }
+
+        ~log_relay()
+        {
+            if ( !pending.empty() )
+                fn(ctx, pending.c_str());
+        }
+    };
+
+    std::shared_ptr<log_relay> make_log_relay(const ittd_fork_settings *s)
+    {
+        using log_fn = void (*)(void *, const char *);
+        const log_fn *fn = setting<log_fn>(s, offsetof(ittd_fork_settings, log));
+        if ( fn == nullptr || *fn == nullptr )
+            return nullptr;
+        auto relay = std::make_shared<log_relay>();
+        relay->fn = *fn;
+        if ( void *const *ctx = setting<void *>(s, offsetof(ittd_fork_settings, log_ctx)); ctx != nullptr )
+            relay->ctx = *ctx;
+        return relay;
+    }
+
+    // Opens the real network once 'live' is set, and keeps the loopback-only
+    // one until then: a fork reaches its position offline (the recording's
+    // results stand in for what the network answered), then runs on with
+    // the real one. Sockets made before the switch stay on the loopback
+    // network, so a poll may hold both kinds; each goes to its own factory.
+    struct net_gate
+    {
+        std::atomic<bool> live{false};
+    };
+
+    struct gated_dns_lookup : sogen::network::dns_lookup
+    {
+        std::shared_ptr<net_gate> gate;
+        std::unique_ptr<sogen::network::dns_lookup> offline =
+            sogen::network::create_dns_lookup(sogen::network::network_mode::offline);
+        std::unique_ptr<sogen::network::dns_lookup> live =
+            sogen::network::create_dns_lookup(sogen::network::network_mode::live);
+
+        explicit gated_dns_lookup(std::shared_ptr<net_gate> g) : gate(std::move(g)) {}
+
+        std::vector<sogen::network::address> resolve_host(std::string_view hostname,
+                                                         std::optional<int> family) override
+        {
+            return (gate->live ? live : offline)->resolve_host(hostname, family);
+        }
+    };
+
+    struct gated_socket_factory : sogen::network::socket_factory
+    {
+        std::shared_ptr<net_gate> gate;
+        std::unique_ptr<sogen::network::socket_factory> offline =
+            sogen::network::create_socket_factory(sogen::network::network_mode::offline);
+        std::unique_ptr<sogen::network::socket_factory> live =
+            sogen::network::create_socket_factory(sogen::network::network_mode::live);
+
+        explicit gated_socket_factory(std::shared_ptr<net_gate> g) : gate(std::move(g)) {}
+
+        std::unique_ptr<sogen::network::i_socket> create_socket(int af, int type, int protocol) override
+        {
+            return (gate->live ? live : offline)->create_socket(af, type, protocol);
+        }
+
+        int poll_sockets(std::span<sogen::network::poll_entry> entries) override
+        {
+            // The real factory's sockets are socket_wrappers (and it throws on
+            // any other); the loopback factory skips what is not its own.
+            std::vector<sogen::network::poll_entry> real, loop;
+            std::vector<size_t> real_at, loop_at;
+            for ( size_t i = 0; i < entries.size(); i++ )
+            {
+                const bool is_real = dynamic_cast<sogen::network::socket_wrapper *>(entries[i].s) != nullptr;
+                (is_real ? real : loop).push_back(entries[i]);
+                (is_real ? real_at : loop_at).push_back(i);
+            }
+            int ready = 0;
+            if ( !loop.empty() )
+                ready += std::max(0, offline->poll_sockets(loop));
+            if ( !real.empty() )
+                ready += std::max(0, live->poll_sockets(real));
+            for ( size_t i = 0; i < loop.size(); i++ )
+                entries[loop_at[i]] = loop[i];
+            for ( size_t i = 0; i < real.size(); i++ )
+                entries[real_at[i]] = real[i];
+            return ready;
+        }
+
+        std::vector<sogen::network::address> get_local_addresses(int family) override
+        {
+            return (gate->live ? live : offline)->get_local_addresses(family);
+        }
+    };
+
+    // What every emulator here has: Unicorn, the relative clock, a headless
+    // UI whose window input can be recorded and replayed, no console input
+    // from this process (inside IDA there is none to give), the log as the
+    // settings ask, the CPUID overrides, and the checks TTD needs. 'gate',
+    // when given, has the network follow it (gated_socket_factory).
+    std::unique_ptr<sogen::windows_emulator> make_emulator(std::optional<sogen::application_settings> app,
+                                                           const sogen::emulator_settings &es,
+                                                           const ittd_fork_settings *settings,
+                                                           const std::shared_ptr<net_gate> &gate)
+    {
+        sogen::emulator_interfaces ifs{};
+        ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
+        ifs.console = std::make_unique<sogen::null_console_backend>();
+        if ( gate != nullptr )
+        {
+            ifs.dns_lookup     = std::make_unique<gated_dns_lookup>(gate);
+            ifs.socket_factory = std::make_unique<gated_socket_factory>(gate);
+        }
+        sogen::emulator_callbacks cbs{};
+        const std::shared_ptr<log_relay> relay = make_log_relay(settings);
+        if ( relay != nullptr )
+            cbs.on_stdout = [relay](std::string_view data) { relay->add(data); };
+        auto emu = app.has_value()
+                 ? std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), std::move(*app),
+                                                             es, std::move(cbs), std::move(ifs))
+                 : std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), es,
+                                                             std::move(cbs), std::move(ifs));
+        // Nothing reads emulator_settings::disable_logging any more; the
+        // logger's own switch keeps its output off this process's stdout.
+        emu->log.disable_output(true);
+        if ( relay != nullptr )
+            emu->log.set_sink([relay](sogen::color, std::string_view message) { relay->add(message); });
+        ttd::install_cpuid_overrides(*emu);
+        ttd::require_deterministic(*emu);
+        return emu;
+    }
+
     // An emulator set up to replay 't' the way Sogen records: Unicorn, the
     // relative clock, the CPUID overrides, and a headless UI that takes the
-    // recorded window input. 'strict' is set from the settings.
+    // recorded window input. 'strict' is set from the settings. With 'gate'
+    // given and the settings asking for the network, the network follows the
+    // gate (fork_open opens it at the fork's position); otherwise it stays
+    // offline, as a replay of the recording itself must.
     std::unique_ptr<sogen::windows_emulator> replay_emulator(const ttd::trace &t, const ittd_fork_settings *settings,
-                                                             bool *strict)
+                                                             bool *strict, std::shared_ptr<net_gate> *gate = nullptr)
     {
         std::filesystem::path registry = module_dir() / "registry";
         const std::string recorded_root = manifest_value(t, "emulation_root");
@@ -2210,12 +2421,13 @@ namespace
             allow_host   = (*v & ITTD_FORK_ALLOW_HOST) != 0;
             any_registry = (*v & ITTD_FORK_ANY_REGISTRY) != 0;
         }
-        // Against the host, the program's file and network operations reach
-        // this machine for real, so only on request.
+        // Against the host, the program's file operations reach this machine
+        // for real, so only on request. (The network stays offline unless
+        // the settings open it, and then only past a fork's position.)
         if ( root.empty() && !allow_host )
             throw coded_error(ITTD_E_HOST_REPLAY, "this recording was made against the host, not an emulation root: "
-                                     "replaying it runs the program's file and network operations on this "
-                                     "machine again. Allow that explicitly to go ahead");
+                                     "replaying it runs the program's file operations (creating, changing, "
+                                     "deleting files) on this machine again. Allow that explicitly to go ahead");
         std::string why;
         const int hives = check_hives(manifest_value(t, "registry"), registry, &why);
         // A recording that carries what it read of its hives replays without
@@ -2236,13 +2448,17 @@ namespace
         es.emulation_root     = root;
         es.registry_directory = registry;
         es.load_registry      = load;
-        sogen::emulator_interfaces ifs{};
-        ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
-        auto emu = std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), es,
-                                                             sogen::emulator_callbacks{}, std::move(ifs));
-        ttd::install_cpuid_overrides(*emu);
-        ttd::require_deterministic(*emu);
-        return emu;
+        // The emulator's own mode stays offline even for a fork that goes
+        // live (it decides, once, what the network device shows); the gate
+        // switches what sockets and name lookups reach.
+        es.network            = sogen::network::network_mode::offline;
+        std::shared_ptr<net_gate> g;
+        if ( gate != nullptr && setting_network(settings) == ITTD_NET_LIVE )
+        {
+            g = std::make_shared<net_gate>();
+            *gate = g;
+        }
+        return make_emulator(std::nullopt, es, settings, g);
     }
 
     // Seek a fresh emulator to the position: a checkpoint restore and up to a
@@ -2266,8 +2482,12 @@ namespace
                 return ITTD_E_NO_POSITION;
             }
             bool strict = false;
-            f->emu = replay_emulator(*f->trace, settings, &strict);
+            f->access_kinds        = setting_access_kinds(settings);
+            f->checkpoint_interval = setting_checkpoint_interval(settings, 0);
+            f->emu = replay_emulator(*f->trace, settings, &strict, &f->net);
             ttd::seek(*f->emu, *f->trace, f->position, strict, control(progress));
+            if ( f->net != nullptr )
+                f->net->live = true;
             *out = reinterpret_cast<ittd_fork *>(f.release());
             return ITTD_OK;
         });
@@ -2280,7 +2500,7 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(f->owner->error, [&]()
         {
-            auto &cpu = f->emu->emu();
+            auto &cpu = f->emu->x64_emu();
             *out = ittd_regs{};
             for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
                 out->gp[i] = cpu.reg<uint64_t>(kGp[i]);
@@ -2301,7 +2521,7 @@ namespace
         {
             if ( f->recorded )
                 throw std::runtime_error("this fork has already run");
-            auto &cpu = f->emu->emu();
+            auto &cpu = f->emu->x64_emu();
             if ( (regs->have & ITTD_REGS_GP) != 0 )
             {
                 for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
@@ -2346,6 +2566,9 @@ namespace
             ttd::record_settings rs{};
             rs.path             = utf8_path(path);
             rs.max_instructions = max_instructions;
+            rs.access_mask      = f->access_kinds;
+            if ( f->checkpoint_interval != 0 )
+                rs.checkpoint_interval = f->checkpoint_interval;
             const std::u8string parent = f->owner->path.u8string();
             rs.manifest = {
                 { "tool", "ida-ttd" },
@@ -2355,6 +2578,8 @@ namespace
             };
             if ( note != nullptr && *note != '\0' )
                 rs.manifest.emplace_back("fork_changes", note);
+            if ( f->net != nullptr )
+                rs.manifest.emplace_back("network", "live after the fork position");
             bool stopped = false;
             std::function<bool()> interrupted;
             if ( progress != nullptr && progress->cancelled != nullptr )
@@ -2376,6 +2601,86 @@ namespace
     void fork_close(ittd_fork *hf)
     {
         delete F(hf);
+    }
+
+    // ------------------------------------------------------------ recording
+
+    // UTF-8 to the UTF-16 Sogen keeps command lines in.
+    std::u16string utf16(const char *s)
+    {
+        const std::wstring w = utf8_path(s).wstring();
+        return std::u16string(w.begin(), w.end());
+    }
+
+    // The program run from its start the way analyzer --ttd-record runs it
+    // (one vCPU, Unicorn, the relative clock), against an emulation root or
+    // this machine's files, recorded until it exits or the limit.
+    int record_program(const ittd_record_request *req, const ittd_fork_settings *settings,
+                       const ittd_progress *progress, uint64_t *out_instructions)
+    {
+        if ( req == nullptr || req->size < sizeof(ittd_record_request)
+          || req->application == nullptr || *req->application == '\0'
+          || req->out_path == nullptr || *req->out_path == '\0' )
+            return ITTD_E_BAD_ARG;
+        return guarded(g_module_error, [&]()
+        {
+            std::filesystem::path root;
+            if ( const char *const *v = setting_emulation_root(settings); v != nullptr && *v != nullptr && **v != '\0' )
+                root = utf8_path(*v);
+            std::filesystem::path registry = module_dir() / "registry";
+            if ( const char *const *v = setting_registry_dir(settings); v != nullptr && *v != nullptr && **v != '\0' )
+                registry = utf8_path(*v);
+            if ( !root.empty() )
+                registry = root / "registry";
+            const uint32_t *flags = setting_flags(settings);
+            if ( root.empty() && (flags == nullptr || (*flags & ITTD_FORK_ALLOW_HOST) == 0) )
+                throw coded_error(ITTD_E_HOST_REPLAY, "without an emulation root the program runs against this "
+                                                      "machine's files, and whatever it creates, changes or deletes "
+                                                      "happens for real. Allow that explicitly to go ahead");
+            // The recording carries what it reads of the hives, so they are
+            // only needed here, to run it.
+            std::string why;
+            if ( check_hives("", registry, &why) == ITTD_E_NO_REGISTRY )
+                throw coded_error(ITTD_E_NO_REGISTRY, why);
+
+            sogen::application_settings app{};
+            app.application = sogen::windows_path(utf8_path(req->application));
+            if ( req->working_dir != nullptr && *req->working_dir != '\0' )
+                app.working_directory = sogen::windows_path(utf8_path(req->working_dir));
+            // The command line as given, after the program's quoted name: the
+            // program splits it itself, so it gets exactly what was typed.
+            std::u16string line = u"\"" + utf16(req->application) + u"\"";
+            if ( req->arguments != nullptr && *req->arguments != '\0' )
+                line += u" " + utf16(req->arguments);
+            app.command_line = line;
+
+            sogen::emulator_settings es{};
+            es.use_relative_time  = true;
+            es.emulation_root     = root;
+            es.registry_directory = registry;
+            es.load_registry      = true;
+            es.elevated           = setting_elevated(settings);
+            // From the start: there is no recorded part to reach first.
+            es.network = setting_network(settings) == ITTD_NET_LIVE ? sogen::network::network_mode::live
+                                                                     : sogen::network::network_mode::offline;
+            auto emu = make_emulator(std::move(app), es, settings, nullptr);
+
+            ttd::record_settings rs{};
+            rs.path                = utf8_path(req->out_path);
+            rs.access_mask         = setting_access_kinds(settings);
+            rs.checkpoint_interval = setting_checkpoint_interval(settings, rs.checkpoint_interval);
+            rs.max_instructions    = req->max_instructions;
+            rs.manifest = { { "tool", "ida-ttd" } };
+            if ( es.network == sogen::network::network_mode::live )
+                rs.manifest.emplace_back("network", "live");
+            std::function<bool()> interrupted;
+            if ( progress != nullptr && progress->cancelled != nullptr )
+                interrupted = [progress]() { return progress->cancelled(progress->ud) != 0; };
+            ttd::record(*emu, rs, interrupted);
+            if ( out_instructions != nullptr )
+                *out_instructions = emu->get_executed_instructions();
+            return ITTD_OK;
+        });
     }
 
     // ------------------------------------------------------------ replay scans
@@ -3755,6 +4060,7 @@ namespace
         a.query_mapping_files = query_mapping_files;
         a.replay_env         = replay_env;
         a.check_registry     = check_registry;
+        a.record_program     = record_program;
         return a;
     }();
 }

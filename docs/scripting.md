@@ -131,6 +131,15 @@ database. The scope is given here instead of in a dialog.
 | `an.forkrecord PATH N [registry=DIR] [strict] [host]` | record the fork being prepared: replay to it, apply its changes, record N (hex) instructions (0: to the end) into PATH. The error says `(needs host)`, `(needs registry=DIR)` or `(wrong hives: ...)` when that is what stopped it; `anyregistry` replays with hives that are not the recording's |
 | `an.forkdiscard` | drop the fork being prepared |
 | `an.fork PATH N [registry=DIR] [strict] [host] [REG=V ...] [mem:EA=HEX ...]` | fork the recording at the playhead (Sogen): replay to it, apply the changes, record N (hex) instructions (0: to the end) into PATH |
+| `an.record PROGRAM PATH [N] [args="..."] [cwd=DIR] [registry=DIR] [root=DIR] [host] ...` | run PROGRAM from its start in Sogen's emulator and record N (hex; none or 0: until it exits) instructions into PATH (TTD > Backends > Record a program with Sogen). Works with no recording open. Without `root=DIR` it runs against this machine's files and needs `host`; the hives are `registry=DIR`, else the first known folder holding some. The error says `(needs host or root=DIR)` or `(needs registry=DIR)` |
+
+The fork, scan and record commands also take the recording options, over the
+Sogen settings: `net` / `nonet` (the real network for the program, from a
+fork's position on or from a new recording's start; scans stay offline),
+`ckpt=N` (instructions between checkpoints, hex), `access=rwx` (what a new
+recording or fork keeps: any of `r`ead, `w`rite, e`x`ecute), `elevated` (an
+administrator's token, new recordings only) and `log` (Sogen's emulator log
+and the program's console output to the output window).
 
 `help` lists every command with its arguments, `backends` lists the loaded
 backend DLLs, and `settings` shows the plugin's settings as it holds them

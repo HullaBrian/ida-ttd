@@ -107,6 +107,21 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   with. Double-click one to switch this IDA to it (the replay restarts on it,
   in the same database) or open it in a new IDA; right-click to copy its path
   or take it off the graph.
+- Network access for forks: off by default, when the program gets a
+  loopback-only network where no host name resolves. The Record fork dialog
+  (and the `sogen_network` setting) can give the program the real network
+  from the fork's position on; the replay up to the position stays offline
+  either way, since the recording's own results stand in for what the
+  network answered then.
+- Record a program (TTD > Backends > Record a program with Sogen..., in any
+  database): run an executable from its start in Sogen's emulator and record
+  it into a new `.sogttd`, without Sogen's own tools. It starts from the
+  database's executable; you choose its arguments, working directory, an
+  emulation root or the registry hives it runs against, the instruction
+  limit, network access and an administrator's token. It runs headless (a
+  program's windows are not shown). The checkpoint interval and what is
+  recorded (reads, writes, instruction fetches) are settings, and apply to
+  forks too.
 
 The value origin graph and the fork manager are drawn by the plugin's own graph
 window (IDAPython with PySide6, like the call tree and the heatmap): drag to
@@ -114,8 +129,10 @@ pan, Ctrl+wheel to zoom, F to fit, double-click or right-click a node. Without
 IDAPython the fork manager uses IDA's graph viewer.
 
 Replaying a recording made against the host (without an emulation root) runs
-the program's file and network operations on your machine again, so the
-replay features ask before doing it.
+the program's file operations on your machine again (it creates, changes and
+deletes the same files), so the replay features ask before doing it, and so
+does recording a program without an emulation root. The network is reached
+only where you allow it: a fork past its position, or a new recording.
 
 **Opening traces**
 
@@ -188,7 +205,10 @@ Paths below are relative to your IDA user directory, `%APPDATA%\Hex-Rays\IDA Pro
    where the root is when it is not where it was. A recording made against
    the host replays only on a machine with the same Windows build, normally
    the one it was recorded on. Hives hold that machine's password hashes, so
-   share them with care.
+   share them with care. Recordings from Sogen before 2026-11-07 (trace format
+   8) open and answer every query, but cannot be forked with this backend:
+   their checkpoints hold an older emulator state. Record them again (TTD >
+   Backends > Record a program with Sogen...) to fork them.
 
 Everything you add yourself lives in the `ida-ttd` folder of the IDA user
 directory, never in `plugins\ida-ttd\`: HCLI replaces that folder on every
@@ -232,6 +252,13 @@ with its section.
 | Memory map | `memmap_flag_code` | `true` | colour executable regions outside every loaded module |
 | Sogen | `fork_instructions` | `1000000` | the Fork dialog's default length (0: to the end) |
 | | `registry_folder` | (none) | another folder to look in for a recording's registry hives |
+| | `sogen_network` | `false` | give forks (past their position) and new recordings the real network; the dialogs start from it |
+| | `sogen_checkpoint_interval` | `500000` | instructions between a new recording's or fork's checkpoints (0: Sogen's default) |
+| | `sogen_record_reads` | `true` | keep memory reads in new recordings and forks (off: much smaller, no read queries) |
+| | `sogen_record_writes` | `true` | keep memory writes (off: no write queries, strings, buffers or self-modifying code) |
+| | `sogen_record_executes` | `true` | keep instruction fetches (off: no coverage or execute breakpoints) |
+| | `sogen_elevated` | `false` | record programs with an administrator's token (forks keep their recording's) |
+| | `sogen_log` | `false` | print Sogen's emulator log and the program's console output while a fork, scan or recording runs |
 | Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
 
 Settings are read through the `ida-settings` Python package, which HCLI

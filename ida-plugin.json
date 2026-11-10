@@ -118,6 +118,70 @@
         "documentation": "Another folder to look for a Sogen recording's registry hives in, after the folder beside the recording and before ida-ttd\\registry in the IDA user directory. Empty: none."
       },
       {
+        "key": "sogen_network",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "prompt": false,
+        "name": "Sogen: give forks and new recordings network access",
+        "documentation": "Let the emulated program reach the real network: a fork from its position on (the replay up to it stays offline), a new recording from its start. Off: a loopback-only network, where no host name resolves. The Fork and Record dialogs start from this and can change it."
+      },
+      {
+        "key": "sogen_checkpoint_interval",
+        "type": "string",
+        "required": false,
+        "default": "500000",
+        "prompt": false,
+        "name": "Sogen: checkpoint interval",
+        "documentation": "How many instructions apart a new recording or fork takes its full checkpoints (decimal; 0: Sogen's default, 500,000). Fewer checkpoints make a smaller file and slower travel.",
+        "validation_pattern": "^[0-9]{1,19}$"
+      },
+      {
+        "key": "sogen_record_reads",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Sogen: record memory reads",
+        "documentation": "Keep every memory read in new recordings and forks. Off makes the file much smaller, but read breakpoints, read accesses and \"where did this value come from\" then find nothing."
+      },
+      {
+        "key": "sogen_record_writes",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Sogen: record memory writes",
+        "documentation": "Keep every memory write in new recordings and forks. Off: write breakpoints, write accesses, strings, buffers and self-modifying code find nothing, and memory is known only at checkpoints."
+      },
+      {
+        "key": "sogen_record_executes",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Sogen: record instruction fetches",
+        "documentation": "Keep every executed instruction's fetch in new recordings and forks. Off: coverage, execute breakpoints and self-modifying code find nothing."
+      },
+      {
+        "key": "sogen_elevated",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "prompt": false,
+        "name": "Sogen: record programs as administrator",
+        "documentation": "Run a program recorded with TTD > Record with Sogen... with an administrator's (elevated) token. Forks keep the token of the recording they come from."
+      },
+      {
+        "key": "sogen_log",
+        "type": "boolean",
+        "required": false,
+        "default": false,
+        "prompt": false,
+        "name": "Sogen: show the emulator's log",
+        "documentation": "Print Sogen's emulator log and the program's console output in the Output window while a fork, a replay scan or a new recording runs. Useful when one fails or diverges."
+      },
+      {
         "key": "diagnostics_log",
         "type": "boolean",
         "required": false,

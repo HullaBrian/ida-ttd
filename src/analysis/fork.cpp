@@ -3,6 +3,8 @@
 #include "debugger/trace_manager.h"
 #include "analysis/fork_registry.h"
 #include "analysis/replay_scans.h"
+#include "core/backend_module.h"
+#include "core/backend_registry.h"
 
 #include <filesystem>
 
@@ -285,6 +287,43 @@ namespace idattd
             rec.instructions = result.instructions;
             rec.time         = (uint64_t)qtime64();
             add_fork_record(rec);
+        }
+        return result;
+    }
+
+    ITraceBackend *find_recorder()
+    {
+        load_backend_modules();
+        for ( ITraceBackend *b : BackendRegistry::instance().all() )
+            if ( b->can_record() )
+                return b;
+        return nullptr;
+    }
+
+    ForkResult run_record(const RecordRequest &req)
+    {
+        ForkResult result;
+        ITraceBackend *recorder = find_recorder();
+        if ( recorder == nullptr )
+        {
+            result.error = "no installed backend can record programs (the Sogen backend can: "
+                           "TTD > Backends > Install the Sogen backend...)";
+            return result;
+        }
+        bool started = false;
+        run_query("Recording the program in Sogen's emulator", [&](ProgressSink *p)
+        {
+            started = true;
+            result = recorder->record_program(req, p);
+            QueryResult q;
+            q.ran = result.ok;
+            q.cancelled = result.cancelled;
+            return q;
+        });
+        if ( !started )
+        {
+            result.ok    = false;
+            result.error = "not started: another trace query or a movement is in progress";
         }
         return result;
     }

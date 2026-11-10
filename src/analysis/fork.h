@@ -31,6 +31,14 @@ namespace idattd
     // keeps what was recorded so far as a complete trace.
     ForkResult run_fork(TraceManager *mgr, const ForkRequest &req);
 
+    // The first loaded backend that can record a program from its start
+    // (Sogen's), or nullptr. Loads the backend modules if need be.
+    ITraceBackend *find_recorder();
+
+    // Record a program behind a cancellable wait box (see RecordRequest).
+    // Cancelling keeps what ran so far as a complete recording.
+    ForkResult run_record(const RecordRequest &req);
+
     // "rax=0x1, 8 bytes at 0x1400070A8", or "no changes".
     qstring describe_fork_changes(const ForkRequest &req);
 

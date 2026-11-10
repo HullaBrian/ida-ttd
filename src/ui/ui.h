@@ -623,6 +623,17 @@ namespace idattd
         { return AST_ENABLE_ALWAYS; }
     };
 
+    // Run a program in Sogen's emulator from its start and record it into a
+    // new .sogttd (ITraceBackend::record_program), with the Sogen settings
+    // (recording_options). In every database, like the install actions; it
+    // starts from the database's input file.
+    struct RecordProgramHandler : public action_handler_t
+    {
+        int  idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override
+        { return AST_ENABLE_ALWAYS; }
+    };
+
     // Action identifiers, used for registration and for menu and popup attach.
     namespace actions
     {
@@ -663,6 +674,7 @@ namespace idattd
         constexpr const char *FULL_PDB     = "idattd:full_pdb";
         constexpr const char *INSTALL_RUNTIME = "idattd:install_runtime";
         constexpr const char *INSTALL_SOGEN   = "idattd:install_sogen";
+        constexpr const char *RECORD_PROGRAM  = "idattd:record_program";
         // Greyed section headings in TTD > Backends, one per backend.
         constexpr const char *BACKEND_HDR_MS    = "idattd:backend_hdr_msttd";
         constexpr const char *BACKEND_HDR_SOGEN = "idattd:backend_hdr_sogen";

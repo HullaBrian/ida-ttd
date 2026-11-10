@@ -93,7 +93,7 @@ jobs:
           cmake -S sogen -B sogen-build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo `
             -DSOGEN_BUILD_STATIC=ON -DSOGEN_BUILD_TOOLS=OFF -DSOGEN_ENABLE_PYTHON_BINDINGS=OFF `
             -DSOGEN_ENABLE_RUST_CODE=OFF -DSOGEN_DISABLE_FEX=ON -DSOGEN_ENABLE_SDL3=OFF `
-            -DSOGEN_ENABLE_LTO=OFF -DSOGEN_STATIC_CRT=OFF
+            -DSOGEN_ENABLE_LTO=OFF -DSOGEN_STATIC_CRT=OFF -DSOGEN_ENABLE_SCCACHE=OFF
           if ($LASTEXITCODE -ne 0) { throw "configuring Sogen failed" }
           cmake --build sogen-build --target windows-ttd windows-ttd-view
           if ($LASTEXITCODE -ne 0) { throw "building Sogen failed" }

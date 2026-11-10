@@ -4,4 +4,4 @@
 # ittd-probe passes against it (docs/building-the-sogen-backend.md), and check
 # the licensing note in docs/licensing.md again.
 repository=https://github.com/TTD-Club/sogen
-commit=8a9fb16172f81cbf3d803f18120b019640d30a0e
+commit=253c948813f7379cb75db593c1045b9ec22fd8dc

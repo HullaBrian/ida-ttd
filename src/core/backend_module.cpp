@@ -797,9 +797,23 @@ namespace idattd
         return result_of(rc, trunc);
     }
 
+    static void backend_log(void *, const char *line);
+
+    // The emulator's log (RecordOptions::log): each line through the
+    // backends' own log, which queues lines from a worker thread for the main
+    // one.
+    static void emulator_log(void *, const char *line)
+    {
+        if ( line == nullptr )
+            return;
+        qstring text;
+        text.sprnt("[emulator] %s\n", line);
+        backend_log(nullptr, text.c_str());
+    }
+
     // The settings point into 'registry_dir' and 'root', which must outlive them.
     static ittd_fork_settings replay_settings(const qstring &registry_dir, const qstring &root, bool strict,
-                                              bool allow_host, bool any_registry)
+                                              bool allow_host, bool any_registry, const RecordOptions &rec)
     {
         ittd_fork_settings fs{};
         fs.size  = sizeof(fs);
@@ -807,12 +821,17 @@ namespace idattd
                  | (any_registry ? ITTD_FORK_ANY_REGISTRY : 0);
         fs.registry_dir   = registry_dir.empty() ? nullptr : registry_dir.c_str();
         fs.emulation_root = root.empty() ? nullptr : root.c_str();
+        fs.network        = rec.network ? ITTD_NET_LIVE : ITTD_NET_OFFLINE;
+        fs.access_mask    = rec.access_mask;
+        fs.checkpoint_interval = rec.checkpoint_interval;
+        fs.elevated       = rec.elevated ? 1 : 0;
+        fs.log            = rec.log ? emulator_log : nullptr;
         return fs;
     }
 
     static ittd_fork_settings replay_settings(const ReplaySettings &s)
     {
-        return replay_settings(s.registry_dir, s.emulation_root, s.strict, s.allow_host, s.any_registry);
+        return replay_settings(s.registry_dir, s.emulation_root, s.strict, s.allow_host, s.any_registry, s.rec);
     }
 
     bool BackendModule::replay_env(ReplayEnv *out)
@@ -954,7 +973,7 @@ namespace idattd
 
         ProgressBridge pb(progress);
         ittd_fork_settings fs = replay_settings(req.registry_dir, req.emulation_root, req.strict, req.allow_host,
-                                                req.any_registry);
+                                                req.any_registry, req.rec);
         ittd_fork *f = nullptr;
         int rc = note_replay(m_api->fork_open(m_handle, to_abi(req.at), &fs, pb.get(), &f));
         if ( rc != ITTD_OK || f == nullptr )
@@ -991,6 +1010,51 @@ namespace idattd
                                 req.note.c_str(), pb.get(), &ran);
         if ( rc != ITTD_OK )
             return failed(rc);
+        r.ok = true;
+        r.instructions = ran;
+        r.cancelled = progress != nullptr && progress->cancelled();
+        return r;
+    }
+
+    bool BackendModule::can_record() const
+    {
+        return ITTD_HAS(m_api, record_program);
+    }
+
+    ForkResult BackendModule::record_program(const RecordRequest &req, ProgressSink *progress)
+    {
+        DiagTimer diag_timer("backend.record_program", 0);
+        ForkResult r;
+        if ( !can_record() )
+        {
+            r.error = "this backend cannot record programs";
+            return r;
+        }
+        ProgressBridge pb(progress);
+        ittd_fork_settings fs = replay_settings(req.registry_dir, req.emulation_root, false, req.allow_host,
+                                                false, req.rec);
+        ittd_record_request rq{};
+        rq.size             = sizeof(rq);
+        rq.application      = req.application.c_str();
+        rq.arguments        = req.arguments.empty() ? nullptr : req.arguments.c_str();
+        rq.working_dir      = req.working_dir.empty() ? nullptr : req.working_dir.c_str();
+        rq.out_path         = req.path.c_str();
+        rq.max_instructions = req.max_instructions;
+        uint64_t ran = 0;
+        // Module-level: its errors are last_error(NULL), not the open
+        // recording's.
+        const int rc = m_api->record_program(&rq, &fs, pb.get(), &ran);
+        if ( rc != ITTD_OK )
+        {
+            r.cancelled = rc == ITTD_E_CANCELLED;
+            r.block = rc == ITTD_E_HOST_REPLAY ? ReplayBlock::HostConsent
+                    : rc == ITTD_E_NO_REGISTRY ? ReplayBlock::Registry
+                    : ReplayBlock::None;
+            r.error = r.cancelled ? qstring("cancelled") : qstring(or_empty(m_api->last_error(nullptr)));
+            if ( r.error.empty() )
+                r.error = "failed";
+            return r;
+        }
         r.ok = true;
         r.instructions = ran;
         r.cancelled = progress != nullptr && progress->cancelled();

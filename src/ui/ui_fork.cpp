@@ -94,6 +94,7 @@ namespace idattd
         rs.registry_dir = find_registry_dir(mgr);
         rs.emulation_root = chosen_emulation_root(mgr);
         rs.allow_host   = mgr != nullptr && !g_hostConsent.empty() && g_hostConsent == mgr->trace_path();
+        rs.rec          = recording_options();
         return rs;
     }
 
@@ -111,9 +112,10 @@ namespace idattd
                             "HIDECANCEL\n"
                             "This recording was made against this machine's own files, not an\n"
                             "emulation root.\n\n"
-                            "Replaying it runs the program again, and its file and network\n"
-                            "operations happen again on this machine: whatever it created,\n"
-                            "renamed, deleted or sent, it does again.\n\n"
+                            "Replaying it runs the program again, and its file operations\n"
+                            "happen again on this machine: whatever it created, renamed or\n"
+                            "deleted, it does again. (The network stays offline, unless a fork\n"
+                            "is given network access, and then only from its position on.)\n\n"
                             "Replay it anyway? Only for programs you trust.") != ASKBTN_YES )
                     return false;
                 g_hostConsent   = mgr->trace_path();
@@ -259,6 +261,9 @@ namespace idattd
             "\n"
             "<~N~ew trace:f:1:64::>\n"
             "<~I~nstructions to record, 0 for no limit:D::18::>\n"
+            "\n"
+            "<~G~ive the program network access from this position on:C>>\n"
+            "(The replay up to the position stays offline either way.)\n"
             "\n";
         qstring where   = form_text(format_position(req.at));
         qstring changes = form_text(describe_changes(req));
@@ -267,9 +272,12 @@ namespace idattd
         // The fork_instructions setting at first, then the last answer this
         // session.
         static sval_t count = (sval_t)qmin(settings().fork_instructions, (uint64)INT64_MAX);
+        // The sogen_network setting each time: network access is not
+        // something to carry over unnoticed from an earlier fork.
+        ushort network = settings().sogen_network ? 1 : 0;
         for ( ;; )
         {
-            if ( ask_form(form, where.c_str(), changes.c_str(), path, &count) <= 0 )
+            if ( ask_form(form, where.c_str(), changes.c_str(), path, &count, &network) <= 0 )
                 return 1;
             if ( path[0] == '\0' )
             {
@@ -288,6 +296,7 @@ namespace idattd
         req.note.cat_sprnt("; %s", describe_fork_changes(req).c_str());
 
         ReplaySettings rs = initial_replay_settings(m);
+        rs.rec.network = network != 0;
         ForkResult r;
         for ( ;; )
         {
@@ -295,6 +304,7 @@ namespace idattd
             req.allow_host   = rs.allow_host;
             req.any_registry = rs.any_registry;
             req.emulation_root = rs.emulation_root;
+            req.rec          = rs.rec;
             r = run_fork(m, req);
             if ( r.ok || r.cancelled || !ask_replay_needs(m, &rs) )
                 break;
@@ -324,6 +334,164 @@ namespace idattd
     action_state_t idaapi ForkRecordHandler::update(action_update_ctx_t *)
     {
         return backend_forks(mgr()) && mgr()->fork_draft().active ? AST_ENABLE : AST_DISABLE;
+    }
+
+    // -------------------------------------------- Record a program with Sogen
+
+    static bool has_hives(const qstring &dir)
+    {
+        qstring system = dir;
+        system.append("\\SYSTEM");
+        return !dir.empty() && qfileexist(system.c_str());
+    }
+
+    // The executable this database was made from, if it is one (a
+    // recording's database has the recording as its input file).
+    static qstring database_program()
+    {
+        char path[QMAXPATH] = {};
+        if ( get_input_file_path(path, sizeof(path)) <= 0 )
+            return qstring();
+        const char *ext = get_file_ext(path);
+        if ( ext == nullptr || (stricmp(ext, "exe") != 0 && stricmp(ext, "dll") != 0) || !qfileexist(path) )
+            return qstring();
+        return qstring(path);
+    }
+
+    int idaapi RecordProgramHandler::activate(action_activation_ctx_t *)
+    {
+        if ( find_recorder() == nullptr )
+        {
+            warning("No installed backend can record programs. The Sogen backend can: "
+                    "TTD > Backends > Install the Sogen backend...");
+            return 1;
+        }
+        static const char form[] =
+            "Record a program with Sogen\n"
+            "\n"
+            "\n"
+            "Run a program from its start in Sogen's emulator and record it into a new\n"
+            "Sogen recording (.sogttd). It runs headless: a program's windows are not shown.\n"
+            "\n"
+            "<~P~rogram:f:0:64::>\n"
+            "<~A~rguments:q::64::>\n"
+            "<~W~orking directory (empty: the program's folder):F::64::>\n"
+            "<~N~ew recording:f:1:64::>\n"
+            "<~I~nstructions to record, 0 until it exits:D::18::>\n"
+            "\n"
+            "<~E~mulation root (empty: this machine's own files):F::64::>\n"
+            "<Registry ~h~ives, without an emulation root:F::64::>\n"
+            "\n"
+            "<~G~ive the program network access:C>\n"
+            "<Run it as an a~d~ministrator:C>>\n"
+            "\n"
+            "Checkpoint interval and what is recorded: TTD > Settings (Sogen).\n"
+            "\n";
+        // The last answers this session; the program starts as the database's
+        // own executable, the hives as the first folder that has some.
+        static qstring s_program, s_args, s_cwd, s_root, s_hives;
+        static sval_t s_count = 0;
+        if ( s_program.empty() )
+            s_program = database_program();
+        if ( s_hives.empty() )
+            for ( const qstring &dir : registry_candidates(nullptr) )
+                if ( has_hives(dir) )
+                {
+                    s_hives = dir;
+                    break;
+                }
+        char program[QMAXPATH], cwd[QMAXPATH], out[QMAXPATH], root[QMAXPATH], hives[QMAXPATH];
+        qstrncpy(program, s_program.c_str(), sizeof(program));
+        qstrncpy(cwd, s_cwd.c_str(), sizeof(cwd));
+        qstrncpy(root, s_root.c_str(), sizeof(root));
+        qstrncpy(hives, s_hives.c_str(), sizeof(hives));
+        out[0] = '\0';
+        if ( program[0] != '\0' )
+        {
+            qstring o = program;
+            set_file_ext(out, sizeof(out), o.c_str(), "sogttd");
+        }
+        qstring args = s_args;
+        sval_t count = s_count;
+        const RecordOptions defaults = recording_options();
+        ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0);
+        for ( ;; )
+        {
+            if ( ask_form(form, program, &args, cwd, out, &count, root, hives, &checks) <= 0 )
+                return 1;
+            if ( program[0] == '\0' || !qfileexist(program) )
+            {
+                warning("Choose the program to record.");
+                continue;
+            }
+            if ( out[0] == '\0' )
+            {
+                warning("Name the file the recording goes into.");
+                continue;
+            }
+            if ( root[0] == '\0' && !has_hives(hives) )
+            {
+                warning("Sogen runs the program against a copy of the registry: choose a folder "
+                        "holding the hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...), such as an emulation "
+                        "root's registry folder or one Sogen's grab-registry.bat made.");
+                continue;
+            }
+            if ( qfileexist(out)
+              && ask_yn(ASKBTN_NO, "HIDECANCEL\n%s already exists. Replace it?", out) != ASKBTN_YES )
+                continue;
+            break;
+        }
+        s_program = program;
+        s_args    = args;
+        s_cwd     = cwd;
+        s_root    = root;
+        s_hives   = hives;
+        s_count   = count;
+        if ( root[0] == '\0' )
+            save_registry_dir(hives);
+
+        RecordRequest req;
+        req.application      = program;
+        req.arguments        = args;
+        req.working_dir      = cwd;
+        req.path             = out;
+        req.max_instructions = count > 0 ? (uint64_t)count : 0;
+        req.emulation_root   = root;
+        req.registry_dir     = root[0] == '\0' ? qstring(hives) : qstring();
+        req.rec              = defaults;
+        req.rec.network      = (checks & 1) != 0;
+        req.rec.elevated     = (checks & 2) != 0;
+        // Each time: consent for one program is not consent for the next.
+        if ( root[0] == '\0' )
+        {
+            if ( ask_yn(ASKBTN_NO,
+                        "HIDECANCEL\n"
+                        "Without an emulation root the program runs against this machine's own\n"
+                        "files: whatever it creates, changes or deletes happens for real%s.\n\n"
+                        "Record it anyway? Only for programs you trust.",
+                        req.rec.network ? ", and it reaches the real network" : "") != ASKBTN_YES )
+                return 1;
+            req.allow_host = true;
+        }
+
+        ForkResult r = run_record(req);
+        if ( !r.ok )
+        {
+            if ( r.cancelled )
+                msg("[ida-ttd] recording cancelled.\n");
+            else
+                warning("The program was not recorded: %s", r.error.c_str());
+            return 1;
+        }
+        msg("[ida-ttd] recorded %s: %llu instruction(s) into %s%s.\n", program,
+            (unsigned long long)r.instructions, out,
+            r.cancelled ? " (stopped early; what ran is a complete recording)" : "");
+        if ( ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) into\n%s\n\n"
+                                "Open it in a new IDA window?",
+                    (unsigned long long)r.instructions, out) == ASKBTN_YES
+          && !open_in_new_ida(out) )
+            warning("Could not start another IDA. Open %s from IDA's File menu.", out);
+        return 1;
     }
 
     // ------------------------------------------------------- Discard fork

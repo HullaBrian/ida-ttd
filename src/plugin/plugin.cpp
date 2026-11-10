@@ -323,6 +323,7 @@ namespace idattd
         {
             unregister_action(actions::INSTALL_RUNTIME);
             unregister_action(actions::INSTALL_SOGEN);
+            unregister_action(actions::RECORD_PROGRAM);
             unregister_action(actions::BACKEND_HDR_MS);
             unregister_action(actions::BACKEND_HDR_SOGEN);
             for ( const char *sep : SUBMENU_SEP_ACTIONS )
@@ -908,10 +909,16 @@ namespace idattd
                 "ida-ttd\\backends in your IDA user directory, where it takes the "
                 "packaged one's place", -1));
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
+                actions::RECORD_PROGRAM, "Record a program with Sogen...",
+                &m_recordProgram, this, nullptr,
+                "Run a program from its start in Sogen's emulator and record it into a "
+                "new Sogen recording (.sogttd), with the Sogen settings: network access, "
+                "checkpoint interval, what is recorded", -1));
+            register_action(ACTION_DESC_LITERAL_PLUGMOD(
                 SETTINGS_ACTION, "Settings...", &g_settingsHandler, this, nullptr,
                 "ida-ttd's settings (symbol downloads, automatic coverage and call-site "
-                "comments, fork length, ...), in the IDA Settings Editor. Changes apply "
-                "from the next stop of the replay", -1));
+                "comments, fork length, Sogen recording, ...), in the IDA Settings Editor. "
+                "Changes apply from the next stop of the replay", -1));
         }
 
         // From scratch, in order. Deleting a menu takes its items with it;
@@ -951,6 +958,7 @@ namespace idattd
         attach_action_to_menu(bpath.c_str(), actions::INSTALL_RUNTIME, SETMENU_APP);
         attach_action_to_menu(bpath.c_str(), actions::BACKEND_HDR_SOGEN, SETMENU_APP | SETMENU_ENSURE_SEP);
         attach_action_to_menu(bpath.c_str(), actions::INSTALL_SOGEN, SETMENU_APP);
+        attach_action_to_menu(bpath.c_str(), actions::RECORD_PROGRAM, SETMENU_APP);
         attach_action_to_menu(TTD_MENU_PATH, SETTINGS_ACTION, SETMENU_APP);
     }
 

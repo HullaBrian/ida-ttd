@@ -67,6 +67,8 @@ namespace idattd
         QueryResult query_self_modifying(std::vector<SelfModHit> *out,
                                          ProgressSink *progress) override;
         ForkResult  record_fork(const ForkRequest &req, ProgressSink *progress) override;
+        bool        can_record() const override;
+        ForkResult  record_program(const RecordRequest &req, ProgressSink *progress) override;
         QueryResult query_strings(const ReplaySettings &settings, uint32_t min_length,
                                   std::vector<StringHit> *out, ProgressSink *progress) override;
         QueryResult query_buffers(const ReplaySettings &settings,

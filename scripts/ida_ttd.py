@@ -142,6 +142,45 @@ def _kinds(kinds):
     return "".join(k for k in kinds.lower() if k in "rwx") or "rw"
 
 
+def _record_options(net, checkpoint_interval, access, elevated, log):
+    """The recording options as an.fork / an.record words; None keeps the
+    Sogen setting."""
+    words = []
+    if net is not None:
+        words.append("net" if net else "nonet")
+    if checkpoint_interval is not None:
+        words.append("ckpt=%X" % checkpoint_interval)
+    if access is not None:
+        words.append("access=" + _kinds(access))
+    if elevated:
+        words.append("elevated")
+    if log:
+        words.append("log")
+    return words
+
+
+def record(program, path, max_instructions=0, args=None, cwd=None, registry=None,
+           root=None, host=False, net=None, checkpoint_interval=None, access=None,
+           elevated=False, log=False):
+    """Run 'program' from its start in Sogen's emulator and record it into
+    'path' (TTD > Backends > Record a program with Sogen), with no recording
+    open. Without 'root' (an emulation root) it runs against this machine's
+    files, which needs host=True; 'registry' is the hives folder (default:
+    the first known one). net, checkpoint_interval, access ("rwx") default to
+    the Sogen settings. Returns {"instructions", "cancelled", "path",
+    "network"}."""
+    words = [program, path]
+    if max_instructions:
+        words.append(max_instructions)
+    for key, value in (("args", args), ("cwd", cwd), ("registry", registry), ("root", root)):
+        if value:
+            words.append("%s=%s" % (key, value))
+    if host:
+        words.append("host")
+    words += _record_options(net, checkpoint_interval, access, elevated, log)
+    return py(call("an.record", *words))
+
+
 class Session(object):
     """The TTD debugger session in this IDA: the recording this database was
     opened from, replayed through IDA's debugger. Movements wait for the stop;

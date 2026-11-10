@@ -270,15 +270,65 @@ namespace idattd
     }
 
     // What replay_option accepts, for the message refusing anything else.
-    static const char REPLAY_OPTIONS[] = "registry=DIR, root=DIR, strict, host or anyregistry";
+    static const char REPLAY_OPTIONS[] = "registry=DIR, root=DIR, strict, host, anyregistry, "
+                                         "net, nonet, ckpt=N, access=rwx, elevated or log";
+
+    // A word that sets how a recording is made (RecordOptions), over the
+    // Sogen settings: net / nonet (network access past a fork's position, or
+    // from a new recording's start), ckpt=N (the checkpoint interval, hex
+    // like every number here), access=rwx (what is kept: any of r, w, x),
+    // elevated (new recordings), log (the emulator's log to the output
+    // window).
+    static bool record_option(const qstring &t, RecordOptions *o)
+    {
+        if ( t == "net" )
+            o->network = true;
+        else if ( t == "nonet" )
+            o->network = false;
+        else if ( t == "elevated" )
+            o->elevated = true;
+        else if ( t == "log" )
+            o->log = true;
+        else if ( t.starts_with("ckpt=") )
+        {
+            uint64_t n = 0;
+            if ( !parse_u64(t.substr(5), &n) )
+                fail("'%s': the checkpoint interval is a hex number", t.c_str());
+            o->checkpoint_interval = n;
+        }
+        else if ( t.starts_with("access=") )
+        {
+            uint32_t mask = 0;
+            const qstring kinds = t.substr(7);
+            for ( size_t i = 0; i < kinds.length(); i++ )
+            {
+                switch ( kinds[i] )
+                {
+                    case 'r': mask |= ITTD_ACCESS_READ;  break;
+                    case 'w': mask |= ITTD_ACCESS_WRITE; break;
+                    case 'x': mask |= ITTD_ACCESS_EXEC;  break;
+                    default:
+                        fail("'%s': access= takes the letters r, w and x", t.c_str());
+                }
+            }
+            if ( mask == 0 )
+                fail("'%s': name at least one of r, w and x", t.c_str());
+            o->access_mask = mask;
+        }
+        else
+            return false;
+        return true;
+    }
 
     // A word that sets up a Sogen replay: registry=DIR, root=DIR (the
     // emulation root, when it is elsewhere here), strict, host, or
-    // anyregistry (accept hives that are not the recording's). ForkRequest
-    // and ReplaySettings name the fields alike.
+    // anyregistry (accept hives that are not the recording's), or one of
+    // record_option's. ForkRequest and ReplaySettings name the fields alike.
     template <typename T>
     static bool replay_option(const qstring &t, T *s)
     {
+        if ( record_option(t, &s->rec) )
+            return true;
         if ( t.starts_with("registry=") )
             s->registry_dir = t.substr(9);
         else if ( t.starts_with("root=") )
@@ -1138,6 +1188,7 @@ namespace idattd
     {
         need_session();
         ForkRequest req;
+        req.rec              = recording_options();
         req.at               = mgr().current_position();
         req.path             = a.at(0);
         req.max_instructions = a.u64(1);
@@ -1295,6 +1346,7 @@ namespace idattd
             fail("there is no fork; an.forkhere first");
         ForkRequest req;
         mgr().fill_fork_request(&req);
+        req.rec              = recording_options();
         req.path             = a.at(0);
         req.max_instructions = a.u64(1);
         for ( size_t i = 2; i < a.count(); i++ )
@@ -1320,6 +1372,64 @@ namespace idattd
            .num("regs", (int64_t)req.regs.size()).num("writes", (int64_t)req.memory.size());
     }
 
+    // an.record PROGRAM PATH [N] [args="..."] [cwd=DIR] [registry=DIR]
+    // [root=DIR] [host] [net] [ckpt=N] [access=rwx] [elevated] [log]: run
+    // PROGRAM from its start in Sogen's emulator and record N instructions
+    // (hex; none or 0: until it exits) into PATH (TTD > Backends > Record a
+    // program with Sogen). Without root=, 'host' is the consent to run it
+    // against this machine's files; the hives are registry=, else the
+    // first known folder that holds some.
+    static void cmd_an_record(const Args &a, JObj &out)
+    {
+        RecordRequest req;
+        req.rec         = recording_options();
+        req.application = a.at(0);
+        req.path        = a.at(1);
+        for ( size_t i = 2; i < a.count(); i++ )
+        {
+            const qstring &t = a.at(i);
+            uint64_t n = 0;
+            if ( record_option(t, &req.rec) )
+                continue;
+            if ( t.starts_with("args=") )
+                req.arguments = t.substr(5);
+            else if ( t.starts_with("cwd=") )
+                req.working_dir = t.substr(4);
+            else if ( t.starts_with("registry=") )
+                req.registry_dir = t.substr(9);
+            else if ( t.starts_with("root=") )
+                req.emulation_root = t.substr(5);
+            else if ( t == "host" )
+                req.allow_host = true;
+            else if ( i == 2 && parse_u64(t, &n) )
+                req.max_instructions = n;
+            else
+                fail("'%s' is not N, args=, cwd=, registry=, root=, host, net, ckpt=N, access=rwx, "
+                     "elevated or log", t.c_str());
+        }
+        if ( req.emulation_root.empty() && req.registry_dir.empty() )
+        {
+            for ( const qstring &dir : registry_candidates(nullptr) )
+            {
+                qstring system = dir;
+                system.append("\\SYSTEM");
+                if ( qfileexist(system.c_str()) )
+                {
+                    req.registry_dir = dir;
+                    break;
+                }
+            }
+        }
+        ForkResult r = run_record(req);
+        if ( !r.ok )
+            fail("the program was not recorded%s: %s",
+                 r.block == ReplayBlock::HostConsent ? " (needs host or root=DIR)"
+                 : r.block == ReplayBlock::Registry ? " (needs registry=DIR)" : "",
+                 r.error.c_str());
+        out.boolean("cancelled", r.cancelled).num("instructions", (int64_t)r.instructions)
+           .str("path", req.path).boolean("network", req.rec.network);
+    }
+
     // Replay options (replay_option) from argument 'from' on. Any other word
     // is refused, so a typo (registy=) is not silently ignored.
     static ReplaySettings replay_args(const Args &a, size_t from)
@@ -1327,6 +1437,7 @@ namespace idattd
         ReplaySettings rs;
         rs.registry_dir = find_registry_dir(&mgr());
         rs.emulation_root = chosen_emulation_root(&mgr());
+        rs.rec = recording_options();
         for ( size_t i = from; i < a.count(); i++ )
             if ( !replay_option(a.at(i), &rs) )
                 fail("'%s' is not %s", a.at(i).c_str(), REPLAY_OPTIONS);
@@ -1930,8 +2041,9 @@ namespace idattd
         { "an.forkhere",    cmd_an_forkhere,    "make this position a fork; change it with IDA's debugger calls" },
         { "an.forkdraft",   cmd_an_forkdraft,   "the fork being prepared and its changes" },
         { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },
-        { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] record the fork being prepared" },
-        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [host] [REG=V ...] [mem:EA=HEX ...] fork here" },
+        { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] record the fork being prepared" },
+        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] [REG=V ...] [mem:EA=HEX ...] fork here" },
+        { "an.record",      cmd_an_record,      "PROGRAM PATH [N] [args=\"...\"] [cwd=DIR] [registry=DIR] [root=DIR] [host] [net] [ckpt=N] [access=rwx] [elevated] [log] record a program with Sogen" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },
@@ -1986,6 +2098,14 @@ namespace idattd
            .boolean("auto_callsites", s.auto_callsites)
            .str("fork_instructions", qstring().sprnt("%llu", (unsigned long long)s.fork_instructions))
            .str("registry_folder", s.registry_folder)
+           .boolean("sogen_network", s.sogen_network)
+           .str("sogen_checkpoint_interval",
+                qstring().sprnt("%llu", (unsigned long long)s.sogen_checkpoint_interval))
+           .boolean("sogen_record_reads", s.sogen_record_reads)
+           .boolean("sogen_record_writes", s.sogen_record_writes)
+           .boolean("sogen_record_executes", s.sogen_record_executes)
+           .boolean("sogen_elevated", s.sogen_elevated)
+           .boolean("sogen_log", s.sogen_log)
            .boolean("diagnostics_log", s.diagnostics_log)
            .boolean("memmap_flag_code", s.memmap_flag_code);
     }
