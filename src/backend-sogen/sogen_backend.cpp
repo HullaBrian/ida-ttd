@@ -2641,7 +2641,9 @@ namespace
             // only needed here, to run it.
             std::string why;
             if ( check_hives("", registry, &why) == ITTD_E_NO_REGISTRY )
-                throw coded_error(ITTD_E_NO_REGISTRY, why);
+                throw coded_error(ITTD_E_NO_REGISTRY, "no registry hives (SYSTEM, SOFTWARE, ...) in "
+                                                      + path_utf8(registry) + ": Sogen runs the program "
+                                                        "against a copy of the registry, which it needs");
 
             sogen::application_settings app{};
             app.application = sogen::windows_path(utf8_path(req->application));
