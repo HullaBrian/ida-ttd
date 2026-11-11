@@ -626,12 +626,12 @@ namespace idattd
     // Run a program in Sogen's emulator from its start and record it into a
     // new .sogttd (ITraceBackend::record_program), with the Sogen settings
     // (recording_options). In every database, like the install actions; it
-    // starts from the database's input file.
-    struct RecordProgramHandler : public action_handler_t
+    // starts from the database's input file. A TtdAction for the context's
+    // switch_trace (opening the new recording in this window); it is not in
+    // the session's action table, so the plugin sets its context itself.
+    struct RecordProgramHandler : public TtdAction
     {
         int  idaapi activate(action_activation_ctx_t *) override;
-        action_state_t idaapi update(action_update_ctx_t *) override
-        { return AST_ENABLE_ALWAYS; }
     };
 
     // Action identifiers, used for registration and for menu and popup attach.

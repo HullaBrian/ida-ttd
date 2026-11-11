@@ -4,6 +4,7 @@
 #include "analysis/fork.h"
 #include "core/backend_module.h"
 #include "plugin/settings.h"
+#include "common/trace_link.h"
 
 namespace idattd
 {
@@ -391,40 +392,61 @@ namespace idattd
         return qstring(path);
     }
 
+    // The base name of a path, without case, for comparing programs.
+    static qstring base_name_lower(const char *path)
+    {
+        const char *slash = strrchr(path, '\\');
+        const char *fwd = strrchr(path, '/');
+        if ( fwd != nullptr && (slash == nullptr || fwd > slash) )
+            slash = fwd;
+        qstring s = slash != nullptr ? slash + 1 : path;
+        for ( size_t i = 0; i < s.length(); i++ )
+            s[i] = (char)qtolower(s[i]);
+        return s;
+    }
+
+    // Whether this database is of the program just recorded, so the new
+    // recording can be replayed here: its input file is that executable, or
+    // it was made from a recording of it.
+    static bool database_is_of(const char *program)
+    {
+        const qstring want = base_name_lower(program);
+        TraceLink link;
+        if ( trace_link_read(&link) && !link.module_name.empty() )
+            return base_name_lower(link.module_name.c_str()) == want;
+        char path[QMAXPATH] = {};
+        return get_input_file_path(path, sizeof(path)) > 0 && base_name_lower(path) == want;
+    }
+
     int idaapi RecordProgramHandler::activate(action_activation_ctx_t *)
     {
         if ( find_recorder() == nullptr )
         {
-            warning("No installed backend can record programs. The Sogen backend can: "
-                    "TTD > Backends > Install the Sogen backend...");
+            warning("No installed backend can record programs (the Sogen backend can).");
             return 1;
         }
+        // Short labels, the details in the tooltips: IDA lines up the
+        // fields of consecutive lines by their labels.
         static const char form[] =
             "Record a program with Sogen\n"
             "\n"
+            "<#The program to run from its start#~P~rogram:f:0:60::>\n"
+            "<#Passed to the program as typed#~A~rguments:q::60::>\n"
+            "<#Empty for the program's own folder#~W~orking folder:F::60::>\n"
+            "<#The new Sogen recording#~O~utput file:f:1:60::>\n"
+            "<#0 records until the program exits#~I~nstruction limit:D::16::>\n"
             "\n"
-            "Run a program from its start in Sogen's emulator and record it into a new\n"
-            "Sogen recording (.sogttd). It runs headless: a program's windows are not shown.\n"
+            "<#The folder holding filesys and registry. Empty runs the program against this machine's own files#~E~mulation root:F::60::>\n"
+            "<#The guest folder a program from outside the root is copied to#~C~opy into root at:q::60::>\n"
+            "<#The hives to run against when there is no emulation root#~R~egistry hives:F::60::>\n"
             "\n"
-            "<~P~rogram:f:0:64::>\n"
-            "<Outside the root, copy it into the root's ~f~older (guest path):q::64::>\n"
-            "<~A~rguments:q::64::>\n"
-            "<~W~orking directory (empty for the program's folder):F::64::>\n"
-            "<~N~ew recording:f:1:64::>\n"
-            "<~I~nstructions to record, 0 until it exits:D::18::>\n"
-            "\n"
-            "<~E~mulation root, the folder holding filesys and registry (empty for this machine's own files):F::64::>\n"
-            "<Registry ~h~ives, without an emulation root:F::64::>\n"
-            "\n"
-            "<~G~ive the program network access:C>\n"
-            "<Run it as an a~d~ministrator:C>>\n"
-            "\n"
-            "Checkpoint interval and what is recorded: TTD > Settings (Sogen).\n"
+            "<#Let the program reach the real network#~N~etwork access:C>\n"
+            "<#Run it with an administrator's token#Run as a~d~ministrator:C>>\n"
             "\n";
-        // The last answers this session; the program starts as the database's
-        // own executable, the hives as the first folder that has some.
-        // The guest folder a program from outside the root is copied to: one
-        // of its own, so the root's own files are not replaced unasked.
+        // The last answers this session. The program starts as the database's
+        // own executable, the hives as the first folder that has some, and
+        // the copy goes to a folder of its own, so none of the root's files
+        // is replaced unasked.
         static qstring s_program, s_args, s_cwd, s_root, s_hives, s_place = "C:\\ida-ttd";
         static sval_t s_count = 0;
         if ( s_program.empty() )
@@ -443,10 +465,7 @@ namespace idattd
         qstrncpy(hives, s_hives.c_str(), sizeof(hives));
         out[0] = '\0';
         if ( program[0] != '\0' )
-        {
-            qstring o = program;
-            set_file_ext(out, sizeof(out), o.c_str(), "sogttd");
-        }
+            set_file_ext(out, sizeof(out), qstring(program).c_str(), "sogttd");
         qstring args = s_args;
         qstring place = s_place;
         qstring run_program;        // the program as recorded: a copy in the root, or itself
@@ -455,8 +474,9 @@ namespace idattd
         ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0);
         for ( ;; )
         {
-            if ( ask_form(form, program, &place, &args, cwd, out, &count, root, hives, &checks) <= 0 )
+            if ( ask_form(form, program, &args, cwd, out, &count, root, &place, hives, &checks) <= 0 )
                 return 1;
+            place.trim2();
             if ( program[0] == '\0' || !qfileexist(program) )
             {
                 warning("Choose the program to record.");
@@ -464,7 +484,7 @@ namespace idattd
             }
             if ( out[0] == '\0' )
             {
-                warning("Name the file the recording goes into.");
+                warning("Choose the output file.");
                 continue;
             }
             if ( root[0] != '\0' )
@@ -475,26 +495,20 @@ namespace idattd
                     warning("%s", problem.c_str());
                     continue;
                 }
-                place.trim2();
                 if ( !visible_in_emulation_root(root, program) && place.empty() )
                 {
-                    warning("The program is outside the emulation root, and a program running in the root "
-                            "sees only its filesys folder (filesys\\c is its C: drive).\n\n"
-                            "Name a folder in the root to copy it to (such as C:\\ida-ttd), or choose a "
-                            "program inside %s\\filesys.", root);
+                    warning("The program is outside the emulation root. Name a folder to copy it to.");
                     continue;
                 }
                 if ( cwd[0] != '\0' && !visible_in_emulation_root(root, cwd) )
                 {
-                    warning("The working directory must be inside the emulation root's filesys folder too.");
+                    warning("The working folder must be inside the emulation root.");
                     continue;
                 }
             }
             else if ( !has_hives(hives) )
             {
-                warning("Sogen runs the program against a copy of the registry: choose a folder "
-                        "holding the hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...), such as an emulation "
-                        "root's registry folder or one Sogen's grab-registry.bat made.");
+                warning("Choose a folder of registry hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...).");
                 continue;
             }
             if ( qfileexist(out)
@@ -509,13 +523,13 @@ namespace idattd
                 if ( pr == PlaceResult::Differs )
                 {
                     if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nThe emulation root already has a different\n%s\n\n"
-                                           "Replace it with %s?", placed.c_str(), program) != ASKBTN_YES )
+                                           "Replace it?", placed.c_str()) != ASKBTN_YES )
                         continue;
                     pr = place_in_emulation_root(root, program, place.c_str(), true, &placed, &err);
                 }
                 if ( pr == PlaceResult::Failed )
                 {
-                    warning("The program could not be copied into the emulation root: %s", err.c_str());
+                    warning("Could not copy the program into the emulation root: %s", err.c_str());
                     continue;
                 }
                 if ( pr == PlaceResult::Placed )
@@ -550,10 +564,10 @@ namespace idattd
         {
             if ( ask_yn(ASKBTN_NO,
                         "HIDECANCEL\n"
-                        "Without an emulation root the program runs against this machine's own\n"
-                        "files: whatever it creates, changes or deletes happens for real%s.\n\n"
-                        "Record it anyway? Only for programs you trust.",
-                        req.rec.network ? ", and it reaches the real network" : "") != ASKBTN_YES )
+                        "Without an emulation root the program runs against this machine's\n"
+                        "own files: whatever it creates, changes or deletes happens for real%s.\n\n"
+                        "Record it? Only for programs you trust.",
+                        req.rec.network ? ", and it reaches the network" : "") != ASKBTN_YES )
                 return 1;
             req.allow_host = true;
         }
@@ -570,10 +584,30 @@ namespace idattd
         msg("[ida-ttd] recorded %s: %llu instruction(s) into %s%s.\n", run_program.c_str(),
             (unsigned long long)r.instructions, out,
             r.cancelled ? " (stopped early; what ran is a complete recording)" : "");
-        if ( ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) into\n%s\n\n"
-                                "Open it in a new IDA window?",
-                    (unsigned long long)r.instructions, out) == ASKBTN_YES
-          && !open_in_new_ida(out) )
+
+        // Replaying it here suits only a database of the same program: this
+        // window's analysis then goes on over the new recording.
+        const bool here_ok = ctx != nullptr && ctx->switch_trace && database_is_of(program);
+        bool here = false, elsewhere = false;
+        if ( here_ok )
+        {
+            const int choice = ask_buttons("~T~his window", "~N~ew window", "~D~on't open", ASKBTN_YES,
+                                           "Recorded %llu instruction(s) into\n%s\n\nOpen it?",
+                                           (unsigned long long)r.instructions, out);
+            here = choice == ASKBTN_YES;
+            elsewhere = choice == ASKBTN_NO;
+        }
+        else
+        {
+            elsewhere = ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) into\n%s\n\n"
+                                           "Open it in a new IDA window?",
+                               (unsigned long long)r.instructions, out) == ASKBTN_YES;
+        }
+        // Here: the replay switches to it in this database, as the Fork
+        // manager's switch does (any running session ends first).
+        if ( here )
+            ctx->switch_trace(qstring(out));
+        else if ( elsewhere && !open_in_new_ida(out) )
             warning("Could not start another IDA. Open %s from IDA's File menu.", out);
         return 1;
     }

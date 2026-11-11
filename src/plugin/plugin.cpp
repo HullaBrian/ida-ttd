@@ -254,6 +254,7 @@ namespace idattd
         m_ctx.store  = &m_bookmarks;
         m_ctx.refresh_position = [this]() { update_position_label(); };
         m_ctx.switch_trace     = [this](const qstring &path) { switch_trace(path); };
+        m_recordProgram.ctx    = &m_ctx;
 
         // Icons live as long as the plugin; the actions are registered only
         // while a trace is loaded (show_actions/hide_actions).
