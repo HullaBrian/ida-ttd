@@ -170,7 +170,7 @@
         "default": false,
         "prompt": false,
         "name": "Sogen: record programs as administrator",
-        "documentation": "Run a program recorded with TTD > Record with Sogen... with an administrator's (elevated) token. Forks keep the token of the recording they come from."
+        "documentation": "Record programs (TTD > Backends > Record a program with Sogen...) with an administrator's token: the program sees itself as elevated (high integrity, in Administrators). What it does to this machine's files and registry still has only IDA's own rights. Forks keep the token of the recording they come from."
       },
       {
         "key": "sogen_log",

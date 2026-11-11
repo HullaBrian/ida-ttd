@@ -262,7 +262,7 @@ with its section.
 | | `sogen_record_reads` | `true` | keep memory reads in new recordings and forks (off: much smaller, no read queries) |
 | | `sogen_record_writes` | `true` | keep memory writes (off: no write queries, strings, buffers or self-modifying code) |
 | | `sogen_record_executes` | `true` | keep instruction fetches (off: no coverage or execute breakpoints) |
-| | `sogen_elevated` | `false` | record programs with an administrator's token (forks keep their recording's) |
+| | `sogen_elevated` | `false` | record programs with an administrator's token: the program sees itself elevated, but its operations on this machine's files keep IDA's rights (forks keep their recording's token) |
 | | `sogen_log` | `false` | print Sogen's emulator log and the program's console output while a fork, scan or recording runs |
 | Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
 

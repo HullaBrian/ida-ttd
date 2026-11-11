@@ -267,6 +267,7 @@ int main(int argc, char **argv)
         rs.registry_dir = getenv("ITTD_PROBE_FORK_REGISTRY");
         rs.emulation_root = getenv("ITTD_PROBE_RECORD_ROOT");
         rs.network = getenv("ITTD_PROBE_NET") != NULL ? ITTD_NET_LIVE : ITTD_NET_OFFLINE;
+        rs.elevated = getenv("ITTD_PROBE_ELEVATED") != NULL ? 1 : 0;
         rs.log = probe_log;
         rs.log_ctx = &g_log_lines;
         /* Without consent, nothing runs against this machine. */

@@ -392,6 +392,21 @@ namespace idattd
         return qstring(path);
     }
 
+    // Whether IDA itself runs elevated. Sogen's "elevated" only changes the
+    // token the program sees; what it does to this machine's files is done
+    // with IDA's rights.
+    static bool ida_is_elevated()
+    {
+        HANDLE tok = nullptr;
+        if ( !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tok) )
+            return false;
+        TOKEN_ELEVATION el{};
+        DWORD n = 0;
+        const bool ok = GetTokenInformation(tok, TokenElevation, &el, sizeof(el), &n) != 0;
+        CloseHandle(tok);
+        return ok && el.TokenIsElevated != 0;
+    }
+
     // The base name of a path, without case, for comparing programs.
     static qstring base_name_lower(const char *path)
     {
@@ -442,7 +457,7 @@ namespace idattd
             "<#The hives to run against when there is no emulation root#~R~egistry hives   :F::60::>\n"
             "\n"
             "<#Let the program reach the real network#~N~etwork access:C>\n"
-            "<#Run it with an administrator's token#Run as a~d~ministrator:C>>\n"
+            "<#The program's token says administrator (high integrity). Its file and registry operations still have only IDA's own rights#Run as a~d~ministrator:C>>\n"
             "\n";
         // The last answers this session. The program starts as the database's
         // own executable, the hives as the first folder that has some, and
@@ -486,6 +501,16 @@ namespace idattd
             if ( out[0] == '\0' )
             {
                 warning("Choose the output file.");
+                continue;
+            }
+            // The replay reads it as it goes: writing over it would change
+            // the recording under the session. (The backend refuses any file
+            // that is open, in another IDA too; this says it before asking
+            // anything else.)
+            if ( ctx != nullptr && ctx->mgr != nullptr && ctx->mgr->is_active()
+              && stricmp(ctx->mgr->trace_path().c_str(), out) == 0 )
+            {
+                warning("That recording is open in this window. Choose another output file.");
                 continue;
             }
             if ( root[0] != '\0' )
@@ -572,6 +597,10 @@ namespace idattd
                 return 1;
             req.allow_host = true;
         }
+
+        if ( req.rec.elevated && !ida_is_elevated() )
+            msg("[ida-ttd] the program's token says administrator, but IDA is not running elevated: "
+                "operations needing real administrator rights on this machine's files still fail.\n");
 
         ForkResult r = run_record(req);
         if ( !r.ok )

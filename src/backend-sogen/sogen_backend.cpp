@@ -2552,6 +2552,61 @@ namespace
         });
     }
 
+    // ------------------------------------------------------------ output files
+
+    // A recording being replayed is read through std::ifstream, which shares
+    // read and write but not delete: a new recording written over it would
+    // change it under its reader (in this IDA or another). An exclusive open
+    // fails on such a file, so it is refused before anything runs.
+    void refuse_open_output(const std::filesystem::path &p)
+    {
+        HANDLE h = CreateFileW(p.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if ( h != INVALID_HANDLE_VALUE )
+        {
+            CloseHandle(h);
+            return;
+        }
+        if ( GetLastError() == ERROR_SHARING_VIOLATION || GetLastError() == ERROR_LOCK_VIOLATION )
+            throw coded_error(ITTD_E_BAD_ARG, path_utf8(p) + " is open, probably as a recording being replayed "
+                                              "(in this IDA or another): record into another file, or close it first");
+    }
+
+    // A recording goes into a file beside its target and is moved into place
+    // once complete, so one that fails leaves the old file as it was, and
+    // the target is never half-written. Replacing needs delete access, which
+    // a reader that opened the target meanwhile denies: the complete
+    // recording then stays under its .partial name, and the error says so.
+    std::filesystem::path partial_path(const std::filesystem::path &p)
+    {
+        return std::filesystem::path(p.native() + L".partial");
+    }
+
+    // Deletes the .partial file of a recording that did not complete; one
+    // that did is kept (kept = true) even when it cannot be moved into place.
+    struct partial_guard
+    {
+        std::filesystem::path path;
+        bool kept = false;
+        ~partial_guard()
+        {
+            if ( !kept )
+            {
+                std::error_code ec;
+                std::filesystem::remove(path, ec);
+            }
+        }
+    };
+
+    void move_into_place(const std::filesystem::path &partial, const std::filesystem::path &p)
+    {
+        if ( MoveFileExW(partial.c_str(), p.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) )
+            return;
+        const DWORD err = GetLastError();
+        throw coded_error(ITTD_E_FAILED, "the recording is complete in " + path_utf8(partial) + ", but "
+                                         + path_utf8(p) + " could not be replaced (Windows error "
+                                         + std::to_string(err) + "): it was opened while the recording ran");
+    }
+
     int fork_record(ittd_fork *hf, const char *path, uint64_t max_instructions, const char *note,
                     const ittd_progress *progress, uint64_t *out_instructions)
     {
@@ -2562,9 +2617,11 @@ namespace
         {
             if ( f->recorded )
                 throw std::runtime_error("this fork has already run");
+            const std::filesystem::path target = utf8_path(path);
+            refuse_open_output(target);
             f->recorded = true;
             ttd::record_settings rs{};
-            rs.path             = utf8_path(path);
+            rs.path             = partial_path(target);
             rs.max_instructions = max_instructions;
             rs.access_mask      = f->access_kinds;
             if ( f->checkpoint_interval != 0 )
@@ -2589,7 +2646,10 @@ namespace
                     return stopped;
                 };
             uint64_t before = f->emu->get_executed_instructions();
+            partial_guard guard{ rs.path };
             ttd::record(*f->emu, rs, interrupted);
+            guard.kept = true;
+            move_into_place(rs.path, target);
             if ( out_instructions != nullptr )
                 *out_instructions = f->emu->get_executed_instructions() - before;
             // A cancelled recording is still a complete, readable trace of
@@ -2760,7 +2820,9 @@ namespace
             auto emu = make_emulator(std::move(app), es, settings, nullptr);
 
             ttd::record_settings rs{};
-            rs.path                = utf8_path(req->out_path);
+            const std::filesystem::path target = utf8_path(req->out_path);
+            refuse_open_output(target);
+            rs.path                = partial_path(target);
             rs.access_mask         = setting_access_kinds(settings);
             rs.checkpoint_interval = setting_checkpoint_interval(settings, rs.checkpoint_interval);
             rs.max_instructions    = req->max_instructions;
@@ -2770,7 +2832,10 @@ namespace
             std::function<bool()> interrupted;
             if ( progress != nullptr && progress->cancelled != nullptr )
                 interrupted = [progress]() { return progress->cancelled(progress->ud) != 0; };
+            partial_guard guard{ rs.path };
             ttd::record(*emu, rs, interrupted);
+            guard.kept = true;
+            move_into_place(rs.path, target);
             if ( out_instructions != nullptr )
                 *out_instructions = emu->get_executed_instructions();
             return ITTD_OK;
