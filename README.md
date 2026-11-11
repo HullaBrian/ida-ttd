@@ -128,9 +128,17 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   emulation root it starts with is the `sogen_emulation_root` setting. The
   output file is named after the program and the time
   (`name-YYYYMMDD-HHMMSS.sogttd`), so recording again makes a new file, and
-  the Output window says how long the recording took. The checkpoint
+  the Output window says how long the recording took. The program starts
+  at the current date and time (otherwise 1 January 1970, the
+  `sogen_start_now` setting), so date checks such as certificate validity
+  behave as on a real machine; the clock then advances with the
+  instructions run, and replays and forks see the same dates. The checkpoint
   interval and what is recorded (reads, writes, instruction fetches) are
-  settings, and apply to forks too.
+  settings, and apply to forks too. With `sogen_log` on, the Output window
+  also names each service the program messaged that Sogen does not emulate,
+  usually where a program that fails silently stopped. For WinINet
+  programs, an emulation root needs `Windows\SystemResources\wininet.dll.mun`
+  (Sogen's `create-root.bat` copies it since `f848464d`).
 
 The value origin graph and the fork manager are drawn by the plugin's own graph
 window (IDAPython with PySide6, like the call tree and the heatmap): drag to
@@ -268,7 +276,8 @@ with its section.
 | | `sogen_record_writes` | `true` | keep memory writes (off: no write queries, strings, buffers or self-modifying code) |
 | | `sogen_record_executes` | `true` | keep instruction fetches (off: no coverage or execute breakpoints) |
 | | `sogen_elevated` | `false` | record programs with an administrator's token: the program sees itself elevated, but its operations on this machine's files keep IDA's rights (forks keep their recording's token) |
-| | `sogen_log` | `false` | print Sogen's emulator log and the program's console output while a fork, scan or recording runs |
+| | `sogen_log` | `false` | print Sogen's emulator log and the program's console output while a fork, scan or recording runs, and the messages sent to services Sogen does not emulate |
+| | `sogen_start_now` | `true` | start new recordings at the date and time recording begins rather than 1 January 1970; replays and forks see the same dates |
 | Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
 
 Settings are read through the `ida-settings` Python package, which HCLI

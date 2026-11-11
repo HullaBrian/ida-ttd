@@ -505,7 +505,8 @@ namespace idattd
             "<#The hives to run against when there is no emulation root#~R~egistry hives   :F::60::>\n"
             "\n"
             "<#Let the program reach the real network#~N~etwork access:C>\n"
-            "<#The program's token says administrator (high integrity). Its file and registry operations still have only IDA's own rights#Run as a~d~ministrator:C>>\n"
+            "<#The program's token says administrator (high integrity). Its file and registry operations still have only IDA's own rights#Run as a~d~ministrator:C>\n"
+            "<#The program sees the date and time recording starts. Off, it starts on 1 January 1970. Replays see the same dates either way#S~t~art at the current date:C>>\n"
             "\n";
         // The last answers this session. The program starts as the database's
         // own executable, the hives as the first folder that has some, and
@@ -538,7 +539,8 @@ namespace idattd
         qstring run_program;        // the program as recorded: a copy in the root, or itself
         sval_t count = s_count;
         const RecordOptions defaults = recording_options();
-        ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0);
+        ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0)
+                      | (settings().sogen_start_now ? 4 : 0);
         for ( ;; )
         {
             if ( ask_form(form, program, &args, cwd, out, &count, root, &place, hives, &checks) <= 0 )
@@ -654,6 +656,9 @@ namespace idattd
             msg("[ida-ttd] the program's token says administrator, but IDA is not running elevated: "
                 "operations needing real administrator rights on this machine's files still fail.\n");
 
+        // Taken now, after the questions, so it is when the program starts.
+        if ( (checks & 4) != 0 )
+            req.start_time = (int64_t)time(nullptr);
         const uint64 started = GetTickCount64();
         ForkResult r = run_record(req);
         const qstring took = duration_text(GetTickCount64() - started);

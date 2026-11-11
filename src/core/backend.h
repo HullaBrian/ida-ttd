@@ -356,6 +356,7 @@ namespace idattd
         qstring  registry_dir;              // the hives it runs against (no emulation root)
         qstring  emulation_root;            // empty: against this machine's files
         bool     allow_host = false;        // consent to run against this machine's files
+        int64_t  start_time = 0;            // seconds since 1970 UTC the program starts at; 0: 1970
         RecordOptions rec;
     };
 

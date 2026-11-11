@@ -79,6 +79,28 @@ Since 2026-11-09 it is built from TTD-Club/sogen `main` at `253c9488`
 - Pass `-DSOGEN_ENABLE_SCCACHE=OFF` to build without sccache even where it
   is installed.
 
+Since 2026-11-11 the pin is `f848464d` (`ttd/next`; `main` is still at
+`253c9488`). Nothing in the build changes; what does:
+
+- `emulator_settings::relative_time_start`: where a relative-time run's
+  system time starts. `record_program` sets it from
+  `ittd_record_request::start_time`. The emulator's saved state carries it,
+  so replays and forks start at the recording's own date and need nothing
+  set. A program sees the start plus Sogen's simulated uptime (about 44
+  minutes), not the start itself.
+- That saved state grew without a trace format change: v9 recordings made
+  before `f848464d` still open and answer every query, but **do not fork**
+  ("Reading from serialized buffer mismatches written data!").
+- A message to a port Sogen does not emulate is reported once per
+  connection through `on_generic_access` ("Rejecting message to unknown
+  port"). The backend passes that one, and "Opening unsupported device", to
+  the emulator log (`sogen_log`), and none of the other generic accesses.
+- A checkpoint holding a file open in a folder deleted later now restores
+  (the folders are recreated too).
+- `create-root.bat` copies each collected DLL's `SystemResources\<dll>.mun`.
+  WinINet's start-up fails without `wininet.dll.mun`, so an emulation root
+  made before this needs it copied in, or the root made again.
+
 - **The cache values matter.** `backend-sogen.vcxproj` compiles Sogen's headers
   with the defines this configuration produces (`SOGEN_BUILD_STATIC=1`,
   `SOGEN_ENABLE_RUST_CODE=0`, ...). A different configuration needs the same
@@ -206,6 +228,32 @@ its hives holds only their 340-byte headers unless the program opened them;
 delete them from a root you mean to share.
 
 ## Results
+
+Run on 2026-11-11 against `f848464d`, Release, on the `ttd-traces`
+recordings made that day with Sogen's analyzer (host mode, test-sample with
+the network live) and on a program recorded with `record_program`: 0 checks
+failed. The 2026-11-09 recordings fail only their forks, as expected.
+
+| Check | ttd-step-sample (5.9M) | test-sample (31.5M) |
+| --- | --- | --- |
+| syscalls | 577, all named | 5,493, all named |
+| self-modifying code | 11 hits, 0.6 s | 1 hit, 3.2 s |
+| fork in the middle, open | 360 ms | 464 ms |
+| strings (8+ characters) | 27,804, 1.6 s | 122,571, 9.0 s |
+| buffers | 515 | 936 |
+| checkpoint intervals verified | 11 of 11 | 61 of 63 |
+
+test-sample's two failing intervals are around 20,000,000. Before it, a
+replay cannot map a file the program has just created (forks from
+19,975,579 to 20,000,000 fail). After it, the state at 20,500,000 differs
+slightly, and forks still work. The 2026-11-09 recording gave 35
+self-modifying hits: Windows updated the system DLLs in between, and a host
+recording runs on this machine's DLLs.
+
+**Start time.** A program printing `GetSystemTime` and `QueryInterruptTime`
+around `Sleep(60000)`, recorded with `start_time` at the current time, saw
+2026-11-11 18:44:58 and then 18:46:10. Without it, it saw 1970-01-01 00:43:53
+and 00:45:05. The interrupt time moved 72 s in both.
 
 Run on 2026-11-09 against TTD-Club/sogen `253c9488`, Release, on recordings
 made with the backend's own `record_program` (`ITTD_PROBE_RECORD`, offline,

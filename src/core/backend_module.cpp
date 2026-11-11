@@ -1040,6 +1040,7 @@ namespace idattd
         rq.working_dir      = req.working_dir.empty() ? nullptr : req.working_dir.c_str();
         rq.out_path         = req.path.c_str();
         rq.max_instructions = req.max_instructions;
+        rq.start_time       = req.start_time;
         uint64_t ran = 0;
         // Module-level: its errors are last_error(NULL), not the open
         // recording's.

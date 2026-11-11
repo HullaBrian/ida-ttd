@@ -28,6 +28,7 @@ namespace idattd
         bool     sogen_record_executes = true;
         bool     sogen_elevated    = false;
         bool     sogen_log         = false;
+        bool     sogen_start_now   = true;      // new recordings start at today's date, not 1970
         bool     diagnostics_log   = true;
         bool     memmap_flag_code  = true;      // highlight executable memory outside modules
     };

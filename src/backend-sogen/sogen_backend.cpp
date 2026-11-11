@@ -2366,7 +2366,22 @@ namespace
         sogen::emulator_callbacks cbs{};
         const std::shared_ptr<log_relay> relay = make_log_relay(settings);
         if ( relay != nullptr )
+        {
             cbs.on_stdout = [relay](std::string_view data) { relay->add(data); };
+            // Most generic accesses are every file and key the program opens;
+            // these two say the emulator has no answer for something, which is
+            // where a program that fails quietly usually stopped.
+            cbs.on_generic_access = [relay](std::string_view type, std::u16string_view name)
+            {
+                if ( type != "Rejecting message to unknown port" && type != "Opening unsupported device" )
+                    return;
+                std::string line(type);
+                line += ": ";
+                line += sogen::u16_to_u8(name);
+                line += "\n";
+                relay->add(line);
+            };
+        }
         auto emu = app.has_value()
                  ? std::make_unique<sogen::windows_emulator>(sogen::unicorn::create_x86_64_emulator(), std::move(*app),
                                                              es, std::move(cbs), std::move(ifs))
@@ -2814,6 +2829,10 @@ namespace
             es.registry_directory = registry;
             es.load_registry      = true;
             es.elevated           = setting_elevated(settings);
+            // Where the relative clock's system time starts (1970 at 0). The
+            // checkpoints carry it, so a replay needs nothing more.
+            if ( req->start_time > 0 )
+                es.relative_time_start = std::chrono::system_clock::time_point(std::chrono::seconds(req->start_time));
             // From the start: there is no recorded part to reach first.
             es.network = setting_network(settings) == ITTD_NET_LIVE ? sogen::network::network_mode::live
                                                                      : sogen::network::network_mode::offline;
@@ -2829,6 +2848,8 @@ namespace
             rs.manifest = { { "tool", "ida-ttd" } };
             if ( es.network == sogen::network::network_mode::live )
                 rs.manifest.emplace_back("network", "live");
+            if ( req->start_time > 0 )
+                rs.manifest.emplace_back("start_time", std::to_string(req->start_time));
             std::function<bool()> interrupted;
             if ( progress != nullptr && progress->cancelled != nullptr )
                 interrupted = [progress]() { return progress->cancelled(progress->ud) != 0; };

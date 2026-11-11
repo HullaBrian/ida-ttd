@@ -1373,12 +1373,13 @@ namespace idattd
     }
 
     // an.record PROGRAM PATH [N] [args="..."] [cwd=DIR] [registry=DIR]
-    // [root=DIR] [host] [net] [ckpt=N] [access=rwx] [elevated] [log]: run
-    // PROGRAM from its start in Sogen's emulator and record N instructions
-    // (hex; none or 0: until it exits) into PATH (TTD > Backends > Record a
-    // program with Sogen). Without root=, 'host' is the consent to run it
-    // against this machine's files; the hives are registry=, else the
-    // first known folder that holds some.
+    // [root=DIR] [host] [start=now|1970|DATE] [net] [ckpt=N] [access=rwx]
+    // [elevated] [log]: run PROGRAM from its start in Sogen's emulator and
+    // record N instructions (hex; none or 0: until it exits) into PATH (TTD >
+    // Backends > Record a program with Sogen). Without root=, 'host' is the
+    // consent to run it against this machine's files; the hives are
+    // registry=, else the first known folder that holds some. start= is the
+    // date it starts at (default: the sogen_start_now setting).
     static void cmd_an_record(const Args &a, JObj &out)
     {
         RecordRequest req;
@@ -1386,6 +1387,7 @@ namespace idattd
         req.application = a.at(0);
         req.path        = a.at(1);
         qstring place;
+        qstring start = settings().sogen_start_now ? "now" : "1970";
         bool replace = false;
         for ( size_t i = 2; i < a.count(); i++ )
         {
@@ -1407,11 +1409,39 @@ namespace idattd
                 req.emulation_root = t.substr(5);
             else if ( t == "host" )
                 req.allow_host = true;
+            else if ( t.starts_with("start=") )
+                start = t.substr(6);
             else if ( i == 2 && parse_u64(t, &n) )
                 req.max_instructions = n;
             else
-                fail("'%s' is not N, args=, cwd=, registry=, root=, place=, replace, host, net, ckpt=N, "
+                fail("'%s' is not N, args=, cwd=, registry=, root=, place=, replace, host, start=, net, ckpt=N, "
                      "access=rwx, elevated or log", t.c_str());
+        }
+        // start=now, start=1970 or start=YYYY-MM-DDTHH:MM:SS (UTC): the
+        // system time the program starts at.
+        if ( start == "now" )
+        {
+            req.start_time = (int64_t)time(nullptr);
+        }
+        else if ( start != "1970" )
+        {
+            int y = 0, mo = 0, d = 0, h = 0, mi = 0, s = 0;
+            char tail = '\0';
+            const int got = sscanf(start.c_str(), "%4d-%2d-%2dT%2d:%2d:%2d%c", &y, &mo, &d, &h, &mi, &s, &tail);
+            struct tm tm = {};
+            tm.tm_year = y - 1900;
+            tm.tm_mon  = mo - 1;
+            tm.tm_mday = d;
+            tm.tm_hour = h;
+            tm.tm_min  = mi;
+            tm.tm_sec  = s;
+            const bool shape = got == 6 || (got == 7 && tail == 'Z');
+            const time_t when = shape && y >= 1970 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31
+                             && h <= 23 && mi <= 59 && s <= 59 ? _mkgmtime(&tm) : (time_t)-1;
+            // _mkgmtime normalises 31 February into March: refuse that.
+            if ( when == (time_t)-1 || tm.tm_mday != d )
+                fail("'start=%s': give now, 1970 or a UTC time as YYYY-MM-DDTHH:MM:SS", start.c_str());
+            req.start_time = (int64_t)when;
         }
         // place=DIR: a program outside the emulation root is copied into it
         // first (the guest sees only the root).
@@ -2066,7 +2096,7 @@ namespace idattd
         { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },
         { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] record the fork being prepared" },
         { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] [REG=V ...] [mem:EA=HEX ...] fork here" },
-        { "an.record",      cmd_an_record,      "PROGRAM PATH [N] [args=\"...\"] [cwd=DIR] [registry=DIR] [root=DIR] [place=DIR] [replace] [host] [net] [ckpt=N] [access=rwx] [elevated] [log] record a program with Sogen" },
+        { "an.record",      cmd_an_record,      "PROGRAM PATH [N] [args=\"...\"] [cwd=DIR] [registry=DIR] [root=DIR] [place=DIR] [replace] [host] [start=now|1970|DATE] [net] [ckpt=N] [access=rwx] [elevated] [log] record a program with Sogen" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
         { "drv.info",       cmd_drv_info,       "trace info and capabilities" },
@@ -2129,6 +2159,7 @@ namespace idattd
            .boolean("sogen_record_executes", s.sogen_record_executes)
            .boolean("sogen_elevated", s.sogen_elevated)
            .boolean("sogen_log", s.sogen_log)
+           .boolean("sogen_start_now", s.sogen_start_now)
            .str("sogen_emulation_root", s.sogen_emulation_root)
            .boolean("diagnostics_log", s.diagnostics_log)
            .boolean("memmap_flag_code", s.memmap_flag_code);

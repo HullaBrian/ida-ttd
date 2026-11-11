@@ -241,8 +241,9 @@ int main(int argc, char **argv)
        first (record_program), then probe the result. Its hives come from
        ITTD_PROBE_FORK_REGISTRY, or ITTD_PROBE_RECORD_ROOT names an emulation
        root; ITTD_PROBE_RECORD_ARGS, ITTD_PROBE_RECORD_MAX (instructions),
-       ITTD_PROBE_NET=1 (the real network) and ITTD_PROBE_LOG=1 (print the
-       emulator's log) as named. */
+       ITTD_PROBE_NET=1 (the real network), ITTD_PROBE_START_TIME (seconds
+       since 1970 UTC) and ITTD_PROBE_LOG=1 (print the emulator's log) as
+       named. */
     if ( getenv("ITTD_PROBE_RECORD") != NULL )
     {
         ittd_record_request rq;
@@ -261,6 +262,9 @@ int main(int argc, char **argv)
         rq.out_path = argv[2];
         rq.max_instructions = getenv("ITTD_PROBE_RECORD_MAX") != NULL
                             ? strtoull(getenv("ITTD_PROBE_RECORD_MAX"), NULL, 0) : 0;
+        /* Seconds since 1970 UTC; unset starts the run at 1970. */
+        rq.start_time = getenv("ITTD_PROBE_START_TIME") != NULL
+                      ? (int64_t)strtoll(getenv("ITTD_PROBE_START_TIME"), NULL, 0) : 0;
         memset(&rs, 0, sizeof(rs));
         rs.size = sizeof(rs);
         rs.flags = ITTD_FORK_ALLOW_HOST;
@@ -1633,6 +1637,8 @@ int main(int argc, char **argv)
             t0 = now_ms();
             rc = api->fork_open(B, at2, &fs, NULL, &fk);
             check(rc == ITTD_OK, "  a fork with recording settings opens");
+            if ( rc != ITTD_OK )
+                printf("  at %s: %s\n", pos_text(at2), api->last_error(B));
             if ( rc == ITTD_OK )
             {
                 rc = api->fork_record(fk, out2, max2, "probe: settings", NULL, &ran2);
@@ -1642,15 +1648,48 @@ int main(int argc, char **argv)
                        (unsigned long long)ran2, file_size_of(out2), file_size_of(out_path),
                        g_log_lines - lines_before, now_ms() - t0);
                 check(rc == ITTD_OK && ran2 > 0, "  it records");
-                /* Only comparable when both cover the same stretch. */
-                if ( getenv("ITTD_PROBE_FORK_AT") == NULL && getenv("ITTD_PROBE_FORK_MAX") == NULL )
-                    check(file_size_of(out2) > 0 && file_size_of(out2) < file_size_of(out_path),
-                          "  without reads the recording is smaller");
                 {
+                    /* Asked directly rather than by comparing sizes with the
+                       first fork: that one changed a register and ran
+                       differently, and 20,000 instructions of reads weigh a
+                       few KB against megabytes of checkpoint. Around the
+                       fork position's stack (which 20,000 instructions all
+                       but certainly read) and its code. */
                     ittd_backend *child = api->open(out2);
                     check(child != NULL, "  and opens");
                     if ( child != NULL )
+                    {
+                        ittd_trace_info ci;
+                        ittd_position_range span;
+                        ittd_access acc2[1];
+                        size_t nr = 0, nx = 0;
+                        int tr = 0;
+                        const uint64_t sp = fr.gp[ITTD_REG_RSP], ip = fr.gp[ITTD_REG_RIP];
+                        api->info(child, &ci);
+                        span.first = ci.first;
+                        span.last  = ci.last;
+                        api->query_accesses(child, sp - 0x10000, sp + 0x10000, ITTD_ACCESS_READ, span, acc2, 1,
+                                            &nr, &tr, NULL);
+                        api->query_accesses(child, ip - 0x10000, ip + 0x10000, ITTD_ACCESS_EXEC, span, acc2, 1,
+                                            &nx, &tr, NULL);
+                        printf("  its reads near the stack: %zu, executes near rip: %zu\n", nr, nx);
+                        check(nr == 0 && nx > 0, "  it has executes and no reads");
                         api->close(child);
+                        /* The control: the first fork, recorded with reads,
+                           has some there, or the check above proves nothing. */
+                        child = api->open(out_path);
+                        if ( child != NULL )
+                        {
+                            size_t nf = 0;
+                            api->info(child, &ci);
+                            span.first = ci.first;
+                            span.last  = ci.last;
+                            api->query_accesses(child, sp - 0x10000, sp + 0x10000, ITTD_ACCESS_READ, span, acc2, 1,
+                                                &nf, &tr, NULL);
+                            check(nf > 0, "  while the first fork, with reads, has some there");
+                            api->close(child);
+                        }
+                    }
                 }
             }
             memset(&fs.network, 0, sizeof(fs) - offsetof(ittd_fork_settings, network));

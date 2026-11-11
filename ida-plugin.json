@@ -182,6 +182,15 @@
         "documentation": "Record programs (TTD > Backends > Record a program with Sogen...) with an administrator's token: the program sees itself as elevated (high integrity, in Administrators). What it does to this machine's files and registry still has only IDA's own rights. Forks keep the token of the recording they come from."
       },
       {
+        "key": "sogen_start_now",
+        "type": "boolean",
+        "required": false,
+        "default": true,
+        "prompt": false,
+        "name": "Sogen: start recordings at the current date",
+        "documentation": "Record programs (TTD > Backends > Record a program with Sogen...) starting at the date and time recording begins, so the program sees a real date (certificate validity, a kill date). Off: they start at 1 January 1970. Either way the clock then advances with the instructions run, and replays and forks see the same dates as the recording."
+      },
+      {
         "key": "sogen_log",
         "type": "boolean",
         "required": false,

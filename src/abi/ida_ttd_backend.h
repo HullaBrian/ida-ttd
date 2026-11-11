@@ -66,9 +66,9 @@ extern "C" {
  * layout alive. 2: ittd_module gained timestamp and checksum; the table gained
  * 'size' and the entries after query_frame_entry. 3: ittd_fork_settings
  * gained the network, checkpoint, access, elevation and log fields; the table
- * gained record_program.
+ * gained record_program. 4: ittd_record_request gained start_time.
  */
-#define ITTD_ABI_VERSION 3u
+#define ITTD_ABI_VERSION 4u
 
 #define ITTD_BADADDR 0xFFFFFFFFFFFFFFFFull
 
@@ -671,6 +671,12 @@ typedef struct ittd_record_request
     const char *out_path;
     /* Instructions to record; 0 runs until the program exits. */
     uint64_t    max_instructions;
+    /* The system time the program starts at, in seconds since 1970-01-01
+     * UTC; 0 starts it at 1970, as a recording's relative clock otherwise
+     * does. Only the date moves: the clock still advances with the
+     * instructions run, and every checkpoint keeps the start, so replays
+     * and forks see the same dates. */
+    int64_t     start_time;
 } ittd_record_request;
 
 /* A string the program had in memory at some point: ASCII or UTF-16LE text

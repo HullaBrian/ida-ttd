@@ -4,7 +4,8 @@ Settled 2026-10-22, against Sogen `8a9fb161` and TTD Replay SDK 0.9.5;
 checked again 2026-11-09 for Sogen `253c9488` (the PDB still holds no
 minidump_cpp or flatbuffers code; the DLL now also contains Unicorn's AArch64
 target, under Unicorn's same terms; the new `deps/libadrenotools`, BSD-2-Clause,
-is Android-only and in the source archive only). Not legal advice; where a
+is Android-only and in the source archive only), and 2026-11-11 for
+`f848464d` (eight source files changed, no dependency). Not legal advice; where a
 point is a reading rather than a fact, it says so.
 
 **In short:** ida-ttd is `Apache-2.0 OR GPL-2.0-only`, at the recipient's

@@ -161,7 +161,7 @@ def _record_options(net, checkpoint_interval, access, elevated, log):
 
 def record(program, path, max_instructions=0, args=None, cwd=None, registry=None,
            root=None, host=False, net=None, checkpoint_interval=None, access=None,
-           elevated=False, log=False, place=None, replace=False):
+           elevated=False, log=False, place=None, replace=False, start=None):
     """Run 'program' from its start in Sogen's emulator and record it into
     'path' (TTD > Backends > Record a program with Sogen), with no recording
     open. Without 'root' (an emulation root) it runs against this machine's
@@ -169,13 +169,15 @@ def record(program, path, max_instructions=0, args=None, cwd=None, registry=None
     the first known one). net, checkpoint_interval, access ("rwx") default to
     the Sogen settings. With a root, 'place' (a guest folder such as
     "C:\\ida-ttd") copies a program from outside the root into it first;
-    replace=True overwrites a different file already there. Returns
+    replace=True overwrites a different file already there. 'start' is
+    "now", "1970" or a UTC "YYYY-MM-DDTHH:MM:SS", the date the program
+    starts at (default: the sogen_start_now setting). Returns
     {"instructions", "cancelled", "path", "network", "program", "placed"}."""
     words = [program, path]
     if max_instructions:
         words.append(max_instructions)
     for key, value in (("args", args), ("cwd", cwd), ("registry", registry), ("root", root),
-                       ("place", place)):
+                       ("place", place), ("start", start)):
         if value:
             words.append("%s=%s" % (key, value))
     if host:
