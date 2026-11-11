@@ -425,20 +425,21 @@ namespace idattd
             warning("No installed backend can record programs (the Sogen backend can).");
             return 1;
         }
-        // Short labels, the details in the tooltips: IDA lines up the
-        // fields of consecutive lines by their labels.
+        // Short labels, the details in the tooltips. IDA places a field
+        // right after its label's characters, so the labels are padded with
+        // spaces to one length (17, the longest) to line the fields up.
         static const char form[] =
             "Record a program with Sogen\n"
             "\n"
-            "<#The program to run from its start#~P~rogram:f:0:60::>\n"
-            "<#Passed to the program as typed#~A~rguments:q::60::>\n"
-            "<#Empty for the program's own folder#~W~orking folder:F::60::>\n"
-            "<#The new Sogen recording#~O~utput file:f:1:60::>\n"
+            "<#The program to run from its start#~P~rogram          :f:0:60::>\n"
+            "<#Passed to the program as typed#~A~rguments        :q::60::>\n"
+            "<#Empty for the program's own folder#~W~orking folder   :F::60::>\n"
+            "<#The new Sogen recording#~O~utput file      :f:1:60::>\n"
             "<#0 records until the program exits#~I~nstruction limit:D::16::>\n"
             "\n"
-            "<#The folder holding filesys and registry. Empty runs the program against this machine's own files#~E~mulation root:F::60::>\n"
+            "<#The folder holding filesys and registry. Empty runs the program against this machine's own files#~E~mulation root   :F::60::>\n"
             "<#The guest folder a program from outside the root is copied to#~C~opy into root at:q::60::>\n"
-            "<#The hives to run against when there is no emulation root#~R~egistry hives:F::60::>\n"
+            "<#The hives to run against when there is no emulation root#~R~egistry hives   :F::60::>\n"
             "\n"
             "<#Let the program reach the real network#~N~etwork access:C>\n"
             "<#Run it with an administrator's token#Run as a~d~ministrator:C>>\n"
