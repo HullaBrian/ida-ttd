@@ -802,10 +802,43 @@ namespace idattd
     // The emulator's log (RecordOptions::log): each line through the
     // backends' own log, which queues lines from a worker thread for the main
     // one.
+    // The emulator log's last lines, for a wait box to show while the work
+    // runs. Written from the backend's thread, read from the main one.
+    static const size_t       LOG_TAIL_MAX = 32;
+    static std::mutex         g_tail_mtx;
+    static std::deque<qstring> g_tail;
+    static uint64_t           g_tail_seq = 0;
+
+    uint64_t emulator_log_tail(size_t n, qstrvec_t *out)
+    {
+        std::lock_guard<std::mutex> lock(g_tail_mtx);
+        if ( out != nullptr )
+        {
+            out->clear();
+            const size_t from = g_tail.size() > n ? g_tail.size() - n : 0;
+            for ( size_t i = from; i < g_tail.size(); i++ )
+                out->push_back(g_tail[i]);
+        }
+        return g_tail_seq;
+    }
+
+    void clear_emulator_log_tail()
+    {
+        std::lock_guard<std::mutex> lock(g_tail_mtx);
+        g_tail.clear();
+    }
+
     static void emulator_log(void *, const char *line)
     {
         if ( line == nullptr )
             return;
+        {
+            std::lock_guard<std::mutex> lock(g_tail_mtx);
+            g_tail.emplace_back(line);
+            if ( g_tail.size() > LOG_TAIL_MAX )
+                g_tail.pop_front();
+            g_tail_seq++;
+        }
         qstring text;
         text.sprnt("[emulator] %s\n", line);
         backend_log(nullptr, text.c_str());

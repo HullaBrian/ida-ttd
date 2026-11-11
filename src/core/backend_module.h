@@ -167,4 +167,10 @@ namespace idattd
     // Print what backends logged from other threads, when called on the main
     // thread (run_query's wait loop calls it).
     void flush_backend_log();
+    // The emulator log's (RecordOptions::log) last 'n' lines, oldest first,
+    // into 'out' (NULL: none). Returns how many lines have been logged so
+    // far, so a caller can tell whether anything new came. Any thread.
+    uint64_t emulator_log_tail(size_t n, qstrvec_t *out);
+    // Forget the last lines, before work whose own lines are to be shown.
+    void clear_emulator_log_tail();
 }

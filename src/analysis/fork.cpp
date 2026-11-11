@@ -417,6 +417,13 @@ namespace idattd
             return result;
         }
         bool started = false;
+        // A recording can run for hours with nothing to count towards, so
+        // the box says how long it has run, and with the log on, what the
+        // program is doing.
+        QueryShow show;
+        show.elapsed   = true;
+        show.log_lines = req.rec.log ? 8 : 0;
+        clear_emulator_log_tail();
         run_query("Recording the program in Sogen's emulator", [&](ProgressSink *p)
         {
             started = true;
@@ -425,7 +432,7 @@ namespace idattd
             q.ran = result.ok;
             q.cancelled = result.cancelled;
             return q;
-        });
+        }, true, &show);
         if ( !started )
         {
             result.ok    = false;

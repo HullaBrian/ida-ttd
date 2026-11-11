@@ -127,8 +127,11 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   at first), and asks before replacing a different file there. The
   emulation root it starts with is the `sogen_emulation_root` setting. The
   output file is named after the program and the time
-  (`name-YYYYMMDD-HHMMSS.sogttd`), so recording again makes a new file, and
-  the Output window says how long the recording took. The program starts
+  (`name-YYYYMMDD-HHMMSS.sogttd`), so recording again makes a new file.
+  While it records, the wait box shows how long it has been running, and
+  with Show Sogen's log (the `sogen_log` setting at first) the log's last
+  lines too; the Output window then has the whole log, and says how long
+  the recording took. The program starts
   at the current date and time (otherwise 1 January 1970, the
   `sogen_start_now` setting), so date checks such as certificate validity
   behave as on a real machine; the clock then advances with the

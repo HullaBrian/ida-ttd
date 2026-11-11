@@ -24,8 +24,18 @@ namespace idattd
     // be asked for while one runs, or while a movement's wait box is up. Such
     // a query is refused without calling the backend (a message says why) and
     // comes back with 'ran' false and 'cancelled' true.
+    //
+    // 'show', when given, adds lines under that one while the work runs.
+    struct QueryShow
+    {
+        bool   elapsed   = false;   // "Running for 1 min 05 s"
+        size_t log_lines = 0;       // the emulator log's last lines (emulator_log_tail)
+    };
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
-                          bool cancellable = true);
+                          bool cancellable = true, const QueryShow *show = nullptr);
+
+    // A running time to the second: "45 s", "3 min 07 s", "2 h 05 min 09 s".
+    qstring clock_text(uint64 ms);
 
     // A query is running (run_query is waiting for it).
     bool query_in_progress();

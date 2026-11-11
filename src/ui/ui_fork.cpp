@@ -506,7 +506,8 @@ namespace idattd
             "\n"
             "<#Let the program reach the real network#~N~etwork access:C>\n"
             "<#The program's token says administrator (high integrity). Its file and registry operations still have only IDA's own rights#Run as a~d~ministrator:C>\n"
-            "<#The program sees the date and time recording starts. Off, it starts on 1 January 1970. Replays see the same dates either way#S~t~art at the current date:C>>\n"
+            "<#The program sees the date and time recording starts. Off, it starts on 1 January 1970. Replays see the same dates either way#S~t~art at the current date:C>\n"
+            "<#The last lines of Sogen's log while it records, and the whole log in the Output window. Can slow a long recording#Show Sogen's ~l~og:C>>\n"
             "\n";
         // The last answers this session. The program starts as the database's
         // own executable, the hives as the first folder that has some, and
@@ -540,7 +541,7 @@ namespace idattd
         sval_t count = s_count;
         const RecordOptions defaults = recording_options();
         ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0)
-                      | (settings().sogen_start_now ? 4 : 0);
+                      | (settings().sogen_start_now ? 4 : 0) | (defaults.log ? 8 : 0);
         for ( ;; )
         {
             if ( ask_form(form, program, &args, cwd, out, &count, root, &place, hives, &checks) <= 0 )
@@ -639,6 +640,7 @@ namespace idattd
         req.rec              = defaults;
         req.rec.network      = (checks & 1) != 0;
         req.rec.elevated     = (checks & 2) != 0;
+        req.rec.log          = (checks & 8) != 0;
         // Each time: consent for one program is not consent for the next.
         if ( root[0] == '\0' )
         {

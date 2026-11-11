@@ -119,8 +119,61 @@ namespace idattd
         return g_queryRunning;
     }
 
+    qstring clock_text(uint64 ms)
+    {
+        const unsigned long long s = ms / 1000;
+        qstring t;
+        if ( s >= 3600 )
+            t.sprnt("%llu h %02llu min %02llu s", s / 3600, s / 60 % 60, s % 60);
+        else if ( s >= 60 )
+            t.sprnt("%llu min %02llu s", s / 60, s % 60);
+        else
+            t.sprnt("%llu s", s);
+        return t;
+    }
+
+    // The longest log line shown whole: the wait box grows with its text.
+    static const size_t LOG_LINE_CHARS = 110;
+
+    // The wait box's text: the first line as before, then what 'show' asks
+    // for. The percentage is left out while it is 0 for work that shows its
+    // time instead (a recording without a limit never reports one).
+    static qstring wait_text(const char *hide, const char *what, const char *ask, uint32_t percent, bool painted,
+                             const QueryShow *show, uint64 elapsed_ms)
+    {
+        qstring t;
+        t.sprnt("%s%s%s...", hide, what, ask);
+        if ( painted && (show == nullptr || percent != 0) )
+            t.cat_sprnt(" %u%%", percent);
+        if ( show == nullptr )
+            return t;
+        if ( show->elapsed )
+            t.cat_sprnt("\nRunning for %s", clock_text(elapsed_ms).c_str());
+        if ( show->log_lines != 0 )
+        {
+            qstrvec_t lines;
+            emulator_log_tail(show->log_lines, &lines);
+            t.append("\n\nSogen's log");
+            if ( lines.empty() )
+                t.append("\n(nothing yet)");
+            for ( qstring l : lines )
+            {
+                l.replace("\t", "    ");
+                l.trim2();
+                if ( l.length() > LOG_LINE_CHARS )
+                {
+                    l.resize(LOG_LINE_CHARS - 3);
+                    l.append("...");
+                }
+                t.append('\n');
+                t.append(l);
+            }
+        }
+        return t;
+    }
+
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
-                          bool cancellable)
+                          bool cancellable, const QueryShow *show)
     {
         DiagTimer diag_timer("query", qstring(what));
 
@@ -180,8 +233,12 @@ namespace idattd
             done.store(true, std::memory_order_release);
         });
 
-        show_wait_box("%s%s%s...", hide, what, ask);
+        const ULONGLONG started = GetTickCount64();
+        show_wait_box("%s", wait_text(hide, what, ask, 0, false, show, 0).c_str());
         uint32_t shown = 101;       // out of range, so the first poll repaints
+        uint64 shown_secs = 0;
+        uint64_t shown_seq = 0;
+        ULONGLONG painted_at = 0;
         bool cancelled = false;
         while ( !done.load(std::memory_order_acquire) )
         {
@@ -199,11 +256,19 @@ namespace idattd
             }
             if ( !cancelled )
             {
-                uint32_t now = sink.percent();
-                if ( now != shown )
+                const uint32_t now = sink.percent();
+                const ULONGLONG t = GetTickCount64();
+                const uint64 secs = show != nullptr && show->elapsed ? (t - started) / 1000 : 0;
+                const uint64_t seq = show != nullptr && show->log_lines != 0 ? emulator_log_tail(0, nullptr) : 0;
+                // New log lines repaint at most four times a second: a busy
+                // log would otherwise repaint at every poll.
+                if ( now != shown || secs != shown_secs || (seq != shown_seq && t - painted_at >= 250) )
                 {
-                    replace_wait_box("%s%s%s... %u%%", hide, what, ask, now);
-                    shown = now;
+                    replace_wait_box("%s", wait_text(hide, what, ask, now, true, show, t - started).c_str());
+                    shown      = now;
+                    shown_secs = secs;
+                    shown_seq  = seq;
+                    painted_at = t;
                 }
             }
             flush_backend_log();
