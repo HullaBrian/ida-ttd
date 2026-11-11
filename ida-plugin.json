@@ -118,6 +118,15 @@
         "documentation": "Another folder to look for a Sogen recording's registry hives in, after the folder beside the recording and before ida-ttd\\registry in the IDA user directory. Empty: none."
       },
       {
+        "key": "sogen_emulation_root",
+        "type": "string",
+        "required": false,
+        "default": "",
+        "prompt": false,
+        "name": "Sogen: default emulation root",
+        "documentation": "The emulation root (the folder holding filesys and registry) the Record dialog starts with, and the one a recording made in an emulation root is replayed in when the root it was made in is not on this machine. Empty: the Record dialog starts without one, running programs against this machine's own files."
+      },
+      {
         "key": "sogen_network",
         "type": "boolean",
         "required": false,

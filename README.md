@@ -124,9 +124,13 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   `registry\` (its hives). A program recorded in one must be inside its
   `filesys` folder, since that is all it sees: the dialog copies a program
   from elsewhere into the root, to a guest folder you name (`C:\ida-ttd`
-  at first), and asks before replacing a different file there. The checkpoint interval and what is
-  recorded (reads, writes, instruction fetches) are settings, and apply to
-  forks too.
+  at first), and asks before replacing a different file there. The
+  emulation root it starts with is the `sogen_emulation_root` setting. The
+  output file is named after the program and the time
+  (`name-YYYYMMDD-HHMMSS.sogttd`), so recording again makes a new file, and
+  the Output window says how long the recording took. The checkpoint
+  interval and what is recorded (reads, writes, instruction fetches) are
+  settings, and apply to forks too.
 
 The value origin graph and the fork manager are drawn by the plugin's own graph
 window (IDAPython with PySide6, like the call tree and the heatmap): drag to
@@ -257,6 +261,7 @@ with its section.
 | Memory map | `memmap_flag_code` | `true` | colour executable regions outside every loaded module |
 | Sogen | `fork_instructions` | `1000000` | the Fork dialog's default length (0: to the end) |
 | | `registry_folder` | (none) | another folder to look in for a recording's registry hives |
+| | `sogen_emulation_root` | (none) | the emulation root the Record dialog starts with, and the one a recording made in a root is replayed in when the root it was made in is not on this machine |
 | | `sogen_network` | `false` | give forks (past their position) and new recordings the real network; the dialogs start from it |
 | | `sogen_checkpoint_interval` | `500000` | instructions between a new recording's or fork's checkpoints (0: Sogen's default) |
 | | `sogen_record_reads` | `true` | keep memory reads in new recordings and forks (off: much smaller, no read queries) |

@@ -36,7 +36,8 @@ namespace idattd
     static const char ALL_KEYS[] = "replay_on_open symbol_downloads symbol_server auto_coverage auto_callsites "
                                    "fork_instructions registry_folder diagnostics_log memmap_flag_code "
                                    "sogen_network sogen_checkpoint_interval sogen_record_reads "
-                                   "sogen_record_writes sogen_record_executes sogen_elevated sogen_log";
+                                   "sogen_record_writes sogen_record_executes sogen_elevated sogen_log "
+                                   "sogen_emulation_root";
 
     static bool parse_bool(const qstring &v, bool *out)
     {
@@ -108,6 +109,14 @@ namespace idattd
             return parse_bool(value, &s->sogen_elevated);
         if ( key == "sogen_log" )
             return parse_bool(value, &s->sogen_log);
+        if ( key == "sogen_emulation_root" )
+        {
+            s->sogen_emulation_root = value;
+            while ( !s->sogen_emulation_root.empty()
+                 && (s->sogen_emulation_root.last() == '\\' || s->sogen_emulation_root.last() == '/') )
+                s->sogen_emulation_root.remove_last();
+            return true;
+        }
         if ( key == "registry_folder" )
         {
             s->registry_folder = value;

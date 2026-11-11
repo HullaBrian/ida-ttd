@@ -2129,6 +2129,7 @@ namespace idattd
            .boolean("sogen_record_executes", s.sogen_record_executes)
            .boolean("sogen_elevated", s.sogen_elevated)
            .boolean("sogen_log", s.sogen_log)
+           .str("sogen_emulation_root", s.sogen_emulation_root)
            .boolean("diagnostics_log", s.diagnostics_log)
            .boolean("memmap_flag_code", s.memmap_flag_code);
     }

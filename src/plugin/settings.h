@@ -19,6 +19,7 @@ namespace idattd
         bool     auto_callsites    = false;     // likewise
         uint64   fork_instructions = 1000000;
         qstring  registry_folder;               // empty: none
+        qstring  sogen_emulation_root;          // empty: record against this machine's files
         // How Sogen forks and new recordings are made (RecordOptions).
         bool     sogen_network     = false;
         uint64   sogen_checkpoint_interval = 500000;   // 0: Sogen's default

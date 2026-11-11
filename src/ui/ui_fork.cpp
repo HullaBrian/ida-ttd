@@ -89,6 +89,20 @@ namespace idattd
         return s;
     }
 
+    // The sogen_emulation_root setting, for a recording made in an emulation
+    // root that is not on this machine (moved, or recorded elsewhere); empty
+    // otherwise, so the backend uses the root the recording names.
+    static qstring default_emulation_root(TraceManager *mgr)
+    {
+        const qstring &root = settings().sogen_emulation_root;
+        ReplayEnv env;
+        if ( root.empty() || mgr == nullptr || mgr->backend() == nullptr
+          || !mgr->backend()->replay_env(&env) || env.host
+          || (!env.emulation_root.empty() && qisdir(env.emulation_root.c_str())) )
+            return qstring();
+        return root;
+    }
+
     ReplaySettings initial_replay_settings(TraceManager *mgr)
     {
         ReplaySettings rs;
@@ -96,6 +110,8 @@ namespace idattd
         rs.emulation_root = chosen_emulation_root(mgr);
         rs.allow_host   = mgr != nullptr && !g_hostConsent.empty() && g_hostConsent == mgr->trace_path();
         rs.rec          = recording_options();
+        if ( rs.emulation_root.empty() )
+            rs.emulation_root = default_emulation_root(mgr);
         return rs;
     }
 
@@ -392,6 +408,38 @@ namespace idattd
         return qstring(path);
     }
 
+    // The default output file: beside the program, named after it and the
+    // time the dialog opened (name-YYYYMMDD-HHMMSS.sogttd), so recording the
+    // same program again makes a new file instead of replacing the last one,
+    // perhaps the recording open in this window.
+    static void timestamped_output(char *out, size_t size, const char *program)
+    {
+        qstring base = program;
+        const char *ext = get_file_ext(program);
+        if ( ext != nullptr )
+            base.resize(base.length() - strlen(ext) - 1);
+        const time_t now = time(nullptr);
+        struct tm local{};
+        char stamp[32] = {};
+        if ( localtime_s(&local, &now) == 0 )
+            strftime(stamp, sizeof(stamp), "-%Y%m%d-%H%M%S", &local);
+        qsnprintf(out, size, "%s%s.sogttd", base.c_str(), stamp);
+    }
+
+    // "1 h 02 min", "3 min 05 s", "12.3 s": how long a recording took.
+    static qstring duration_text(uint64 ms)
+    {
+        const uint64 s = ms / 1000;
+        qstring t;
+        if ( s >= 3600 )
+            t.sprnt("%llu h %02llu min", (unsigned long long)(s / 3600), (unsigned long long)(s / 60 % 60));
+        else if ( s >= 60 )
+            t.sprnt("%llu min %02llu s", (unsigned long long)(s / 60), (unsigned long long)(s % 60));
+        else
+            t.sprnt("%.1f s", ms / 1000.0);
+        return t;
+    }
+
     // Whether IDA itself runs elevated. Sogen's "elevated" only changes the
     // token the program sees; what it does to this machine's files is done
     // with IDA's rights.
@@ -465,6 +513,9 @@ namespace idattd
         // is replaced unasked.
         static qstring s_program, s_args, s_cwd, s_root, s_hives, s_place = "C:\\ida-ttd";
         static sval_t s_count = 0;
+        static bool s_asked = false;    // s_root holds an answer (perhaps "none")
+        if ( !s_asked )
+            s_root = settings().sogen_emulation_root;
         if ( s_program.empty() )
             s_program = database_program();
         if ( s_hives.empty() )
@@ -481,7 +532,7 @@ namespace idattd
         qstrncpy(hives, s_hives.c_str(), sizeof(hives));
         out[0] = '\0';
         if ( program[0] != '\0' )
-            set_file_ext(out, sizeof(out), qstring(program).c_str(), "sogttd");
+            timestamped_output(out, sizeof(out), program);
         qstring args = s_args;
         qstring place = s_place;
         qstring run_program;        // the program as recorded: a copy in the root, or itself
@@ -571,6 +622,7 @@ namespace idattd
         s_hives   = hives;
         s_place   = place;
         s_count   = count;
+        s_asked   = true;
         if ( root[0] == '\0' )
             save_registry_dir(hives);
 
@@ -602,17 +654,19 @@ namespace idattd
             msg("[ida-ttd] the program's token says administrator, but IDA is not running elevated: "
                 "operations needing real administrator rights on this machine's files still fail.\n");
 
+        const uint64 started = GetTickCount64();
         ForkResult r = run_record(req);
+        const qstring took = duration_text(GetTickCount64() - started);
         if ( !r.ok )
         {
             if ( r.cancelled )
-                msg("[ida-ttd] recording cancelled.\n");
+                msg("[ida-ttd] recording cancelled after %s.\n", took.c_str());
             else
                 warning("The program was not recorded: %s", r.error.c_str());
             return 1;
         }
-        msg("[ida-ttd] recorded %s: %llu instruction(s) into %s%s.\n", run_program.c_str(),
-            (unsigned long long)r.instructions, out,
+        msg("[ida-ttd] recorded %s: %llu instruction(s) in %s into %s%s.\n", run_program.c_str(),
+            (unsigned long long)r.instructions, took.c_str(), out,
             r.cancelled ? " (stopped early; what ran is a complete recording)" : "");
 
         // Replaying it here suits only a database of the same program: this
@@ -622,16 +676,16 @@ namespace idattd
         if ( here_ok )
         {
             const int choice = ask_buttons("~T~his window", "~N~ew window", "~D~on't open", ASKBTN_YES,
-                                           "Recorded %llu instruction(s) into\n%s\n\nOpen it?",
-                                           (unsigned long long)r.instructions, out);
+                                           "Recorded %llu instruction(s) in %s into\n%s\n\nOpen it?",
+                                           (unsigned long long)r.instructions, took.c_str(), out);
             here = choice == ASKBTN_YES;
             elsewhere = choice == ASKBTN_NO;
         }
         else
         {
-            elsewhere = ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) into\n%s\n\n"
+            elsewhere = ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) in %s into\n%s\n\n"
                                            "Open it in a new IDA window?",
-                               (unsigned long long)r.instructions, out) == ASKBTN_YES;
+                               (unsigned long long)r.instructions, took.c_str(), out) == ASKBTN_YES;
         }
         // Here: the replay switches to it in this database, as the Fork
         // manager's switch does (any running session ends first).
