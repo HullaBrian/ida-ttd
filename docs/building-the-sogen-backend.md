@@ -101,6 +101,37 @@ Since 2026-11-11 the pin is `f848464d` (`ttd/next`; `main` is still at
   WinINet's start-up fails without `wininet.dll.mun`, so an emulation root
   made before this needs it copied in, or the root made again.
 
+Since 2026-11-12 the pin is `154088cc` (`ttd/next`, also `main`). The build
+options and libraries are the same; Unicorn comes from TTD-Club's fork
+(`ttd` branch, for `UC_CTL_HOOK_NO_SYNC`), so make a fresh snapshot. What
+changes:
+
+- **The network is recorded.** A recording keeps every answer the host
+  network gave (`network_inputs`), and a replay takes the answers from it
+  instead of asking the host, so scans and the probe's replays of a
+  live-network recording need no network and see the same traffic. Older
+  recordings replay with the backend's offline network, as before.
+- That replay stops at the first question the log has no answer for. A fork
+  asks new ones as soon as its run differs, so `fork_open` puts the network
+  back on (`network_tap::go_live`) after the seek: offline, or the real one
+  with `ITTD_NET_LIVE`. Sockets open at the fork position were the
+  recording's, and answer as a connection the host reset.
+- A pending request on a host socket waits for the host, for up to 10 s of
+  real time, without guest time passing (`socket_factory::wait_for_sockets`);
+  the backend's switchable factory passes that on.
+- The relative clock runs at 100 MHz instead of 1 kHz, so a guest timeout
+  lasts about as long as in real time. WinINet's connect and receive
+  timeouts no longer expire before any real work is done.
+- Trace format version 10: checkpoints after the first hold only the pages
+  changed since their base. Versions 7 to 9 still open; recordings made
+  before `154088cc` do not fork on it (the saved state gained the network
+  input position).
+- `keep_kernel_lock_between_instructions`, which the backend turns on: one
+  vCPU keeps the kernel lock between instructions instead of taking it for
+  each. Nothing the backend runs inside a hook waits for another thread.
+- The WinINet fixes from round 9 (the Schannel names, the ALPC reply view,
+  a reproducible TLS handshake that checkpoints can hold).
+
 - **The cache values matter.** `backend-sogen.vcxproj` compiles Sogen's headers
   with the defines this configuration produces (`SOGEN_BUILD_STATIC=1`,
   `SOGEN_ENABLE_RUST_CODE=0`, ...). A different configuration needs the same
@@ -228,6 +259,35 @@ its hives holds only their 340-byte headers unless the program opened them;
 delete them from a root you mean to share.
 
 ## Results
+
+Run on 2026-11-12 against `154088cc`, Release, on the `ttd-traces`
+recordings made that day with Sogen's analyzer (host mode, test-sample with
+the network live and `--root-mode rw`): 0 checks failed. The 2026-11-11
+recordings fail only their forks, as expected.
+
+| Check | ttd-step-sample (5.9M) | test-sample (31.4M) |
+| --- | --- | --- |
+| syscalls | 571, all named | 5,437, all named |
+| self-modifying code | 11 hits, 0.7 s | 1 hit, 3.4 s |
+| fork in the middle, open | 353 ms | 409 ms |
+| strings (8+ characters) | 27,840, 1.5 s | 122,592, 8.8 s |
+| buffers | 509 | 908 |
+| checkpoint intervals verified | 11 of 11 | 62 of 62 |
+
+**Network.** A program that resolves `example.com` and connects was
+recorded with `record_program` and the network on. The lookup and the
+connect succeed, and the probe's replays of it (scans included) ran with no
+network. Forked from position 1,000 to the end with the network on, the
+fork resolves and connects again. Forked offline, it gets 11001 (host not
+found) and runs to the end. An offline recording forked with the network on
+resolves and connects.
+
+**Known failure.** test-sample recorded with `record_program` (offline,
+default root mode) fails one probe check: `regs_at` has no registers at
+16,481,686, because Sogen's register view replays a `rep` string
+instruction one iteration behind the recording
+(`docs/sogen-ttd-requests-10.md`, item 1). Sogen's own recording of it
+fails the same way. A seek there works.
 
 Run on 2026-11-11 against `f848464d`, Release, on the `ttd-traces`
 recordings made that day with Sogen's analyzer (host mode, test-sample with

@@ -112,14 +112,17 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   (and the `sogen_network` setting) can give the program the real network
   from the fork's position on; the replay up to the position stays offline
   either way, since the recording's own results stand in for what the
-  network answered then.
+  network answered then. A connection the program had open at the fork's
+  position is closed for the fork (it reads as reset by the other end).
 - Record a program (TTD > Backends > Record a program with Sogen..., in any
   database): run an executable from its start in Sogen's emulator and record
   it into a new `.sogttd`, without Sogen's own tools. It starts from the
   database's executable; you choose its arguments, working directory, an
   emulation root or the registry hives it runs against, the instruction
   limit, network access and an administrator's token. It runs headless (a
-  program's windows are not shown). An emulation root is Sogen's folder
+  program's windows are not shown). A recording made with network access
+  keeps what the network answered, so its replays (the scans, and forks up
+  to their position) need no network and see the same traffic. An emulation root is Sogen's folder
   holding `filesys\` (the program's drives: `filesys\c` is its C:) and
   `registry\` (its hives). A program recorded in one must be inside its
   `filesys` folder, since that is all it sees: the dialog copies a program

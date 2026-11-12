@@ -1183,11 +1183,23 @@ int main(int argc, char **argv)
                 for ( k = 0; k < n; k += n / 64 + 1 )
                 {
                     ittd_regs a, b;
+                    int ra, rb = ITTD_E_FAILED, g;
                     asked++;
-                    if ( api->regs_at(B, &sc[k].pos, 1, &a, NULL) == ITTD_OK
-                      && api->cursor_seek(c, sc[k].pos) == ITTD_OK && api->cursor_regs(c, &b) == ITTD_OK
-                      && memcmp(a.gp, b.gp, sizeof(a.gp)) == 0 )
+                    ra = api->regs_at(B, &sc[k].pos, 1, &a, NULL);
+                    if ( ra == ITTD_OK && api->cursor_seek(c, sc[k].pos) == ITTD_OK )
+                        rb = api->cursor_regs(c, &b);
+                    if ( ra == ITTD_OK && rb == ITTD_OK && memcmp(a.gp, b.gp, sizeof(a.gp)) == 0 )
+                    {
                         same++;
+                        continue;
+                    }
+                    printf("  %s %s: regs_at %d, seek %d", pos_text(sc[k].pos), sc[k].name, ra, rb);
+                    if ( ra == ITTD_OK && rb == ITTD_OK )
+                        for ( g = 0; g < ITTD_REG_GP_COUNT; g++ )
+                            if ( a.gp[g] != b.gp[g] )
+                                printf(", gp[%d] %#llx vs %#llx", g, (unsigned long long)a.gp[g],
+                                       (unsigned long long)b.gp[g]);
+                    printf("\n");
                 }
                 check(same == asked, "  registers at a syscall agree between regs_at and a seek");
 

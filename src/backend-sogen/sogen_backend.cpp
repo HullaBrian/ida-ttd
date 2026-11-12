@@ -38,6 +38,7 @@
 // replay delivers recorded window input to.
 #include <windows_emulator.hpp>
 #include <ttd_session.hpp>
+#include <ttd_network.hpp>
 #include <ttd_ui.hpp>
 #include <unicorn_x86_64_emulator.hpp>
 #include <platform/ui_backend.hpp>
@@ -50,6 +51,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -2317,6 +2319,26 @@ namespace
 
         int poll_sockets(std::span<sogen::network::poll_entry> entries) override
         {
+            return poll(entries, std::nullopt);
+        }
+
+        // A pending request on a host socket waits here for the host (up to
+        // 10 s of real time, during which guest time stands still), so the
+        // guest's own timeouts do not run out first. Only the real sockets
+        // wait, and not at all when a loopback socket is already ready.
+        int wait_for_sockets(std::span<sogen::network::poll_entry> entries, std::chrono::milliseconds wait) override
+        {
+            return poll(entries, wait);
+        }
+
+        std::vector<sogen::network::address> get_local_addresses(int family) override
+        {
+            return (gate->live ? live : offline)->get_local_addresses(family);
+        }
+
+      private:
+        int poll(std::span<sogen::network::poll_entry> entries, std::optional<std::chrono::milliseconds> wait)
+        {
             // The real factory's sockets are socket_wrappers (and it throws on
             // any other); the loopback factory skips what is not its own.
             std::vector<sogen::network::poll_entry> real, loop;
@@ -2331,17 +2353,13 @@ namespace
             if ( !loop.empty() )
                 ready += std::max(0, offline->poll_sockets(loop));
             if ( !real.empty() )
-                ready += std::max(0, live->poll_sockets(real));
+                ready += std::max(0, wait.has_value() && ready == 0 ? live->wait_for_sockets(real, *wait)
+                                                                    : live->poll_sockets(real));
             for ( size_t i = 0; i < loop.size(); i++ )
                 entries[loop_at[i]] = loop[i];
             for ( size_t i = 0; i < real.size(); i++ )
                 entries[real_at[i]] = real[i];
             return ready;
-        }
-
-        std::vector<sogen::network::address> get_local_addresses(int family) override
-        {
-            return (gate->live ? live : offline)->get_local_addresses(family);
         }
     };
 
@@ -2351,10 +2369,16 @@ namespace
     // settings ask, the CPUID overrides, and the checks TTD needs. 'gate',
     // when given, has the network follow it (gated_socket_factory).
     std::unique_ptr<sogen::windows_emulator> make_emulator(std::optional<sogen::application_settings> app,
-                                                           const sogen::emulator_settings &es,
+                                                           sogen::emulator_settings es,
                                                            const ittd_fork_settings *settings,
                                                            const std::shared_ptr<net_gate> &gate)
     {
+        // One vCPU and instruction precision, so the instruction hook may keep
+        // the kernel lock from one instruction to the next instead of taking
+        // it for each (Sogen's analyzer does the same). Nothing here waits,
+        // inside a hook, for another thread that takes it: progress and log
+        // callbacks only queue.
+        es.keep_kernel_lock_between_instructions = true;
         sogen::emulator_interfaces ifs{};
         ifs.ui = std::make_unique<ttd::recordable_ui_backend>(std::make_unique<sogen::null_ui_backend>());
         ifs.console = std::make_unique<sogen::null_console_backend>();
@@ -2501,6 +2525,15 @@ namespace
             f->checkpoint_interval = setting_checkpoint_interval(settings, 0);
             f->emu = replay_emulator(*f->trace, settings, &strict, &f->net);
             ttd::seek(*f->emu, *f->trace, f->position, strict, control(progress));
+            // A recording that logged what the network answered (every one
+            // made since Sogen's network tap, 2026-11-11) is replayed from it, and the log stops the
+            // emulator at the first question it has no answer for. A fork's
+            // run differs from the recording, so from here on the network
+            // answers again: the offline one, or the real one when the
+            // settings asked for it. Sockets open at the fork position were
+            // the recording's and answer as a connection the host reset.
+            if ( std::optional<ttd::network_tap> tap = ttd::find_network_tap(*f->emu); tap.has_value() )
+                tap->go_live();
             if ( f->net != nullptr )
                 f->net->live = true;
             *out = reinterpret_cast<ittd_fork *>(f.release());
