@@ -522,6 +522,12 @@ namespace
         x86_register::rip,
     };
 
+    // The segment selectors in ittd_regs.seg order.
+    const x86_register kSeg[ITTD_SEG_COUNT] = {
+        x86_register::cs, x86_register::ss, x86_register::ds,
+        x86_register::es, x86_register::fs, x86_register::gs,
+    };
+
     // ------------------------------------------------------------ identity
 
     const char *id() { return "sogen"; }
@@ -787,10 +793,6 @@ namespace
     // on one CPU per thread; view.cpu() would build an emulator per view.
     void read_regs(const ttd::cpu_view &view, ittd_regs *out)
     {
-        static const x86_register seg[ITTD_SEG_COUNT] = {
-            x86_register::cs, x86_register::ss, x86_register::ds,
-            x86_register::es, x86_register::fs, x86_register::gs,
-        };
         *out = ittd_regs{};
         for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
             out->gp[i] = view.read_register(kGp[i]);
@@ -798,7 +800,7 @@ namespace
         out->fs_base = view.read_register(x86_register::fs_base);
         out->gs_base = view.read_register(x86_register::gs_base);
         for ( int i = 0; i < ITTD_SEG_COUNT; i++ )
-            out->seg[i] = (uint16_t)view.read_register(seg[i]);
+            out->seg[i] = (uint16_t)view.read_register(kSeg[i]);
         for ( int i = 0; i < 16; i++ )
             view.read_register((x86_register)((int)x86_register::xmm0 + i), out->xmm[i], 16);
         out->have = ITTD_REGS_GP | ITTD_REGS_SEG | ITTD_REGS_XMM;
@@ -2690,9 +2692,14 @@ namespace
             for ( int i = 0; i < ITTD_REG_GP_COUNT; i++ )
                 out->gp[i] = cpu.reg<uint64_t>(kGp[i]);
             out->rflags  = cpu.reg<uint64_t>(x86_register::rflags);
+            // The bases belong to the segment group, which also has the
+            // selectors: filling the bases but reporting only GP left them
+            // looking like registers nobody read.
             out->fs_base = cpu.reg<uint64_t>(x86_register::fs_base);
             out->gs_base = cpu.reg<uint64_t>(x86_register::gs_base);
-            out->have = ITTD_REGS_GP;
+            for ( int i = 0; i < ITTD_SEG_COUNT; i++ )
+                out->seg[i] = (uint16_t)cpu.reg<uint64_t>(kSeg[i]);
+            out->have = ITTD_REGS_GP | ITTD_REGS_SEG;
             return ITTD_OK;
         });
     }
@@ -3392,11 +3399,16 @@ namespace
                     ctl.check();
                     ctl.report(number, total_events);
                 }
-                // Mapping changes up to this event drop what the pages held
-                // (dropping early only means reading a page again, exactly).
+                // Mapping changes up to this event drop what the pages held.
+                // The reads before each change are answered first: a page
+                // fetched again for one of them would show the memory before
+                // the change, and the reads after it would then be answered
+                // from that. Never past this event's step, whose writes are
+                // not applied yet.
                 while ( next_map < maps.size() && maps[next_map].event_number <= number )
                 {
                     const ttd::mapping_change &m = maps[next_map++];
+                    answer(std::min(m.step, ev->step));
                     shadow.drop(m.address, m.size);
                 }
                 // The reads before this write's instruction see everything up
@@ -3413,6 +3425,7 @@ namespace
             while ( next_map < maps.size() )
             {
                 const ttd::mapping_change &m = maps[next_map++];
+                answer(m.step);
                 shadow.drop(m.address, m.size);
             }
             answer(UINT64_MAX);
