@@ -946,7 +946,7 @@ namespace idattd
             out.str("pos", format_position(mgr().current_position())).hex("pc", mgr().current_pc_ea())
                .str("trace", mgr().trace_path());
         out.str("drv_backend", g_drv.backend != nullptr ? g_drv.backend->id() : "")
-           .str("last_resume", mgr().last_resume()).num("event_order", mgr().event_order());
+           .str("last_resume", mgr().last_resume());
         JArr log;
         for ( const qstring &l : mgr().event_log() )
         {
@@ -1108,13 +1108,6 @@ namespace idattd
             arr.add(o.done());
         }
         out.num("count", get_segm_qty()).raw("segments", arr.done());
-    }
-
-    static void cmd_event_order(const Args &a, JObj &out)
-    {
-        if ( a.count() > 0 )
-            mgr().set_event_order((int)a.u64(0));
-        out.num("event_order", mgr().event_order());
     }
 
     static void cmd_stop(const Args &, JObj &out)
@@ -2161,7 +2154,6 @@ namespace idattd
         { "read",           cmd_read,           "EA [SIZE] debugger memory, as IDA reads it" },
         { "segments",       cmd_segments,       "[MAX] the segments, debugger ones included" },
         { "stop",           cmd_stop,           "end the session" },
-        { "evorder",        cmd_event_order,    "[N] when thread/module events are reported (experimental)" },
         { "an.search",      cmd_an_search,      "LO HI [rwx] [MAX] memory search, as the dialog runs it" },
         { "an.coverage",    cmd_an_coverage,    "LO HI [COLOR] measure and colour execution coverage" },
         { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },

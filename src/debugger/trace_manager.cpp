@@ -639,11 +639,24 @@ namespace idattd
         {
             WaitBoxSink sink(forward ? "Moving forward through the recording"
                                      : "Moving back through the recording");
-            m_nav->set_progress(&sink);
-            set_trace_moving(true);     // no query may start from the box's pump
+            // Undone however move() leaves, so a throw cannot leave queries
+            // refused for the session or the navigator holding a dead sink.
+            // Declared after the sink, so it is undone before the sink goes.
+            struct Moving
+            {
+                INavigator *nav;
+                Moving(INavigator *n, ProgressSink *s) : nav(n)
+                {
+                    nav->set_progress(s);
+                    set_trace_moving(true);     // no query may start from the box's pump
+                }
+                ~Moving()
+                {
+                    set_trace_moving(false);
+                    nav->set_progress(nullptr);
+                }
+            } moving(m_nav.get(), &sink);
             sr = move();
-            set_trace_moving(false);
-            m_nav->set_progress(nullptr);
         }
 
         // Breakpoints IDA changed during the movement (on_update_bpts).
@@ -851,13 +864,7 @@ namespace idattd
                 case StopEvent::Suspended:  m_events.add_suspended(m_pid, current_tid(), pc);  break;
             }
         };
-        if ( m_eventOrder == 1 )
-        {
-            stop();
-            report_differences();
-            return;
-        }
-        if ( !(m_eventOrder == 2 && m_stepMode) )
+        if ( !m_stepMode )
             report_differences();
         stop();
     }
@@ -1007,28 +1014,23 @@ namespace idattd
         switch ( mode )
         {
             case RESMOD_INTO:
-            {
-                StopReason sr = navigate(true, [&]() { return m_nav->step(true); });
-                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
+                emit_stop(step_event(navigate(true, [&]() { return m_nav->step(true); })));
                 break;
-            }
+
             case RESMOD_BACKINTO:
-            {
-                StopReason sr = navigate(false, [&]() { return m_nav->step(false); });
-                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
+                emit_stop(step_event(navigate(false, [&]() { return m_nav->step(false); })));
                 break;
-            }
+
             case RESMOD_OVER:
             {
                 // Backwards this is a real backward step-over, not a single
                 // step. A backend without one steps once.
                 bool fwd = m_isForward;
-                StopReason sr = navigate(fwd, [&]()
+                emit_stop(step_event(navigate(fwd, [&]()
                 {
                     StopReason r = m_nav->step_over(fwd);
                     return r == StopReason::Failed ? m_nav->step(fwd) : r;
-                });
-                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
+                })));
                 break;
             }
             case RESMOD_OUT:
@@ -1038,7 +1040,7 @@ namespace idattd
                 StopReason sr = navigate(fwd, [&]() { return m_nav->step_out(fwd); });
                 if ( sr == StopReason::Failed && m_pendingNotice.empty() )
                     m_pendingNotice = "This recording's backend cannot step out in that direction.";
-                emit_stop(sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step);
+                emit_stop(step_event(sr));
                 break;
             }
             case RESMOD_NONE:
@@ -1055,11 +1057,12 @@ namespace idattd
                 // RESMOD_USER, RESMOD_HANDLE, later additions). None is
                 // advertised in dbg.resume_modes. Step once rather than fall
                 // through to RESMOD_NONE, which would run to the trace's end.
+                // A breakpoint on the instruction stepped to is reported as
+                // one, as for the step modes above.
                 msg("[ida-ttd] unsupported resume mode %d; stepping once instead.\n",
                     (int)mode);
                 bool fwd = m_isForward;
-                navigate(fwd, [&]() { return m_nav->step(fwd); });
-                emit_stop(StopEvent::Step);
+                emit_stop(step_event(navigate(fwd, [&]() { return m_nav->step(fwd); })));
                 break;
             }
         }

@@ -66,16 +66,6 @@ namespace idattd
         uint64 resume_serial() const { return m_resumeSerial; }
         const std::deque<qstring> &event_log() const { return m_eventLog; }
 
-        // When a movement's thread and module changes are reported relative to
-        // its stop. Under IDA's step modes any non-step event ends the step
-        // there and leaves the step's own event queued, so the order matters.
-        // Experimental, set from the script API:
-        //   0  changes, then the stop
-        //   1  the stop, then the changes
-        //   2  as 0, but during IDA's step modes the changes are held back and
-        //      reported with the next stop outside one
-        void set_event_order(int order) { m_eventOrder = order; }
-        int  event_order() const        { return m_eventOrder; }
         ssize_t on_set_backwards(bool backwards);
         ssize_t on_set_resume_mode(thid_t tid, resume_mode_t resmod);
         ssize_t on_update_bpts(int *nbpts, update_bpt_info_t *bpts, int nadd, int ndel);
@@ -232,8 +222,18 @@ namespace idattd
         // How a stop is reported to IDA: a single step, a breakpoint the
         // movement stopped on, or neither (a travel, the trace's edge).
         enum class StopEvent { Step, Breakpoint, Suspended };
+        // A movement the UI asked for (a travel, a run) stops suspended; one
+        // of IDA's step modes stops as a step, which is what IDA waits for.
+        // Either way a breakpoint the movement stopped on is reported as one.
         static StopEvent stop_event(StopReason sr)
         { return sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Suspended; }
+        static StopEvent step_event(StopReason sr)
+        { return sr == StopReason::Breakpoint ? StopEvent::Breakpoint : StopEvent::Step; }
+        // Queue the stop, with the thread and module changes the movement
+        // made reported first. Under IDA's step modes any event other than
+        // the step ends the step there and leaves the step's own event
+        // queued, so during one the changes are held back and reported with
+        // the next stop outside a step mode.
         void  emit_stop(StopEvent kind);
         // Report the threads and modules that differ from what IDA was last
         // told, and remember the new state as told.
@@ -278,7 +278,6 @@ namespace idattd
         // The threads and modules IDA has been told about.
         std::set<uint32_t> m_toldThreads;
         std::map<std::pair<ea_t, Position>, const ModuleInfo *> m_toldMods;
-        int           m_eventOrder = 2;
         bool          m_stepMode   = false;   // this resume is one of IDA's step modes
         bool          m_travelWait = false;   // set_next_position's wait box is up
         // A movement is in progress. Its wait box pumps messages, so IDA can
