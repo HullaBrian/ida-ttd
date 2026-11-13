@@ -124,6 +124,12 @@ namespace
         uint64_t from = 0, to = 0;      // positions [from, to] it holds for
         uint64_t used = 0;              // for eviction
         std::vector<uint8_t> bytes, known;
+        // For an MMIO page, the offsets 'known' marks, in order. A read of
+        // KUSER_SHARED_DATA shows a few hundred of its bytes, and a miss
+        // fills its unknown bytes from every other version of the page
+        // cached (read_page), which grow with every stop: by these, a miss
+        // costs what the versions know, not a page per version.
+        std::vector<uint16_t> known_at;
     };
 
     struct page_cache
@@ -132,6 +138,101 @@ namespace
         std::unordered_map<uint64_t, std::vector<cached_page>> pages;   // by page base
         size_t   count = 0;
         uint64_t clock = 0;
+    };
+
+    // The memory regions section as an interval index over addresses, built
+    // once at open. Every uncached page read asks which entries touch its
+    // page (stable_span, mmio_page_near), and a walk of the whole table per
+    // miss grew with every change the program made to its memory. A static
+    // interval tree laid over the entries sorted by start: the middle entry
+    // of each subrange keeps the highest end within the subrange.
+    class region_index
+    {
+      public:
+        void build(const std::vector<ttd::memory_region> &regions)
+        {
+            m_items.clear();
+            m_items.reserve(regions.size());
+            for ( const ttd::memory_region &r : regions )
+                m_items.push_back({ r.address, r.address + r.size, r.step });
+            std::sort(m_items.begin(), m_items.end(), [](const item &a, const item &b) { return a.lo < b.lo; });
+            m_max.assign(m_items.size(), 0);
+            build_max(0, m_items.size());
+        }
+
+        // fn(step) for every entry touching [lo, hi): starting below hi and
+        // ending above lo. That counts an empty entry strictly inside the
+        // range, as the table walk this replaces did.
+        template <typename F>
+        void for_each(uint64_t lo, uint64_t hi, F &&fn) const
+        {
+            visit(0, m_items.size(), lo, hi, fn);
+        }
+
+      private:
+        struct item
+        {
+            uint64_t lo, hi, step;
+        };
+        std::vector<item>     m_items;
+        std::vector<uint64_t> m_max;    // by the middle index of each subrange
+
+        uint64_t build_max(size_t b, size_t e)
+        {
+            if ( b >= e )
+                return 0;
+            const size_t m = b + (e - b) / 2;
+            const uint64_t v = std::max({ m_items[m].hi, build_max(b, m), build_max(m + 1, e) });
+            m_max[m] = v;
+            return v;
+        }
+
+        template <typename F>
+        void visit(size_t b, size_t e, uint64_t lo, uint64_t hi, F &fn) const
+        {
+            if ( b >= e )
+                return;
+            const size_t m = b + (e - b) / 2;
+            if ( m_max[m] <= lo )
+                return;                     // nothing in this subrange ends above lo
+            visit(b, m, lo, hi, fn);
+            if ( m_items[m].lo >= hi )
+                return;                     // this entry and all to its right start too high
+            if ( m_items[m].hi > lo )
+                fn(m_items[m].step);
+            visit(m + 1, e, lo, hi, fn);
+        }
+    };
+
+    // One query's answer, kept from its count call to its fill.
+    //
+    // count-then-fill asks every question twice, and a query that computes
+    // its answer from scratch (a walk over the event stream, a replay) did
+    // all its work twice. The answer is kept under the arguments it was
+    // asked with ('key'), so a different question is never answered from
+    // it, and dropped once filled, or straight away when it is empty (the
+    // core skips the fill of an empty answer), as abi_export keeps the
+    // Microsoft backend's. A failure or a cancel keeps nothing.
+    template <typename T>
+    struct kept_answer
+    {
+        std::mutex mtx;
+        std::string key;
+        std::shared_ptr<const std::vector<T>> data;
+        int served = 0;
+    };
+
+    // The parts of a recovered string a listing needs. An ittd_string_hit
+    // is about 288 bytes, mostly a fixed text buffer, and the cached scans
+    // hold every string of the recording for the backend's life (135k on a
+    // test recording: 39 MB); this keeps the text at its own length.
+    struct kept_string
+    {
+        uint64_t      address = 0;
+        ittd_position pos{};
+        uint32_t      length = 0;       // as the listing counts it
+        bool          wide = false;
+        std::string   text;
     };
 
     // A thread and the span it ran over, from the switch table.
@@ -165,7 +266,7 @@ namespace
         std::mutex scan_mtx;
         // Keyed by what the replay ran with (scan_key), and for strings also
         // the minimum length, so a strict run is never answered by a lenient one.
-        std::map<std::string, std::vector<ittd_string_hit>> strings;
+        std::map<std::string, std::vector<kept_string>> strings;
         std::map<std::string, std::vector<ittd_buffer_hit>> buffers;
         // Whether a cached scan stopped keeping results at a scanner's own
         // limit, by the same keys, so a later fill still reports it.
@@ -176,9 +277,19 @@ namespace
         std::vector<uint64_t> executed;
         bool executed_valid = false;
         // Address ranges recorded as MMIO at any time (region kind 5), whose
-        // pages are never cached: memory_at reads them from their accesses,
-        // so they change at reads too, not only at writes.
+        // pages are cached only between accesses: memory_at reads them from
+        // their accesses, so they change at reads too, not only at writes.
         std::vector<std::pair<uint64_t, uint64_t>> mmio;
+        // The memory regions section by address, for the page reads; fixed
+        // after open, so read without a lock.
+        region_index regions;
+        // The answers of the queries that compute theirs from scratch, each
+        // kept from its count call to its fill (kept_answer).
+        kept_answer<ittd_access>      accesses_answer;
+        kept_answer<ittd_call>        calls_answer;
+        kept_answer<ittd_call_target> indirect_answer;
+        kept_answer<ittd_exception>   exceptions_answer;
+        kept_answer<ittd_selfmod>     selfmod_answer;
         // query_access_heat's answers, by page shift and slice count.
         std::map<std::string, std::vector<ittd_heat_cell>> heat;
         // What each cached scan skipped (scan_notice), by the same keys, and
@@ -264,12 +375,19 @@ namespace
         *hi = b;
     }
 
-    void copy_str(char *dst, size_t cap, const std::string &src)
+    // How much of 'src' a field of 'cap' bytes holds with its terminator, cut
+    // on a character boundary, never inside a UTF-8 sequence.
+    size_t fitted_length(const std::string &src, size_t cap)
     {
         size_t n = std::min(src.size(), cap - 1);
-        // Cut on a character boundary, never inside a UTF-8 sequence.
         while ( n > 0 && n < src.size() && (static_cast<unsigned char>(src[n]) & 0xC0) == 0x80 )
             n--;
+        return n;
+    }
+
+    void copy_str(char *dst, size_t cap, const std::string &src)
+    {
+        const size_t n = fitted_length(src, cap);
         std::memcpy(dst, src.data(), n);
         dst[n] = '\0';
     }
@@ -571,6 +689,7 @@ namespace
                 for ( const ttd::memory_region &r : b->trace->memory_regions().regions )
                     if ( r.kind == kMmioKind && r.size != 0 )
                         b->mmio.emplace_back(r.address, r.address + r.size);
+                b->regions.build(b->trace->memory_regions().regions);
             }
             opened = b.release();
             return ITTD_OK;
@@ -823,12 +942,29 @@ namespace
     constexpr uint64_t kPage = 0x1000;
     constexpr size_t   kMaxCachedPages = 8192;      // 64 MiB of bytes and flags
 
+    // Narrow [*from, *to] around 'position' by every change to the mapping
+    // of 'page' (memory freed and allocated again reads as zeros with no
+    // write): the latest at or before the position raises 'from', the first
+    // after it lowers 'to' to just before it.
+    void narrow_by_mapping(const region_index &regions, uint64_t page, uint64_t position,
+                           uint64_t *from, uint64_t *to)
+    {
+        regions.for_each(page, page + kPage, [&](uint64_t step)
+        {
+            if ( step <= position && step > *from )
+                *from = step;
+            else if ( step > position && step - 1 < *to )
+                *to = step - 1;
+        });
+    }
+
     // The positions around 'position' over which the page cannot change: from
     // the last write to it at or before the position to just before the next,
-    // narrowed by any mapping change in between (memory freed and allocated
-    // again reads as zeros with no write). MMIO is read from its accesses,
-    // reads included, so for an MMIO page ('mmio') reads bound the span too.
-    void stable_span(ttd::trace &t, uint64_t page, uint64_t position, bool mmio, uint64_t *from, uint64_t *to)
+    // narrowed by any mapping change in between. MMIO is read from its
+    // accesses, reads included, so for an MMIO page ('mmio') reads bound the
+    // span too.
+    void stable_span(ttd::trace &t, const region_index &regions, uint64_t page, uint64_t position, bool mmio,
+                     uint64_t *from, uint64_t *to)
     {
         uint64_t W = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
         if ( mmio )
@@ -837,16 +973,7 @@ namespace
         std::optional<ttd::access_event> after  = t.next_access(page, kPage, position, W);
         *from = before ? before->step : 0;
         *to   = after ? after->step - 1 : UINT64_MAX;
-        if ( t.has_memory_regions() )
-            for ( const ttd::memory_region &r : t.memory_regions().regions )
-            {
-                if ( r.address >= page + kPage || r.address + r.size <= page )
-                    continue;
-                if ( r.step <= position && r.step > *from )
-                    *from = r.step;
-                else if ( r.step > position && r.step - 1 < *to )
-                    *to = r.step - 1;
-            }
+        narrow_by_mapping(regions, page, position, from, to);
     }
 
     // Drop the least recently used half once the cache is full.
@@ -883,23 +1010,15 @@ namespace
     // left unknown here; read_page fills them from other reads of the page.
     static const uint64_t kMmioWindow = 1ull << 20;
 
-    void mmio_page_near(ttd::trace &t, uint64_t page, uint64_t position, uint8_t *dst, uint8_t *kn)
+    void mmio_page_near(ttd::trace &t, const region_index &regions, uint64_t page, uint64_t position,
+                        uint8_t *dst, uint8_t *kn)
     {
         memset(dst, 0, kPage);
         memset(kn, 0, kPage);
         // Not across a change to the page's mapping.
         uint64_t lo = position > kMmioWindow ? position - kMmioWindow : 0;
         uint64_t hi = position + kMmioWindow;
-        if ( t.has_memory_regions() )
-            for ( const ttd::memory_region &r : t.memory_regions().regions )
-            {
-                if ( r.address >= page + kPage || r.address + r.size <= page )
-                    continue;
-                if ( r.step <= position && r.step > lo )
-                    lo = r.step;
-                else if ( r.step > position && r.step - 1 < hi )
-                    hi = r.step - 1;
-            }
+        narrow_by_mapping(regions, page, position, &lo, &hi);
         const uint64_t W = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
         auto bytes_of = [&t](const ttd::access_event &e) -> std::vector<std::byte>
         {
@@ -992,6 +1111,7 @@ namespace
                 all_mmio = all_mmio || (lo <= page && page + kPage <= hi);
             }
 
+        const region_index &regions = c->owner->regions;
         cached_page e;
         e.bytes.assign(kPage, 0);
         e.known.assign(kPage, 0);
@@ -1002,41 +1122,55 @@ namespace
             // first: most of KUSER_SHARED_DATA is read once, as the process
             // starts, and never changes. The first read of the page also
             // reads it at the start for that.
-            mmio_page_near(*c->trace, page, c->position, e.bytes.data(), e.known.data());
-            std::vector<cached_page> others;
+            mmio_page_near(*c->trace, regions, page, c->position, e.bytes.data(), e.known.data());
+            bool cached = false;
             {
                 std::lock_guard<std::mutex> lock(pc.mtx);
                 auto it = pc.pages.find(page);
-                if ( it != pc.pages.end() )
-                    others = it->second;
+                cached = it != pc.pages.end() && !it->second.empty();
             }
-            if ( others.empty() && c->position > kMmioWindow )
+            std::optional<cached_page> start;
+            if ( !cached && c->position > kMmioWindow )
             {
-                cached_page s;
-                s.bytes.assign(kPage, 0);
-                s.known.assign(kPage, 0);
-                mmio_page_near(*c->trace, page, 0, s.bytes.data(), s.known.data());
-                stable_span(*c->trace, page, 0, true, &s.from, &s.to);
-                others.push_back(s);
-                std::lock_guard<std::mutex> lock(pc.mtx);
-                s.used = ++pc.clock;
-                pc.pages[page].push_back(std::move(s));
+                start.emplace();
+                start->bytes.assign(kPage, 0);
+                start->known.assign(kPage, 0);
+                mmio_page_near(*c->trace, regions, page, 0, start->bytes.data(), start->known.data());
+                stable_span(*c->trace, regions, page, 0, true, &start->from, &start->to);
+                for ( size_t i = 0; i < kPage; i++ )
+                    if ( start->known[i] )
+                        start->known_at.push_back((uint16_t)i);
+            }
+            std::lock_guard<std::mutex> lock(pc.mtx);
+            if ( start.has_value() )
+            {
+                start->used = ++pc.clock;
+                pc.pages[page].push_back(std::move(*start));
                 pc.count++;
             }
-            auto distance = [&](const cached_page &o)
+            // The other versions are read in place, under the lock, instead
+            // of copied out a page each.
+            std::vector<const cached_page *> others;
+            if ( auto it = pc.pages.find(page); it != pc.pages.end() )
+                for ( const cached_page &o : it->second )
+                    others.push_back(&o);
+            auto distance = [&](const cached_page *o)
             {
-                return c->position < o.from ? o.from - c->position
-                     : c->position > o.to   ? c->position - o.to : 0;
+                return c->position < o->from ? o->from - c->position
+                     : c->position > o->to   ? c->position - o->to : 0;
             };
             std::sort(others.begin(), others.end(),
-                      [&](const cached_page &a, const cached_page &b) { return distance(a) < distance(b); });
-            for ( size_t i = 0; i < kPage; i++ )
-                for ( const cached_page &o : others )
-                    if ( !e.known[i] && o.known[i] )
+                      [&](const cached_page *a, const cached_page *b) { return distance(a) < distance(b); });
+            for ( const cached_page *o : others )
+                for ( uint16_t i : o->known_at )
+                    if ( !e.known[i] )
                     {
-                        e.bytes[i] = o.bytes[i];
+                        e.bytes[i] = o->bytes[i];
                         e.known[i] = 1;
                     }
+            for ( size_t i = 0; i < kPage; i++ )
+                if ( e.known[i] )
+                    e.known_at.push_back((uint16_t)i);
         }
         else
         {
@@ -1050,7 +1184,7 @@ namespace
         }
         memcpy(dst, e.bytes.data(), kPage);
         memcpy(kn, e.known.data(), kPage);
-        stable_span(*c->trace, page, c->position, mmio, &e.from, &e.to);
+        stable_span(*c->trace, regions, page, c->position, mmio, &e.from, &e.to);
 
         std::lock_guard<std::mutex> lock(pc.mtx);
         e.used = ++pc.clock;
@@ -1418,6 +1552,13 @@ namespace
 
     // The walk back checks 'progress' every 16,384 instructions
     // (entering_call), so a call tree's search of tens of millions can stop.
+    //
+    // A search with progress is the call tree's, on the core's worker, and
+    // may walk for seconds: it runs on query_reader, as the other long
+    // queries do, so the module and thread lists asked for at a stop never
+    // wait behind it on 'mtx'. One without is the short, bounded search the
+    // main thread makes at every stop, which must not wait behind a long
+    // query on the query reader; it keeps the shared reader.
     int query_frame_entry_progress(ittd_backend *hb, ittd_position where, uint32_t tid, uint64_t max_back,
                                    ittd_position *out_call, uint64_t *out_entry, const ittd_progress *progress)
     {
@@ -1426,8 +1567,13 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            std::optional<query_reader> reader;
+            std::unique_lock<std::mutex> lock;
+            if ( progress != nullptr )
+                reader.emplace(b);
+            else
+                lock = std::unique_lock<std::mutex>(b->mtx);
+            ttd::trace &t = reader.has_value() ? reader->trace() : *b->trace;
             uint64_t pos = 0;
             if ( !resolve(t, where, &pos) )
                 return ITTD_E_NO_POSITION;
@@ -1747,14 +1893,73 @@ namespace
     // ------------------------------------------------------------ queries
     //
     // Each runs the Sogen query, holds the whole answer and copies out what
-    // fits, so a count query's two calls run it twice; the second is cheaper
-    // because the reader keeps the decoded chunks. The long ones run on
-    // query_reader, not under 'mtx'.
+    // fits. Those that compute their answer from scratch keep it from the
+    // count call to the fill (kept_fill); the others are cheap to ask again.
+    // The long ones run on query_reader, not under 'mtx'.
 
     void set_truncated(int *out_truncated, size_t have, size_t cap, bool buf_given)
     {
         if ( out_truncated != nullptr )
             *out_truncated = buf_given && have > cap ? 1 : 0;
+    }
+
+    // A kept answer's key: the bytes of the arguments that decide it.
+    struct query_key
+    {
+        std::string s;
+
+        template <typename T>
+        query_key &add(const T &v)
+        {
+            s.append(reinterpret_cast<const char *>(&v), sizeof(T));
+            return *this;
+        }
+
+        query_key &add_bytes(const void *p, size_t n)
+        {
+            if ( n != 0 )
+                s.append(static_cast<const char *>(p), n);
+            return *this;
+        }
+    };
+
+    // Answer one call of a count-then-fill pair from 'slot', running 'run'
+    // (which returns the whole answer as a std::vector<T>, or throws) only
+    // when the slot does not hold the answer to 'key'. The slot's lock is not
+    // held while 'run' works: the reader it takes serialises the work, and a
+    // call on another slot never waits for it.
+    template <typename T, typename Run>
+    int kept_fill(kept_answer<T> &slot, const std::string &key, T *buf, size_t cap,
+                  size_t *out_count, int *out_truncated, Run &&run)
+    {
+        std::shared_ptr<const std::vector<T>> data;
+        {
+            std::lock_guard<std::mutex> lock(slot.mtx);
+            if ( slot.data != nullptr && slot.key == key )
+                data = slot.data;
+        }
+        if ( data == nullptr )
+        {
+            data = std::make_shared<const std::vector<T>>(run());
+            std::lock_guard<std::mutex> lock(slot.mtx);
+            slot.key    = key;
+            slot.data   = data;
+            slot.served = 0;
+        }
+        const std::vector<T> &v = *data;
+        set_truncated(out_truncated, v.size(), cap, buf != nullptr);
+        fill(v, buf, cap, out_count, [](const T &x) { return x; });
+        // Answered after a fill (or two counts without one, as abi_export
+        // allows), and at once when empty: the core does not fill an empty
+        // answer, and a kept one would answer the next identical question
+        // without running it.
+        std::lock_guard<std::mutex> lock(slot.mtx);
+        if ( slot.data == data && (++slot.served >= 2 || buf != nullptr || v.empty()) )
+        {
+            slot.data.reset();
+            slot.key.clear();
+        }
+        return ITTD_OK;
     }
 
     int query_accesses(ittd_backend *hb, uint64_t lo, uint64_t hi, uint32_t kinds,
@@ -1766,22 +1971,30 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            query_reader reader(b);
-            ttd::trace &t = reader.trace();
-            uint64_t s0 = 0, s1 = 0;
-            step_range(t, when, &s0, &s1);
-            std::vector<ttd::access_event> ev = t.accesses(lo, hi - lo, s0, s1, sogen_mask(kinds), control(progress));
-            set_truncated(out_truncated, ev.size(), cap, buf != nullptr);
-            return fill(ev, buf, cap, out_count, [&](const ttd::access_event &e)
+            query_key key;
+            key.add(lo).add(hi).add(kinds).add(when);
+            return kept_fill(b->accesses_answer, key.s, buf, cap, out_count, out_truncated, [&]()
             {
-                ittd_access a{};
-                a.pos  = before_step(e.step);
-                a.pc   = e.ip;
-                a.addr = e.address;
-                a.size = (uint32_t)e.size;
-                a.kind = access_kind_of(e.kind);
-                a.tid  = t.thread_at(e.step).value_or(0);
-                return a;
+                query_reader reader(b);
+                ttd::trace &t = reader.trace();
+                uint64_t s0 = 0, s1 = 0;
+                step_range(t, when, &s0, &s1);
+                std::vector<ttd::access_event> ev =
+                    t.accesses(lo, hi - lo, s0, s1, sogen_mask(kinds), control(progress));
+                std::vector<ittd_access> v;
+                v.reserve(ev.size());
+                for ( const ttd::access_event &e : ev )
+                {
+                    ittd_access a{};
+                    a.pos  = before_step(e.step);
+                    a.pc   = e.ip;
+                    a.addr = e.address;
+                    a.size = (uint32_t)e.size;
+                    a.kind = access_kind_of(e.kind);
+                    a.tid  = t.thread_at(e.step).value_or(0);
+                    v.push_back(a);
+                }
+                return v;
             });
         });
     }
@@ -1973,6 +2186,64 @@ namespace
         return out;
     }
 
+    // query_calls' answer, computed: the calls to 'targets', or every call
+    // when there are none, in [when].
+    std::vector<ittd_call> find_calls(backend_t *b, const uint64_t *targets, size_t ntargets,
+                                      ittd_position_range when, const ittd_progress *progress)
+    {
+        query_reader reader(b);
+        ttd::trace &t = reader.trace();
+        uint64_t s0 = 0, s1 = 0;
+        step_range(t, when, &s0, &s1);
+        std::vector<ttd::call_event> all;
+        // No targets: every call in the range. Meant for a short range,
+        // such as the run of one function a call tree shows.
+        if ( ntargets == 0 )
+            all = every_call(t, s0, s1, is64(t), control(progress));
+        for ( size_t i = 0; i < ntargets; i++ )
+        {
+            // Each target reports its share of the whole: a pattern can
+            // name thousands, and per-target progress ran the bar from 0
+            // to 100% over and over.
+            ttd::operation_control ctl = control(progress);
+            if ( ctl.progress )
+            {
+                auto whole = ctl.progress;
+                ctl.progress = [whole, i, ntargets](uint64_t done, uint64_t total)
+                {
+                    uint64_t part = total == 0 ? 0 : std::min<uint64_t>(1000, done * 1000 / total);
+                    whole((uint64_t)i * 1000 + part, (uint64_t)ntargets * 1000);
+                };
+            }
+            std::vector<ttd::call_event> v = t.calls_to(targets[i], s0, s1, ctl);
+            all.insert(all.end(), v.begin(), v.end());
+        }
+        std::sort(all.begin(), all.end(), [](const ttd::call_event &a, const ttd::call_event &b)
+                  { return a.entry_step < b.entry_step; });
+        // In entry order: neighbouring entries walk the same stretch of
+        // the event stream, whose decoded chunks the reader keeps.
+        for ( ttd::call_event &e : all )
+            if ( !e.is_call && e.return_step == UINT64_MAX )
+                e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
+        std::vector<ittd_call> v;
+        v.reserve(all.size());
+        for ( const ttd::call_event &e : all )
+        {
+            ittd_call c{};
+            c.pos       = before_step(e.step);
+            c.entry_pos = before_step(e.entry_step);
+            // Position = the ret's step is the state after it: back at the
+            // return address with the result in RAX.
+            c.ret_pos   = e.return_step == UINT64_MAX ? NONE : at(e.return_step);
+            c.site      = e.step == UINT64_MAX ? ITTD_BADADDR : e.site;
+            c.target    = e.target;
+            c.tid       = e.thread_id;
+            c.flags     = e.is_call ? 0 : ITTD_CALL_F_NOT_CALL;
+            v.push_back(c);
+        }
+        return v;
+    }
+
     int query_calls(ittd_backend *hb, const uint64_t *targets, size_t ntargets,
                     ittd_position_range when, ittd_call *buf, size_t cap,
                     size_t *out_count, int *out_truncated, const ittd_progress *progress)
@@ -1982,55 +2253,10 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            query_reader reader(b);
-            ttd::trace &t = reader.trace();
-            uint64_t s0 = 0, s1 = 0;
-            step_range(t, when, &s0, &s1);
-            std::vector<ttd::call_event> all;
-            // No targets: every call in the range. Meant for a short range,
-            // such as the run of one function a call tree shows.
-            if ( ntargets == 0 )
-                all = every_call(t, s0, s1, is64(t), control(progress));
-            for ( size_t i = 0; i < ntargets; i++ )
-            {
-                // Each target reports its share of the whole: a pattern can
-                // name thousands, and per-target progress ran the bar from 0
-                // to 100% over and over.
-                ttd::operation_control ctl = control(progress);
-                if ( ctl.progress )
-                {
-                    auto whole = ctl.progress;
-                    ctl.progress = [whole, i, ntargets](uint64_t done, uint64_t total)
-                    {
-                        uint64_t part = total == 0 ? 0 : std::min<uint64_t>(1000, done * 1000 / total);
-                        whole((uint64_t)i * 1000 + part, (uint64_t)ntargets * 1000);
-                    };
-                }
-                std::vector<ttd::call_event> v = t.calls_to(targets[i], s0, s1, ctl);
-                all.insert(all.end(), v.begin(), v.end());
-            }
-            std::sort(all.begin(), all.end(), [](const ttd::call_event &a, const ttd::call_event &b)
-                      { return a.entry_step < b.entry_step; });
-            // In entry order: neighbouring entries walk the same stretch of
-            // the event stream, whose decoded chunks the reader keeps.
-            for ( ttd::call_event &e : all )
-                if ( !e.is_call && e.return_step == UINT64_MAX )
-                    e.return_step = return_of_jump_entry(t, e.entry_step, e.thread_id);
-            set_truncated(out_truncated, all.size(), cap, buf != nullptr);
-            return fill(all, buf, cap, out_count, [](const ttd::call_event &e)
-            {
-                ittd_call c{};
-                c.pos       = before_step(e.step);
-                c.entry_pos = before_step(e.entry_step);
-                // Position = the ret's step is the state after it: back at the
-                // return address with the result in RAX.
-                c.ret_pos   = e.return_step == UINT64_MAX ? NONE : at(e.return_step);
-                c.site      = e.step == UINT64_MAX ? ITTD_BADADDR : e.site;
-                c.target    = e.target;
-                c.tid       = e.thread_id;
-                c.flags     = e.is_call ? 0 : ITTD_CALL_F_NOT_CALL;
-                return c;
-            });
+            query_key key;
+            key.add(ntargets).add_bytes(targets, ntargets * sizeof(uint64_t)).add(when);
+            return kept_fill(b->calls_answer, key.s, buf, cap, out_count, out_truncated,
+                             [&]() { return find_calls(b, targets, ntargets, when, progress); });
         });
     }
 
@@ -2043,23 +2269,31 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            query_reader reader(b);
             std::vector<std::pair<uint64_t, uint64_t>> r;
             for ( size_t i = 0; i < nranges; i++ )
                 if ( ranges[i].end > ranges[i].start )
                     r.emplace_back(ranges[i].start, ranges[i].end - ranges[i].start);
-            std::vector<ttd::indirect_branch> v =
-                reader.trace().indirect_branches(r, (flags & ITTD_INDIRECT_JUMPS) != 0, control(progress));
-            set_truncated(out_truncated, v.size(), cap, buf != nullptr);
-            return fill(v, buf, cap, out_count, [](const ttd::indirect_branch &e)
+            const bool jumps = (flags & ITTD_INDIRECT_JUMPS) != 0;
+            query_key key;
+            key.add(jumps).add(r.size()).add_bytes(r.data(), r.size() * sizeof(r[0]));
+            return kept_fill(b->indirect_answer, key.s, buf, cap, out_count, out_truncated, [&]()
             {
-                ittd_call_target t{};
-                t.site      = e.site;
-                t.target    = e.target;
-                t.hits      = e.hits;
-                t.first_pos = before_step(e.first_step);
-                t.flags     = e.is_call ? 0 : ITTD_CALL_F_NOT_CALL;
-                return t;
+                query_reader reader(b);
+                std::vector<ttd::indirect_branch> found =
+                    reader.trace().indirect_branches(r, jumps, control(progress));
+                std::vector<ittd_call_target> v;
+                v.reserve(found.size());
+                for ( const ttd::indirect_branch &e : found )
+                {
+                    ittd_call_target t{};
+                    t.site      = e.site;
+                    t.target    = e.target;
+                    t.hits      = e.hits;
+                    t.first_pos = before_step(e.first_step);
+                    t.flags     = e.is_call ? 0 : ITTD_CALL_F_NOT_CALL;
+                    v.push_back(t);
+                }
+                return v;
             });
         });
     }
@@ -2072,28 +2306,35 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            query_reader reader(b);
-            std::vector<ttd::exception_event> v = reader.trace().exceptions(control(progress));
-            set_truncated(out_truncated, v.size(), cap, buf != nullptr);
-            return fill(v, buf, cap, out_count, [](const ttd::exception_event &e)
+            return kept_fill(b->exceptions_answer, std::string(), buf, cap, out_count, out_truncated, [&]()
             {
-                ittd_exception x{};
-                x.pos            = before_step(e.step);
-                x.raise_pos      = before_step(e.raise_step);
-                x.address        = e.address;
-                x.information[0] = e.information[0];
-                x.information[1] = e.information[1];
-                x.code           = e.code;
-                x.flags          = e.flags;
-                x.tid            = e.thread_id;
-                return x;
+                query_reader reader(b);
+                std::vector<ttd::exception_event> found = reader.trace().exceptions(control(progress));
+                std::vector<ittd_exception> v;
+                v.reserve(found.size());
+                for ( const ttd::exception_event &e : found )
+                {
+                    ittd_exception x{};
+                    x.pos            = before_step(e.step);
+                    x.raise_pos      = before_step(e.raise_step);
+                    x.address        = e.address;
+                    x.information[0] = e.information[0];
+                    x.information[1] = e.information[1];
+                    x.code           = e.code;
+                    x.flags          = e.flags;
+                    x.tid            = e.thread_id;
+                    v.push_back(x);
+                }
+                return v;
             });
         });
     }
 
     // The syscall table is decoded when the trace opens, so this is a copy.
     // The thread comes from the switch table; the arguments, which the table
-    // lacks, are left to regs_at.
+    // lacks, are left to regs_at. On query_reader: the fill builds a cpu_view
+    // for every syscall that can block, which on a large recording is
+    // seconds that the module and thread lists must not wait on 'mtx' for.
     int query_syscalls(ittd_backend *hb, ittd_syscall *buf, size_t cap, size_t *out_count,
                        int *out_truncated, const ittd_progress *)
     {
@@ -2102,8 +2343,8 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            std::lock_guard<std::mutex> lock(b->mtx);
-            ttd::trace &t = *b->trace;
+            query_reader reader(b);
+            ttd::trace &t = reader.trace();
             std::span<const ttd::syscall_entry> v = t.syscalls();
             set_truncated(out_truncated, v.size(), cap, buf != nullptr);
             return fill(v, buf, cap, out_count, [&](const ttd::syscall_entry &e)
@@ -2138,10 +2379,10 @@ namespace
                         }
                     }
                 }
-                if ( std::optional<std::string_view> n = t.syscall_name(e.id) )
+                if ( name.has_value() )
                 {
-                    size_t len = std::min(n->size(), sizeof(x.name) - 1);
-                    memcpy(x.name, n->data(), len);
+                    size_t len = std::min(name->size(), sizeof(x.name) - 1);
+                    memcpy(x.name, name->data(), len);
                 }
                 return x;
             });
@@ -2158,30 +2399,32 @@ namespace
             return ITTD_E_BAD_ARG;
         return guarded(b->error, [&]()
         {
-            // A reader of its own under scan_mtx, so seconds of scanning hold
-            // neither 'mtx' nor the query reader.
-            std::lock_guard<std::mutex> lock(b->scan_mtx);
-            std::unique_ptr<ttd::trace> own = open_forward_trace(b->path);
-            ttd::trace &t = *own;
-            const uint64_t need = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::execute;
-            if ( (t.access_mask() & need) != need )
+            return kept_fill(b->selfmod_answer, std::string(), buf, cap, out_count, out_truncated, [&]()
             {
-                b->error.set("this recording was made without write or execute events, "
-                             "which finding self-modifying code needs");
-                return ITTD_E_FAILED;
-            }
-            std::vector<ttd::self_modifying_hit> v = t.self_modifying_code(control(progress));
-            set_truncated(out_truncated, v.size(), cap, buf != nullptr);
-            return fill(v, buf, cap, out_count, [](const ttd::self_modifying_hit &h)
-            {
-                ittd_selfmod x{};
-                x.address     = h.address;
-                x.size        = h.size;
-                x.write_pos   = before_step(h.write_step);
-                x.write_ip    = h.write_ip;
-                x.execute_pos = before_step(h.execute_step);
-                x.executions  = h.executions;
-                return x;
+                // A reader of its own under scan_mtx, so seconds of scanning
+                // hold neither 'mtx' nor the query reader.
+                std::lock_guard<std::mutex> lock(b->scan_mtx);
+                std::unique_ptr<ttd::trace> own = open_forward_trace(b->path);
+                ttd::trace &t = *own;
+                const uint64_t need = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::execute;
+                if ( (t.access_mask() & need) != need )
+                    throw coded_error(ITTD_E_FAILED, "this recording was made without write or execute events, "
+                                                     "which finding self-modifying code needs");
+                std::vector<ttd::self_modifying_hit> found = t.self_modifying_code(control(progress));
+                std::vector<ittd_selfmod> v;
+                v.reserve(found.size());
+                for ( const ttd::self_modifying_hit &h : found )
+                {
+                    ittd_selfmod x{};
+                    x.address     = h.address;
+                    x.size        = h.size;
+                    x.write_pos   = before_step(h.write_step);
+                    x.write_ip    = h.write_ip;
+                    x.execute_pos = before_step(h.execute_step);
+                    x.executions  = h.executions;
+                    v.push_back(x);
+                }
+                return v;
             });
         });
     }
@@ -3433,16 +3676,55 @@ namespace
         });
     }
 
+    // A buffer the scanners found, as the ABI lists it.
+    ittd_buffer_hit buffer_hit(uint64_t address, uint64_t size, uint64_t first_step, uint64_t last_step,
+                               uint64_t writer_ip, uint64_t writes, const std::string &kind,
+                               const std::string &preview)
+    {
+        ittd_buffer_hit h{};
+        h.address   = address;
+        h.size      = size;
+        h.first_pos = before_step(first_step);
+        h.last_pos  = before_step(last_step);
+        h.writer_ip = writer_ip;
+        h.writes    = writes;
+        copy_str(h.kind, sizeof(h.kind), kind);
+        copy_str(h.preview, sizeof(h.preview), preview);
+        return h;
+    }
+
+    // A kept string as the ABI lists it.
+    ittd_string_hit string_hit(const kept_string &s)
+    {
+        ittd_string_hit h{};
+        h.address = s.address;
+        h.pos     = s.pos;
+        h.wide    = s.wide ? 1 : 0;
+        h.length  = s.length;
+        copy_str(h.text, sizeof(h.text), s.text);
+        return h;
+    }
+
+    // The text a string's listing shows: what copy_str would put in its
+    // ittd_string_hit, and no more.
+    std::string listed_text(const std::string &value)
+    {
+        return value.substr(0, fitted_length(value, sizeof(ittd_string_hit::text)));
+    }
+
     // One pass over the recording for both answers. 'string_minimum' is the
-    // shortest string kept.
+    // shortest string kept. Without 'strings_out' the string scanner does not
+    // run: it is most of the pass's work (a read of memory around every
+    // write), which a listing of buffers alone has no use for.
     // '*strings_truncated' and '*buffers_truncated' say whether a scanner hit
     // its own limit on results, so the answer is a prefix.
     void scan_recorded_writes(const std::filesystem::path &path, size_t string_minimum,
                               const ittd_progress *progress,
-                              std::vector<ittd_string_hit> *strings_out,
+                              std::vector<kept_string> *strings_out,
                               std::vector<ittd_buffer_hit> *buffers_out,
                               bool *strings_truncated, bool *buffers_truncated)
     {
+        const bool want_strings = strings_out != nullptr;
         std::unique_ptr<ttd::trace> own = open_forward_trace(path);
         ttd::trace &t = *own;
         // The shadow's page reads use a reader of their own, so they never
@@ -3496,7 +3778,7 @@ namespace
         };
 
         // ---- what memory held at the start ------------------------------------
-        if ( t.has_memory_regions() )
+        if ( want_strings && t.has_memory_regions() )
         {
             at_start = true;
             for ( const ttd::memory_region &r : t.memory_regions().regions )
@@ -3567,12 +3849,14 @@ namespace
             if ( data.size() != ev->size )
                 continue;
             const uint8_t *bytes = reinterpret_cast<const uint8_t *>(data.data());
-            shadow.apply(ev->address, bytes, data.size());
+            if ( want_strings )
+                shadow.apply(ev->address, bytes, data.size());
             // Sogen's scanners hook the guest CPU's writes, not those Sogen
             // makes for the program (a syscall filling a buffer).
             if ( ev->kind != ttd::access_kind::write )
                 continue;
-            pending.emplace_back(ev->address, ev->size);
+            if ( want_strings )
+                pending.emplace_back(ev->address, ev->size);
             for ( size_t off = 0; off < data.size(); off += kMaximumRegion )
             {
                 const size_t n = std::min(kMaximumRegion, data.size() - off);
@@ -3590,31 +3874,19 @@ namespace
         {
             strings.for_each([&](uint64_t address, const StringScan<uint64_t>::Entry &e)
             {
-                ittd_string_hit h{};
-                h.address = address;
-                h.pos     = appeared_at(t, e.pos);
-                h.wide    = e.wide ? 1 : 0;
-                copy_str(h.text, sizeof(h.text), e.value);
-                h.length  = (uint32_t)e.value.size();
-                strings_out->push_back(h);
+                kept_string s;
+                s.address = address;
+                s.pos     = appeared_at(t, e.pos);
+                s.wide    = e.wide;
+                s.length  = (uint32_t)e.value.size();
+                s.text    = listed_text(e.value);
+                strings_out->push_back(std::move(s));
             });
         }
         if ( buffers_out != nullptr )
-        {
             for ( const FoundBuffer<uint64_t> &r : buffers.results )
-            {
-                ittd_buffer_hit h{};
-                h.address   = r.address;
-                h.size      = r.size;
-                h.first_pos = before_step(r.first);
-                h.last_pos  = before_step(r.last);
-                h.writer_ip = r.writer_ip;
-                h.writes    = r.writes;
-                copy_str(h.kind, sizeof(h.kind), r.kind);
-                copy_str(h.preview, sizeof(h.preview), r.preview);
-                buffers_out->push_back(h);
-            }
-        }
+                buffers_out->push_back(buffer_hit(r.address, r.size, r.first, r.last, r.writer_ip, r.writes,
+                                                  r.kind, r.preview));
     }
 
     // What a replay scan's answer depends on besides the recording.
@@ -3643,14 +3915,14 @@ namespace
     // same pass also fills the buffer answer.
     // '*truncated', when given, says whether the scan hit the string scanner's
     // own limit.
-    const std::vector<ittd_string_hit> &recorded_strings(backend_t *b, size_t scan_min, const ittd_progress *progress,
-                                                         bool *truncated = nullptr)
+    const std::vector<kept_string> &recorded_strings(backend_t *b, size_t scan_min, const ittd_progress *progress,
+                                                     bool *truncated)
     {
         const std::string key = "recorded|" + std::to_string(scan_min);
         auto found = b->strings.find(key);
         if ( found == b->strings.end() )
         {
-            std::vector<ittd_string_hit> s;
+            std::vector<kept_string> s;
             std::vector<ittd_buffer_hit> v;
             bool s_cut = false, v_cut = false;
             scan_recorded_writes(b->path, scan_min, progress, &s, &v, &s_cut, &v_cut);
@@ -3663,6 +3935,39 @@ namespace
         if ( truncated != nullptr )
             *truncated = b->strings_truncated[key];
         return found->second;
+    }
+
+    // The buffers of the recorded writes, from a string scan that ran, or
+    // else from a pass of their own without the string scanner.
+    const std::vector<ittd_buffer_hit> &recorded_buffers(backend_t *b, const ittd_progress *progress, bool *truncated)
+    {
+        auto found = b->buffers.find("recorded");
+        if ( found == b->buffers.end() )
+        {
+            std::vector<ittd_buffer_hit> v;
+            bool v_cut = false;
+            scan_recorded_writes(b->path, 4, progress, nullptr, &v, nullptr, &v_cut);
+            b->buffers_truncated["recorded"] = v_cut;
+            found = b->buffers.emplace("recorded", std::move(v)).first;
+        }
+        *truncated = b->buffers_truncated["recorded"];
+        return found->second;
+    }
+
+    // Count the strings of 'all' at least 'min_length' long, and convert the
+    // first 'cap' of them into 'buf' (when given) on the way.
+    size_t fill_strings(const std::vector<kept_string> &all, uint32_t min_length, ittd_string_hit *buf, size_t cap)
+    {
+        size_t n = 0;
+        for ( const kept_string &s : all )
+        {
+            if ( s.length < min_length )
+                continue;
+            if ( buf != nullptr && n < cap )
+                buf[n] = string_hit(s);
+            n++;
+        }
+        return n;
     }
 
     // set_truncated, also reporting a scanner that stopped at its own limit.
@@ -3690,7 +3995,7 @@ namespace
                 // Scanned at the shortest length likely to be asked for, and
                 // filtered for this request.
                 bool cut = false;
-                const std::vector<ittd_string_hit> *scanned =
+                const std::vector<kept_string> *scanned =
                     &recorded_strings(b, std::min<size_t>(min_length, 4), progress, &cut);
                 // The short scan filled the scanner's cap: 4 to 7 character
                 // strings may have crowded out longer ones asked for. A scan
@@ -3698,14 +4003,12 @@ namespace
                 // as it is another full pass.
                 if ( cut && min_length > 4 )
                     scanned = &recorded_strings(b, min_length, progress, &cut);
-                const std::vector<ittd_string_hit> &all = *scanned;
-                std::vector<ittd_string_hit> v;
-                for ( const ittd_string_hit &h : all )
-                    if ( h.length >= min_length )
-                        v.push_back(h);
+                const size_t n = fill_strings(*scanned, min_length, buf, cap);
                 b->scan_note.clear();
-                set_scan_truncated(out_truncated, v.size(), cap, buf != nullptr, cut);
-                return fill(v, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
+                set_scan_truncated(out_truncated, n, cap, buf != nullptr, cut);
+                if ( out_count != nullptr )
+                    *out_count = n;
+                return ITTD_OK;
             }
             const std::string key = std::to_string(min_length) + "|" + scan_key(settings);
             auto found = b->strings.find(key);
@@ -3730,25 +4033,25 @@ namespace
                 if ( !scanner )
                     throw std::runtime_error("the replay did not start");
                 scanner->finish();
-                std::vector<ittd_string_hit> v;
+                std::vector<kept_string> v;
                 for ( const ttd::recovered_string &s : scanner->results() )
                 {
-                    ittd_string_hit h{};
-                    h.address = s.address;
-                    h.pos     = appeared_at(*t, s.step);
-                    h.wide    = s.encoding.find("16") != std::string::npos ? 1 : 0;
-                    copy_str(h.text, sizeof(h.text), s.value);
+                    kept_string k;
+                    k.address = s.address;
+                    k.pos     = appeared_at(*t, s.step);
+                    k.wide    = s.encoding.find("16") != std::string::npos;
+                    k.text    = listed_text(s.value);
                     // Characters, not bytes: UTF-8 continuation bytes do not count.
                     for ( unsigned char ch : s.value )
                         if ( (ch & 0xC0) != 0x80 )
-                            h.length++;
-                    v.push_back(h);
+                            k.length++;
+                    v.push_back(std::move(k));
                 }
                 found = b->strings.emplace(key, std::move(v)).first;
             }
             b->scan_note.set(b->scan_notes[key]);
             set_truncated(out_truncated, found->second.size(), cap, buf != nullptr);
-            return fill(found->second, buf, cap, out_count, [](const ittd_string_hit &h) { return h; });
+            return fill(found->second, buf, cap, out_count, string_hit);
         });
     }
 
@@ -3764,11 +4067,10 @@ namespace
             std::lock_guard<std::mutex> lock(b->scan_mtx);
             if ( recorded_scans(b) )
             {
-                if ( b->buffers.find("recorded") == b->buffers.end() )
-                    recorded_strings(b, 4, progress);
-                const std::vector<ittd_buffer_hit> &v = b->buffers["recorded"];
+                bool cut = false;
+                const std::vector<ittd_buffer_hit> &v = recorded_buffers(b, progress, &cut);
                 b->scan_note.clear();
-                set_scan_truncated(out_truncated, v.size(), cap, buf != nullptr, b->buffers_truncated["recorded"]);
+                set_scan_truncated(out_truncated, v.size(), cap, buf != nullptr, cut);
                 return fill(v, buf, cap, out_count, [](const ittd_buffer_hit &h) { return h; });
             }
             const std::string key = scan_key(settings);
@@ -3810,18 +4112,8 @@ namespace
                 put_away(!b->scan_notes[key].empty());
                 std::vector<ittd_buffer_hit> v;
                 for ( const ttd::recovered_buffer &r : found_before )
-                {
-                    ittd_buffer_hit h{};
-                    h.address   = r.address;
-                    h.size      = r.size;
-                    h.first_pos = before_step(r.first_step);
-                    h.last_pos  = before_step(r.last_step);
-                    h.writer_ip = r.writer_ip;
-                    h.writes    = r.writes;
-                    copy_str(h.kind, sizeof(h.kind), r.kind);
-                    copy_str(h.preview, sizeof(h.preview), r.preview);
-                    v.push_back(h);
-                }
+                    v.push_back(buffer_hit(r.address, r.size, r.first_step, r.last_step, r.writer_ip, r.writes,
+                                           r.kind, r.preview));
                 found = b->buffers.emplace(key, std::move(v)).first;
             }
             b->scan_note.set(b->scan_notes[key]);
@@ -3879,11 +4171,19 @@ namespace
             if ( found == b->heat.end() )
             {
                 // Zooming in and out asks for the same few windows. Past 16
-                // entries every cached window is dropped (the whole-recording
-                // answers stay), so the cache cannot grow without bound.
-                if ( !whole && b->heat.size() > 16 )
+                // entries every cached window is dropped, so the cache cannot
+                // grow without bound. The whole-recording answers each cost a
+                // pass over every event and are asked for again whenever the
+                // heatmap opens, so they are kept longer: past 4 page sizes
+                // and slice counts, those go too.
+                auto is_window = [](const std::string &k) { return std::count(k.begin(), k.end(), '|') > 1; };
+                size_t windows = 0;
+                for ( const auto &[k, v] : b->heat )
+                    windows += is_window(k) ? 1 : 0;
+                const size_t wholes = b->heat.size() - windows;
+                if ( (!whole && b->heat.size() > 16) || (whole && wholes >= 4) )
                     for ( auto it = b->heat.begin(); it != b->heat.end(); )
-                        it = std::count(it->first.begin(), it->first.end(), '|') > 1 ? b->heat.erase(it) : std::next(it);
+                        it = is_window(it->first) == !whole ? b->heat.erase(it) : std::next(it);
                 std::unique_ptr<ttd::trace> own = open_forward_trace(b->path);
                 ttd::trace &t = *own;
                 uint64_t start = 0, span = 1;
