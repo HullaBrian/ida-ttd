@@ -4,8 +4,9 @@
 
 namespace idattd
 {
-    // A graph drawn by the plugin's own graph window (graph_py.hh), styled
-    // and panned and zoomed like IDA's graphs. The plugin builds the model; IDAPython fetches it with
+    // A graph drawn by the plugin's own graph window
+    // (scripts/ida_ttd_graph.py), styled and panned and zoomed like IDA's
+    // graphs. The plugin builds the model; IDAPython fetches it with
     // ttd("ui.graph KIND") and sends node actions back with
     // ttd("ui.graphact KIND NODE ACTION"). One window per kind ("forks",
     // "origin").
@@ -68,6 +69,12 @@ namespace idattd
     // For the script commands the window uses.
     bool graph_json(const char *kind, qstring *out);
     bool graph_act(const char *kind, int node, const qstring &action);
+
+    // Run 'call' (say "show()") on the PySide window module 'module'
+    // (scripts/<module>.py, in ida-ttd-python/ beside the plugin), reloaded
+    // first if its file changed. False, with IDAPython's error in 'err',
+    // when IDAPython is absent or the call raised.
+    bool run_python_window(const char *module, const char *call, qstring *err);
 
     // Append 's' as a quoted JSON string. Used for every model an IDAPython
     // window asks for (graphs, the call tree, the heatmap).

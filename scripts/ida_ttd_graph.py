@@ -1,33 +1,44 @@
-// graph_py.hh: the plugin's graph window, as IDAPython runs it.
-//
-// One window per kind of graph ("forks", "origin"). The plugin builds the
-// model (graph_view.cpp) and this draws it: ttd("ui.graph KIND") hands over
-// the nodes and edges, ttd("ui.graphact KIND NODE ACTION") runs a node's
-// action. It is drawn as IDA draws its own graphs: plain boxes with a shadow,
-// text in the disassembly font and colours (the node's kind as a comment),
-// right-angled edges, in a top-down tree. Colours are read from IDA's theme,
-// so light and dark themes both work.
-//
-// Mouse and keys as in IDA's graphs: drag to pan, wheel to scroll,
-// Ctrl+wheel to zoom; F (or Home) fits the graph, Ctrl+0 shows it at 100%.
-#pragma once
+"""The plugin's graph window, drawn with PySide6.
 
-namespace idattd
-{
-    static const char GRAPH_PY[] = R"PY(
-def _ida_ttd_graph_show(kind, first):
-    import json
-    import re
-    import ida_kernwin
-    import idc
-    from PySide6 import QtCore, QtGui, QtWidgets
+One window per kind of graph ("forks", "origin"). The plugin builds the model
+(src/ui/graph_view.cpp) and this draws it: ttd("ui.graph KIND") hands over the
+nodes and edges, ttd("ui.graphact KIND NODE ACTION") runs a node's action. It
+is drawn as IDA draws its own graphs: plain boxes with a shadow, text in the
+disassembly font and colours (the node's kind as a comment), right-angled
+edges, in a top-down tree. Colours are read from IDA's theme, so light and
+dark themes both work.
 
-    forms = globals().setdefault("_ida_ttd_graph_forms", {})
+Mouse and keys as in IDA's graphs: drag to pan, wheel to scroll, Ctrl+wheel
+to zoom; F (or Home) fits the graph, Ctrl+0 shows it at 100%.
 
-    def ttd(cmd):
-        # cmd becomes an IDC string literal: escape what would end it early.
-        cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
-        return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+The plugin calls show() through ida_ttd_qt.fresh_module("ida_ttd_graph").
+"""
+import json
+import re
+import ida_kernwin
+import idc
+from PySide6 import QtCore, QtGui, QtWidgets
+
+
+def ttd(cmd):
+    # cmd becomes an IDC string literal: escape what would end it early.
+    cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
+    return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+
+
+# The open windows' forms, by kind or title. Kept across importlib.reload
+# (ida_ttd_qt.fresh_module), which runs this file again in the same
+# namespace: a window opened before a reinstall is still found and reused.
+try:
+    _forms
+except NameError:
+    _forms = {}
+
+
+def show(kind, first):
+    """Open the graph of 'kind', or redraw its open window with the model
+    the plugin holds now ('first': also bring the window to the front)."""
+    forms = _forms
 
     def fetch():
         r = ttd("ui.graph " + kind)
@@ -537,5 +548,3 @@ def _ida_ttd_graph_show(kind, first):
     form = GraphForm(graph)
     forms[kind] = form
     form.Show(graph["title"], options=ida_kernwin.PluginForm.WOPN_DP_TAB | ida_kernwin.PluginForm.WOPN_RESTORE)
-)PY";
-}

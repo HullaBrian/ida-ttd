@@ -1,26 +1,38 @@
-// calltree_py.hh: the call tree window, as IDAPython runs it.
-//
-// A real tree control (columns, expand arrows, theme colours) is a Qt widget,
-// and Hex-Rays steer plugins away from Qt in C++ (it ties the binary to IDA's
-// exact Qt build) towards PySide6 in IDAPython. The plugin builds the tree;
-// this draws it, fetching it with ttd("ui.calltree") and travelling with
-// ttd("ui.travel POS"), the same commands a test uses. Without IDAPython,
-// ui_calltree.cpp falls back to a text view.
-#pragma once
+"""The call tree window, drawn with PySide6.
 
-namespace idattd
-{
-    static const char CALL_TREE_PY[] = R"PY(
-def _ida_ttd_call_tree():
-    import json
-    import ida_kernwin
-    import idc
-    from PySide6 import QtCore, QtGui, QtWidgets
+A real tree control (columns, expand arrows, theme colours) is a Qt widget,
+and Hex-Rays steer plugins away from Qt in C++ (it ties the binary to IDA's
+exact Qt build) towards PySide6 in IDAPython. The plugin builds the tree; this
+draws it, fetching it with ttd("ui.calltree") and travelling with
+ttd("ui.travel POS"), the same commands a test uses. Without IDAPython,
+src/ui/ui_calltree.cpp falls back to a text view.
 
-    def ttd(cmd):
-        # cmd becomes an IDC string literal: escape what would end it early.
-        cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
-        return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+The plugin calls show() through ida_ttd_qt.fresh_module("ida_ttd_calltree").
+"""
+import json
+import ida_kernwin
+import idc
+from PySide6 import QtCore, QtGui, QtWidgets
+
+
+def ttd(cmd):
+    # cmd becomes an IDC string literal: escape what would end it early.
+    cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
+    return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+
+
+# The open windows' forms, by kind or title. Kept across importlib.reload
+# (ida_ttd_qt.fresh_module), which runs this file again in the same
+# namespace: a window opened before a reinstall is still found and reused.
+try:
+    _forms
+except NameError:
+    _forms = {}
+
+
+def show():
+    """Open the call tree the plugin built last, replacing an open one of
+    the same function."""
 
     data = ttd("ui.calltree")
     if not data.get("ok"):
@@ -191,12 +203,6 @@ def _ida_ttd_call_tree():
         def OnClose(self, form):
             _forms.pop(title, None)
 
-    global _ida_ttd_call_tree_forms
-    try:
-        _forms = _ida_ttd_call_tree_forms
-    except NameError:
-        _forms = _ida_ttd_call_tree_forms = {}
-
     title = "TTD call tree: " + tree["name"]
     old = ida_kernwin.find_widget(title)
     if old is not None:
@@ -205,6 +211,3 @@ def _ida_ttd_call_tree():
     _forms[title] = form
     form.Show(title, options=ida_kernwin.PluginForm.WOPN_DP_TAB | ida_kernwin.PluginForm.WOPN_RESTORE)
 
-_ida_ttd_call_tree()
-)PY";
-}

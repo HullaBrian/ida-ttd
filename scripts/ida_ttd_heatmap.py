@@ -1,34 +1,44 @@
-// heatmap_py.hh: the memory heatmap window, as IDAPython runs it.
-//
-// One row per page the recording touched, in address order; one column per
-// slice of time. A cell's colour is the page's access count in that slice, on
-// a log scale; in "All", writes are red, reads green and executes blue, so a
-// mix blends. The plugin counts (ttd("ui.heat")); a double-click travels to
-// the slice and shows the page in the hex view (ttd("ui.showbytes POS EA")).
-//
-// Drag across the columns, or type a start and end position, to zoom. Each
-// zoom recounts that span alone (ttd("ui.heatzoom FROM TO")), so it keeps the
-// full number of slices; Back and Whole recording zoom out. A vertical line
-// marks the debugger's slice (ttd("ui.heatnow"), polled by a QTimer on the UI
-// thread, never from another thread).
-#pragma once
+"""The memory heatmap window, drawn with PySide6.
 
-namespace idattd
-{
-    static const char HEATMAP_PY[] = R"PY(
-def _ida_ttd_heatmap():
-    import json
-    import math
-    import re
-    import ida_kernwin
-    import idc
-    from PySide6 import QtCore, QtGui, QtWidgets
+One row per page the recording touched, in address order; one column per
+slice of time. A cell's colour is the page's access count in that slice, on a
+log scale; in "All", writes are red, reads green and executes blue, so a mix
+blends. The plugin counts (ttd("ui.heat")); a double-click travels to the
+slice and shows the page in the hex view (ttd("ui.showbytes POS EA")).
 
-    def ttd(cmd):
-        # cmd becomes an IDC string literal, so its quotes and backslashes
-        # are escaped: typed text must not end the literal early.
-        cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
-        return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+Drag across the columns, or type a start and end position, to zoom. Each
+zoom recounts that span alone (ttd("ui.heatzoom FROM TO")), so it keeps the
+full number of slices; Back and Whole recording zoom out. A vertical line
+marks the debugger's slice (ttd("ui.heatnow"), polled by a QTimer on the UI
+thread, never from another thread).
+
+The plugin calls show() through ida_ttd_qt.fresh_module("ida_ttd_heatmap").
+"""
+import json
+import math
+import re
+import ida_kernwin
+import idc
+from PySide6 import QtCore, QtGui, QtWidgets
+
+
+def ttd(cmd):
+    # cmd becomes an IDC string literal: escape what would end it early.
+    cmd = cmd.replace("\\", "\\\\").replace('"', '\\"')
+    return json.loads(idc.eval_idc('ttd("%s")' % cmd))
+
+
+# The open windows' forms, by kind or title. Kept across importlib.reload
+# (ida_ttd_qt.fresh_module), which runs this file again in the same
+# namespace: a window opened before a reinstall is still found and reused.
+try:
+    _forms
+except NameError:
+    _forms = {}
+
+
+def show():
+    """Open the heatmap of the counts the plugin holds, replacing an open one."""
 
     # What a typed span end may look like: Microsoft's Sequence:Steps in hex,
     # Sogen's decimal instruction number, or "end". The backend parses it
@@ -396,12 +406,6 @@ def _ida_ttd_heatmap():
             self.timer.stop()
             _forms.pop(title, None)
 
-    global _ida_ttd_heatmap_forms
-    try:
-        _forms = _ida_ttd_heatmap_forms
-    except NameError:
-        _forms = _ida_ttd_heatmap_forms = {}
-
     title = "TTD memory heatmap"
     old = ida_kernwin.find_widget(title)
     if old is not None:
@@ -410,6 +414,3 @@ def _ida_ttd_heatmap():
     _forms[title] = form
     form.Show(title, options=ida_kernwin.PluginForm.WOPN_DP_TAB | ida_kernwin.PluginForm.WOPN_RESTORE)
 
-_ida_ttd_heatmap()
-)PY";
-}

@@ -88,6 +88,33 @@ def theme_is_dark():
     return int(app is not None and app.palette().base().color().lightness() < 128)
 
 
+def fresh_module(name):
+    """The module 'name' (one of the windows: ida_ttd_graph, ida_ttd_heatmap,
+    ida_ttd_calltree), imported, and reloaded when its file changed since:
+    a reinstall while IDA runs then shows the installed window code, as
+    when the plugin ran it from a string on every call, without compiling
+    it again on every show and refresh. The modules keep their open windows
+    across a reload."""
+    import importlib
+    import os
+    import sys
+
+    def stamp(m):
+        try:
+            st = os.stat(m.__file__)
+            return (st.st_mtime_ns, st.st_size)
+        except (OSError, TypeError, AttributeError):
+            return None
+
+    mod = sys.modules.get(name)
+    if mod is None:
+        mod = importlib.import_module(name)
+    elif stamp(mod) != getattr(mod, "_ida_ttd_stamp", None):
+        mod = importlib.reload(mod)
+    mod._ida_ttd_stamp = stamp(mod)
+    return mod
+
+
 # The window a recording runs behind (run_query in query_runner.cpp): what
 # is running, for how long, Sogen's log as it comes, and Pause and Stop.
 # IDA's wait box shows a few lines of text and offers only Cancel, which for

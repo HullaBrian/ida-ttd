@@ -1,7 +1,6 @@
 // The plugin's graph window: the models it draws, handed to IDAPython as
 // JSON, and the actions it sends back.
 #include "ui/graph_view.h"
-#include "ui/graph_py.hh"
 
 #include <expr.hpp>
 
@@ -29,22 +28,31 @@ namespace idattd
             return true;
         }
 
-        // Run the window's code (redefined each time, so a reinstalled
-        // plugin's version takes over), then 'call'.
+        // The window's code is scripts/ida_ttd_graph.py.
         bool run_python(const char *call)
         {
-            extlang_object_t py = find_extlang_by_name("Python");
-            if ( py == nullptr || py->eval_snippet == nullptr )
-                return false;
-            qstring code(GRAPH_PY);
-            code.append(call);
-            code.append('\n');
             qstring err;
-            if ( py->eval_snippet(code.c_str(), &err) )
+            if ( run_python_window("ida_ttd_graph", call, &err) )
                 return true;
             msg("[ida-ttd] the graph window failed: %s\n", err.c_str());
             return false;
         }
+    }
+
+    bool run_python_window(const char *module, const char *call, qstring *err)
+    {
+        extlang_object_t py = find_extlang_by_name("Python");
+        if ( py == nullptr || py->eval_snippet == nullptr )
+        {
+            *err = "no IDAPython";
+            return false;
+        }
+        // fresh_module reloads the module when its file changed, so a
+        // reinstall's version takes over, as when this code was a string run
+        // on every call, without compiling it again on every show.
+        qstring code;
+        code.sprnt("import ida_ttd_qt\nida_ttd_qt.fresh_module('%s').%s\n", module, call);
+        return py->eval_snippet(code.c_str(), err);
     }
 
     void json_str(qstring *out, const char *s)
@@ -94,7 +102,7 @@ namespace idattd
         const bool open = graph_is_open(kind);
         g_models[kind] = std::move(model);
         qstring call;
-        call.sprnt("_ida_ttd_graph_show('%s', %s)", kind, open ? "False" : "True");
+        call.sprnt("show('%s', %s)", kind, open ? "False" : "True");
         return run_python(call.c_str());
     }
 
@@ -113,7 +121,7 @@ namespace idattd
         if ( had && graph_json(kind, &after) && after == before )
             return;
         qstring call;
-        call.sprnt("_ida_ttd_graph_show('%s', False)", kind);
+        call.sprnt("show('%s', False)", kind);
         run_python(call.c_str());
     }
 

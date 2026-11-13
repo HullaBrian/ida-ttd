@@ -1,10 +1,9 @@
 // The memory heatmap: which pages the recording read, wrote and ran from,
 // and when. The backend counts (ITraceBackend::query_access_heat); a PySide6
-// window draws it (heatmap_py.hh), asking for the counts with
+// window draws it (scripts/ida_ttd_heatmap.py), asking for the counts with
 // ttd("ui.heat") and travelling with ttd("ui.showbytes POS EA").
 #include "ui/ui.h"
 #include "ui/graph_view.h"
-#include "ui/heatmap_py.hh"
 #include "analysis/query_runner.h"
 #include <expr.hpp>
 
@@ -74,11 +73,10 @@ namespace idattd
 
     static bool open_heatmap_window()
     {
-        extlang_object_t py = find_extlang_by_name("Python");
-        if ( py == nullptr || py->eval_snippet == nullptr )
+        if ( !graph_window_available() )
             return false;
         qstring err;
-        if ( py->eval_snippet(HEATMAP_PY, &err) )
+        if ( run_python_window("ida_ttd_heatmap", "show()", &err) )
             return true;
         msg("[ida-ttd] the heatmap window could not be opened: %s\n", err.c_str());
         return false;
@@ -150,7 +148,7 @@ namespace idattd
         g_heatJson.clear();
         g_heatStarts.clear();
         g_heatEnd = Position::none();
-        // The title heatmap_py.hh gives its window.
+        // The title scripts/ida_ttd_heatmap.py gives its window.
         TWidget *w = find_widget("TTD memory heatmap");
         if ( w != nullptr )
             close_widget(w, 0);

@@ -114,7 +114,8 @@ def main():
     # so a stray file is not shipped and a missing one fails below.
     expected = {
         "ida-ttd-data": sorted(p.name for p in (REPO / "data").glob("*.bin")),
-        "ida-ttd-python": ["ida_ttd.py", "ida_ttd_runtime.py", "ida_ttd_settings.py", "ida_ttd_qt.py"],
+        "ida-ttd-python": ["ida_ttd.py", "ida_ttd_runtime.py", "ida_ttd_settings.py", "ida_ttd_qt.py",
+                           "ida_ttd_graph.py", "ida_ttd_heatmap.py", "ida_ttd_calltree.py"],
     }
     for folder, names in expected.items():
         if not names:

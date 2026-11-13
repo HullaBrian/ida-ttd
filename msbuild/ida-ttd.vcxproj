@@ -87,7 +87,6 @@
     <ClInclude Include="$(SrcDir)\analysis\trace_store.h" />
     <ClInclude Include="$(SrcDir)\analysis\tracer.h" />
     <ClInclude Include="$(SrcDir)\ui\clipboard.h" />
-    <ClInclude Include="$(SrcDir)\ui\graph_py.hh" />
     <ClInclude Include="$(SrcDir)\ui\graph_view.h" />
     <ClInclude Include="$(SrcDir)\ui\decompiler.h" />
     <ClInclude Include="$(SrcDir)\ui\icons.hh" />
@@ -184,7 +183,7 @@
   <!-- The ida_ttd Python module, in plugins\ida-ttd-python\, which the plugin
        puts on IDAPython's sys.path. -->
   <Target Name="CopyPythonModule" AfterTargets="Build">
-    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py;$(RepoRoot)scripts\ida_ttd_runtime.py;$(RepoRoot)scripts\ida_ttd_settings.py;$(RepoRoot)scripts\ida_ttd_qt.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(RepoRoot)scripts\ida_ttd.py;$(RepoRoot)scripts\ida_ttd_runtime.py;$(RepoRoot)scripts\ida_ttd_settings.py;$(RepoRoot)scripts\ida_ttd_qt.py;$(RepoRoot)scripts\ida_ttd_graph.py;$(RepoRoot)scripts\ida_ttd_heatmap.py;$(RepoRoot)scripts\ida_ttd_calltree.py" DestinationFolder="$(OutDir)ida-ttd-python" SkipUnchangedFiles="true" />
   </Target>
 
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

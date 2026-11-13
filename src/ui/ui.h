@@ -510,7 +510,7 @@ namespace idattd
     // The call tree of the function at the cursor.
     struct CallTreeHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
-    // The last call tree built, as JSON, for the window script (calltree_py.hh).
+    // The last call tree built, as JSON, for the window script (scripts/ida_ttd_calltree.py).
     const qstring &call_tree_json();
 
     // The replay scans. Enabled only for a backend that can replay.

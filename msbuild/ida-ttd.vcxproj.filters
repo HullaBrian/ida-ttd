@@ -160,9 +160,6 @@
     <ClInclude Include="$(SrcDir)\ui\clipboard.h">
       <Filter>ui</Filter>
     </ClInclude>
-    <ClInclude Include="$(SrcDir)\ui\graph_py.hh">
-      <Filter>ui</Filter>
-    </ClInclude>
     <ClInclude Include="$(SrcDir)\ui\graph_view.h">
       <Filter>ui</Filter>
     </ClInclude>

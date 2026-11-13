@@ -78,8 +78,11 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   from).
 - **`src/ui/`**: choosers (one per listing), action handlers (`ui.h` declares
   them and the `actions::` ids), pseudocode painting (`decompiler.cpp`), SVG
-  icons (`icons.hh`, Material Symbols / codicons). The call tree is a PySide6
-  widget run through IDAPython (`calltree_py.hh`).
+  icons (`icons.hh`, Material Symbols / codicons). The graph window, the
+  memory heatmap and the call tree are PySide6 windows in
+  `scripts/ida_ttd_graph.py`, `ida_ttd_heatmap.py` and `ida_ttd_calltree.py`,
+  run through IDAPython (`run_python_window` in `graph_view.h`, which
+  reloads a module whose file changed).
 - **`src/plugin/`**: the `plugmod_t`. `plugin.cpp` holds the action table
   (`build_action_table`: label, handler, shortcut, tooltip, icon, menu group,
   submenu: adding a command is a handler + one row), menu/submenu/toolbar

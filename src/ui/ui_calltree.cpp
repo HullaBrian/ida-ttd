@@ -1,11 +1,10 @@
 // The call tree of the function at the cursor. Opens the PySide6 tree
-// (calltree_py.hh) where IDAPython is available; otherwise a folding text
+// (scripts/ida_ttd_calltree.py) where IDAPython is available; otherwise a folding text
 // view, one line per call, folded from the gutter arrow (or Left / Right) as
 // IDA's own trees are.
 #include "ui/ui.h"
 #include "ui/names.h"
 #include "ui/graph_view.h"
-#include "ui/calltree_py.hh"
 #include <expr.hpp>
 
 namespace idattd
@@ -293,15 +292,15 @@ namespace idattd
         return j;
     }
 
-    // Open the tree control (calltree_py.hh). False when IDAPython is absent
+    // Open the tree control (scripts/ida_ttd_calltree.py). False when
+    // IDAPython is absent
     // or the script failed (reported in the output window).
     static bool open_call_tree_window()
     {
-        extlang_object_t py = find_extlang_by_name("Python");
-        if ( py == nullptr || py->eval_snippet == nullptr )
+        if ( !graph_window_available() )
             return false;
         qstring err;
-        if ( py->eval_snippet(CALL_TREE_PY, &err) )
+        if ( run_python_window("ida_ttd_calltree", "show()", &err) )
             return true;
         msg("[ida-ttd] the call tree window could not be opened (%s); showing it as text.\n",
             err.c_str());
