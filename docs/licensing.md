@@ -8,7 +8,9 @@ is Android-only and in the source archive only), 2026-11-11 for
 `f848464d` (eight source files changed, no dependency), and 2026-11-12 for
 `154088cc` (no new dependency; Unicorn now comes from TTD-Club's fork,
 which changes 28 lines and keeps Unicorn's license files and terms; the
-PDB check below still finds only `minidump_cpp` and no flatbuffers). Not legal advice; where a
+PDB check below still finds only `minidump_cpp` and no flatbuffers), and
+2026-11-13 for `0908dc17` (a 9-line change to that Unicorn fork, nothing
+else). Not legal advice; where a
 point is a reading rather than a fact, it says so.
 
 **In short:** ida-ttd is `Apache-2.0 OR GPL-2.0-only`, at the recipient's

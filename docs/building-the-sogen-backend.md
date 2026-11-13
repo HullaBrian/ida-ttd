@@ -132,6 +132,14 @@ changes:
 - The WinINet fixes from round 9 (the Schannel names, the ALPC reply view,
   a reproducible TLS handshake that checkpoints can hold).
 
+Since 2026-11-13 the pin is `0908dc17` (`ttd/next`, also `main`), for
+`fe87f8d9`: Unicorn gave a RAM block mapped after a bigger one the offset of
+the bigger one's first page, so a store into a page the register view had
+mapped looked like a change to the running instruction's code, and the view
+ran a `rep stos` iteration twice (TTD-Club/sogen#100). Only `deps/unicorn`
+changed (TTD-Club/unicorn#2). The trace format and saved state are the
+same, so `154088cc` recordings still fork.
+
 - **The cache values matter.** `backend-sogen.vcxproj` compiles Sogen's headers
   with the defines this configuration produces (`SOGEN_BUILD_STATIC=1`,
   `SOGEN_ENABLE_RUST_CODE=0`, ...). A different configuration needs the same
@@ -260,7 +268,7 @@ delete them from a root you mean to share.
 
 ## Results
 
-Run on 2026-11-12 against `154088cc`, Release, on the `ttd-traces`
+Run on 2026-11-12 against `154088cc`, and again 2026-11-13 against `0908dc17` (same results), Release, on the `ttd-traces`
 recordings made that day with Sogen's analyzer (host mode, test-sample with
 the network live and `--root-mode rw`): 0 checks failed. The 2026-11-11
 recordings fail only their forks, as expected.
@@ -282,12 +290,12 @@ fork resolves and connects again. Forked offline, it gets 11001 (host not
 found) and runs to the end. An offline recording forked with the network on
 resolves and connects.
 
-**Known failure.** test-sample recorded with `record_program` (offline,
-default root mode) fails one probe check: `regs_at` has no registers at
-16,481,686, because Sogen's register view replays a `rep` string
-instruction one iteration behind the recording
-(`docs/sogen-ttd-requests-10.md`, item 1). Sogen's own recording of it
-fails the same way. A seek there works.
+**Register views.** At `154088cc`, test-sample recorded with
+`record_program` (offline, default root mode) failed one probe check:
+`regs_at` had no registers at 16,481,686, where Sogen's register view ran a
+`rep stos` iteration twice (TTD-Club/sogen#100). At `0908dc17` that
+recording, Sogen's own recording of it and a fresh one all pass, and the
+table's numbers are unchanged.
 
 Run on 2026-11-11 against `f848464d`, Release, on the `ttd-traces`
 recordings made that day with Sogen's analyzer (host mode, test-sample with
