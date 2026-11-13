@@ -44,6 +44,8 @@ namespace idattd
         ssize_t on_get_memory_info(Position now, meminfo_vec_t *ranges);
         // How often the layout IDA had was replaced (the first one aside).
         uint32_t changes() const { return m_changes; }
+        // IDA has been given a layout this session.
+        bool has_layout() const { return m_haveLayout; }
 
         // Tell IDA to re-read the layout if the one at 'now' differs from what
         // it was last given. Called on every stop, hence the comparison.

@@ -151,6 +151,7 @@ namespace idattd
         m_stepMode = false;
         m_draft    = ForkDraft{};
         m_shownAt  = Position::none();
+        m_shownCaptured = false;
     }
 
     ssize_t TraceManager::on_get_processes(procinfo_vec_t *procs)
@@ -341,8 +342,10 @@ namespace idattd
         // During a movement the navigator is replaying m_cursor, and the wait
         // box's message pump can deliver this read; reading the cursor then
         // would re-enter the backend. The stop flushes IDA's memory cache
-        // (on_suspended), so the failed read is not kept.
-        if ( !m_cursor || m_navigating )
+        // (on_suspended), so the failed read is not kept. The copy before a
+        // new layout (capture_kept_at_shown) reads while a resume is still
+        // marked as moving, but only once the movement itself has ended.
+        if ( !m_cursor || (m_navigating && !m_capturing) )
         {
             *nbytes = 0;
             return DRC_FAILED;
@@ -399,10 +402,23 @@ namespace idattd
 
     ssize_t TraceManager::on_get_memory_info(meminfo_vec_t *ranges)
     {
-        // Not mid-movement: the cursor's position is in flux (see on_read_memory).
-        if ( !m_cursor || m_navigating )
+        if ( !m_cursor )
             return DRC_FAILED;
-        return m_layout.on_get_memory_info(m_cursor->position(), ranges);
+        // Not mid-movement: the cursor's position is in flux (see
+        // on_read_memory). What IDA has still describes the position it was
+        // shown, so it is told nothing changed (the SDK's DRC_NOCHG, as its
+        // own debuggers answer an unchanged layout) rather than that the
+        // layout cannot be had; the stop compares again (SegmentLayout::
+        // refresh) and has IDA re-read a layout that did change.
+        if ( m_navigating )
+            return m_layout.has_layout() ? DRC_NOCHG : DRC_FAILED;
+        const Position here = m_cursor->position();
+        // IDA may ask while it handles the module loads and unloads queued
+        // before the stop, so before on_suspended: the layout it is about to
+        // get deletes the functions laid out for the shown position.
+        if ( here != m_shownAt && m_layout.changes_at(here) )
+            capture_kept_at_shown(here);
+        return m_layout.on_get_memory_info(here, ranges);
     }
 
     ssize_t TraceManager::on_read_registers(thid_t tid, int /*clsmask*/, regval_t *values)
@@ -765,7 +781,8 @@ namespace idattd
             m_pendingNotice.clear();
         }
         // IDA's views now show this position's memory.
-        m_shownAt = m_cursor->position();
+        m_shownAt       = m_cursor->position();
+        m_shownCaptured = false;
     }
 
     void TraceManager::capture_kept_at_shown(Position here)
@@ -776,8 +793,26 @@ namespace idattd
         // one thread's instruction, so seeking back lands on the same state;
         // the thread is checked anyway. Two seeks (about 17 ms each on
         // Microsoft TTD), only on the stops that change the layout.
+        //
+        // Once per shown position: the stop being queued (emit_stop), IDA
+        // asking for the layout while it handles the module events queued
+        // before the stop, and the stop itself all call this, and whichever
+        // sees the change first does the copy, so IDA's order does not
+        // matter. Never from inside a movement's move(), so nothing else is
+        // replaying the playhead.
+        if ( m_shownCaptured || !m_shownAt.is_valid() )
+            return;
+        m_shownCaptured = true;
+        diag("kept functions: copying before a layout change (shown %s, playhead %s)",
+             format_position(m_shownAt).c_str(), format_position(here).c_str());
+        struct Capturing
+        {
+            bool &f;
+            explicit Capturing(bool &flag) : f(flag) { f = true; }
+            ~Capturing() { f = false; }
+        } capturing(m_capturing);
         const uint32_t tid = m_cursor->thread_id();
-        const bool back = m_shownAt.is_valid() && m_shownAt != here && m_cursor->seek(m_shownAt);
+        const bool back = m_shownAt != here && m_cursor->seek(m_shownAt);
         // IDA's cache may hold reads made during the movement; the copy must
         // read the shown position's bytes throughout.
         invalidate_dbgmem_contents(BADADDR, 0);
@@ -797,6 +832,15 @@ namespace idattd
         // Only queues the stop (this runs inside ev_resume). Cache invalidation
         // and disassembly/symbol work happen in on_suspended(), once IDA has
         // the process stopped.
+        //
+        // Except the kept-functions copy: IDA may re-read the layout while it
+        // handles the module events queued here, before the stop reaches
+        // on_suspended, and the functions laid out for the shown position
+        // are gone once it has. This is the first point that knows where the
+        // movement ended.
+        const Position here = m_cursor->position();
+        if ( m_shownAt.is_valid() && here != m_shownAt && m_layout.changes_at(here) )
+            capture_kept_at_shown(here);
         ea_t pc = program_counter();
         auto stop = [&]()
         {
