@@ -131,6 +131,7 @@ namespace idattd
         void suspend_source_debugging();
         void restore_source_debugging();
 
+        void settings_after_python();
         bool can_fork_recording() const
         {
             return m_mgr.backend() != nullptr && m_mgr.backend()->capabilities().fork;
@@ -265,6 +266,8 @@ namespace idattd
         // True while the actions are registered (a trace is loaded), so
         // registration is never doubled.
         bool m_actionsRegistered = false;
+        bool m_pythonSeen = false;      // IDAPython was loaded when the settings were read
+        bool m_tearingDown = false;     // in the destructor: no menu rebuilds
 
         // IDA's own icons for the re-skinned movement actions, captured the
         // first time each action is seen (they register lazily) and restored

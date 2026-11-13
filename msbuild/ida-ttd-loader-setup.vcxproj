@@ -46,6 +46,7 @@
     shared sources: it knows nothing about recordings.
   -->
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\installer_labels.h" />
     <ClInclude Include="$(SrcDir)\common\pch.h" />
   </ItemGroup>
   <ItemGroup>

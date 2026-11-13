@@ -2,6 +2,7 @@
 #include "analysis/callsites.h"
 #include "analysis/fork_registry.h"
 #include "common/trace_link.h"
+#include "common/installer_labels.h"
 #include "common/symsrv.h"
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
@@ -147,29 +148,30 @@ namespace idattd
 
     // Put ida-ttd-python\ (beside the plugin; scripts/ida_ttd.py and its
     // siblings) on IDAPython's sys.path, so `import ida_ttd` works. Safe to
-    // repeat; a no-op without IDAPython or the folder.
-    static void register_python_module()
+    // repeat; a no-op without IDAPython or the folder. True when IDAPython is
+    // loaded (so the settings could be read through it).
+    static bool register_python_module()
     {
         extlang_object_t py = find_extlang_by_name("Python");
         if ( py == nullptr || py->eval_snippet == nullptr )
-            return;
+            return false;
         HMODULE self = nullptr;
         wchar_t buf[MAX_PATH * 2];
         if ( !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
                                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
                                  reinterpret_cast<LPCWSTR>(&register_python_module), &self)
           || GetModuleFileNameW(self, buf, qnumber(buf)) == 0 )
-            return;
+            return true;
         qstring dir;
         utf16_utf8(&dir, (const wchar16_t *)buf);
         ssize_t slash = dir.rfind('\\');
         if ( slash < 0 )
-            return;
+            return true;
         dir.resize((size_t)slash);
         dir.append("/ida-ttd-python");
         dir.replace("\\", "/");     // a Python string literal without escapes
         if ( !qisdir(dir.c_str()) )
-            return;
+            return true;
         // A quote still needs escaping: a user name can hold one (O'Neil).
         dir.replace("'", "\\'");
         qstring code;
@@ -179,6 +181,7 @@ namespace idattd
         qstring err;
         if ( !py->eval_snippet(code.c_str(), &err) )
             msg("[ida-ttd] could not put %s on IDAPython's path: %s\n", dir.c_str(), err.c_str());
+        return true;
     }
 
     // Flag the call stack and stack views for refresh. The mask is built by
@@ -199,8 +202,10 @@ namespace idattd
     Plugin::Plugin()
     {
         g_live_plugin = this;
-        // The backend DLLs (load_backend_modules lists where they are found).
-        load_backend_modules();
+        // The backend DLLs are not loaded here: the plugin loads in every
+        // database, and the Sogen backend links its whole emulator. Every
+        // path that needs one (opening a recording, the debugger's init,
+        // drv.open, backends, forks) calls load_backend_modules first.
         // Hex-Rays variable and comment edits mark their function for the
         // kept-functions copy, as IDB events do for the rest.
         set_function_edit_hook([](ea_t ea)
@@ -212,7 +217,7 @@ namespace idattd
         install_script_api(this);
         // An idalib worker gets no ui_ready_to_run; there, IDAPython is
         // already loaded if present at all.
-        register_python_module();
+        m_pythonSeen = register_python_module();
         load_settings();
 
         configure_debugger(m_debugger, inf_is_64bit());
@@ -286,6 +291,10 @@ namespace idattd
     Plugin::~Plugin()
     {
         g_live_plugin = nullptr;
+        // hide_actions() below rebuilds the TTD menu (with Python calls for
+        // its icons) when it unregisters the session's actions; the menu is
+        // deleted a few lines later, so that work would be thrown away.
+        m_tearingDown = true;
         // First: no symbol download may outlive the plugin, and no script may
         // reach it while it goes away.
         symsrv_shutdown();
@@ -875,10 +884,23 @@ namespace idattd
         rebuild_ttd_menu();
     }
 
+    // At ui_ready_to_run: IDAPython is loaded by now. The settings are read
+    // again only if it was not when the plugin was (they then came from the
+    // defaults), so a GUI start reads them once, not twice.
+    void Plugin::settings_after_python()
+    {
+        if ( !m_pythonSeen && register_python_module() )
+        {
+            m_pythonSeen = true;
+            load_settings();
+        }
+    }
+
     void Plugin::rebuild_ttd_menu()
     {
-        // A headless idalib worker has no menus to build.
-        if ( !is_idaq() )
+        // A headless idalib worker has no menus to build, and the plugin's
+        // teardown deletes them.
+        if ( !is_idaq() || m_tearingDown )
             return;
 
         // The actions that belong to the menu rather than to a session, once.
@@ -896,18 +918,11 @@ namespace idattd
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
                 actions::BACKEND_HDR_SOGEN, "Sogen", &g_menuSep, this, nullptr, nullptr, -1));
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                actions::INSTALL_RUNTIME, "Install the TTD runtime (WinDbg)...",
-                &m_installRuntime, this, nullptr,
-                "Get Microsoft's TTD replay runtime, which Microsoft TTD recordings "
-                "need: copied from an installed WinDbg, or WinDbg downloaded from "
-                "Microsoft once you accept its license", -1));
+                actions::INSTALL_RUNTIME, INSTALL_RUNTIME_LABEL,
+                &m_installRuntime, this, nullptr, INSTALL_RUNTIME_TOOLTIP, -1));
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                actions::INSTALL_SOGEN, "Install the Sogen backend...",
-                &m_installSogen, this, nullptr,
-                "The package includes the Sogen backend. This installs another build "
-                "of it (ida-ttd-sogen.dll, or a release zip holding it) into "
-                "ida-ttd\\backends in your IDA user directory, where it takes the "
-                "packaged one's place", -1));
+                actions::INSTALL_SOGEN, INSTALL_SOGEN_LABEL,
+                &m_installSogen, this, nullptr, INSTALL_SOGEN_TOOLTIP, -1));
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
                 actions::RECORD_PROGRAM, "Record a program with Sogen...",
                 &m_recordProgram, this, nullptr,
@@ -1176,18 +1191,18 @@ namespace idattd
         update_action_label(actions::POS_LABEL, label.c_str());
         // The pin is a Python call, and this runs at every stop, every module
         // load (a hundred at a session's start) and every register write. So
-        // once it has been made while stopped, when the toolbar's button is
-        // certainly there, it is made again only for a wider sample. The
+        // it is made only while stopped, when the toolbar's button is
+        // certainly there (before the first stop it may not be, and the
+        // first stop pins it anyway), and again only for a wider sample. The
         // toolbar is rebuilt at each session's start and end, which resets
         // this (show_actions, hide_actions).
-        if ( m_mgr.is_active() )
+        if ( m_mgr.is_active() && get_process_state() == DSTATE_SUSP )
         {
             const qstring widest = format_position(m_mgr.last_position());
             if ( widest != m_posPinned )
             {
                 pin_position_width(widest);
-                if ( get_process_state() == DSTATE_SUSP )
-                    m_posPinned = widest;
+                m_posPinned = widest;
             }
         }
     }
@@ -1655,7 +1670,7 @@ namespace idattd
                 // registers), for forkable recordings; Record and Discard only
                 // with a fork begun.
                 if ( (wt == BWN_DISASM || wt == BWN_PSEUDOCODE || wt == BWN_HEXVIEW || wt == BWN_CPUREGS)
-                  && p->manager().backend() != nullptr && p->manager().backend()->capabilities().fork )
+                  && p->can_fork_recording() )
                 {
                     attach_action_to_popup(widget, popup, actions::FORK, "TTD/");
                     if ( p->manager().fork_draft().active )
@@ -1685,8 +1700,7 @@ namespace idattd
                 // Everything is loaded by now, decompiler and IDAPython
                 // included (the SDK's point for plugins needing the full UI).
                 p->try_hook_decompiler();
-                register_python_module();
-                load_settings();
+                p->settings_after_python();
                 // The TTD menu, with Backends, in every database: the TTD
                 // runtime is needed before a Microsoft recording can open.
                 p->rebuild_ttd_menu();

@@ -253,6 +253,14 @@ def download(release, dest, progress=None, chunk=1 << 20):
 _PACKAGE_META = ("[Content_Types].xml",)
 
 
+def _kept(name):
+    """Whether a package member (its unquoted, '/'-separated name) is
+    unpacked: anything under amd64/ttd, and the license beside it."""
+    ttd = TTD_SUBDIR.replace(os.sep, "/").lower() + "/"
+    n = name.replace("\\", "/").lower()
+    return n.startswith(ttd) or n == "eula.rtf"
+
+
 def unpack(package, target, version, progress=None):
     """Unpack a downloaded package into 'target', replacing what is there.
     It is unpacked beside it and renamed into place, so a failure leaves the
@@ -262,7 +270,11 @@ def unpack(package, target, version, progress=None):
     os.makedirs(staging)
     root = os.path.realpath(staging)
     with zipfile.ZipFile(package) as z:
-        members = [m for m in z.infolist() if not m.is_dir() and m.filename not in _PACKAGE_META]
+        # Only what copy_installed takes from an installed WinDbg: the TTD
+        # runtime and the license. The rest of the package is the whole
+        # debugger (hundreds of MB) and most of the unpacking time.
+        members = [m for m in z.infolist() if not m.is_dir() and m.filename not in _PACKAGE_META
+                   and _kept(urllib.parse.unquote(m.filename))]
         for i, m in enumerate(members):
             # Package part names are percent-encoded ("Third%20Party...").
             name = urllib.parse.unquote(m.filename).replace("/", os.sep)

@@ -10,6 +10,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\installer_labels.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\pch.h">
       <Filter>common</Filter>
     </ClInclude>

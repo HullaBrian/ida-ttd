@@ -19,6 +19,7 @@
 // and nothing stays loaded.
 // ---------------------------------------------------------------------------
 #include "common/pch.h"
+#include "common/installer_labels.h"
 #include <diskio.hpp>
 #include <expr.hpp>
 
@@ -255,16 +256,11 @@ namespace
             runtime.pydir = pydir;
             sogen.pydir = pydir;
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                ACT_RUNTIME, "Install the TTD runtime (WinDbg)...", &runtime, this, nullptr,
-                "Get Microsoft's TTD replay runtime, which Microsoft TTD recordings "
-                "need: copied from an installed WinDbg, or WinDbg downloaded from "
-                "Microsoft once you accept its license", -1));
+                ACT_RUNTIME, idattd::INSTALL_RUNTIME_LABEL, &runtime, this, nullptr,
+                idattd::INSTALL_RUNTIME_TOOLTIP, -1));
             register_action(ACTION_DESC_LITERAL_PLUGMOD(
-                ACT_SOGEN, "Install the Sogen backend...", &sogen, this, nullptr,
-                "The package includes the Sogen backend. This installs another build "
-                "of it (ida-ttd-sogen.dll, or a release zip holding it) into "
-                "ida-ttd\\backends in your IDA user directory, where it takes the "
-                "packaged one's place", -1));
+                ACT_SOGEN, idattd::INSTALL_SOGEN_LABEL, &sogen, this, nullptr,
+                idattd::INSTALL_SOGEN_TOOLTIP, -1));
             ::hook_event_listener(HT_UI, this, this);
             // Not from init(): the menu bar may not exist yet. A command-line
             // file may open before or after this fires; ui_initing_database

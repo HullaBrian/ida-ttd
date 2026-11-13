@@ -43,6 +43,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\installer_labels.h" />
     <ClInclude Include="$(SrcDir)\common\dbstore.h" />
     <ClInclude Include="$(SrcDir)\common\pch.h" />
     <ClInclude Include="$(SrcDir)\common\symbols.h" />

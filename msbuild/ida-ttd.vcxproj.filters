@@ -28,6 +28,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\installer_labels.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\dbstore.h">
       <Filter>common</Filter>
     </ClInclude>
