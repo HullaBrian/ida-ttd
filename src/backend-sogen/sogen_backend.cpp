@@ -2282,7 +2282,8 @@ namespace
         if ( !std::filesystem::is_regular_file(dir / "SYSTEM") )
         {
             *why = "no registry hives (SYSTEM, SOFTWARE, ...) in " + path_utf8(dir)
-                 + ": replaying the program loads the registry it ran against";
+                 + ": Sogen's emulator reads the program's registry from them, whether it "
+                   "records a program or replays one";
             return ITTD_E_NO_REGISTRY;
         }
         if ( recorded.empty() )
