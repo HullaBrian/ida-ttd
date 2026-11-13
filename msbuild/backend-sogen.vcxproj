@@ -3,12 +3,13 @@
   ida-ttd-sogen.dll: the backend for Sogen time-travel traces (.sogttd).
 
   Not part of ida-ttd.slnx, so a normal build never needs Sogen. It links
-  Sogen's trace reader and cpu_view, which are GPL-2.0-only, so the DLL it
-  produces is a GPL-2.0 binary (docs/modular-backends.md section 3).
+  Sogen's trace reader, cpu_view and emulator, which are GPL-2.0-only, so the
+  DLL it produces is a GPL-2.0 binary (docs/licensing.md). Its sources are
+  src/backend-sogen/ (sogen_state.h lists the files).
 
-  It needs a Sogen checkout and a CMake build of that checkout's
-  windows-ttd-view target, configured with these cache values (and built for
-  that one target): CMAKE_BUILD_TYPE=RelWithDebInfo, SOGEN_BUILD_STATIC=ON,
+  It needs a Sogen checkout and a CMake build of that checkout's windows-ttd
+  and windows-ttd-view targets, configured with these cache values:
+  CMAKE_BUILD_TYPE=RelWithDebInfo, SOGEN_BUILD_STATIC=ON,
   SOGEN_BUILD_TOOLS=OFF, SOGEN_ENABLE_PYTHON_BINDINGS=OFF,
   SOGEN_ENABLE_RUST_CODE=OFF, SOGEN_DISABLE_FEX=ON, SOGEN_ENABLE_SDL3=OFF and
   SOGEN_ENABLE_LTO=OFF. docs/building-the-sogen-backend.md has the commands.
@@ -66,6 +67,7 @@
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ExceptionHandling>Async</ExceptionHandling>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
       <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(SrcDir);$(SogenRoot)\src\windows-ttd\reader;$(SogenRoot)\src\windows-ttd\view;$(SogenRoot)\src\windows-ttd;$(SogenRoot)\src\windows-emulator;$(SogenRoot)\src\process-manager;$(SogenRoot)\src\common;$(SogenRoot)\src\emulator-platform;$(SogenRoot)\src;$(SogenRoot)\src\emulator;$(SogenRoot)\src\backends\unicorn-emulator;$(SogenRoot)\deps\zstd\lib;$(SogenRoot)\deps\minidump_cpp\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -87,7 +89,16 @@
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
     <ClInclude Include="$(SrcDir)\common\write_scans.h" />
     <ClInclude Include="$(SrcDir)\common\local_path.h" />
+    <ClInclude Include="$(SrcDir)\backend-sogen\sogen_state.h" />
+    <ClInclude Include="$(SrcDir)\backend-sogen\sogen_insn.h" />
     <ClCompile Include="$(SrcDir)\backend-sogen\sogen_backend.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_emulator.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_fork.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_memory.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_nav.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_queries.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_scans.cpp" />
+    <ClCompile Include="$(SrcDir)\backend-sogen\sogen_session.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>
