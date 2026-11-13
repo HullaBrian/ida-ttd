@@ -304,7 +304,7 @@ namespace idattd
             return backend->query_executed(spans, &executed, p);
         });
         if ( !qr.ran )
-            return refuse(query_error(mgr, backend, "The replay session ended during the coverage sweep.",
+            return refuse(query_error(mgr, backend, qr, "The replay session ended during the coverage sweep.",
                                       "This recording's backend could not measure execution coverage."));
         res.cancelled = qr.cancelled;
 

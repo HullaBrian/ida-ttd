@@ -142,7 +142,7 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            *err = query_error(mgr, backend, "the replay session ended during the call listing",
+            *err = query_error(mgr, backend, qr, "the replay session ended during the call listing",
                                "the call listing did not run");
             return false;
         }

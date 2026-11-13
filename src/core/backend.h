@@ -130,6 +130,8 @@ namespace idattd
     {
         Position pos;
         qstring  what;
+        uint32_t kind = ITTD_EV_OTHER;   // ITTD_EV_*: what the timeline can sort by
+        uint32_t tid  = 0;               // the thread it happened on; 0 when not one
     };
 
     enum AccessKind : uint8_t
@@ -370,6 +372,11 @@ namespace idattd
                                   // the backend cannot answer it or it failed
         bool cancelled = false;   // the user stopped it part-way
         bool truncated = false;   // a record cap was hit; results are a prefix
+        // Why it did not run, read from the backend on the thread that ran
+        // it, right after it failed: by the time the main thread asks, a
+        // call of its own (a cursor read) may have replaced the backend's
+        // last error. Empty when it ran, or the backend gave no reason.
+        qstring error;
     };
 
     // How a long query reports progress and asks whether to stop. The core
@@ -915,10 +922,11 @@ namespace idattd
 
         // ---- symbols -------------------------------------------------------
         //
-        // Named addresses the recording knows about. Microsoft TTD records
-        // none, so its backend parses the export table out of guest memory;
-        // Sogen records every module's export directory. Either way the core
-        // gets a list and applies IDA names.
+        // Named addresses the recording knows about (recorded_exports):
+        // Sogen records every module's export directory. Microsoft TTD
+        // records none, and its backend answers with nothing; the core then
+        // parses the export table itself (ModuleRegistry), out of guest
+        // memory or the image on disk, and applies IDA names either way.
         struct Symbol { ea_t ea = BADADDR; qstring name; bool is_export = true; };
         virtual std::vector<Symbol> module_symbols(ea_t base) = 0;
         // [start, end) of every function in the module at 'base', from whatever

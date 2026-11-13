@@ -740,7 +740,8 @@ namespace idattd
             {
                 ittd_trace_event x{};
                 x.pos  = to_abi(e.pos);
-                x.kind = ITTD_EV_OTHER;
+                x.kind = e.kind;
+                x.tid  = e.tid;
                 copy_str(x.text, sizeof(x.text), e.what.c_str());
                 return x;
             });

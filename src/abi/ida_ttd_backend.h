@@ -42,6 +42,34 @@
  *    result array is one memcpy and the caller owns all the memory.
  *  - Handles are opaque. A cursor belongs to the backend handle that made it
  *    and must be closed before it.
+ *
+ * Threading (what the core does, so what a backend must allow):
+ *
+ *  - Opening, closing, making and closing cursors, and every movement
+ *    (ittd_navigator) happen on IDA's main thread.
+ *  - At most one whole-recording query (query_*, read_memory_at,
+ *    visit_positions, registers_at, record_fork, ...) runs at a time, on a
+ *    worker thread. While it runs, the main thread keeps reading through
+ *    the playhead cursor (registers, memory, threads, modules): a query
+ *    must not hold a lock those reads need for longer than a read takes,
+ *    and must use a cursor of its own, never the playhead.
+ *  - A cursor is used by one thread at a time; two cursors of one handle
+ *    may be used by two threads at once.
+ *  - visit_positions may call 'fn' from several threads at once, as may a
+ *    progress sink's report and cancelled.
+ *  - ittd_last_error() is read on the thread that made the failing call,
+ *    right after it. A backend may keep one slot per handle or per thread.
+ *
+ * Capabilities, and how their absence is said:
+ *
+ *  - An entry the backend does not implement is NULL (or lies past 'size',
+ *    for a backend built before the entry existed). The core checks before
+ *    calling, and offers no command that would need it.
+ *  - An ITTD_CAP_* bit is for what varies from one recording to the next
+ *    with the same backend (a Sogen recording made without its exception
+ *    section, say). The core reads the bits once, when the recording opens.
+ *  - ITTD_E_UNSUPPORTED at call time is for what neither can say ahead: an
+ *    argument this recording cannot answer for.
  */
 
 #ifndef IDA_TTD_BACKEND_H
@@ -57,18 +85,31 @@ extern "C" {
 /* ------------------------------------------------------------------ version */
 
 /*
- * Bumped for any change that is not purely additive. The core passes the
- * version it was built against to the entry point; a backend that cannot speak
- * it returns NULL, and the core names the mismatch instead of reading a table
- * it does not understand.
+ * ITTD_ABI_VERSION counts changes; ITTD_ABI_LAYOUT is the last version that
+ * changed a layout (a field moved, a struct without a 'size' grew, a meaning
+ * changed). The core passes its version to the entry point, and each side
+ * accepts any partner whose version is at least ITTD_ABI_LAYOUT:
  *
- * Not published yet, so every change still bumps it rather than keeping an old
- * layout alive. 2: ittd_module gained timestamp and checksum; the table gained
+ *  - A purely additive change (an entry appended to the table, a field
+ *    appended to a struct that carries its 'size', a new flag or constant)
+ *    bumps ITTD_ABI_VERSION only. A newer core reads an older backend's table
+ *    up to its 'size' (ITTD_HAS); a backend reads a struct the core passes
+ *    only up to that struct's 'size'. So a backend the user installed in
+ *    $IDAUSR\ida-ttd\backends keeps loading after the plugin is upgraded.
+ *  - Any other change bumps both, and the mismatch is named instead of a
+ *    table being read that the other side does not understand.
+ *
+ * History: 2: ittd_module gained timestamp and checksum; the table gained
  * 'size' and the entries after query_frame_entry. 3: ittd_fork_settings
  * gained the network, checkpoint, access, elevation and log fields; the table
- * gained record_program. 4: ittd_record_request gained start_time.
+ * gained record_program. 4: ittd_record_request gained start_time; the last
+ * change before the additive rule, so the layout every later version keeps.
+ * ITTD_TRUNC_CANCELLED was added within 4 (a backend built before it sets 1
+ * for a cancelled prefix, which the core still reads correctly), so that
+ * backends built for 4, which check for 4 exactly, keep loading.
  */
 #define ITTD_ABI_VERSION 4u
+#define ITTD_ABI_LAYOUT  4u
 
 #define ITTD_BADADDR 0xFFFFFFFFFFFFFFFFull
 
@@ -528,7 +569,7 @@ typedef struct ittd_name
 #define ITTD_REGS_GP   0x1u
 #define ITTD_REGS_SEG  0x2u
 #define ITTD_REGS_XMM  0x4u
-#define ITTD_REGS_FPU  0x8u
+#define ITTD_REGS_FPU  0x8u   /* reserved: ittd_regs has no x87 state; never set */
 
 typedef struct ittd_regs
 {
@@ -921,12 +962,12 @@ typedef struct ittd_backend_api
     /* ---- symbols ------------------------------------------------------ */
 
     /*
-     * Named addresses the recording knows about, and function bounds.
-     *
-     * Microsoft TTD records neither, so its backend parses the export
-     * directory and .pdata out of guest memory; Sogen stores every module's
-     * export directory in the trace. Either way the core gets a list and
-     * applies IDA names.
+     * Named addresses the recording knows about, and function bounds, for a
+     * backend whose recording stores them (ITTD_CAP_RECORDED_EXPORTS): Sogen
+     * stores every module's export directory. Without them the core parses
+     * the export directory and .pdata itself, out of guest memory or the
+     * image on disk (ModuleRegistry); Microsoft TTD records neither, so its
+     * backend answers with nothing. NULL entries are allowed.
      */
     int (*module_symbols)(ittd_backend *b, uint64_t base,
                           ittd_symbol *buf, size_t cap, size_t *out_count);

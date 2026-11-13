@@ -136,6 +136,12 @@ namespace idattd
         {
             return m_mgr.backend() != nullptr && m_mgr.backend()->capabilities().fork;
         }
+        // The recording can be stepped backwards (both backends today): the
+        // backward buttons and menu entries are offered only then.
+        bool can_reverse() const
+        {
+            return m_mgr.backend() != nullptr && m_mgr.backend()->capabilities().reverse_step;
+        }
 
     private:
         void register_actions();

@@ -141,9 +141,9 @@ namespace idattd
     }
 
     // Why a replay did not run (query_error).
-    static qstring replay_error(TraceManager *mgr, ITraceBackend *backend)
+    static qstring replay_error(TraceManager *mgr, ITraceBackend *backend, const QueryResult &qr)
     {
-        return query_error(mgr, backend, "the replay session ended during the replay",
+        return query_error(mgr, backend, qr, "the replay session ended during the replay",
                            "the replay did not run");
     }
 
@@ -162,7 +162,7 @@ namespace idattd
         });
         *cancelled = qr.cancelled;
         if ( !qr.ran )
-            *error = replay_error(mgr, backend);
+            *error = replay_error(mgr, backend, qr);
         return qr.ran;
     }
 
@@ -181,7 +181,7 @@ namespace idattd
         });
         *cancelled = qr.cancelled;
         if ( !qr.ran )
-            *error = replay_error(mgr, backend);
+            *error = replay_error(mgr, backend, qr);
         return qr.ran;
     }
 }

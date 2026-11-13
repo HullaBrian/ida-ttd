@@ -574,12 +574,12 @@ namespace idattd
         return user_cancelled();
     }
 
-    qstring query_error(TraceManager *mgr, ITraceBackend *backend, const char *ended,
-                        const char *fallback)
+    qstring query_error(TraceManager *mgr, ITraceBackend *backend, const QueryResult &qr,
+                        const char *ended, const char *fallback)
     {
         if ( mgr == nullptr || !mgr->is_active() || backend == nullptr || mgr->backend() != backend )
             return qstring(ended);
-        qstring why = backend->last_error();
+        qstring why = !qr.error.empty() ? qr.error : backend->last_error();
         if ( why.empty() )
             why = fallback;
         return why;

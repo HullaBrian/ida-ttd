@@ -508,7 +508,7 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            *error = query_error(m_mgr, backend, "The replay session ended during the call search.",
+            *error = query_error(m_mgr, backend, qr, "The replay session ended during the call search.",
                                  "This recording's backend could not search for calls.");
             return false;
         }

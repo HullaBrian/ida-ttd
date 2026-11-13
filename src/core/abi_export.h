@@ -11,7 +11,8 @@ namespace idattd
     //   extern "C" __declspec(dllexport)
     //   const ittd_backend_api *ida_ttd_backend(uint32_t abi_version)
     //   {
-    //       return abi_version == ITTD_ABI_VERSION
+    //       // Any core since the last layout change (ida_ttd_backend.h).
+    //       return abi_version >= ITTD_ABI_LAYOUT
     //            ? export_backend(make_my_backend, my_set_log) : nullptr;
     //   }
     //

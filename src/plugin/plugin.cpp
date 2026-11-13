@@ -1105,12 +1105,15 @@ namespace idattd
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOver");         // Step over
         attach_action_to_toolbar(TTD_TOOLBAR, "ThreadRunUntilReturn");   // Run until return
         attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_TO_CUR_FWD);  // Run to cursor (custom)
-        // --- backward ---
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_BACK);        // Continue backwards
-        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepIntoBackwards");
-        attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOverBackwards");
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::STEP_OUT_BACK);   // Step out backwards
-        attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_TO_CUR_BACK); // Run to cursor backwards (custom)
+        // --- backward, for a recording that can be stepped backwards ---
+        if ( can_reverse() )
+        {
+            attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_BACK);        // Continue backwards
+            attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepIntoBackwards");
+            attach_action_to_toolbar(TTD_TOOLBAR, "ThreadStepOverBackwards");
+            attach_action_to_toolbar(TTD_TOOLBAR, actions::STEP_OUT_BACK);   // Step out backwards
+            attach_action_to_toolbar(TTD_TOOLBAR, actions::RUN_TO_CUR_BACK); // Run to cursor backwards (custom)
+        }
         // --- TTD extras ---
         attach_action_to_toolbar(TTD_TOOLBAR, actions::TIMELINE);
         attach_action_to_toolbar(TTD_TOOLBAR, actions::GOTO_POS);
@@ -1663,7 +1666,8 @@ namespace idattd
                 {
                     // Travel to the address under the cursor.
                     attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_FWD, "TTD/");
-                    attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_BACK, "TTD/");
+                    if ( p->can_reverse() )
+                        attach_action_to_popup(widget, popup, actions::RUN_TO_CUR_BACK, "TTD/");
                     attach_action_to_popup(widget, popup, actions::ADD_BOOKMARK, "TTD/");
                 }
                 // Forking, wherever program state is changed (code, memory,

@@ -99,6 +99,16 @@ namespace idattd
         return r;
     }
 
+    // A query's outcome, with the backend's reason when it failed, read here
+    // on the thread that ran it (QueryResult::error).
+    static QueryResult finish_query(const BackendModule *m, int rc, int truncated, const ProgressBridge &pb)
+    {
+        QueryResult r = result_of(rc, truncated, pb);
+        if ( !r.ran && rc != ITTD_E_UNSUPPORTED )
+            r.error = m->last_error();
+        return r;
+    }
+
     // The count-then-fill convention: ask for the count, then fill an array
     // that large. If the count grew between the calls, the array is grown and
     // the fill repeated (up to three times); when it is still short after
@@ -606,6 +616,8 @@ namespace idattd
             TraceEvent te;
             te.pos  = from_abi(e.pos);
             te.what = fixed_str(e.text);
+            te.kind = e.kind;
+            te.tid  = e.tid;
             out.push_back(te);
         }
         return out;
@@ -641,7 +653,7 @@ namespace idattd
                    : a.kind == ITTD_ACCESS_WRITE ? ACCESS_WRITE : ACCESS_EXEC;
             out->push_back(x);
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
@@ -661,7 +673,7 @@ namespace idattd
         // Already sorted and distinct. A module's worth is millions of
         // addresses: one append, not a push_back each.
         out->insert(out->end(), v.begin(), v.end());
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_calls(const std::vector<ea_t> &targets, PositionRange when,
@@ -691,7 +703,7 @@ namespace idattd
             e.is_call   = (c.flags & ITTD_CALL_F_NOT_CALL) == 0;
             out->push_back(e);
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &ranges,
@@ -720,7 +732,7 @@ namespace idattd
             t.is_call = (c.flags & ITTD_CALL_F_NOT_CALL) == 0;
             (*out)[(ea_t)c.site].push_back(t);
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress)
@@ -748,7 +760,7 @@ namespace idattd
             e.information[1] = x.information[1];
             out->push_back(e);
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress)
@@ -774,7 +786,7 @@ namespace idattd
             e.name   = fixed_str(x.name);
             out->push_back(std::move(e));
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_self_modifying(std::vector<SelfModHit> *out, ProgressSink *progress)
@@ -801,7 +813,7 @@ namespace idattd
             h.executions  = x.executions;
             out->push_back(h);
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     static void backend_log(void *, const char *line);
@@ -942,12 +954,19 @@ namespace idattd
         return qstring(or_empty(m_api->scan_notice(m_handle)));
     }
 
+    // What stopped a replay, from the code it failed with: one mapping for
+    // forks, scans and new recordings alike.
+    static ReplayBlock replay_block_of(int rc)
+    {
+        return rc == ITTD_E_HOST_REPLAY       ? ReplayBlock::HostConsent
+             : rc == ITTD_E_NO_REGISTRY       ? ReplayBlock::Registry
+             : rc == ITTD_E_REGISTRY_MISMATCH ? ReplayBlock::RegistryMismatch
+             : ReplayBlock::None;
+    }
+
     int BackendModule::note_replay(int rc)
     {
-        m_replayBlock = rc == ITTD_E_HOST_REPLAY ? ReplayBlock::HostConsent
-                      : rc == ITTD_E_NO_REGISTRY ? ReplayBlock::Registry
-                      : rc == ITTD_E_REGISTRY_MISMATCH ? ReplayBlock::RegistryMismatch
-                      : ReplayBlock::None;
+        m_replayBlock = replay_block_of(rc);
         return rc;
     }
 
@@ -978,7 +997,7 @@ namespace idattd
             h.text    = fixed_str(x.text);
             out->push_back(std::move(h));
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_buffers(const ReplaySettings &settings,
@@ -1011,7 +1030,7 @@ namespace idattd
             h.preview   = fixed_str(x.preview);
             out->push_back(std::move(h));
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     ForkResult BackendModule::record_fork(const ForkRequest &req, ProgressSink *progress)
@@ -1111,9 +1130,7 @@ namespace idattd
         if ( rc != ITTD_OK )
         {
             r.cancelled = rc == ITTD_E_CANCELLED;
-            r.block = rc == ITTD_E_HOST_REPLAY ? ReplayBlock::HostConsent
-                    : rc == ITTD_E_NO_REGISTRY ? ReplayBlock::Registry
-                    : ReplayBlock::None;
+            r.block = replay_block_of(rc);
             r.error = r.cancelled ? qstring("cancelled") : qstring(or_empty(m_api->last_error(nullptr)));
             if ( r.error.empty() )
                 r.error = "failed";
@@ -1146,7 +1163,7 @@ namespace idattd
                 for ( const ittd_name &n : names )
                     files->push_back(fixed_str(n.name));
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     Position BackendModule::position_add(Position p, int64_t delta) const
@@ -1202,7 +1219,7 @@ namespace idattd
             return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, &trunc, pb.get());
         }, &trunc);
         append_heat(v, out);
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     bool BackendModule::can_window_heat() const
@@ -1231,7 +1248,7 @@ namespace idattd
             return m_api->query_access_heat_window(m_handle, page_shift, slices, w, b, cap, n, &trunc, pb.get());
         }, &trunc);
         append_heat(v, out);
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     Position BackendModule::heat_window_slice_position(uint32_t slices, uint32_t slice, PositionRange when)
@@ -1342,7 +1359,7 @@ namespace idattd
                 out->push_back(x);
             }
         }
-        return result_of(rc, trunc, pb);
+        return finish_query(this, rc, trunc, pb);
     }
 
     QueryResult BackendModule::registers_at(const std::vector<Position> &positions,
@@ -1359,7 +1376,7 @@ namespace idattd
             p.push_back(to_abi(x));
         out->assign(positions.size(), ittd_regs{});
         int rc = m_api->regs_at(m_handle, p.data(), p.size(), out->data(), pb.get());
-        return result_of(rc, 0, pb);
+        return finish_query(this, rc, 0, pb);
     }
 
     QueryResult BackendModule::read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
@@ -1385,7 +1402,7 @@ namespace idattd
         int rc = m_api->read_memory_at(m_handle, in.data(), in.size(), data->data(), known->data(), pb.get());
         if ( rc == ITTD_E_UNSUPPORTED )
             return ITraceBackend::read_memory_at(reads, data, known, progress);
-        return result_of(rc, 0, pb);
+        return finish_query(this, rc, 0, pb);
     }
 
     // visit_positions' callback, through the C ABI: 'ud' is the VisitFn, and
@@ -1427,7 +1444,7 @@ namespace idattd
                                               visit_trampoline, const_cast<VisitFn *>(&fn), pb.get());
         if ( rc == ITTD_E_UNSUPPORTED )
             return QueryResult{};
-        return result_of(rc, 0, pb);
+        return finish_query(this, rc, 0, pb);
     }
 
     std::vector<ITraceBackend::Symbol> BackendModule::module_symbols(ea_t base)
@@ -1642,13 +1659,17 @@ namespace idattd
         {
             api = nullptr;
         }
-        // Every entry up to set_log was in the first table of this version
-        // and is read without a size check, so a shorter table is refused.
-        if ( api == nullptr || api->abi_version != ITTD_ABI_VERSION || api->id == nullptr
+        // Any version since the last layout change will do: what was added
+        // after it is read only up to the table's 'size' (ITTD_HAS), so an
+        // older backend in the user's folder keeps loading after an upgrade.
+        // Every entry up to set_log was in the first table of that layout and
+        // is read without a size check, so a shorter table is refused.
+        if ( api == nullptr || api->abi_version < ITTD_ABI_LAYOUT || api->id == nullptr
           || api->size < offsetof(ittd_backend_api, set_log) )
         {
-            msg("[ida-ttd] the backend %s does not speak backend ABI version %u; skipped. "
-                "It was built for a different ida-ttd.\n", path.c_str(), ITTD_ABI_VERSION);
+            msg("[ida-ttd] the backend %s does not speak backend ABI version %u (or a later "
+                "one with the same layout); skipped. It was built for a different ida-ttd.\n",
+                path.c_str(), ITTD_ABI_VERSION);
             FreeLibrary(h);
             return;
         }

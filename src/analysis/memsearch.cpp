@@ -49,7 +49,7 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            *error = query_error(mgr, backend, "The replay session ended during the search.",
+            *error = query_error(mgr, backend, qr, "The replay session ended during the search.",
                                  "This recording's backend could not search for accesses.");
             return false;
         }

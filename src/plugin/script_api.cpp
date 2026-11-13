@@ -612,7 +612,8 @@ namespace idattd
         for ( size_t i = 0; i < ev.size() && i < max; i++ )
         {
             JObj o;
-            o.str("pos", position_text(b, ev[i].pos)).str("what", ev[i].what);
+            o.str("pos", position_text(b, ev[i].pos)).str("what", ev[i].what)
+             .num("kind", ev[i].kind).num("tid", ev[i].tid);
             arr.add(o.done());
         }
         out.num("count", (int64_t)ev.size()).raw("events", arr.done());
