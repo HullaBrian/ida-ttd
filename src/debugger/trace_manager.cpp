@@ -32,6 +32,97 @@ namespace idattd
     }
 
     //=======================================================================
+    // SessionOptions
+    //=======================================================================
+    // Set DOPT_LOAD_DINFO on or off and return the options as they were.
+    // set_debugger_options replaces the options and returns the old ones,
+    // with no getter, so the old set goes straight back with only this bit
+    // changed (CLAUDE.md: it is never called to read them alone).
+    static uint swap_load_dinfo(bool on)
+    {
+        uint dopts = set_debugger_options(0);
+        set_debugger_options(on ? dopts | DOPT_LOAD_DINFO : dopts & ~(uint)DOPT_LOAD_DINFO);
+        return dopts;
+    }
+
+    SessionOptions::SessionOptions()
+    {
+        m_savedAf    = inf_get_af();
+        m_dinfoWasOn = (swap_load_dinfo(false) & DOPT_LOAD_DINFO) != 0;
+        apply();
+    }
+
+    void SessionOptions::apply() const
+    {
+        // Stop the analysis cascade: with AF_PROC ("create functions if call
+        // is present") each on-stop add_func() would make IDA create and
+        // analyze every callee recursively, across whole modules. CodeAnalyzer
+        // defines the current function and its direct callees itself.
+        inf_set_af(m_savedAf & ~(uint32)(AF_PROC | AF_PROCPTR));
+        // ModuleRegistry::load_pdb loads module PDBs silently, so IDA's
+        // automatic debug-file loading (which asks "load symbols?" per
+        // module) is turned off.
+        swap_load_dinfo(false);
+    }
+
+    SessionOptions::~SessionOptions()
+    {
+        inf_set_af(m_savedAf);
+        // Only put back if the user had it on; off, it is already as it was.
+        if ( m_dinfoWasOn )
+            swap_load_dinfo(true);
+    }
+
+    //=======================================================================
+    // ForkDraft
+    //=======================================================================
+    ssize_t ForkDraft::overlay_read(size_t *nbytes, ea_t ea, void *buffer, size_t size, ssize_t rc) const
+    {
+        if ( bytes.empty() )
+            return rc;
+        // A read is a prefix of the range (MemoryReader zero-fills past it).
+        // Fork bytes written right after that prefix, or where the recording
+        // has nothing at all, are readable too, so the prefix is extended
+        // over consecutive draft bytes; the user sees what was written rather
+        // than unreadable memory.
+        size_t n = rc == DRC_OK ? *nbytes : 0;
+        while ( n < size && bytes.count(ea + n) != 0 )
+            n++;
+        uchar *out = (uchar *)buffer;
+        for ( auto it = bytes.lower_bound(ea); it != bytes.end() && it->first < ea + n; ++it )
+            out[it->first - ea] = it->second;
+        if ( n == 0 )
+            return rc;
+        *nbytes = n;
+        return DRC_OK;
+    }
+
+    void ForkDraft::overlay_registers(regval_t *values) const
+    {
+        for ( const auto &[idx, v] : regs )
+            values[idx].set_int(v);
+    }
+
+    void ForkDraft::fill_request(ForkRequest *req, bool is64) const
+    {
+        req->at = at;
+        req->regs.clear();
+        req->memory.clear();
+        for ( const auto &[idx, v] : regs )
+            req->regs.emplace_back(fork_register_index(idx, is64), (uint64_t)v);
+        // Runs of consecutive bytes, one write each.
+        for ( auto it = bytes.begin(); it != bytes.end(); )
+        {
+            ea_t start = it->first;
+            bytevec_t run;
+            ea_t next = start;
+            for ( ; it != bytes.end() && it->first == next; ++it, ++next )
+                run.push_back(it->second);
+            req->memory.emplace_back(start, std::move(run));
+        }
+    }
+
+    //=======================================================================
     // TraceManager
     //=======================================================================
     thid_t TraceManager::current_tid() const
@@ -95,23 +186,7 @@ namespace idattd
         if ( m_hooks.on_end )
             m_hooks.on_end();
         set_current_trace(0);
-        if ( m_afSaved )
-        {
-            inf_set_af(m_savedAf);   // the analysis flags on_start_process changed
-            m_afSaved = false;
-        }
-        if ( m_dinfoSaved )
-        {
-            // The same swap as in on_start_process: there is no getter, so the
-            // options are read by replacing them and go straight back with
-            // only this bit changed.
-            if ( m_dinfoWasOn )
-            {
-                uint dopts = set_debugger_options(0);
-                set_debugger_options(dopts | DOPT_LOAD_DINFO);
-            }
-            m_dinfoSaved = false;
-        }
+        m_options.reset();      // the analysis flags and debugger options go back
         // Also drops queued events, which describe this trace's modules and
         // threads.
         reset_session_state();
@@ -180,17 +255,12 @@ namespace idattd
         reset_session_state();
         m_is64 = inf_is_64bit();
 
-        // Stop the analysis cascade: with AF_PROC ("create functions if call
-        // is present") each on-stop add_func() would make IDA create and
-        // analyze every callee recursively, across whole modules. CodeAnalyzer
-        // defines the current function and its direct callees itself; these
-        // flags stay off for the session (restored in on_term).
-        if ( !m_afSaved )
-        {
-            m_savedAf = inf_get_af();
-            m_afSaved = true;
-        }
-        inf_set_af(m_savedAf & ~(uint32)(AF_PROC | AF_PROCPTR));
+        // The analysis flags and debugger options a session runs with
+        // (SessionOptions), until on_term.
+        if ( !m_options )
+            m_options.emplace();
+        else
+            m_options->apply();
         // The module the database is of, so its load can trigger a rebase. A
         // loader-created database records it; otherwise it is the name of the
         // file IDA opened.
@@ -200,21 +270,6 @@ namespace idattd
                 m_targetName = link.module_name.c_str();
             else
                 m_targetName = base_name(input_path != nullptr ? input_path : "");
-        }
-
-        // ModuleRegistry::load_pdb loads module PDBs silently, so IDA's
-        // automatic debug-file loading (which asks "load symbols?" per module)
-        // is turned off. set_debugger_options replaces the options and returns
-        // the old ones, with no getter, so the old set goes straight back with
-        // only this bit cleared. Whether it was set is remembered (once per
-        // session, as a failed start leaves it cleared) so on_term can put the
-        // user's choice back.
-        uint dopts = set_debugger_options(0);
-        set_debugger_options(dopts & ~(uint)DOPT_LOAD_DINFO);
-        if ( !m_dinfoSaved )
-        {
-            m_dinfoWasOn = (dopts & DOPT_LOAD_DINFO) != 0;
-            m_dinfoSaved = true;
         }
 
         if ( path == nullptr || !std::filesystem::exists(std::filesystem::u8path(path)) )
@@ -351,26 +406,8 @@ namespace idattd
             return DRC_FAILED;
         }
         ssize_t rc = m_memory.read(m_cursor.get(), nbytes, ea, buffer, size);
-        if ( at_fork_draft() && !m_draft.bytes.empty() )
-        {
-            // A read is a prefix of the range (MemoryReader zero-fills past
-            // it). Fork bytes written right after that prefix, or where the
-            // recording has nothing at all, are readable too, so the prefix is
-            // extended over consecutive draft bytes; the user sees what was
-            // written rather than unreadable memory.
-            size_t n = rc == DRC_OK ? *nbytes : 0;
-            while ( n < size && m_draft.bytes.count(ea + n) != 0 )
-                n++;
-            uchar *out = (uchar *)buffer;
-            for ( auto it = m_draft.bytes.lower_bound(ea);
-                  it != m_draft.bytes.end() && it->first < ea + n; ++it )
-                out[it->first - ea] = it->second;
-            if ( n > 0 )
-            {
-                *nbytes = n;
-                rc = DRC_OK;
-            }
-        }
+        if ( at_fork_draft() )
+            rc = m_draft.overlay_read(nbytes, ea, buffer, size, rc);
         return rc;
     }
 
@@ -435,8 +472,7 @@ namespace idattd
             return DRC_FAILED;
         fill_regvals(r, m_is64, values);
         if ( at_fork_draft() && (tid == NO_THREAD ? current_tid() : tid) == m_draft.tid )
-            for ( const auto &[idx, v] : m_draft.regs )
-                values[idx].set_int(v);
+            m_draft.overlay_registers(values);
         return DRC_OK;
     }
 
@@ -450,7 +486,7 @@ namespace idattd
 
     bool TraceManager::at_fork_draft() const
     {
-        return m_draft.active && m_cursor && m_cursor->position() == m_draft.at;
+        return m_cursor && m_draft.here(m_cursor->position());
     }
 
     // Changes are allowed only at the draft's position; elsewhere the
@@ -502,25 +538,6 @@ namespace idattd
             m_draft.bytes[ea + i] = in[i];
         *nbytes = size;
         return DRC_OK;
-    }
-
-    void TraceManager::fill_fork_request(ForkRequest *req) const
-    {
-        req->at = m_draft.at;
-        req->regs.clear();
-        req->memory.clear();
-        for ( const auto &[idx, v] : m_draft.regs )
-            req->regs.emplace_back(fork_register_index(idx, m_is64), (uint64_t)v);
-        // Runs of consecutive bytes, one write each.
-        for ( auto it = m_draft.bytes.begin(); it != m_draft.bytes.end(); )
-        {
-            ea_t start = it->first;
-            bytevec_t run;
-            ea_t next = start;
-            for ( ; it != m_draft.bytes.end() && it->first == next; ++it, ++next )
-                run.push_back(it->second);
-            req->memory.emplace_back(start, std::move(run));
-        }
     }
 
     ssize_t TraceManager::on_rebase_if_required_to(ea_t new_base)

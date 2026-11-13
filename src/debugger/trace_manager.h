@@ -22,6 +22,53 @@ namespace idattd
         std::function<void()> on_end;     // the trace is closing: tear it down
     };
 
+    // A fork being prepared.
+    //
+    // "Fork here" fixes a position. Registers and memory changed there
+    // through IDA (registers window, hex view, patching) are kept as the
+    // fork's changes and shown instead of the recording's while the cursor
+    // stands there; elsewhere the recording is read-only. Recording the fork
+    // turns them into a ForkRequest.
+    class ForkDraft
+    {
+    public:
+        bool     active = false;
+        Position at;
+        thid_t   tid = NO_THREAD;           // the thread that runs next
+        std::map<int, uint64_t> regs;       // IDA register index, value
+        std::map<ea_t, uchar>   bytes;
+
+        // A cursor at 'p' shows the draft's changes.
+        bool here(Position p) const { return active && p == at; }
+        // 'buffer' holds a read of [ea, ea + size) at the draft's position,
+        // which returned 'rc' with '*nbytes' bytes: lay the draft's bytes
+        // over it. Returns the read's new drc_t.
+        ssize_t overlay_read(size_t *nbytes, ea_t ea, void *buffer, size_t size, ssize_t rc) const;
+        // Lay the draft's register values over 'values', a read of its
+        // thread's registers at its position.
+        void    overlay_registers(regval_t *values) const;
+        // The draft's position and changes, as a request to record.
+        void    fill_request(ForkRequest *req, bool is64) const;
+    };
+
+    // The analysis flags and debugger options a session changes, saved by
+    // the constructor and put back by the destructor, so a session that
+    // starts and ends any way at all leaves the user's choices as they were.
+    class SessionOptions
+    {
+    public:
+        SessionOptions();
+        ~SessionOptions();
+        SessionOptions(const SessionOptions &) = delete;
+        SessionOptions &operator=(const SessionOptions &) = delete;
+        // Set the session's values again (a second start without an end).
+        void apply() const;
+
+    private:
+        uint32 m_savedAf = 0;          // INF_AF before the session
+        bool   m_dinfoWasOn = false;   // DOPT_LOAD_DINFO before the session
+    };
+
     // The debugger session: translates IDA debugger events (ev_*) into
     // movement through a recording, register and memory reads, and IDA debug
     // events, through whichever backend reads the recording (core/backend.h;
@@ -145,28 +192,15 @@ namespace idattd
         ITraceBackend             *backend() const { return m_backend; }
         ITraceCursor              *cursor() const  { return m_cursor.get(); }
 
-        // ---- a fork being prepared ------------------------------------------
-        //
-        // "Fork here" fixes a position. Registers and memory changed there
-        // through IDA (registers window, hex view, patching) are kept as the
-        // fork's changes and shown instead of the recording's while the cursor
-        // stands there; elsewhere the recording is read-only. Recording the
-        // fork turns them into a ForkRequest.
-        struct ForkDraft
-        {
-            bool     active = false;
-            Position at;
-            thid_t   tid = NO_THREAD;           // the thread that runs next
-            std::map<int, uint64_t> regs;       // IDA register index, value
-            std::map<ea_t, uchar>   bytes;
-        };
+        // ---- a fork being prepared (ForkDraft) -------------------------------
+        using ForkDraft = idattd::ForkDraft;
         void             begin_fork_draft();
         void             discard_fork_draft() { m_draft = ForkDraft{}; }
         const ForkDraft &fork_draft() const { return m_draft; }
         // The cursor stands at the draft's position.
         bool             at_fork_draft() const;
         // The draft's position and changes, as a request to record.
-        void             fill_fork_request(ForkRequest *req) const;
+        void             fill_fork_request(ForkRequest *req) const { m_draft.fill_request(req, m_is64); }
         ssize_t on_write_register(thid_t tid, int regidx, const regval_t *value, qstring *errbuf);
         ssize_t on_write_memory(size_t *nbytes, ea_t ea, const void *buffer, size_t size, qstring *errbuf);
 
@@ -260,10 +294,9 @@ namespace idattd
         std::unique_ptr<INavigator> m_nav;          // moves m_cursor
         std::vector<Breakpoint>     m_bpts;         // what IDA has set
 
-        uint32                          m_savedAf = 0;     // INF_AF saved over the session
-        bool                            m_afSaved = false;
-        bool                            m_dinfoWasOn = false;  // DOPT_LOAD_DINFO before the session
-        bool                            m_dinfoSaved = false;
+        // From the first start of a session to its end (on_term). A failed
+        // start keeps it, as the options stay changed until then.
+        std::optional<SessionOptions>   m_options;
 
         EventQueue   m_events;
         bool         m_is64 = false;
