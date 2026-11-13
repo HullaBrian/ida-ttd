@@ -288,9 +288,8 @@ namespace idattd
         // copies the user's work from there, not from where it landed.
         Position                    m_shownAt = Position::none();
         int                         m_quietStops = 0;   // quiet_stops()
-        // capture_kept_at_shown() has run for m_shownAt, and is running.
+        // capture_kept_at_shown() has run for m_shownAt.
         bool                        m_shownCaptured = false;
-        bool                        m_capturing = false;
         std::unique_ptr<INavigator> m_nav;          // moves m_cursor
         std::vector<Breakpoint>     m_bpts;         // what IDA has set
 
