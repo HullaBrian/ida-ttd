@@ -131,12 +131,13 @@ namespace idattd
         void suspend_source_debugging();
         void restore_source_debugging();
 
-    private:
-        void register_actions();
         bool can_fork_recording() const
         {
             return m_mgr.backend() != nullptr && m_mgr.backend()->capabilities().fork;
         }
+
+    private:
+        void register_actions();
         void unregister_actions();
         void attach_session_menu();
         void restore_native_icons();          // give IDA's movement actions their own icons back
@@ -253,7 +254,6 @@ namespace idattd
             ICO_CALL_TREE,
             ICO_MEMORY,
             ICO_SYSCALLS,
-            ICO_MEMORY_MAP,
             ICO_ORIGIN,
             ICO_HANDLES,
             ICO_COUNT

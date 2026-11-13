@@ -26,10 +26,19 @@ namespace idattd
     // comes back with 'ran' false and 'cancelled' true.
     //
     // 'show', when given, adds lines under that one while the work runs.
+    // With log lines, and IDAPython's Qt to show it, a recording window
+    // takes the wait box's place: the whole log in a scrolling box, the
+    // running time, and Stop (ending the work as Cancel would) and Pause
+    // buttons instead of Cancel.
     struct QueryShow
     {
-        bool   elapsed   = false;   // "Running for 1 min 05 s"
-        size_t log_lines = 0;       // the emulator log's last lines (emulator_log_tail)
+        bool        elapsed   = false;   // "Running for 1 min 05 s"
+        size_t      log_lines = 0;       // the emulator log's last lines (emulator_log_tail)
+        const char *title     = nullptr; // the window's title; nullptr: 'what'
+        // Pause holds the thread that asks whether to cancel until Resume,
+        // which for a recording is the emulator's, between two checkpoint
+        // intervals.
+        bool        pausable  = false;
     };
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
                           bool cancellable = true, const QueryShow *show = nullptr);

@@ -262,9 +262,8 @@ namespace idattd
         if ( node < 0 || node >= (int)g_fm.nodes.size() || g_fm.nodes[node].record < 0 )
             return;
         const qstring path = g_fm.nodes[node].path;
-        if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nTake %s out of the fork graph?\n\n"
-                               "Its file stays where it is, and so do forks made from it.",
-                    path.c_str()) != ASKBTN_YES )
+        if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nRemove the fork %s?\n\nIts file is kept.",
+                    qbasename(path.c_str())) != ASKBTN_YES )
             return;
         remove_fork_record(path.c_str());
         refresh_fork_manager();
@@ -273,6 +272,25 @@ namespace idattd
     //-----------------------------------------------------------------------
     // The graph window's model
     //-----------------------------------------------------------------------
+    // An action run once the graph window's menu handler has returned:
+    // Record fork runs a recording for minutes, with its own window, which
+    // is better not nested inside the Python call that reported the click.
+    static void run_action_later(const char *name)
+    {
+        struct Later : public exec_request_t
+        {
+            const char *name;
+            explicit Later(const char *n) : name(n) {}
+            ssize_t idaapi execute() override
+            {
+                process_ui_action(name);
+                return 0;
+            }
+        };
+        // With MFF_NOWAIT, IDA deletes the request after running it.
+        execute_sync(*new Later(name), MFF_WRITE | MFF_NOWAIT);
+    }
+
     static void graph_action(int node, const qstring &action)
     {
         if ( node < 0 || node >= (int)g_fm.nodes.size() )
@@ -300,6 +318,28 @@ namespace idattd
         {
             forget(node);
         }
+        // Forking, on the recording being replayed: the same commands as
+        // TTD > Forks, at the playhead.
+        else if ( action == "fork" )
+        {
+            run_action_later(actions::FORK);
+        }
+        else if ( action == "forkrecord" )
+        {
+            run_action_later(actions::FORK_RECORD);
+        }
+        else if ( action == "forkdiscard" )
+        {
+            run_action_later(actions::FORK_DISCARD);
+        }
+    }
+
+    // Forks can be made from the recording being replayed now.
+    static bool can_fork_now()
+    {
+        TraceManager *mgr = g_fm.ctx != nullptr ? g_fm.ctx->mgr : nullptr;
+        return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr
+            && mgr->backend()->capabilities().fork;
     }
 
     static GraphModel fork_model()
@@ -332,6 +372,19 @@ namespace idattd
             {
                 g.badge    = "replaying";
                 g.emphasis = true;
+                if ( can_fork_now() )
+                {
+                    const TraceManager::ForkDraft &d = g_fm.ctx->mgr->fork_draft();
+                    if ( d.active )
+                        g.lines.push_back(qstring("a fork is being made at ") + format_position(d.at));
+                    g.menu.emplace_back("Fork at the current position", "fork");
+                    if ( d.active )
+                    {
+                        g.menu.emplace_back("Record fork...", "forkrecord");
+                        g.menu.emplace_back("Discard fork", "forkdiscard");
+                    }
+                    g.menu.emplace_back("", "");
+                }
             }
             if ( n.missing )
             {
@@ -348,7 +401,7 @@ namespace idattd
             }
             g.menu.emplace_back("Copy the path", "copypath");
             if ( n.record >= 0 )
-                g.menu.emplace_back("Take it out of the fork graph...", "forget");
+                g.menu.emplace_back("Remove fork", "forget");
             m.nodes.push_back(std::move(g));
         }
         for ( const auto &[src, dst] : g_fm.edges )
@@ -362,8 +415,8 @@ namespace idattd
             m.edges.push_back(std::move(e));
         }
         if ( forks == 0 )
-            m.status = "No forks yet: Fork here (TTD menu, or right-click in the disassembly) starts one, "
-                       "on a Sogen recording.";
+            m.status = "No forks yet: right-click the recording being replayed, or use Fork here "
+                       "(TTD menu, or right-click in the disassembly), on a Sogen recording.";
         else
             m.status.sprnt("%d fork%s. Double-click a recording to switch to it or open it in a new IDA; "
                            "right-click for more. Ctrl+wheel zooms, F fits.", forks, forks == 1 ? "" : "s");

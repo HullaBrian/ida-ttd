@@ -197,7 +197,7 @@
         "default": false,
         "prompt": false,
         "name": "Sogen: the emulator's log in the Output window",
-        "documentation": "Print Sogen's emulator log and the program's console output in the Output window while a fork, a replay scan or a new recording runs. Useful when one fails or diverges. The wait box of a fork or a new recording shows the log's last lines either way; the Record dialogs start from this setting."
+        "documentation": "Print Sogen's emulator log and the program's console output in the Output window while a fork, a replay scan or a new recording runs. Useful when one fails or diverges. The window a fork or a new recording runs behind shows the log either way; the Record dialogs start from this setting."
       },
       {
         "key": "diagnostics_log",

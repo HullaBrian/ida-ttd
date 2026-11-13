@@ -246,7 +246,7 @@ namespace idattd
         for ( const auto &m : req.memory )
             bytes += m.second.size();
         if ( req.regs.empty() && bytes == 0 )
-            return qstring("Nothing changed: the fork runs on as the recording did, from this machine's replay.");
+            return qstring("No changes: the program runs on as recorded.");
         qstring s;
         if ( !req.regs.empty() )
             s.sprnt("%u register%s", (uint)req.regs.size(), req.regs.size() == 1 ? "" : "s");
@@ -272,17 +272,13 @@ namespace idattd
             "Record the fork\n"
             "\n"
             "\n"
-            "Replay the program to position %A, apply the changes, and let it run on,\n"
-            "recording into a new trace. This recording is not touched.\n"
-            "%A\n"
+            "Fork at %A. %A\n"
             "\n"
-            "<~N~ew trace:f:1:64::>\n"
-            "<~I~nstructions to record, 0 for no limit:D::18::>\n"
+            "<#The new recording. This one is not touched#~N~ew trace        :f:1:64::>\n"
+            "<#0 records until the program exits#~I~nstruction limit:D::18::>\n"
             "\n"
-            "<~G~ive the program network access from this position on:C>\n"
-            "<Sogen's ~l~og to the Output window:C>>\n"
-            "(The replay up to the position stays offline either way. The wait box\n"
-            "shows how long the fork has run and the log's last lines.)\n"
+            "<#The replay up to the fork stays offline either way#Ne~t~work access after the fork:C>\n"
+            "<#The recording window shows it either way#Sogen's ~l~og to the Output window:C>>\n"
             "\n";
         qstring where   = form_text(format_position(req.at));
         qstring changes = form_text(describe_changes(req));
@@ -511,7 +507,7 @@ namespace idattd
             "<#Let the program reach the real network#~N~etwork access:C>\n"
             "<#The program's token says administrator (high integrity). Its file and registry operations still have only IDA's own rights#Run as a~d~ministrator:C>\n"
             "<#The program sees the date and time recording starts. Off, it starts on 1 January 1970. Replays see the same dates either way#S~t~art at the current date:C>\n"
-            "<#The wait box shows the log's last lines either way. On, the whole log also goes to the Output window#Sogen's ~l~og to the Output window:C>>\n"
+            "<#The recording window shows it either way#Sogen's ~l~og to the Output window:C>>\n"
             "\n";
         // The last answers this session. The program starts as the database's
         // own executable, the hives as the first folder that has some, and
@@ -725,6 +721,8 @@ namespace idattd
     {
         if ( c != nullptr && c->refresh_position )
             c->refresh_position();
+        // Its recording's node says where the fork is, and offers recording it.
+        refresh_fork_manager();
         // The views showed the fork's changes: have IDA reread the recording.
         if ( views_showed_changes )
         {

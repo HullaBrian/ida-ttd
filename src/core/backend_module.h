@@ -171,6 +171,10 @@ namespace idattd
     // into 'out' (NULL: none). Returns how many lines have been logged so
     // far, so a caller can tell whether anything new came. Any thread.
     uint64_t emulator_log_tail(size_t n, qstrvec_t *out);
+    // The lines logged since emulator_log_tail or emulator_log_since
+    // returned 'seq' (as many as are still kept), oldest first. Returns the
+    // count to pass next time. Any thread.
+    uint64_t emulator_log_since(uint64_t seq, qstrvec_t *out);
     // Forget the last lines, before work whose own lines are to be shown.
     void clear_emulator_log_tail();
 }

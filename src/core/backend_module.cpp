@@ -804,7 +804,10 @@ namespace idattd
     // one.
     // The emulator log's last lines, for a wait box to show while the work
     // runs. Written from the backend's thread, read from the main one.
-    static const size_t       LOG_TAIL_MAX = 32;
+    // Enough that the recording window, which takes the new lines ten times
+    // a second, loses none to a burst (Sogen logs a few dozen lines a
+    // recording; guest console output can be more).
+    static const size_t       LOG_TAIL_MAX = 4096;
     static std::mutex         g_tail_mtx;
     static std::deque<qstring> g_tail;
     static uint64_t           g_tail_seq = 0;
@@ -819,6 +822,19 @@ namespace idattd
             for ( size_t i = from; i < g_tail.size(); i++ )
                 out->push_back(g_tail[i]);
         }
+        return g_tail_seq;
+    }
+
+    uint64_t emulator_log_since(uint64_t seq, qstrvec_t *out)
+    {
+        std::lock_guard<std::mutex> lock(g_tail_mtx);
+        out->clear();
+        // Lines logged after 'seq' that are still kept; a clear() drops
+        // lines without moving the count, so never more than are there.
+        const uint64_t fresh = g_tail_seq > seq ? g_tail_seq - seq : 0;
+        const size_t n = (size_t)std::min<uint64_t>(fresh, g_tail.size());
+        for ( size_t i = g_tail.size() - n; i < g_tail.size(); i++ )
+            out->push_back(g_tail[i]);
         return g_tail_seq;
     }
 

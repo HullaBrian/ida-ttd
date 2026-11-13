@@ -67,13 +67,13 @@ namespace idattd
     };
     static const SubmenuDesc TTD_SUBMENUS[] =
     {
-        // Among the items with icons, so it has one too.
+        // Among the items with icons, so each has one too.
         { SUB_FORKS,    "Forks",             true,  icons_fork_svg },
         // Beside Syscalls and Handles, in their section.
-        { SUB_MEMORY,   "Memory",            false, nullptr },
-        { SUB_WRITTEN,  "Written data",      false, nullptr },
+        { SUB_MEMORY,   "Memory",            false, icons_memory_map_svg },
+        { SUB_WRITTEN,  "Written data",      false, icons_written_data_svg },
         // Everything that changes the database, in a section of its own.
-        { SUB_ANNOTATE, "Annotate database", true,  nullptr },
+        { SUB_ANNOTATE, "Annotate database", true,  icons_annotate_svg },
     };
 
     // ida_ttd_qt.<fn>(args...) (scripts/ida_ttd_qt.py), for the Qt changes
@@ -361,7 +361,6 @@ namespace idattd
         m_icons[ICO_CALL_TREE]       = svg(icons_call_tree_svg,       sizeof(icons_call_tree_svg) - 1);
         m_icons[ICO_MEMORY]          = svg(icons_memory_svg,          sizeof(icons_memory_svg) - 1);
         m_icons[ICO_SYSCALLS]        = svg(icons_syscalls_svg,        sizeof(icons_syscalls_svg) - 1);
-        m_icons[ICO_MEMORY_MAP]      = svg(icons_memory_map_svg,      sizeof(icons_memory_map_svg) - 1);
         m_icons[ICO_ORIGIN]          = svg(icons_origin_svg,          sizeof(icons_origin_svg) - 1);
         m_icons[ICO_HANDLES]         = svg(icons_handles_svg,         sizeof(icons_handles_svg) - 1);
     }
@@ -409,8 +408,8 @@ namespace idattd
             { actions::FORK_OPEN, "Switch to or open this recording...", &m_forkOpen, nullptr,
               "Switch this IDA to the selected recording, or open it in a new IDA",
               NO_ICON, ITEM, TOOLBAR_ONLY },
-            { actions::FORK_FORGET, "Forget this fork", &m_forkForget, nullptr,
-              "Remove the selected fork from the graph (its file stays)",
+            { actions::FORK_FORGET, "Remove fork", &m_forkForget, nullptr,
+              "Remove the selected fork from the graph (its file is kept)",
               NO_ICON, ITEM, TOOLBAR_ONLY },
 
             // Searching the recording.
@@ -440,7 +439,7 @@ namespace idattd
               m_icons[ICO_HANDLES], ITEM, MENU },
             { actions::MEM_MAP, "Memory map", &m_memMap, nullptr,
               "Memory map: the regions at this position, with protection and use",
-              m_icons[ICO_MEMORY_MAP], ITEM, MENU, SUB_MEMORY },
+              NO_ICON, ITEM, MENU, SUB_MEMORY },
             { actions::MEM_TIMELINE, "Memory timeline", &m_memTimeline, nullptr,
               "Every allocation, protection change and free, in order",
               NO_ICON, ITEM, MENU, SUB_MEMORY },
@@ -1634,6 +1633,14 @@ namespace idattd
                 {
                     attach_action_to_popup(widget, popup, actions::FORK_OPEN);
                     attach_action_to_popup(widget, popup, actions::FORK_FORGET);
+                    // Forking at the playhead, as in TTD > Forks.
+                    if ( p->can_fork_recording() )
+                    {
+                        attach_action_to_popup(widget, popup, nullptr);
+                        attach_action_to_popup(widget, popup, actions::FORK);
+                        attach_action_to_popup(widget, popup, actions::FORK_RECORD);
+                        attach_action_to_popup(widget, popup, actions::FORK_DISCARD);
+                    }
                     break;
                 }
                 int wt = get_widget_type(widget);

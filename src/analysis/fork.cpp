@@ -257,8 +257,10 @@ namespace idattd
         QueryShow show;
         show.elapsed   = true;
         show.log_lines = 8;
+        show.title     = "Recording the fork";
+        show.pausable  = true;
         clear_emulator_log_tail();
-        run_query("Forking the recording: replaying to the position, then recording", [&](ProgressSink *p)
+        run_query("Replaying to the fork position, then recording from there", [&](ProgressSink *p)
         {
             started = true;
             result = backend->record_fork(full, p);
@@ -435,6 +437,8 @@ namespace idattd
         QueryShow show;
         show.elapsed   = true;
         show.log_lines = 8;
+        show.title     = "Recording with Sogen";
+        show.pausable  = true;
         clear_emulator_log_tail();
         run_query("Recording the program in Sogen's emulator", [&](ProgressSink *p)
         {
