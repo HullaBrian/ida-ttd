@@ -313,14 +313,17 @@ def show(kind, first):
         def __init__(self, form):
             super().__init__()
             self.form = form
-            self.setRenderHints(QtGui.QPainter.Antialiasing | QtGui.QPainter.TextAntialiasing)
+            # Scoped enum names: IDA's PyQt5 shim warns on '|' and '&' over
+            # the unscoped ones (QtGui.QPainter.Antialiasing).
+            self.setRenderHints(QtGui.QPainter.RenderHint.Antialiasing
+                                | QtGui.QPainter.RenderHint.TextAntialiasing)
             self.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
             self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
             self.setViewportUpdateMode(QtWidgets.QGraphicsView.SmartViewportUpdate)
             self.setFrameShape(QtWidgets.QFrame.NoFrame)
 
         def wheelEvent(self, e):
-            if e.modifiers() & QtCore.Qt.ControlModifier:
+            if e.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 self.zoom(1.15 if e.angleDelta().y() > 0 else 1 / 1.15)
                 e.accept()
             else:
@@ -335,7 +338,7 @@ def show(kind, first):
             k = e.key()
             if k in (QtCore.Qt.Key_F, QtCore.Qt.Key_Home):
                 self.form.fit()
-            elif k == QtCore.Qt.Key_0 and e.modifiers() & QtCore.Qt.ControlModifier:
+            elif k == QtCore.Qt.Key_0 and e.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
                 self.resetTransform()
             elif k in (QtCore.Qt.Key_Plus, QtCore.Qt.Key_Equal):
                 self.zoom(1.15)
