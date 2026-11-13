@@ -17,10 +17,11 @@ namespace idattd
 
     // Every colour this database has been painted with, so callers recognise
     // their own paint (clearing the disassembly, repainting pseudocode).
-    std::set<bgcolor_t> coverage_colors();
-    // The colour marks another recording's coverage (painted before the replay
-    // switched to this one), in the complement of its original shade.
-    bool coverage_is_previous(bgcolor_t c);
+    // 'previous', when given, receives those of them that mark another
+    // recording's coverage (painted before the replay switched to this one,
+    // in the complement of its original shade). One netnode walk for both,
+    // since pseudocode painting asks on every repaint.
+    std::set<bgcolor_t> coverage_colors(std::set<bgcolor_t> *previous = nullptr);
     // After the replay changed recording, repaint the other recording's
     // coverage in the complementary shade. Only from a safe place (a timer
     // after the stop, or a command): it writes every painted instruction.

@@ -138,10 +138,12 @@ namespace idattd
         nn.altset((nodeidx_t)c, 1, CV_USED_TAG);
     }
 
-    std::set<bgcolor_t> coverage_colors()
+    std::set<bgcolor_t> coverage_colors(std::set<bgcolor_t> *previous)
     {
         std::set<bgcolor_t> out;
         out.insert(CV_LEGACY_COLOR);
+        if ( previous != nullptr )
+            previous->clear();
         netnode nn = cv_node(false);
         if ( nn != BADNODE )
         {
@@ -149,9 +151,15 @@ namespace idattd
                   i != BADNODE;
                   i = nn.altnext(i, CV_USED_TAG) )
             {
-                if ( (bgcolor_t)i != DEFCOLOR )
-                    out.insert((bgcolor_t)i);
+                if ( (bgcolor_t)i == DEFCOLOR )
+                    continue;
+                out.insert((bgcolor_t)i);
+                if ( previous != nullptr && nn.altval(i, CV_PREV_TAG) != 0 )
+                    previous->insert((bgcolor_t)i);
             }
+            // The legacy colour is in the set without a 'C' entry of its own.
+            if ( previous != nullptr && nn.altval((nodeidx_t)CV_LEGACY_COLOR, CV_PREV_TAG) != 0 )
+                previous->insert(CV_LEGACY_COLOR);
         }
         return out;
     }
@@ -164,12 +172,6 @@ namespace idattd
         g_repaint_pending = false;
         if ( nn != BADNODE )
             repaint_as_previous(nn);
-    }
-
-    bool coverage_is_previous(bgcolor_t c)
-    {
-        netnode nn = cv_node(false);
-        return nn != BADNODE && c != DEFCOLOR && nn.altval((nodeidx_t)c, CV_PREV_TAG) != 0;
     }
 
     // The auto_coverage setting. The old per-database answer (alt 0, tag 'A',

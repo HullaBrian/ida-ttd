@@ -24,6 +24,28 @@ namespace idattd
         g_edit_hook = hook;
     }
 
+    // What a paint reads changes only with an item's colour or comment, so
+    // the stop-time repaint is skipped for a view painted since the last
+    // such change. Any writer counts (a sweep, an annotation, the user, a
+    // script): the database's own events bump the generation, rather than
+    // each of the plugin's writers remembering to.
+    static uint64_t g_paint_generation = 1;
+    // The generation each function's text was last painted at. Keyed by the
+    // cfunc_t: regenerated text is painted on hxe_func_printed and recorded
+    // again, so a stale entry is never trusted for new text.
+    static std::map<const cfunc_t *, uint64_t> g_painted_at;
+
+    struct PaintInputsListener : public event_listener_t
+    {
+        ssize_t idaapi on_event(ssize_t code, va_list) override
+        {
+            if ( code == idb_event::item_color_changed || code == idb_event::cmt_changed )
+                g_paint_generation++;
+            return 0;
+        }
+    };
+    static PaintInputsListener g_paint_inputs;
+
     // Every address a pseudocode line was decompiled from.
     //
     // Generated pseudocode carries invisible COLOR_ADDR tags holding ctree
@@ -217,7 +239,9 @@ namespace idattd
         if ( cf == nullptr )
             return false;
         bool uncovered = false;
-        std::set<bgcolor_t> ours = coverage_colors();
+        // Both sets once per paint: each is a netnode walk.
+        std::set<bgcolor_t> previous;
+        std::set<bgcolor_t> ours = coverage_colors(&previous);
         std::vector<ea_t>   eas;              // reused; no per-line allocation
         // Call sites whose note is already placed (see append_ttd_comments).
         std::set<ea_t>      annotated;
@@ -245,7 +269,7 @@ namespace idattd
                 if ( c != DEFCOLOR && ours.find(c) != ours.end() )
                 {
                     sl.bgcolor = c;
-                    if ( !coverage_is_previous(c) )
+                    if ( previous.find(c) == previous.end() )
                         break;
                 }
             }
@@ -256,6 +280,11 @@ namespace idattd
 
             append_ttd_comments(sl, eas, annotated);
         }
+        // A function printed and dropped again would leave its entry behind;
+        // the map only needs the open views, so an overgrown one is reset.
+        if ( g_painted_at.size() > 256 )
+            g_painted_at.clear();
+        g_painted_at[cf] = g_paint_generation;
         return uncovered;
     }
 
@@ -324,6 +353,8 @@ namespace idattd
             return false;
         }
         g_hooked = install_hexrays_callback(hx_callback, nullptr);
+        if ( g_hooked )
+            hook_event_listener(HT_IDB, &g_paint_inputs, nullptr);
         msg("[ida-ttd] decompiler found: pseudocode %s follow the execution "
             "highlight.\n", g_hooked ? "will" : "could NOT be hooked to");
         return g_hooked;
@@ -334,6 +365,8 @@ namespace idattd
         if ( g_hooked )
         {
             remove_hexrays_callback(hx_callback, nullptr);
+            unhook_event_listener(HT_IDB, &g_paint_inputs);
+            g_painted_at.clear();
             g_hooked = false;
         }
     }
@@ -351,6 +384,11 @@ namespace idattd
         {
             vdui_t *vu = get_widget_vdui(w);
             if ( vu == nullptr || vu->cfunc == nullptr )
+                continue;
+            // Nothing a paint reads has changed since this text was painted
+            // (most stops: the highlight was already there).
+            auto done = g_painted_at.find(vu->cfunc);
+            if ( done != g_painted_at.end() && done->second == g_paint_generation )
                 continue;
 
             // Repaint the text the view already shows, then redraw the widget.
