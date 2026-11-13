@@ -16,7 +16,9 @@ static BackendPtr make_msttd()
 
 extern "C" __declspec(dllexport) const ittd_backend_api *ida_ttd_backend(uint32_t abi_version)
 {
-    if ( abi_version != ITTD_ABI_VERSION )
+    // Any core from the last layout change on: a newer one reads this table
+    // only up to its 'size', and passes structs that carry their own.
+    if ( abi_version < ITTD_ABI_LAYOUT )
         return nullptr;
     return export_backend(make_msttd, msttd_set_log);
 }
