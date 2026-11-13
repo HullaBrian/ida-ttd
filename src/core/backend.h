@@ -51,10 +51,6 @@ namespace idattd
         // Module export tables come out of the recording, so the core does not
         // need to parse them out of guest memory.
         bool recorded_exports = false;
-        // Seeking is cheap enough to do on every row of a listing. False: the
-        // core offers positions rather than values, and runs prepare() if the
-        // backend has one.
-        bool cheap_seek       = false;
         // registers_at over many positions costs much less than a seek and a
         // register read at each (ITTD_CAP_BATCH_REGS), so a listing that
         // needs registers at thousands of positions asks for them up front.

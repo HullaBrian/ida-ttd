@@ -557,7 +557,7 @@ namespace idattd
         JObj caps;
         caps.boolean("access_queries", c.access_queries).boolean("call_queries", c.call_queries)
             .boolean("mapping_changes", c.mapping_changes).boolean("syscalls", c.syscalls)
-            .boolean("recorded_exports", c.recorded_exports).boolean("cheap_seek", c.cheap_seek)
+            .boolean("recorded_exports", c.recorded_exports)
             .boolean("batch_regs", c.batch_regs)
             .boolean("reverse_step", c.reverse_step).boolean("exceptions", c.exceptions)
             .boolean("cheap_reads", c.cheap_reads).boolean("self_modifying", c.self_modifying)

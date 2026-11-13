@@ -147,7 +147,7 @@ namespace idattd::sogen
             const ttd::module_entry *m = main_module(t);
             out->is64 = is64(t) ? 1 : 0;
             out->capabilities = ITTD_CAP_ACCESS_QUERIES | ITTD_CAP_CALL_QUERIES
-                              | ITTD_CAP_RECORDED_EXPORTS | ITTD_CAP_CHEAP_SEEK
+                              | ITTD_CAP_RECORDED_EXPORTS
                               | ITTD_CAP_REVERSE_STEP | ITTD_CAP_BATCH_REGS;
             if ( t.has_syscalls() )
                 out->capabilities |= ITTD_CAP_SYSCALLS;

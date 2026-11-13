@@ -163,7 +163,6 @@ namespace idattd
         if ( c.mapping_changes )  caps |= ITTD_CAP_MAPPING_CHANGES;
         if ( c.syscalls )         caps |= ITTD_CAP_SYSCALLS;
         if ( c.recorded_exports ) caps |= ITTD_CAP_RECORDED_EXPORTS;
-        if ( c.cheap_seek )       caps |= ITTD_CAP_CHEAP_SEEK;
         if ( c.batch_regs )       caps |= ITTD_CAP_BATCH_REGS;
         if ( c.reverse_step )     caps |= ITTD_CAP_REVERSE_STEP;
         if ( c.exceptions )       caps |= ITTD_CAP_EXCEPTIONS;
@@ -181,7 +180,6 @@ namespace idattd
         x.mapping_changes  = (c & ITTD_CAP_MAPPING_CHANGES) != 0;
         x.syscalls         = (c & ITTD_CAP_SYSCALLS) != 0;
         x.recorded_exports = (c & ITTD_CAP_RECORDED_EXPORTS) != 0;
-        x.cheap_seek       = (c & ITTD_CAP_CHEAP_SEEK) != 0;
         x.batch_regs       = (c & ITTD_CAP_BATCH_REGS) != 0;
         x.reverse_step     = (c & ITTD_CAP_REVERSE_STEP) != 0;
         x.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0;

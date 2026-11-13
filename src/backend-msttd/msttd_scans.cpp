@@ -620,9 +620,13 @@ namespace idattd
         if ( !m_engine || out == nullptr )
             return r;
         // Ran only once the scans exist: a failed run (no cursor, say) must
-        // not read as a complete, empty answer that a caller would save.
+        // not read as a complete, empty answer that a caller would save. A
+        // cancelled one did run, and says so (cancelled, not unsupported).
         if ( !run_scans(progress, &r) )
+        {
+            r.ran = r.cancelled;
             return r;
+        }
         r.ran = true;
         const MsTtdScanResults *s = m_scans.p;
         out->insert(out->end(), s->selfmod.begin(), s->selfmod.end());
@@ -637,9 +641,13 @@ namespace idattd
         if ( !m_engine || out == nullptr )
             return r;
         // Ran only once the scans exist: a failed run (no cursor, say) must
-        // not read as a complete, empty answer that a caller would save.
+        // not read as a complete, empty answer that a caller would save. A
+        // cancelled one did run, and says so (cancelled, not unsupported).
         if ( !run_scans(progress, &r) )
+        {
+            r.ran = r.cancelled;
             return r;
+        }
         r.ran = true;
         const uint32_t want = std::max(min_length, kStringMinimum);
         const MsTtdScanResults *s = m_scans.p;
@@ -666,9 +674,13 @@ namespace idattd
         if ( !m_engine || out == nullptr )
             return r;
         // Ran only once the scans exist: a failed run (no cursor, say) must
-        // not read as a complete, empty answer that a caller would save.
+        // not read as a complete, empty answer that a caller would save. A
+        // cancelled one did run, and says so (cancelled, not unsupported).
         if ( !run_scans(progress, &r) )
+        {
+            r.ran = r.cancelled;
             return r;
+        }
         r.ran = true;
         const MsTtdScanResults *s = m_scans.p;
         out->insert(out->end(), s->buffers.begin(), s->buffers.end());

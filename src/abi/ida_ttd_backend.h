@@ -178,7 +178,10 @@ typedef struct ittd_position_range
 #define ITTD_CAP_MAPPING_CHANGES  0x0004u
 #define ITTD_CAP_SYSCALLS         0x0008u  /* dispatched syscalls are recorded */
 #define ITTD_CAP_RECORDED_EXPORTS 0x0010u  /* module exports come out of the recording */
-#define ITTD_CAP_CHEAP_SEEK       0x0020u  /* seeking is cheap enough to do per listing row */
+/* 0x0020 was ITTD_CAP_CHEAP_SEEK, which the core never read (and Microsoft's
+ * backend set at ~17 ms a seek); kept so an older backend that sets it is
+ * still understood, and not to be reused. */
+#define ITTD_CAP_CHEAP_SEEK       0x0020u
 #define ITTD_CAP_REVERSE_STEP     0x0040u  /* the recording can be stepped backwards */
 #define ITTD_CAP_PREPARE          0x0080u  /* prepare() has something to do */
 #define ITTD_CAP_EXCEPTIONS       0x0100u  /* dispatched exceptions can be listed */

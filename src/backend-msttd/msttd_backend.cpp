@@ -258,7 +258,6 @@ namespace idattd
         m_caps.call_queries   = true;      // by replay with the call/return callback
         // Not mapping_changes: the map is reconstructed from the memory
         // syscalls rather than read out of the recording (see the ABI).
-        m_caps.cheap_seek     = true;
         m_caps.reverse_step   = true;
         m_caps.exceptions     = true;
         m_caps.cheap_reads    = true;      // the engine's memory index
