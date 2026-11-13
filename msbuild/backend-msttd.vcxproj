@@ -63,6 +63,7 @@
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_host.h" />
     <ClInclude Include="$(SrcDir)\backend-msttd\msttd_x86.h" />
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h" />
+    <ClInclude Include="$(SrcDir)\core\abi_convert.h" />
     <ClInclude Include="$(SrcDir)\core\abi_export.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />

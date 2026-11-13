@@ -55,6 +55,7 @@
   <ItemGroup>
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h" />
     <ClInclude Include="$(SrcDir)\common\pch.h" />
+    <ClInclude Include="$(SrcDir)\core\abi_convert.h" />
     <ClInclude Include="$(SrcDir)\core\position.h" />
     <ClInclude Include="$(SrcDir)\core\diag.h" />
     <ClInclude Include="$(SrcDir)\core\backend.h" />

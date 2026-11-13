@@ -1,4 +1,5 @@
 #include "core/backend_module.h"
+#include "core/abi_convert.h"
 #include "core/backend_registry.h"
 #include "core/diag.h"
 
@@ -9,41 +10,6 @@
 namespace idattd
 {
     // ---------------------------------------------------------------- helpers
-
-    // The core's Position and the ABI's ittd_position are the same two words
-    // with the same three sentinels, so the conversion is a copy.
-    static ittd_position to_abi(Position p) { return ittd_position{ p.hi, p.lo }; }
-    static Position from_abi(ittd_position p) { return Position{ p.hi, p.lo }; }
-
-    static ittd_position_range to_abi(PositionRange r)
-    {
-        return ittd_position_range{ to_abi(r.first), to_abi(r.last) };
-    }
-
-    static uint32_t to_abi_kinds(uint8_t kinds)
-    {
-        return ((kinds & ACCESS_READ)  ? ITTD_ACCESS_READ  : 0)
-             | ((kinds & ACCESS_WRITE) ? ITTD_ACCESS_WRITE : 0)
-             | ((kinds & ACCESS_EXEC)  ? ITTD_ACCESS_EXEC  : 0);
-    }
-
-    static std::vector<ittd_range> to_abi(const std::vector<std::pair<ea_t, ea_t>> &ranges)
-    {
-        std::vector<ittd_range> r;
-        r.reserve(ranges.size());
-        for ( const auto &p : ranges )
-            r.push_back(ittd_range{ (uint64_t)p.first, (uint64_t)p.second });
-        return r;
-    }
-
-    // A fixed-size string field of an ABI struct, read without trusting the
-    // NUL: a backend that filled it to the brim must not make the core read
-    // past the struct.
-    template <size_t N>
-    static qstring fixed_str(const char (&s)[N])
-    {
-        return qstring(s, strnlen(s, N));
-    }
 
     // A ProgressSink as the ABI's ittd_progress. The sink takes percent, not
     // permille, and is told only when the percent changes.
@@ -161,6 +127,58 @@ namespace idattd
         return rc;
     }
 
+    // An enumeration: count and fill, then each ABI struct as its core type
+    // (from_abi). 'available' is the caller's check for a handle and the
+    // entry; without it, or when the count or fill fails, the list is empty.
+    template <typename AbiT, typename Call>
+    static auto list_from_abi(bool available, Call call)
+    {
+        std::vector<decltype(from_abi(std::declval<const AbiT &>()))> out;
+        std::vector<AbiT> v;
+        if ( !available || count_fill(&v, call) != ITTD_OK )
+            return out;
+        for ( const AbiT &x : v )
+            out.push_back(from_abi(x));
+        return out;
+    }
+
+    // Each ABI struct of a query's answer appended to 'out' as its core type.
+    template <typename CoreT, typename AbiT>
+    static void append_from_abi(const std::vector<AbiT> &v, std::vector<CoreT> *out)
+    {
+        for ( const AbiT &x : v )
+            out->push_back(from_abi(x));
+    }
+
+    // A whole-recording query: count, fill, convert, finish. 'available' is
+    // the caller's check for a handle, the table entry and somewhere to put
+    // the answer; without it the query did not run. 'call' asks the entry
+    // once, given the buffer and where the truncated flag and the progress
+    // go. 'on_rc' sees the final return code first (note_replay), and
+    // 'convert' then gets what the fills gathered, even from a query that
+    // failed or was cancelled part way. The outcome is finish_query's, with
+    // the backend's flag from the fill (or count_fill's, when the count kept
+    // growing) and the backend's reason when it failed.
+    template <typename AbiT, typename Call, typename Convert>
+    static QueryResult run_count_query(const BackendModule *m, bool available, ProgressSink *progress,
+                                       Call call, Convert convert,
+                                       const std::function<void(int)> &on_rc = nullptr)
+    {
+        if ( !available )
+            return QueryResult{};
+        ProgressBridge pb(progress);
+        int trunc = 0;
+        std::vector<AbiT> v;
+        int rc = count_fill(&v, [&](AbiT *b, size_t cap, size_t *n)
+        {
+            return call(b, cap, n, &trunc, pb.get());
+        }, &trunc);
+        if ( on_rc )
+            on_rc(rc);
+        convert(v);
+        return finish_query(m, rc, trunc, pb);
+    }
+
     // ---------------------------------------------------------------- cursor
 
     class ModuleCursor : public ITraceCursor
@@ -259,31 +277,11 @@ namespace idattd
         ittd_cursor            *m_c;
     };
 
-    static ThreadInfo thread_info(const ittd_thread &t)
-    {
-        ThreadInfo ti;
-        ti.tid         = t.tid;
-        ti.created     = from_abi(t.created);
-        ti.exited      = from_abi(t.exited);
-        ti.name        = fixed_str(t.name);
-        ti.teb         = (ea_t)t.teb;
-        ti.teb32       = (ea_t)t.teb32;
-        ti.stack_base  = (ea_t)t.stack_base;
-        ti.stack_limit = (ea_t)t.stack_limit;
-        return ti;
-    }
-
     std::vector<ThreadInfo> ModuleCursor::live_threads() const
     {
-        std::vector<ThreadInfo> out;
-        if ( m_api->cursor_threads == nullptr )
-            return out;
-        std::vector<ittd_thread> v;
-        if ( count_fill(&v, [&](ittd_thread *b, size_t cap, size_t *n)
-                        { return m_api->cursor_threads(m_c, b, cap, n); }) == ITTD_OK )
-            for ( const ittd_thread &t : v )
-                out.push_back(thread_info(t));
-        return out;
+        return list_from_abi<ittd_thread>(m_api->cursor_threads != nullptr,
+                                          [&](ittd_thread *b, size_t cap, size_t *n)
+                                          { return m_api->cursor_threads(m_c, b, cap, n); });
     }
 
     // ---------------------------------------------------------------- navigator
@@ -305,7 +303,7 @@ namespace idattd
             if ( m_api->nav_run_to == nullptr
               || m_api->nav_run_to(m_c, (uint64_t)addr, forward ? 1 : 0, &stop) != ITTD_OK )
                 return StopReason::Failed;
-            return reason(stop);
+            return stop_from_abi(stop);
         }
 
         StopReason seek_to(Position p) override
@@ -324,13 +322,7 @@ namespace idattd
             std::vector<ittd_breakpoint> v;
             v.reserve(bpts.size());
             for ( const Breakpoint &b : bpts )
-            {
-                ittd_breakpoint x{};
-                x.addr  = (uint64_t)b.addr;
-                x.size  = b.size == 0 ? 1 : b.size;
-                x.kinds = to_abi_kinds(b.kinds);
-                v.push_back(x);
-            }
+                v.push_back(to_abi(b));
             // The ABI answers for the whole set.
             bool ok = m_api->nav_breakpoints(m_c, v.data(), v.size()) == ITTD_OK;
             if ( accepted != nullptr )
@@ -365,19 +357,9 @@ namespace idattd
             // (ITTD_E_UNSUPPORTED), is a movement that did not happen.
             if ( fn == nullptr || fn(m_c, forward ? 1 : 0, &stop) != ITTD_OK )
                 return StopReason::Failed;
-            return reason(stop);
+            return stop_from_abi(stop);
         }
 
-        static StopReason reason(int stop)
-        {
-            switch ( stop )
-            {
-                case ITTD_STOP_STEPPED:    return StopReason::Stepped;
-                case ITTD_STOP_BREAKPOINT: return StopReason::Breakpoint;
-                case ITTD_STOP_BOUNDARY:   return StopReason::TraceBoundary;
-                default:                   return StopReason::Failed;
-            }
-        }
 
         const ittd_backend_api *m_api;
         ittd_cursor            *m_c;
@@ -443,36 +425,27 @@ namespace idattd
             close();
             return false;
         }
-        m_info.is64         = ti.is64 != 0;
-        m_info.fingerprint  = ti.fingerprint;
-        m_info.first        = from_abi(ti.first);
-        m_info.last         = from_abi(ti.last);
-        m_info.main_module  = fixed_str(ti.main_module);
-        m_info.backend_name = fixed_str(ti.backend_name);
+        m_info = from_abi(ti);
 
         uint32_t c = ti.capabilities;
         // Each bit only with the entries it promises, as the header says the
         // bits are for: a backend setting one without them would offer
         // commands that can only fail.
-        m_caps.access_queries   = (c & ITTD_CAP_ACCESS_QUERIES) != 0
-                               && ITTD_HAS(m_api, query_accesses) && ITTD_HAS(m_api, query_executed);
-        m_caps.call_queries     = (c & ITTD_CAP_CALL_QUERIES) != 0 && ITTD_HAS(m_api, query_calls);
-        m_caps.mapping_changes  = (c & ITTD_CAP_MAPPING_CHANGES) != 0 && ITTD_HAS(m_api, query_mapping_changes);
-        m_caps.syscalls         = (c & ITTD_CAP_SYSCALLS) != 0 && ITTD_HAS(m_api, query_syscalls);
-        m_caps.recorded_exports = (c & ITTD_CAP_RECORDED_EXPORTS) != 0;
-        m_caps.cheap_seek       = (c & ITTD_CAP_CHEAP_SEEK) != 0;
-        m_caps.batch_regs       = (c & ITTD_CAP_BATCH_REGS) != 0 && ITTD_HAS(m_api, regs_at);
-        m_caps.reverse_step     = (c & ITTD_CAP_REVERSE_STEP) != 0;
-        m_caps.exceptions       = (c & ITTD_CAP_EXCEPTIONS) != 0 && ITTD_HAS(m_api, query_exceptions);
-        m_caps.self_modifying   = (c & ITTD_CAP_SELF_MODIFYING) != 0
-                               && ITTD_HAS(m_api, query_self_modifying);
-        m_caps.fork             = (c & ITTD_CAP_FORK) != 0
-                               && ITTD_HAS(m_api, fork_open) && ITTD_HAS(m_api, fork_regs)
-                               && ITTD_HAS(m_api, fork_set_regs) && ITTD_HAS(m_api, fork_write_memory)
-                               && ITTD_HAS(m_api, fork_record) && ITTD_HAS(m_api, fork_close);
-        m_caps.replay_scans     = (c & ITTD_CAP_REPLAY_SCANS) != 0
-                               && ITTD_HAS(m_api, query_strings) && ITTD_HAS(m_api, query_buffers);
-        m_caps.cheap_reads      = (c & ITTD_CAP_CHEAP_READS) != 0;
+        m_caps = caps_from_abi(c);
+        m_caps.access_queries  = m_caps.access_queries
+                              && ITTD_HAS(m_api, query_accesses) && ITTD_HAS(m_api, query_executed);
+        m_caps.call_queries    = m_caps.call_queries && ITTD_HAS(m_api, query_calls);
+        m_caps.mapping_changes = m_caps.mapping_changes && ITTD_HAS(m_api, query_mapping_changes);
+        m_caps.syscalls        = m_caps.syscalls && ITTD_HAS(m_api, query_syscalls);
+        m_caps.batch_regs      = m_caps.batch_regs && ITTD_HAS(m_api, regs_at);
+        m_caps.exceptions      = m_caps.exceptions && ITTD_HAS(m_api, query_exceptions);
+        m_caps.self_modifying  = m_caps.self_modifying && ITTD_HAS(m_api, query_self_modifying);
+        m_caps.fork            = m_caps.fork
+                              && ITTD_HAS(m_api, fork_open) && ITTD_HAS(m_api, fork_regs)
+                              && ITTD_HAS(m_api, fork_set_regs) && ITTD_HAS(m_api, fork_write_memory)
+                              && ITTD_HAS(m_api, fork_record) && ITTD_HAS(m_api, fork_close);
+        m_caps.replay_scans    = m_caps.replay_scans
+                              && ITTD_HAS(m_api, query_strings) && ITTD_HAS(m_api, query_buffers);
         // The header promises prepare() is called only when the bit is set,
         // so a backend may leave the entry filled but meaningless for a
         // recording that needs no preparation.
@@ -565,145 +538,73 @@ namespace idattd
     std::vector<ModuleInfo> BackendModule::modules() const
     {
         DiagTimer diag_timer("backend.modules");
-        std::vector<ModuleInfo> out;
-        std::vector<ittd_module> v;
-        if ( m_handle == nullptr || m_api->modules == nullptr
-          || count_fill(&v, [&](ittd_module *b, size_t cap, size_t *n)
-                        { return m_api->modules(m_handle, b, cap, n); }) != ITTD_OK )
-            return out;
-        for ( const ittd_module &m : v )
-        {
-            ModuleInfo mi;
-            mi.base     = (ea_t)m.base;
-            mi.size     = m.size;
-            mi.name     = fixed_str(m.name);
-            mi.path     = fixed_str(m.path);
-            mi.loaded   = from_abi(m.loaded);
-            mi.unloaded = from_abi(m.unloaded);
-            mi.machine   = (uint16_t)m.machine;
-            mi.timestamp = m.timestamp;
-            mi.checksum  = m.checksum;
-            out.push_back(mi);
-        }
-        return out;
+        return list_from_abi<ittd_module>(m_handle != nullptr && m_api->modules != nullptr,
+                                          [&](ittd_module *b, size_t cap, size_t *n)
+                                          { return m_api->modules(m_handle, b, cap, n); });
     }
 
     std::vector<ThreadInfo> BackendModule::threads() const
     {
         DiagTimer diag_timer("backend.threads");
-        std::vector<ThreadInfo> out;
-        std::vector<ittd_thread> v;
-        if ( m_handle == nullptr || m_api->threads == nullptr
-          || count_fill(&v, [&](ittd_thread *b, size_t cap, size_t *n)
-                        { return m_api->threads(m_handle, b, cap, n); }) != ITTD_OK )
-            return out;
-        for ( const ittd_thread &t : v )
-            out.push_back(thread_info(t));
-        return out;
+        return list_from_abi<ittd_thread>(m_handle != nullptr && m_api->threads != nullptr,
+                                          [&](ittd_thread *b, size_t cap, size_t *n)
+                                          { return m_api->threads(m_handle, b, cap, n); });
     }
 
     std::vector<TraceEvent> BackendModule::timeline() const
     {
         DiagTimer diag_timer("backend.timeline");
-        std::vector<TraceEvent> out;
-        std::vector<ittd_trace_event> v;
-        if ( m_handle == nullptr || m_api->timeline == nullptr
-          || count_fill(&v, [&](ittd_trace_event *b, size_t cap, size_t *n)
-                        { return m_api->timeline(m_handle, b, cap, n); }) != ITTD_OK )
-            return out;
-        for ( const ittd_trace_event &e : v )
-        {
-            TraceEvent te;
-            te.pos  = from_abi(e.pos);
-            te.what = fixed_str(e.text);
-            te.kind = e.kind;
-            te.tid  = e.tid;
-            out.push_back(te);
-        }
-        return out;
+        return list_from_abi<ittd_trace_event>(m_handle != nullptr && m_api->timeline != nullptr,
+                                               [&](ittd_trace_event *b, size_t cap, size_t *n)
+                                               { return m_api->timeline(m_handle, b, cap, n); });
     }
 
-    // The whole-trace queries all run the same way: count, fill, convert.
-    // 'truncated' is the backend's flag from the fill.
+    // The whole-trace queries all run the same way (run_count_query):
+    // count, fill, convert, finish.
 
     QueryResult BackendModule::query_accesses(ea_t lo, ea_t hi, uint8_t kinds, PositionRange when,
                                               std::vector<Access> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_accesses");
-        if ( m_handle == nullptr || m_api->query_accesses == nullptr || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
         uint32_t k = to_abi_kinds(kinds);
-        std::vector<ittd_access> v;
-        int rc = count_fill(&v, [&](ittd_access *b, size_t cap, size_t *n)
-        {
-            return m_api->query_accesses(m_handle, (uint64_t)lo, (uint64_t)hi, k, to_abi(when),
-                                         b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        for ( const ittd_access &a : v )
-        {
-            Access x;
-            x.pos  = from_abi(a.pos);
-            x.tid  = a.tid;
-            x.pc   = (ea_t)a.pc;
-            x.addr = (ea_t)a.addr;
-            x.size = a.size;
-            x.kind = a.kind == ITTD_ACCESS_READ  ? ACCESS_READ
-                   : a.kind == ITTD_ACCESS_WRITE ? ACCESS_WRITE : ACCESS_EXEC;
-            out->push_back(x);
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_access>(this,
+            m_handle != nullptr && m_api->query_accesses != nullptr && out != nullptr, progress,
+            [&](ittd_access *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_accesses(m_handle, (uint64_t)lo, (uint64_t)hi, k, to_abi(when),
+                                             b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_access> &v) { append_from_abi(v, out); });
     }
 
     QueryResult BackendModule::query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                               std::vector<ea_t> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_executed");
-        if ( m_handle == nullptr || m_api->query_executed == nullptr || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
         std::vector<ittd_range> r = to_abi(ranges);
-        std::vector<uint64_t> v;
-        int rc = count_fill(&v, [&](uint64_t *b, size_t cap, size_t *n)
-        {
-            return m_api->query_executed(m_handle, r.data(), r.size(), b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        // Already sorted and distinct. A module's worth is millions of
-        // addresses: one append, not a push_back each.
-        out->insert(out->end(), v.begin(), v.end());
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<uint64_t>(this,
+            m_handle != nullptr && m_api->query_executed != nullptr && out != nullptr, progress,
+            [&](uint64_t *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_executed(m_handle, r.data(), r.size(), b, cap, n, trunc, p);
+            },
+            // Already sorted and distinct. A module's worth is millions of
+            // addresses: one append, not a push_back each.
+            [&](const std::vector<uint64_t> &v) { out->insert(out->end(), v.begin(), v.end()); });
     }
 
     QueryResult BackendModule::query_calls(const std::vector<ea_t> &targets, PositionRange when,
                                            std::vector<CallEvent> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_calls");
-        if ( m_handle == nullptr || m_api->query_calls == nullptr || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
         std::vector<uint64_t> t(targets.begin(), targets.end());
-        std::vector<ittd_call> v;
-        int rc = count_fill(&v, [&](ittd_call *b, size_t cap, size_t *n)
-        {
-            return m_api->query_calls(m_handle, t.data(), t.size(), to_abi(when),
-                                      b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        for ( const ittd_call &c : v )
-        {
-            CallEvent e;
-            e.pos       = from_abi(c.pos);
-            e.entry_pos = from_abi(c.entry_pos);
-            e.ret_pos   = from_abi(c.ret_pos);
-            e.tid       = c.tid;
-            e.site      = c.site == ITTD_BADADDR ? BADADDR : (ea_t)c.site;
-            e.target    = (ea_t)c.target;
-            e.is_call   = (c.flags & ITTD_CALL_F_NOT_CALL) == 0;
-            out->push_back(e);
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_call>(this,
+            m_handle != nullptr && m_api->query_calls != nullptr && out != nullptr, progress,
+            [&](ittd_call *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_calls(m_handle, t.data(), t.size(), to_abi(when), b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_call> &v) { append_from_abi(v, out); });
     }
 
     QueryResult BackendModule::query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &ranges,
@@ -712,108 +613,63 @@ namespace idattd
                                                       ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_indirect_targets");
-        if ( m_handle == nullptr || m_api->query_indirect == nullptr || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
         std::vector<ittd_range> r = to_abi(ranges);
-        std::vector<ittd_call_target> v;
-        int rc = count_fill(&v, [&](ittd_call_target *b, size_t cap, size_t *n)
-        {
-            return m_api->query_indirect(m_handle, r.data(), r.size(), jumps ? ITTD_INDIRECT_JUMPS : 0,
-                                         b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        for ( const ittd_call_target &c : v )
-        {
-            IndirectTarget t;
-            t.target  = (ea_t)c.target;
-            t.hits    = c.hits;
-            t.first   = from_abi(c.first_pos);
-            t.is_call = (c.flags & ITTD_CALL_F_NOT_CALL) == 0;
-            (*out)[(ea_t)c.site].push_back(t);
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_call_target>(this,
+            m_handle != nullptr && m_api->query_indirect != nullptr && out != nullptr, progress,
+            [&](ittd_call_target *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_indirect(m_handle, r.data(), r.size(), jumps ? ITTD_INDIRECT_JUMPS : 0,
+                                             b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_call_target> &v)
+            {
+                for ( const ittd_call_target &c : v )
+                    (*out)[(ea_t)c.site].push_back(from_abi(c));
+            });
     }
 
     QueryResult BackendModule::query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_exceptions");
-        if ( m_handle == nullptr || m_api->query_exceptions == nullptr || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
-        std::vector<ittd_exception> v;
-        int rc = count_fill(&v, [&](ittd_exception *b, size_t cap, size_t *n)
-        {
-            return m_api->query_exceptions(m_handle, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        for ( const ittd_exception &x : v )
-        {
-            ExceptionEvent e;
-            e.pos            = from_abi(x.pos);
-            e.raise_pos      = from_abi(x.raise_pos);
-            e.tid            = x.tid;
-            e.code           = x.code;
-            e.flags          = x.flags;
-            e.address        = (ea_t)x.address;
-            e.information[0] = x.information[0];
-            e.information[1] = x.information[1];
-            out->push_back(e);
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_exception>(this,
+            m_handle != nullptr && m_api->query_exceptions != nullptr && out != nullptr, progress,
+            [&](ittd_exception *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_exceptions(m_handle, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_exception> &v) { append_from_abi(v, out); });
     }
 
     QueryResult BackendModule::query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_syscalls");
-        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_syscalls) || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
-        std::vector<ittd_syscall> v;
-        int rc = count_fill(&v, [&](ittd_syscall *b, size_t cap, size_t *n)
-        {
-            return m_api->query_syscalls(m_handle, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        out->reserve(v.size());
-        for ( const ittd_syscall &x : v )
-        {
-            SyscallEvent e;
-            e.pos    = from_abi(x.pos);
-            e.result = x.result;
-            e.number = x.number;
-            e.tid    = x.tid;
-            e.name   = fixed_str(x.name);
-            out->push_back(std::move(e));
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_syscall>(this,
+            m_handle != nullptr && ITTD_HAS(m_api, query_syscalls) && out != nullptr, progress,
+            [&](ittd_syscall *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_syscalls(m_handle, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_syscall> &v)
+            {
+                out->reserve(v.size());
+                append_from_abi(v, out);
+            });
     }
 
     QueryResult BackendModule::query_self_modifying(std::vector<SelfModHit> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_self_modifying");
-        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_self_modifying) || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
-        std::vector<ittd_selfmod> v;
-        int rc = count_fill(&v, [&](ittd_selfmod *b, size_t cap, size_t *n)
-        {
-            return m_api->query_self_modifying(m_handle, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        out->reserve(v.size());
-        for ( const ittd_selfmod &x : v )
-        {
-            SelfModHit h;
-            h.address     = (ea_t)x.address;
-            h.size        = x.size;
-            h.write_pos   = from_abi(x.write_pos);
-            h.write_ip    = (ea_t)x.write_ip;
-            h.execute_pos = from_abi(x.execute_pos);
-            h.executions  = x.executions;
-            out->push_back(h);
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_selfmod>(this,
+            m_handle != nullptr && ITTD_HAS(m_api, query_self_modifying) && out != nullptr, progress,
+            [&](ittd_selfmod *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_self_modifying(m_handle, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_selfmod> &v)
+            {
+                out->reserve(v.size());
+                append_from_abi(v, out);
+            });
     }
 
     static void backend_log(void *, const char *line);
@@ -885,23 +741,16 @@ namespace idattd
         backend_log(nullptr, text.c_str());
     }
 
-    // The settings point into 'registry_dir' and 'root', which must outlive them.
+    // The ABI settings with the emulator log attached: lines go to the wait
+    // box's tail always when asked for, and to the output window only with
+    // RecordOptions::log. They point into 'registry_dir' and 'root', which
+    // must outlive them.
     static ittd_fork_settings replay_settings(const qstring &registry_dir, const qstring &root, bool strict,
                                               bool allow_host, bool any_registry, const RecordOptions &rec)
     {
-        ittd_fork_settings fs{};
-        fs.size  = sizeof(fs);
-        fs.flags = (strict ? ITTD_FORK_STRICT : 0) | (allow_host ? ITTD_FORK_ALLOW_HOST : 0)
-                 | (any_registry ? ITTD_FORK_ANY_REGISTRY : 0);
-        fs.registry_dir   = registry_dir.empty() ? nullptr : registry_dir.c_str();
-        fs.emulation_root = root.empty() ? nullptr : root.c_str();
-        fs.network        = rec.network ? ITTD_NET_LIVE : ITTD_NET_OFFLINE;
-        fs.access_mask    = rec.access_mask;
-        fs.checkpoint_interval = rec.checkpoint_interval;
-        fs.elevated       = rec.elevated ? 1 : 0;
-        fs.log            = rec.log || rec.log_tail ? emulator_log : nullptr;
-        fs.log_ctx        = rec.log ? &g_log_to_output : nullptr;
-        return fs;
+        return to_abi_settings(registry_dir, root, strict, allow_host, any_registry, rec,
+                               rec.log || rec.log_tail ? emulator_log : nullptr,
+                               rec.log ? &g_log_to_output : nullptr);
     }
 
     static ittd_fork_settings replay_settings(const ReplaySettings &s)
@@ -975,29 +824,20 @@ namespace idattd
     {
         DiagTimer diag_timer("backend.query_strings", 0);
         m_replayBlock = ReplayBlock::None;
-        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_strings) || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
+        // Points into 'settings', which outlives the query.
         ittd_fork_settings fs = replay_settings(settings);
-        int trunc = 0;
-        std::vector<ittd_string_hit> v;
-        int rc = count_fill(&v, [&](ittd_string_hit *b, size_t cap, size_t *n)
-        {
-            return m_api->query_strings(m_handle, &fs, min_length, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        note_replay(rc);
-        out->reserve(v.size());
-        for ( const ittd_string_hit &x : v )
-        {
-            StringHit h;
-            h.address = (ea_t)x.address;
-            h.pos     = from_abi(x.pos);
-            h.wide    = x.wide != 0;
-            h.length  = x.length;
-            h.text    = fixed_str(x.text);
-            out->push_back(std::move(h));
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_string_hit>(this,
+            m_handle != nullptr && ITTD_HAS(m_api, query_strings) && out != nullptr, progress,
+            [&](ittd_string_hit *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_strings(m_handle, &fs, min_length, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_string_hit> &v)
+            {
+                out->reserve(v.size());
+                append_from_abi(v, out);
+            },
+            [&](int rc) { note_replay(rc); });
     }
 
     QueryResult BackendModule::query_buffers(const ReplaySettings &settings,
@@ -1005,32 +845,19 @@ namespace idattd
     {
         DiagTimer diag_timer("backend.query_buffers", 0);
         m_replayBlock = ReplayBlock::None;
-        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_buffers) || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
         ittd_fork_settings fs = replay_settings(settings);
-        int trunc = 0;
-        std::vector<ittd_buffer_hit> v;
-        int rc = count_fill(&v, [&](ittd_buffer_hit *b, size_t cap, size_t *n)
-        {
-            return m_api->query_buffers(m_handle, &fs, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        note_replay(rc);
-        out->reserve(v.size());
-        for ( const ittd_buffer_hit &x : v )
-        {
-            BufferHit h;
-            h.address   = (ea_t)x.address;
-            h.size      = x.size;
-            h.first_pos = from_abi(x.first_pos);
-            h.last_pos  = from_abi(x.last_pos);
-            h.writer_ip = (ea_t)x.writer_ip;
-            h.writes    = x.writes;
-            h.kind      = fixed_str(x.kind);
-            h.preview   = fixed_str(x.preview);
-            out->push_back(std::move(h));
-        }
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_buffer_hit>(this,
+            m_handle != nullptr && ITTD_HAS(m_api, query_buffers) && out != nullptr, progress,
+            [&](ittd_buffer_hit *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_buffers(m_handle, &fs, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_buffer_hit> &v)
+            {
+                out->reserve(v.size());
+                append_from_abi(v, out);
+            },
+            [&](int rc) { note_replay(rc); });
     }
 
     ForkResult BackendModule::record_fork(const ForkRequest &req, ProgressSink *progress)
@@ -1161,7 +988,7 @@ namespace idattd
             if ( count_fill(&names, [&](ittd_name *b, size_t cap, size_t *n)
                             { return m_api->query_mapping_files(m_handle, b, cap, n); }) == ITTD_OK )
                 for ( const ittd_name &n : names )
-                    files->push_back(fixed_str(n.name));
+                    files->push_back(from_abi(n));
         }
         return finish_query(this, rc, trunc, pb);
     }
@@ -1203,23 +1030,23 @@ namespace idattd
         return true;
     }
 
-    static void append_heat(const std::vector<ittd_heat_cell> &v, std::vector<HeatCell> *out);
+    static void append_heat(const std::vector<ittd_heat_cell> &v, std::vector<HeatCell> *out)
+    {
+        out->reserve(out->size() + v.size());
+        append_from_abi(v, out);
+    }
 
     QueryResult BackendModule::query_access_heat(uint32_t page_shift, uint32_t slices,
                                                  std::vector<HeatCell> *out, ProgressSink *progress)
     {
         DiagTimer diag_timer("backend.query_access_heat", 0);
-        if ( m_handle == nullptr || !ITTD_HAS(m_api, query_access_heat) || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
-        std::vector<ittd_heat_cell> v;
-        int rc = count_fill(&v, [&](ittd_heat_cell *b, size_t cap, size_t *n)
-        {
-            return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        append_heat(v, out);
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_heat_cell>(this,
+            m_handle != nullptr && ITTD_HAS(m_api, query_access_heat) && out != nullptr, progress,
+            [&](ittd_heat_cell *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_heat_cell> &v) { append_heat(v, out); });
     }
 
     bool BackendModule::can_window_heat() const
@@ -1237,18 +1064,14 @@ namespace idattd
         if ( when.whole_trace() )
             return query_access_heat(page_shift, slices, out, progress);
         DiagTimer diag_timer("backend.query_access_heat_window", 0);
-        if ( !can_window_heat() || out == nullptr )
-            return QueryResult{};
-        ProgressBridge pb(progress);
-        int trunc = 0;
-        std::vector<ittd_heat_cell> v;
         const ittd_position_range w = to_abi(when);
-        int rc = count_fill(&v, [&](ittd_heat_cell *b, size_t cap, size_t *n)
-        {
-            return m_api->query_access_heat_window(m_handle, page_shift, slices, w, b, cap, n, &trunc, pb.get());
-        }, &trunc);
-        append_heat(v, out);
-        return finish_query(this, rc, trunc, pb);
+        return run_count_query<ittd_heat_cell>(this,
+            can_window_heat() && out != nullptr, progress,
+            [&](ittd_heat_cell *b, size_t cap, size_t *n, int *trunc, const ittd_progress *p)
+            {
+                return m_api->query_access_heat_window(m_handle, page_shift, slices, w, b, cap, n, trunc, p);
+            },
+            [&](const std::vector<ittd_heat_cell> &v) { append_heat(v, out); });
     }
 
     Position BackendModule::heat_window_slice_position(uint32_t slices, uint32_t slice, PositionRange when)
@@ -1262,21 +1085,6 @@ namespace idattd
         return from_abi(p);
     }
 
-    static void append_heat(const std::vector<ittd_heat_cell> &v, std::vector<HeatCell> *out)
-    {
-        out->reserve(out->size() + v.size());
-        for ( const ittd_heat_cell &x : v )
-        {
-            HeatCell c;
-            c.page     = x.page;
-            c.slice    = x.slice;
-            c.reads    = x.reads;
-            c.writes   = x.writes;
-            c.executes = x.executes;
-            out->push_back(c);
-        }
-    }
-
     bool BackendModule::query_out_values(const std::vector<OutSlot> &slots,
                                          std::vector<std::optional<uint64_t>> *out, ProgressSink *progress)
     {
@@ -1285,13 +1093,7 @@ namespace idattd
             return false;
         std::vector<ittd_out_slot> in(slots.size());
         for ( size_t i = 0; i < slots.size(); i++ )
-        {
-            in[i].call   = to_abi(slots[i].call);
-            in[i].addr   = (uint64_t)slots[i].addr;
-            in[i].before = slots[i].before;
-            in[i].tid    = slots[i].tid;
-            in[i].width  = slots[i].width;
-        }
+            in[i] = to_abi(slots[i]);
         std::vector<uint64_t> values(slots.size(), 0);
         std::vector<uint8_t>  known(slots.size(), 0);
         ProgressBridge pb(progress);
@@ -1347,14 +1149,10 @@ namespace idattd
                                            &n, &trunc, pb.get());
         if ( rc == ITTD_OK )
         {
+            // Every one an execution, whatever kind the backend wrote.
             for ( size_t i = 0; i < n && i < v.size(); i++ )
             {
-                Access x;
-                x.pos  = from_abi(v[i].pos);
-                x.tid  = v[i].tid;
-                x.pc   = (ea_t)v[i].pc;
-                x.addr = (ea_t)v[i].addr;
-                x.size = v[i].size;
+                Access x = from_abi(v[i]);
                 x.kind = ACCESS_EXEC;
                 out->push_back(x);
             }
@@ -1390,10 +1188,7 @@ namespace idattd
         std::vector<ittd_mem_read> in(reads.size());
         for ( size_t i = 0; i < reads.size(); i++ )
         {
-            in[i].pos    = to_abi(reads[i].pos);
-            in[i].addr   = (uint64_t)reads[i].addr;
-            in[i].offset = (uint64_t)reads[i].offset;
-            in[i].size   = (uint64_t)reads[i].size;
+            in[i] = to_abi(reads[i]);
             total = std::max(total, reads[i].offset + reads[i].size);
         }
         data->assign(total, 0);
@@ -1450,35 +1245,17 @@ namespace idattd
     std::vector<ITraceBackend::Symbol> BackendModule::module_symbols(ea_t base)
     {
         DiagTimer diag_timer("backend.module_symbols");
-        std::vector<Symbol> out;
-        std::vector<ittd_symbol> v;
-        if ( m_handle == nullptr || m_api->module_symbols == nullptr
-          || count_fill(&v, [&](ittd_symbol *b, size_t cap, size_t *n)
-                        { return m_api->module_symbols(m_handle, (uint64_t)base, b, cap, n); }) != ITTD_OK )
-            return out;
-        for ( const ittd_symbol &s : v )
-        {
-            Symbol sym;
-            sym.ea        = (ea_t)s.ea;
-            sym.name      = fixed_str(s.name);
-            sym.is_export = s.is_export != 0;
-            out.push_back(sym);
-        }
-        return out;
+        return list_from_abi<ittd_symbol>(m_handle != nullptr && m_api->module_symbols != nullptr,
+                                          [&](ittd_symbol *b, size_t cap, size_t *n)
+                                          { return m_api->module_symbols(m_handle, (uint64_t)base, b, cap, n); });
     }
 
     std::vector<std::pair<ea_t, ea_t>> BackendModule::module_functions(ea_t base)
     {
         DiagTimer diag_timer("backend.module_functions");
-        std::vector<std::pair<ea_t, ea_t>> out;
-        std::vector<ittd_range> v;
-        if ( m_handle == nullptr || m_api->module_functions == nullptr
-          || count_fill(&v, [&](ittd_range *b, size_t cap, size_t *n)
-                        { return m_api->module_functions(m_handle, (uint64_t)base, b, cap, n); }) != ITTD_OK )
-            return out;
-        for ( const ittd_range &r : v )
-            out.push_back({ (ea_t)r.start, (ea_t)r.end });
-        return out;
+        return list_from_abi<ittd_range>(m_handle != nullptr && m_api->module_functions != nullptr,
+                                         [&](ittd_range *b, size_t cap, size_t *n)
+                                         { return m_api->module_functions(m_handle, (uint64_t)base, b, cap, n); });
     }
 
     // ---------------------------------------------------------------- loading

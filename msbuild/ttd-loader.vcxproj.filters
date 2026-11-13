@@ -22,6 +22,9 @@
     <ClInclude Include="$(SrcDir)\common\pch.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\abi_convert.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\core\position.h">
       <Filter>core</Filter>
     </ClInclude>

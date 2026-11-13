@@ -49,6 +49,9 @@
     <ClInclude Include="$(SrcDir)\abi\ida_ttd_backend.h">
       <Filter>abi</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\core\abi_convert.h">
+      <Filter>core</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\core\abi_export.h">
       <Filter>core</Filter>
     </ClInclude>
