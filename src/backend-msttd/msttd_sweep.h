@@ -19,6 +19,69 @@ namespace idattd
     bool msttd_sweep(TTD::Replay::ICursorView *cursor, TTD::Replay::Position first,
                      TTD::Replay::Position last, ProgressSink *progress);
 
+    // What one replay arms on a cursor (its flags, event mask, watchpoints
+    // and callbacks), taken off again when this goes out of scope or at
+    // disarm(). The engine keeps a pointer to each callable, not a copy, so
+    // a callback left set when its lambda dies is called through a dangling
+    // pointer by the next replay on that cursor; declaring the lambdas
+    // before this object makes the order right by construction. The event
+    // mask is put back as it was, so a cursor reused for one slot after
+    // another (query_out_values) keeps its own. Replays run through sweep()
+    // (msttd_sweep), or straight on cursor() when no progress is wanted.
+    class ArmedSweep
+    {
+    public:
+        // A call/return callback needs no event: that sweep leaves the mask
+        // alone.
+        ArmedSweep(TTD::Replay::ICursorView *cursor, TTD::Replay::ReplayFlags flags);
+        ArmedSweep(TTD::Replay::ICursorView *cursor, TTD::Replay::ReplayFlags flags,
+                   TTD::Replay::EventMask events);
+        ~ArmedSweep() { disarm(); }
+        ArmedSweep(const ArmedSweep &) = delete;
+        ArmedSweep &operator=(const ArmedSweep &) = delete;
+
+        // Removed again at disarm().
+        bool watch(const TTD::Replay::MemoryWatchpointData &wp);
+
+        template <typename F> void on_watchpoint(F &f)
+        {
+            m_cursor->SetMemoryWatchpointCallback(f);
+            m_watchCb = true;
+        }
+        template <typename F> void on_call_return(F &f)
+        {
+            m_cursor->SetCallReturnCallback(f);
+            m_callRetCb = true;
+        }
+        template <typename F> void on_gap(F &f, TTD::Replay::GapKindMask kinds, TTD::Replay::GapEventMask events)
+        {
+            m_cursor->SetGapKindMask(kinds);
+            m_cursor->SetGapEventMask(events);
+            m_cursor->SetGapEventCallback(f);
+            m_gapCb = true;
+        }
+
+        bool sweep(TTD::Replay::Position first, TTD::Replay::Position last, ProgressSink *progress)
+        {
+            return msttd_sweep(m_cursor, first, last, progress);
+        }
+        TTD::Replay::ICursorView *cursor() const { return m_cursor; }
+
+        // Everything off, now rather than at the end of the scope: before the
+        // cursor is used for something else.
+        void disarm();
+
+    private:
+        TTD::Replay::ICursorView *m_cursor;
+        TTD::Replay::EventMask    m_oldEvents;
+        std::vector<TTD::Replay::MemoryWatchpointData> m_watched;
+        bool m_watchCb   = false;
+        bool m_callRetCb = false;
+        bool m_gapCb     = false;
+        bool m_events    = false;   // the mask was set, and is put back
+        bool m_armed     = true;
+    };
+
     // Independent work on 'items' things that each need the engine at a
     // position of their own (a seek costs about 15 ms however near, so a
     // query that visits thousands of positions spends minutes seeking). The

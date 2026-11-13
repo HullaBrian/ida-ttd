@@ -187,16 +187,14 @@ namespace idattd
         // Confined to the calling thread, which is the one that reads the
         // out-param, so the step budget is not spent elsewhere.
         wp.ThreadId   = (UniqueThreadId)tid;
-        cur->AddMemoryWatchpoint(wp);
-        cur->SetMemoryWatchpointCallback(on_read);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-        cur->SetReplayFlags(ReplayFlags::ReplayOnlyCurrentThread
-                          | ReplayFlags::ReplaySegmentsSequentially);
-        cur->SetPositionOnThread((UniqueThreadId)tid, from);
-        cur->ReplayForward(TtdPosition::Max, (StepCount)0x2000);
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
-        cur->RemoveMemoryWatchpoint(wp);
-        cur->SetEventMask(EventMask::None);
+        {
+            ArmedSweep arm(cur, ReplayFlags::ReplayOnlyCurrentThread | ReplayFlags::ReplaySegmentsSequentially,
+                           EventMask::MemoryWatchpoint);
+            arm.watch(wp);
+            arm.on_watchpoint(on_read);
+            cur->SetPositionOnThread((UniqueThreadId)tid, from);
+            cur->ReplayForward(TtdPosition::Max, (StepCount)0x2000);
+        }
 
         if ( got )
             *out = found;
@@ -231,8 +229,6 @@ namespace idattd
             if ( !cur )
                 return;
             made = true;
-            cur->SetReplayFlags(ReplayFlags::ReplayOnlyCurrentThread | ReplayFlags::ReplaySegmentsSequentially);
-            cur->SetEventMask(EventMask::MemoryWatchpoint);
 
             for ( size_t n = begin; n < end && !stop.load(); n++, done++ )
             {
@@ -282,12 +278,15 @@ namespace idattd
                                                | (uint8_t)DataAccessMask::Overwrite | (uint8_t)DataAccessMask::DataMismatch
                                                | (uint8_t)DataAccessMask::NewData);
                 wp.ThreadId   = (UniqueThreadId)utid;
-                cur->AddMemoryWatchpoint(wp);
-                cur->SetMemoryWatchpointCallback(on_hit);
-                cur->SetPositionOnThread((UniqueThreadId)utid, from_core(sl.call));
-                cur->ReplayForward(TtdPosition::Max, (StepCount)0x4000);
-                cur->SetMemoryWatchpointCallback(nullptr, 0);
-                cur->RemoveMemoryWatchpoint(wp);
+                {
+                    ArmedSweep arm(cur.get(), ReplayFlags::ReplayOnlyCurrentThread
+                                            | ReplayFlags::ReplaySegmentsSequentially,
+                                   EventMask::MemoryWatchpoint);
+                    arm.watch(wp);
+                    arm.on_watchpoint(on_hit);
+                    cur->SetPositionOnThread((UniqueThreadId)utid, from_core(sl.call));
+                    cur->ReplayForward(TtdPosition::Max, (StepCount)0x4000);
+                }
                 if ( got )
                     (*out)[i] = value;
             }

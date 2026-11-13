@@ -106,7 +106,6 @@ namespace idattd
         // repeat or cover many executions at once). Overwrite is the
         // pre-write companion of every Write, so asking for it would report
         // each store twice and halve what kMaxHits holds.
-        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
         DataAccessMask am = DataAccessMask::None;
         if ( kinds & ACCESS_READ )
             am |= DataAccessMask::Read;
@@ -118,12 +117,13 @@ namespace idattd
         wp.Address    = GuestAddress{ (uint64_t)lo };
         wp.Size       = (uint64_t)(hi - lo);
         wp.AccessMask = am;
-        cur->AddMemoryWatchpoint(wp);
-        cur->SetMemoryWatchpointCallback(on_hit);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-
-        bool complete = msttd_sweep(cur.get(), range_first(when), range_last(when), progress);
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
+        bool complete;
+        {
+            ArmedSweep arm(cur.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+            arm.watch(wp);
+            arm.on_watchpoint(on_hit);
+            complete = arm.sweep(range_first(when), range_last(when), progress);
+        }
 
         // A timeline must not depend on how the engine scheduled the work, and
         // sorting on the whole tuple groups duplicates for the pass below.
@@ -246,20 +246,20 @@ namespace idattd
 
         // Segment filtering stays on: a narrow scope lets the engine skip the
         // parts of the recording that never touch it.
-        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        for ( const auto &x : merged )
+        bool complete;
         {
-            MemoryWatchpointData wp{};
-            wp.Address    = GuestAddress{ (uint64_t)x.first };
-            wp.Size       = (uint64_t)(x.second - x.first);
-            wp.AccessMask = DataAccessMask::Execute;
-            cur->AddMemoryWatchpoint(wp);
+            ArmedSweep arm(cur.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+            for ( const auto &x : merged )
+            {
+                MemoryWatchpointData wp{};
+                wp.Address    = GuestAddress{ (uint64_t)x.first };
+                wp.Size       = (uint64_t)(x.second - x.first);
+                wp.AccessMask = DataAccessMask::Execute;
+                arm.watch(wp);
+            }
+            arm.on_watchpoint(on_exec);
+            complete = arm.sweep(TtdPosition::Min, TtdPosition::Max, progress);
         }
-        cur->SetMemoryWatchpointCallback(on_exec);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-
-        bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, progress);
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
 
         for ( const Bin &b : bins )
             for ( size_t i = 0; i < b.bits.size(); i++ )
@@ -366,11 +366,13 @@ namespace idattd
 
         // A call/return callback is not a maskable event, so there is nothing
         // for segment filtering to work with.
-        cur->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                          | ReplayFlags::ReplaySegmentsSequentially);
-        cur->SetCallReturnCallback(on_call_ret);
-        bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, progress);
-        cur->SetCallReturnCallback(nullptr, 0);
+        bool complete;
+        {
+            ArmedSweep arm(cur.get(), ReplayFlags::ReplayAllSegmentsWithoutFiltering
+                                    | ReplayFlags::ReplaySegmentsSequentially);
+            arm.on_call_return(on_call_ret);
+            complete = arm.sweep(TtdPosition::Min, TtdPosition::Max, progress);
+        }
 
         for ( const auto &[site, targets] : seen )
             for ( const auto &[tgt, s] : targets )
@@ -487,11 +489,13 @@ namespace idattd
             }
         };
 
-        sweep->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                            | ReplayFlags::ReplaySegmentsSequentially);
-        sweep->SetCallReturnCallback(on_call_ret);
-        bool complete = msttd_sweep(sweep.get(), range_first(when), range_last(when), progress);
-        sweep->SetCallReturnCallback(nullptr, 0);
+        bool complete;
+        {
+            ArmedSweep arm(sweep.get(), ReplayFlags::ReplayAllSegmentsWithoutFiltering
+                                      | ReplayFlags::ReplaySegmentsSequentially);
+            arm.on_call_return(on_call_ret);
+            complete = arm.sweep(range_first(when), range_last(when), progress);
+        }
 
         out->reserve(out->size() + recs.size());
         for ( const Rec &rec : recs )

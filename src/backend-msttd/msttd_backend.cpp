@@ -902,12 +902,13 @@ namespace idattd
                 return false;
             };
             cur->SetPosition(start);
-            cur->AddMemoryWatchpoint(wp);
-            cur->SetMemoryWatchpointCallback(on_exec);
-            cur->SetEventMask(EventMask::MemoryWatchpoint);
-            const bool complete = msttd_sweep(cur.get(), start, end, progress);
-            cur->SetMemoryWatchpointCallback(nullptr, 0);
-            cur->RemoveMemoryWatchpoint(wp);
+            bool complete;
+            {
+                ArmedSweep arm(cur.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+                arm.watch(wp);
+                arm.on_watchpoint(on_exec);
+                complete = arm.sweep(start, end, progress);
+            }
             if ( !complete )
                 return true;
             // The last instruction before 'end' changes it to what 'end' has.
@@ -1066,9 +1067,13 @@ namespace idattd
             seen_all  = 0;
             seen_mine = 0;
             scratch->SetPosition(s);
-            scratch->SetCallReturnCallback(on_call_ret);
-            ICursorView::ReplayResult rr = scratch->ReplayForward(here);    // stop AT the position
-            scratch->SetCallReturnCallback(nullptr, 0);
+            ICursorView::ReplayResult rr;
+            {
+                // The scratch cursor's flags are its owner's.
+                ArmedSweep arm(scratch, scratch->GetReplayFlags());
+                arm.on_call_return(on_call_ret);
+                rr = scratch->ReplayForward(here);      // stop AT the position
+            }
             winStart = s;
             winInsns = (uint64_t)rr.InstructionsExecuted;
 
@@ -1479,14 +1484,13 @@ namespace idattd
         wp.Address    = GuestAddress{ (uint64_t)lo };
         wp.Size       = (uint64_t)(hi - lo);
         wp.AccessMask = DataAccessMask::Write;
-        cur->AddMemoryWatchpoint(wp);
-        cur->SetMemoryWatchpointCallback(on_write);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        cur->SetPosition(TtdPosition::Min);
-
-        cur->ReplayForward(target);
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
+        {
+            ArmedSweep arm(cur.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+            arm.watch(wp);
+            arm.on_watchpoint(on_write);
+            cur->SetPosition(TtdPosition::Min);
+            cur->ReplayForward(target);
+        }
 
         size_t nknown = 0;
         for ( bool b : reg.known )

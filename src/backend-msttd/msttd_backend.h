@@ -4,6 +4,7 @@
 #include "backend-msttd/msttd_trace_open.h"
 #include "core/backend.h"
 #include "backend-msttd/msttd_position.h"
+#include "backend-msttd/msttd_sweep.h"
 
 #include <thread>
 #include <unordered_map>

@@ -2,6 +2,8 @@
 
 #include <condition_variable>
 
+#include <condition_variable>
+
 using namespace TTD;
 using namespace TTD::Replay;
 
@@ -89,6 +91,54 @@ namespace idattd
         worker.join();
         cursor->SetReplayProgressCallback(nullptr, 0);
         return !stopped;
+    }
+
+    ArmedSweep::ArmedSweep(ICursorView *cursor, ReplayFlags flags)
+        : m_cursor(cursor), m_oldEvents(cursor->GetEventMask())
+    {
+        m_cursor->SetReplayFlags(flags);
+    }
+
+    ArmedSweep::ArmedSweep(ICursorView *cursor, ReplayFlags flags, EventMask events)
+        : ArmedSweep(cursor, flags)
+    {
+        m_cursor->SetEventMask(events);
+        m_events = true;
+    }
+
+    bool ArmedSweep::watch(const MemoryWatchpointData &wp)
+    {
+        if ( !m_cursor->AddMemoryWatchpoint(wp) )
+            return false;
+        try
+        {
+            m_watched.push_back(wp);
+        }
+        catch ( ... )
+        {
+            // Not removable later, so not left behind either.
+            m_cursor->RemoveMemoryWatchpoint(wp);
+            return false;
+        }
+        return true;
+    }
+
+    void ArmedSweep::disarm()
+    {
+        if ( !m_armed )
+            return;
+        m_armed = false;
+        if ( m_watchCb )
+            m_cursor->SetMemoryWatchpointCallback(nullptr, 0);
+        if ( m_callRetCb )
+            m_cursor->SetCallReturnCallback(nullptr, 0);
+        if ( m_gapCb )
+            m_cursor->SetGapEventCallback(nullptr, 0);
+        for ( const MemoryWatchpointData &wp : m_watched )
+            m_cursor->RemoveMemoryWatchpoint(wp);
+        m_watched.clear();
+        if ( m_events )
+            m_cursor->SetEventMask(m_oldEvents);
     }
 
     // More workers than this gain little (measured: 16 workers on a 24-thread
