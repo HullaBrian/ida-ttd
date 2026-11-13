@@ -41,16 +41,17 @@ namespace idattd
         return *p == '\0';
     }
 
-    // A path under the Windows directory, as the recording machine wrote it:
-    // "C:\Windows\System32\ntdll.dll", "\SystemRoot\...", with or without a
-    // "\??\" or "\\?\" prefix. Such a module is the OS's own, never packed.
+    // A path under the Windows directory, as the recording machine wrote it
+    // (any drive letter, either slash): "C:\Windows\System32\ntdll.dll",
+    // "\SystemRoot\...", with or without a "\??\" or "\\?\" prefix. Such a
+    // module is the OS's own, never packed or rewritten.
     static bool is_system_path(const char *path)
     {
         if ( path == nullptr )
             return false;
         std::string p = path;
         for ( char &c : p )
-            c = (char)tolower((unsigned char)c);
+            c = c == '/' ? '\\' : (char)tolower((unsigned char)c);
         if ( p.rfind("\\??\\", 0) == 0 || p.rfind("\\\\?\\", 0) == 0 )
             p.erase(0, 4);
         if ( p.rfind("\\systemroot\\", 0) == 0 )
@@ -373,6 +374,12 @@ namespace idattd
     {
         size_t li = load_for(ea, m_now);
         return li != NONE && !is_main_load(li);
+    }
+
+    bool ModuleRegistry::is_system_address(ea_t ea) const
+    {
+        size_t li = load_for(ea, m_now);
+        return li != NONE && is_system_path(m_modules[li].path.c_str());
     }
 
     //=======================================================================

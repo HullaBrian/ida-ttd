@@ -118,6 +118,10 @@ namespace idattd
         // True if 'ea' is in a module other than the analysed binary (library
         // or system code).
         bool is_library_address(ea_t ea) const;
+        // True if 'ea' is in a module loaded from the recording machine's
+        // Windows folder (System32, SysWOW64, WinSxS, ...): system code,
+        // never the program's, and never packed or rewritten.
+        bool is_system_address(ea_t ea) const;
 
         // [start, end) of the function containing 'pc', from its module's
         // exception table, worked out on first use. False outside any

@@ -158,22 +158,6 @@ namespace idattd
 
     // An unconditional jump to an operand (not a ret, which has none): a tail
     // call when it leaves the function.
-    // 'ea' is in a module loaded from the recording machine's Windows folder
-    // (System32, SysWOW64, WinSxS, ...): system code, never the program's.
-    // The path is the recorded one, so any drive letter counts.
-    static bool in_system_module(const ModuleRegistry *modules, ea_t ea)
-    {
-        ea_t lo = 0, hi = 0;
-        if ( modules == nullptr || !modules->range_at(ea, lo, hi) )
-            return false;
-        const ModuleInfo *m = modules->record_at(lo);
-        if ( m == nullptr )
-            return false;
-        qstring p = m->path;
-        p.replace("/", "\\");
-        return p.length() > 11 && p[1] == ':' && strnicmp(p.c_str() + 2, "\\windows\\", 9) == 0;
-    }
-
     static bool is_module_tail_jump(const insn_t &insn)
     {
         if ( (insn.get_canon_feature(PH) & CF_STOP) == 0 )
@@ -668,7 +652,7 @@ namespace idattd
         // 32-bit recording each first stop in an ntdll or kernel32 function
         // replayed the recording for nothing. The program's own modules keep
         // the rebuild: an unpacker writes its payload into its own sections.
-        if ( rhi > rlo && !m_modules->has_function_table(pc) && !in_system_module(m_modules, pc)
+        if ( rhi > rlo && !m_modules->has_function_table(pc) && !m_modules->is_system_address(pc)
           && m_memory->reconstruct(playhead, rlo, rhi) )
             invalidate_dbgmem_contents(rlo, rhi - rlo);
 
