@@ -28,6 +28,7 @@ namespace idattd
     // comes back with 'ran' false and 'cancelled' true.
     //
     // 'show', when given, adds lines under that one while the work runs.
+    // What is shown, and how, is ui/query_view.h's.
     // With log lines, and IDAPython's Qt to show it, a recording window
     // takes the wait box's place: the whole log in a scrolling box, the
     // running time, and Stop (ending the work as Cancel would) and Pause
@@ -53,9 +54,6 @@ namespace idattd
     // gave no reason.
     qstring query_error(TraceManager *mgr, ITraceBackend *backend, const QueryResult &qr,
                         const char *ended, const char *fallback);
-
-    // A running time to the second: "45 s", "3 min 07 s", "2 h 05 min 09 s".
-    qstring clock_text(uint64 ms);
 
     // A query is running (run_query is waiting for it).
     bool query_in_progress();

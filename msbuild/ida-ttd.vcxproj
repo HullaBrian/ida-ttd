@@ -91,6 +91,7 @@
     <ClInclude Include="$(SrcDir)\ui\decompiler.h" />
     <ClInclude Include="$(SrcDir)\ui\icons.hh" />
     <ClInclude Include="$(SrcDir)\ui\names.h" />
+    <ClInclude Include="$(SrcDir)\ui\query_view.h" />
     <ClInclude Include="$(SrcDir)\ui\scope.h" />
     <ClInclude Include="$(SrcDir)\ui\ui.h" />
     <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h" />
@@ -141,6 +142,7 @@
     <ClCompile Include="$(SrcDir)\ui\clipboard.cpp" />
     <ClCompile Include="$(SrcDir)\ui\decompiler.cpp" />
     <ClCompile Include="$(SrcDir)\ui\names.cpp" />
+    <ClCompile Include="$(SrcDir)\ui\query_view.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp" />
     <ClCompile Include="$(SrcDir)\ui\graph_view.cpp" />
     <ClCompile Include="$(SrcDir)\ui\ui_handles.cpp" />

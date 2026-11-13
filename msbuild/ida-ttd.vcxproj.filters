@@ -172,6 +172,9 @@
     <ClInclude Include="$(SrcDir)\ui\names.h">
       <Filter>ui</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\ui\query_view.h">
+      <Filter>ui</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\ui\scope.h">
       <Filter>ui</Filter>
     </ClInclude>
@@ -322,6 +325,9 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\names.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\query_view.cpp">
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\ui\ui_origin.cpp">
