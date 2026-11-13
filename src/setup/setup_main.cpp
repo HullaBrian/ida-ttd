@@ -20,6 +20,7 @@
 // ---------------------------------------------------------------------------
 #include "common/pch.h"
 #include "common/installer_labels.h"
+#include "common/python_eval.h"
 #include <diskio.hpp>
 #include <expr.hpp>
 
@@ -219,8 +220,7 @@ namespace
 
         int idaapi activate(action_activation_ctx_t *) override
         {
-            extlang_object_t py = find_extlang_by_name("Python");
-            if ( py == nullptr || py->eval_snippet == nullptr )
+            if ( !idattd::python_available() )
             {
                 warning("Installing %s needs IDAPython, which is not available.", what);
                 return 1;
@@ -232,7 +232,7 @@ namespace
                        "import ida_ttd_runtime\n"
                        "ida_ttd_runtime.%s()\n", pydir.c_str(), pydir.c_str(), func);
             qstring err;
-            if ( !py->eval_snippet(code.c_str(), &err) )
+            if ( !idattd::eval_py(code.c_str(), &err) )
                 warning("Installing %s failed: %s", what, err.c_str());
             return 1;
         }

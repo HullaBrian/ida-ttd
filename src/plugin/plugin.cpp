@@ -4,6 +4,7 @@
 #include "common/trace_link.h"
 #include "common/installer_labels.h"
 #include "common/symsrv.h"
+#include "common/python_eval.h"
 #include "core/backend_module.h"
 #include "core/backend_registry.h"
 #include "plugin/script_api.h"
@@ -81,22 +82,10 @@ namespace idattd
     // the SDK has no call for. The arguments go as quoted string literals.
     static bool call_qt(const char *fn, std::initializer_list<const char *> args)
     {
-        extlang_object_t py = find_extlang_by_name("Python");
-        if ( py == nullptr || py->eval_snippet == nullptr )
+        if ( !python_available() )
             return false;
-        qstring code;
-        code.sprnt("import ida_ttd_qt\nida_ttd_qt.%s(", fn);
-        bool first = true;
-        for ( const char *a : args )
-        {
-            if ( !first )
-                code.append(", ");
-            first = false;
-            json_str(&code, a);
-        }
-        code.append(")\n");
         qstring err;
-        if ( py->eval_snippet(code.c_str(), &err) )
+        if ( call_py("ida_ttd_qt", fn, args, &err) )
             return true;
         msg("[ida-ttd] ida_ttd_qt.%s failed: %s\n", fn, err.c_str());
         return false;
@@ -131,11 +120,9 @@ namespace idattd
     {
         int idaapi activate(action_activation_ctx_t *) override
         {
-            extlang_object_t py = find_extlang_by_name("Python");
             qstring err;
-            if ( py == nullptr || py->eval_snippet == nullptr
-              || !py->eval_snippet("import ida_ttd_settings\n"
-                                   "ida_ttd_settings.show_editor()\n", &err) )
+            if ( !eval_py("import ida_ttd_settings\n"
+                          "ida_ttd_settings.show_editor()\n", &err) )
                 warning("ida-ttd's settings are changed with "
                         "\"hcli plugin config ida-ttd set KEY VALUE\"%s%s",
                         err.empty() ? "" : "\n\n", err.c_str());
@@ -152,8 +139,7 @@ namespace idattd
     // loaded (so the settings could be read through it).
     static bool register_python_module()
     {
-        extlang_object_t py = find_extlang_by_name("Python");
-        if ( py == nullptr || py->eval_snippet == nullptr )
+        if ( !python_available() )
             return false;
         HMODULE self = nullptr;
         wchar_t buf[MAX_PATH * 2];
@@ -179,7 +165,7 @@ namespace idattd
                    "if '%s' not in sys.path:\n"
                    "    sys.path.append('%s')\n", dir.c_str(), dir.c_str());
         qstring err;
-        if ( !py->eval_snippet(code.c_str(), &err) )
+        if ( !eval_py(code.c_str(), &err) )
             msg("[ida-ttd] could not put %s on IDAPython's path: %s\n", dir.c_str(), err.c_str());
         return true;
     }

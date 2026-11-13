@@ -1,6 +1,7 @@
 // The plugin's graph window: the models it draws, handed to IDAPython as
 // JSON, and the actions it sends back.
 #include "ui/graph_view.h"
+#include "common/python_eval.h"
 
 #include <expr.hpp>
 
@@ -41,8 +42,7 @@ namespace idattd
 
     bool run_python_window(const char *module, const char *call, qstring *err)
     {
-        extlang_object_t py = find_extlang_by_name("Python");
-        if ( py == nullptr || py->eval_snippet == nullptr )
+        if ( !python_available() )
         {
             *err = "no IDAPython";
             return false;
@@ -52,14 +52,13 @@ namespace idattd
         // on every call, without compiling it again on every show.
         qstring code;
         code.sprnt("import ida_ttd_qt\nida_ttd_qt.fresh_module('%s').%s\n", module, call);
-        return py->eval_snippet(code.c_str(), err);
+        return eval_py(code.c_str(), err);
     }
 
 
     bool graph_window_available()
     {
-        extlang_object_t py = find_extlang_by_name("Python");
-        return py != nullptr && py->eval_snippet != nullptr;
+        return python_available();
     }
 
     TWidget *graph_widget(const char *kind)

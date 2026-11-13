@@ -42,14 +42,19 @@
   <!--
     A component of the HCLI package (plugins\ida-ttd\ida-ttd-loader-setup\):
     copies the ttd-loader.dll packaged beside it into $IDAUSR\loaders\ as IDA
-    starts, since HCLI can only install into the plugin folder. One file, no
-    shared sources: it knows nothing about recordings.
+    starts, since HCLI can only install into the plugin folder. It knows
+    nothing about recordings: its only shared sources are the IDAPython
+    helpers its installer actions run through.
   -->
   <ItemGroup>
     <ClInclude Include="$(SrcDir)\common\installer_labels.h" />
+    <ClInclude Include="$(SrcDir)\common\json_str.h" />
+    <ClInclude Include="$(SrcDir)\common\python_eval.h" />
     <ClInclude Include="$(SrcDir)\common\pch.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\json_str.cpp" />
+    <ClCompile Include="$(SrcDir)\common\python_eval.cpp" />
     <ClCompile Include="$(SrcDir)\setup\setup_main.cpp" />
   </ItemGroup>
 

@@ -13,11 +13,23 @@
     <ClInclude Include="$(SrcDir)\common\installer_labels.h">
       <Filter>common</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\json_str.h">
+      <Filter>common</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\common\python_eval.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\pch.h">
       <Filter>common</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\json_str.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\common\python_eval.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\setup\setup_main.cpp">
       <Filter>setup</Filter>
     </ClCompile>

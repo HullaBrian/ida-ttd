@@ -1,5 +1,6 @@
 #include "plugin/settings.h"
 #include "common/symsrv.h"
+#include "common/python_eval.h"
 #include "core/diag.h"
 
 #include <diskio.hpp>
@@ -132,16 +133,15 @@ namespace idattd
     static qstring read_values()
     {
         qstring text;
-        extlang_object_t py = find_extlang_by_name("Python");
-        if ( py == nullptr || py->eval_snippet == nullptr || py->eval_expr == nullptr )
+        if ( !python_available(true) )
             return text;
         qstring err;
-        if ( !py->eval_snippet("import ida_ttd_settings\n", &err) )
+        if ( !eval_py("import ida_ttd_settings\n", &err) )
             return text;
         qstring expr;
         expr.sprnt("ida_ttd_settings.dump('%s')", ALL_KEYS);
         idc_value_t rv;
-        if ( py->eval_expr(&rv, BADADDR, expr.c_str(), &err) && rv.vtype == VT_STR )
+        if ( eval_py_expr(&rv, expr.c_str(), &err) && rv.vtype == VT_STR )
             text = rv.qstr();
         else if ( !err.empty() )
             msg("[ida-ttd] could not read the plugin's settings (%s); using the defaults.\n", err.c_str());
