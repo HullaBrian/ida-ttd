@@ -222,7 +222,7 @@ namespace idattd
         std::stable_sort(order.begin(), order.end(),
                          [&](size_t a, size_t b) { return slots[a].call < slots[b].call; });
         std::atomic<bool> made{ false };
-        msttd_parallel(slots.size(), 8, progress,
+        const bool complete = msttd_parallel(slots.size(), 8, progress,
             [&](size_t begin, size_t end, std::atomic<size_t> &done, const std::atomic<bool> &stop)
         {
             UniqueCursor cur = new_engine_cursor();
@@ -291,7 +291,11 @@ namespace idattd
                     (*out)[i] = value;
             }
         });
-        // Cancelled, the slots not reached are unknown, as before.
+        // Cancelled, no answer is given: the slots not reached would read
+        // as searched and not found. The callers check their own Cancel
+        // before they fall back to anything.
+        if ( !complete )
+            return false;
         return slots.empty() || made.load();
     }
 
