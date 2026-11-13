@@ -2,8 +2,10 @@
 // (and from its forks), as a graph. A node is a recording; double-clicking one
 // switches this IDA to it or opens it in another.
 //
-// Drawn by the plugin's graph window (graph_view.h) where IDAPython is
-// available, else by IDA's graph viewer, which most of this file handles.
+// Drawn by the plugin's graph window (graph_view.h) where IDAPython with
+// PySide6 is available, else by IDA's graph viewer, which most of this file
+// handles. Users without IDAPython, or whose PySide window failed to open,
+// get the viewer, so both stay; both take a node's text from describe().
 //
 // IDA 9.4 bug, worked around in guard_graph(): after a step or register
 // change, IDA updates the current instruction in every graph view as if it
@@ -31,8 +33,8 @@ namespace idattd
         struct Node
         {
             qstring path;
-            qstring text;
-            qstring hint;
+            qstring text;               // IDA's graph viewer: viewer_text()
+            qstring hint;               // both renderers' tooltip
             int     record  = -1;       // index into records; -1 for a recording not forked here
             bool    current = false;    // the one being replayed
             bool    missing = false;    // its file is gone
@@ -71,6 +73,8 @@ namespace idattd
         ForkGraph g_fm;
     }
 
+    static qstring viewer_text(const ForkGraph &fg, const Node &n);
+
     void ForkGraph::rebuild()
     {
         records = load_fork_records(nullptr);
@@ -99,26 +103,89 @@ namespace idattd
         {
             n.current = mgr != nullptr && mgr->is_active() && same_trace_path(n.path, mgr->trace_path());
             n.missing = !qfileexist(n.path.c_str());
-            n.text = qbasename(n.path.c_str());
+        }
+        for ( Node &n : nodes )
+        {
             n.hint = n.path;
             if ( n.record >= 0 )
             {
                 const ForkRecord &r = records[n.record];
-                n.text.cat_sprnt("\nforked at %s\n%s\n%llu instructions", r.at.c_str(), r.changes.c_str(),
-                                 (unsigned long long)r.instructions);
                 char when[64] = {};
                 qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)r.time);
                 n.hint.cat_sprnt("\nforked at %s, %s\nchanges: %s", r.at.c_str(), when, r.changes.c_str());
             }
-            else
-            {
-                n.text.append("\nrecording");
-            }
-            if ( n.current )
-                n.text.append("\n(replaying now)");
-            if ( n.missing )
-                n.text.append("\n(file not found)");
+            n.text = viewer_text(*this, n);
         }
+    }
+
+    // Forks can be made from the recording being replayed now.
+    static bool can_fork_now()
+    {
+        TraceManager *mgr = g_fm.ctx != nullptr ? g_fm.ctx->mgr : nullptr;
+        return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr
+            && mgr->backend()->capabilities().fork;
+    }
+
+    // What a node says, for both renderers: its title, the fork's changes
+    // (as an instruction), comment lines, its kind, and how it is framed.
+    // The menu is the graph window's alone (fork_model).
+    static GraphNode describe(const ForkGraph &fg, const Node &n)
+    {
+        GraphNode g;
+        g.title   = qbasename(n.path.c_str());
+        g.tooltip = n.hint;
+        if ( n.record >= 0 )
+        {
+            const ForkRecord &r = fg.records[n.record];
+            g.code = r.changes;
+            g.lines.push_back(qstring().sprnt("%llu instructions", (unsigned long long)r.instructions));
+            char when[64] = {};
+            qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)r.time);
+            g.lines.push_back(qstring("recorded ") + when);
+            g.badge = "fork";
+        }
+        else
+        {
+            g.lines.push_back("the recording this database was made from");
+            g.badge = "recording";
+        }
+        if ( n.current )
+        {
+            g.badge    = "replaying";
+            g.emphasis = true;
+            if ( can_fork_now() )
+            {
+                const TraceManager::ForkDraft &d = g_fm.ctx->mgr->fork_draft();
+                if ( d.active )
+                    g.lines.push_back(qstring("a fork is being made at ") + format_position(d.at));
+            }
+        }
+        if ( n.missing )
+        {
+            g.badge  = "missing";
+            g.dashed = true;
+            g.lines.push_back("the file is not there any more");
+        }
+        return g;
+    }
+
+    // The node's text in IDA's graph viewer, which has one block of text per
+    // node and no edge labels: the description's lines, its kind as a
+    // comment after the title as the graph window shows it, and the edge's
+    // "forked at" as a line of its own.
+    static qstring viewer_text(const ForkGraph &fg, const Node &n)
+    {
+        const GraphNode g = describe(fg, n);
+        qstring t = g.title;
+        if ( !g.badge.empty() )
+            t.cat_sprnt("  ; %s", g.badge.c_str());
+        if ( n.record >= 0 )
+            t.cat_sprnt("\nforked at %s", fg.records[n.record].at.c_str());
+        if ( !g.code.empty() )
+            t.cat_sprnt("\n%s", g.code.c_str());
+        for ( const qstring &line : g.lines )
+            t.cat_sprnt("\n; %s", line.c_str());
+        return t;
     }
 
     //-----------------------------------------------------------------------
@@ -334,14 +401,6 @@ namespace idattd
         }
     }
 
-    // Forks can be made from the recording being replayed now.
-    static bool can_fork_now()
-    {
-        TraceManager *mgr = g_fm.ctx != nullptr ? g_fm.ctx->mgr : nullptr;
-        return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr
-            && mgr->backend()->capabilities().fork;
-    }
-
     static GraphModel fork_model()
     {
         GraphModel m;
@@ -349,48 +408,18 @@ namespace idattd
         int forks = 0;
         for ( const Node &n : g_fm.nodes )
         {
-            GraphNode g;
-            g.title   = qbasename(n.path.c_str());
-            g.tooltip = n.hint;
+            GraphNode g = describe(g_fm, n);
             if ( n.record >= 0 )
-            {
-                const ForkRecord &r = g_fm.records[n.record];
                 forks++;
-                g.code = r.changes;
-                g.lines.push_back(qstring().sprnt("%llu instructions", (unsigned long long)r.instructions));
-                char when[64] = {};
-                qstrftime64(when, sizeof(when), "%Y-%m-%d %H:%M", (qtime64_t)r.time);
-                g.lines.push_back(qstring("recorded ") + when);
-                g.badge = "fork";
-            }
-            else
+            if ( n.current && can_fork_now() )
             {
-                g.lines.push_back("the recording this database was made from");
-                g.badge = "recording";
-            }
-            if ( n.current )
-            {
-                g.badge    = "replaying";
-                g.emphasis = true;
-                if ( can_fork_now() )
+                g.menu.emplace_back("Fork at the current position", "fork");
+                if ( g_fm.ctx->mgr->fork_draft().active )
                 {
-                    const TraceManager::ForkDraft &d = g_fm.ctx->mgr->fork_draft();
-                    if ( d.active )
-                        g.lines.push_back(qstring("a fork is being made at ") + format_position(d.at));
-                    g.menu.emplace_back("Fork at the current position", "fork");
-                    if ( d.active )
-                    {
-                        g.menu.emplace_back("Record fork...", "forkrecord");
-                        g.menu.emplace_back("Discard fork", "forkdiscard");
-                    }
-                    g.menu.emplace_back("", "");
+                    g.menu.emplace_back("Record fork...", "forkrecord");
+                    g.menu.emplace_back("Discard fork", "forkdiscard");
                 }
-            }
-            if ( n.missing )
-            {
-                g.badge  = "missing";
-                g.dashed = true;
-                g.lines.push_back("the file is not there any more");
+                g.menu.emplace_back("", "");
             }
             if ( !n.current && !n.missing )
             {
