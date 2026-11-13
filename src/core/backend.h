@@ -245,6 +245,9 @@ namespace idattd
         uint64_t checkpoint_interval = 0;   // 0: the backend's default
         bool     elevated = false;          // an administrator's token (new recordings)
         bool     log = false;               // the emulator's log to the output window
+        // The emulator's last lines kept for a recording's wait box
+        // (emulator_log_tail), with or without 'log'.
+        bool     log_tail = false;
     };
 
     // What replaying the recording needs beyond the recording itself.

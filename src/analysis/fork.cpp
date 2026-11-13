@@ -250,6 +250,14 @@ namespace idattd
         if ( full.emulation_root.empty() )
             full.emulation_root = chosen_emulation_root(mgr);
         bool started = false;
+        // As for a new recording (run_record): how long it has run, and
+        // what the emulator last said, whether or not the log also goes to
+        // the output window.
+        full.rec.log_tail = true;
+        QueryShow show;
+        show.elapsed   = true;
+        show.log_lines = 8;
+        clear_emulator_log_tail();
         run_query("Forking the recording: replaying to the position, then recording", [&](ProgressSink *p)
         {
             started = true;
@@ -258,7 +266,7 @@ namespace idattd
             q.ran = result.ok;
             q.cancelled = result.cancelled;
             return q;
-        });
+        }, true, &show);
         // Refused before it ran (another query, a movement), or the session
         // ended during it: the backend's last error is not this fork's.
         if ( !started )
@@ -418,16 +426,20 @@ namespace idattd
         }
         bool started = false;
         // A recording can run for hours with nothing to count towards, so
-        // the box says how long it has run, and with the log on, what the
-        // program is doing.
+        // the box says how long it has run and what the emulator last said
+        // (Sogen's log is a few lines a recording, not one per instruction).
+        // req.rec.log only decides whether the whole log also goes to the
+        // output window.
+        RecordRequest full = req;
+        full.rec.log_tail = true;
         QueryShow show;
         show.elapsed   = true;
-        show.log_lines = req.rec.log ? 8 : 0;
+        show.log_lines = 8;
         clear_emulator_log_tail();
         run_query("Recording the program in Sogen's emulator", [&](ProgressSink *p)
         {
             started = true;
-            result = recorder->record_program(req, p);
+            result = recorder->record_program(full, p);
             QueryResult q;
             q.ran = result.ok;
             q.cancelled = result.cancelled;

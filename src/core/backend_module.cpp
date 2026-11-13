@@ -828,7 +828,11 @@ namespace idattd
         g_tail.clear();
     }
 
-    static void emulator_log(void *, const char *line)
+    // The log callback's context says whether lines also go to the output
+    // window (RecordOptions::log); the wait box's tail always gets them.
+    static char g_log_to_output;
+
+    static void emulator_log(void *ctx, const char *line)
     {
         if ( line == nullptr )
             return;
@@ -839,6 +843,8 @@ namespace idattd
                 g_tail.pop_front();
             g_tail_seq++;
         }
+        if ( ctx != &g_log_to_output )
+            return;
         qstring text;
         text.sprnt("[emulator] %s\n", line);
         backend_log(nullptr, text.c_str());
@@ -858,7 +864,8 @@ namespace idattd
         fs.access_mask    = rec.access_mask;
         fs.checkpoint_interval = rec.checkpoint_interval;
         fs.elevated       = rec.elevated ? 1 : 0;
-        fs.log            = rec.log ? emulator_log : nullptr;
+        fs.log            = rec.log || rec.log_tail ? emulator_log : nullptr;
+        fs.log_ctx        = rec.log ? &g_log_to_output : nullptr;
         return fs;
     }
 

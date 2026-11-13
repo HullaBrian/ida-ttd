@@ -279,8 +279,10 @@ namespace idattd
             "<~N~ew trace:f:1:64::>\n"
             "<~I~nstructions to record, 0 for no limit:D::18::>\n"
             "\n"
-            "<~G~ive the program network access from this position on:C>>\n"
-            "(The replay up to the position stays offline either way.)\n"
+            "<~G~ive the program network access from this position on:C>\n"
+            "<Sogen's ~l~og to the Output window:C>>\n"
+            "(The replay up to the position stays offline either way. The wait box\n"
+            "shows how long the fork has run and the log's last lines.)\n"
             "\n";
         qstring where   = form_text(format_position(req.at));
         qstring changes = form_text(describe_changes(req));
@@ -291,10 +293,11 @@ namespace idattd
         static sval_t count = (sval_t)qmin(settings().fork_instructions, (uint64)INT64_MAX);
         // The sogen_network setting each time: network access is not
         // something to carry over unnoticed from an earlier fork.
-        ushort network = settings().sogen_network ? 1 : 0;
+        // The log starts from the sogen_log setting.
+        ushort checks = (settings().sogen_network ? 1 : 0) | (settings().sogen_log ? 2 : 0);
         for ( ;; )
         {
-            if ( ask_form(form, where.c_str(), changes.c_str(), path, &count, &network) <= 0 )
+            if ( ask_form(form, where.c_str(), changes.c_str(), path, &count, &checks) <= 0 )
                 return 1;
             if ( path[0] == '\0' )
             {
@@ -313,7 +316,8 @@ namespace idattd
         req.note.cat_sprnt("; %s", describe_fork_changes(req).c_str());
 
         ReplaySettings rs = initial_replay_settings(m);
-        rs.rec.network = network != 0;
+        rs.rec.network = (checks & 1) != 0;
+        rs.rec.log     = (checks & 2) != 0;
         ForkResult r;
         for ( ;; )
         {
@@ -507,7 +511,7 @@ namespace idattd
             "<#Let the program reach the real network#~N~etwork access:C>\n"
             "<#The program's token says administrator (high integrity). Its file and registry operations still have only IDA's own rights#Run as a~d~ministrator:C>\n"
             "<#The program sees the date and time recording starts. Off, it starts on 1 January 1970. Replays see the same dates either way#S~t~art at the current date:C>\n"
-            "<#The last lines of Sogen's log while it records, and the whole log in the Output window. Can slow a long recording#Show Sogen's ~l~og:C>>\n"
+            "<#The wait box shows the log's last lines either way. On, the whole log also goes to the Output window#Sogen's ~l~og to the Output window:C>>\n"
             "\n";
         // The last answers this session. The program starts as the database's
         // own executable, the hives as the first folder that has some, and

@@ -114,6 +114,9 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   either way, since the recording's own results stand in for what the
   network answered then. A connection the program had open at the fork's
   position is closed for the fork (it reads as reset by the other end).
+  While a fork records, its wait box shows how long it has run and the last
+  lines of Sogen's log; the dialog's "Sogen's log to the Output window"
+  (the `sogen_log` setting at first) also prints the whole log there.
 - Record a program (TTD > Backends > Record a program with Sogen..., in any
   database): run an executable from its start in Sogen's emulator and record
   it into a new `.sogttd`, without Sogen's own tools. It starts from the
@@ -131,10 +134,10 @@ Microsoft one uses the TTD Replay SDK, the Sogen one Sogen's trace reader.
   emulation root it starts with is the `sogen_emulation_root` setting. The
   output file is named after the program and the time
   (`name-YYYYMMDD-HHMMSS.sogttd`), so recording again makes a new file.
-  While it records, the wait box shows how long it has been running, and
-  with Show Sogen's log (the `sogen_log` setting at first) the log's last
-  lines too; the Output window then has the whole log, and says how long
-  the recording took. The program starts
+  While it records, the wait box shows how long it has been running and
+  the last lines of Sogen's log. With "Sogen's log to the Output window"
+  (the `sogen_log` setting at first) the Output window also gets the whole
+  log; it always says how long the recording took. The program starts
   at the current date and time (otherwise 1 January 1970, the
   `sogen_start_now` setting), so date checks such as certificate validity
   behave as on a real machine; the clock then advances with the
@@ -282,7 +285,7 @@ with its section.
 | | `sogen_record_writes` | `true` | keep memory writes (off: no write queries, strings, buffers or self-modifying code) |
 | | `sogen_record_executes` | `true` | keep instruction fetches (off: no coverage or execute breakpoints) |
 | | `sogen_elevated` | `false` | record programs with an administrator's token: the program sees itself elevated, but its operations on this machine's files keep IDA's rights (forks keep their recording's token) |
-| | `sogen_log` | `false` | print Sogen's emulator log and the program's console output while a fork, scan or recording runs, and the messages sent to services Sogen does not emulate |
+| | `sogen_log` | `false` | print Sogen's emulator log and the program's console output in the Output window while a fork, scan or recording runs, and the messages sent to services Sogen does not emulate (a recording's wait box shows the last lines either way) |
 | | `sogen_start_now` | `true` | start new recordings at the date and time recording begins rather than 1 January 1970; replays and forks see the same dates |
 | Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
 
