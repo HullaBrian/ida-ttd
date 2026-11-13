@@ -232,8 +232,9 @@ namespace idattd
         // got is from a backend that is gone, so callers must keep nothing.
         if ( g_runningStopped )
         {
-            result.ran = false;
-            cancelled  = true;
+            result.ran           = false;
+            result.session_ended = true;
+            cancelled            = true;
         }
         if ( cancelled )
             result.cancelled = true;
@@ -340,7 +341,7 @@ namespace idattd
     qstring query_error(TraceManager *mgr, ITraceBackend *backend, const QueryResult &qr,
                         const char *ended, const char *fallback)
     {
-        if ( mgr == nullptr || !mgr->is_active() || backend == nullptr || mgr->backend() != backend )
+        if ( qr.session_ended || mgr == nullptr || !mgr->is_active() || backend == nullptr )
             return qstring(ended);
         qstring why = !qr.error.empty() ? qr.error : backend->last_error();
         if ( why.empty() )

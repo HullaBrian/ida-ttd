@@ -569,7 +569,7 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            *error = !mgr->is_active() || mgr->backend() != backend
+            *error = qr.session_ended || !mgr->is_active()
                    ? "the replay session ended while the memory map was built"
                    : "the memory map could not be built for this recording (the output window has the details)";
             return false;

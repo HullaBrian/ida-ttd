@@ -373,6 +373,11 @@ namespace idattd
         // call of its own (a cursor read) may have replaced the backend's
         // last error. Empty when it ran, or the backend gave no reason.
         qstring error;
+        // run_query was stopped because its session ended (and with it the
+        // backend): no state of the backend may be read for it any more.
+        // Decided by the session's end itself, not by comparing backend
+        // pointers, which a new recording of the same kind would reuse.
+        bool session_ended = false;
     };
 
     // How a long query reports progress and asks whether to stop. The core

@@ -280,7 +280,7 @@ namespace idattd
             result.ok    = false;
             result.error = "not started: another trace query or a movement is in progress";
         }
-        else if ( !result.ok && (!mgr->is_active() || mgr->backend() != backend) )
+        else if ( !result.ok && (qr.session_ended || !mgr->is_active()) )
         {
             result.error = "the replay session ended during the fork";
         }
