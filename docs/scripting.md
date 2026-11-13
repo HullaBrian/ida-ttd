@@ -46,8 +46,9 @@ with ida_ttd.Recording(r"C:\traces\run.sogttd") as r:   # no debugger at all
     r.breakpoints((0x404000, 8, "w")); r.run()
 ```
 
-Answers come back as Python values: every `"0x..."` string becomes an int,
-memory becomes `bytes`. Positions stay strings in the recording's own syntax
+Answers come back as Python values: numbers become ints (the fields each
+answer lists in its `"_hex"`, so text that happens to read `"0x41"` stays
+text), memory becomes `bytes`. Positions stay strings in the recording's own syntax
 and are passed back as they are. A failure raises `ida_ttd.TtdError` with
 the plugin's reason. Below the classes, `ida_ttd.call(command, *args)` sends
 any command and returns its JSON answer as a dict:
@@ -61,8 +62,13 @@ ida_ttd.call("drv.seek", "f4240")    # 1,000,000: numbers are hex
 
 - **Arguments** are separated by spaces. Write one that contains spaces in
   double quotes, which may also sit inside a word:
-  `registry="C:\Program Files\x"`. Numbers are hex, with or without `0x`.
-- **A trailing `back`** makes a movement go backwards.
+  `registry="C:\Program Files\x"`. Numbers are hex, with or without `0x`,
+  addresses and counts alike (`an.strings 10` is sixteen characters); `0n`
+  marks a decimal one, as in WinDbg (`0n10` is ten).
+- **A trailing `back`** makes a movement go backwards, and `timeout=N`
+  (seconds; a minute by default) bounds how long it waits for the stop. An
+  answer with `"timed_out"` means the replay is still moving. A movement
+  takes no other word: a typo is an error, not some other movement.
 - **Sogen replays** (`an.strings`, `an.buffers`, `an.fork`, `an.forkrecord`)
   take `registry=DIR` (the hives, for a recording made against the host),
   `root=DIR` (the emulation root, where it is elsewhere on this machine),
@@ -71,7 +77,12 @@ ida_ttd.call("drv.seek", "f4240")    # 1,000,000: numbers are hex
   error, so a misspelt option is not silently ignored.
 - **Answers** are JSON objects with `"ok"`; a failure also carries `"error"`.
   Addresses and positions are strings (`"0x..."`, or the backend's own position
-  text), so 64-bit values survive a JSON reader that uses doubles.
+  text), so 64-bit values survive a JSON reader that uses doubles. Each
+  object lists the keys it wrote as `"0x..."` numbers in `"_hex"`.
+- **`drv.open`** answers with a `handle`. One recording is open for `drv.*`
+  at a time: a second `drv.open` closes the first, and a Python `Recording`
+  whose handle is no longer the open one raises instead of driving the new
+  recording.
 - **Lists** stop at a `MAX` argument (default 0x200 entries, written `200`, as
   every number is hex) and say how many there were in `count`.
 
@@ -99,9 +110,9 @@ machinery.
 | Command | |
 | --- | --- |
 | `start [TIMEOUT]` | start the replay this database was made from; wait for the first stop |
-| `step`, `over`, `out`, `run` | each `[back]`; waits for the stop and says where |
-| `runto EA [back]`, `goto POS` | |
-| `wait [TIMEOUT]` | wait for a stop (seconds, hex) |
+| `step`, `over`, `out`, `run` | each `[back] [timeout=N]`; waits for the stop and says where |
+| `runto EA [back] [timeout=N]`, `goto POS [timeout=N]` | |
+| `wait [TIMEOUT]` | wait for a stop (seconds, hex; `timeout=N` also works here and for `start` and `switch`) |
 | `regs`, `read EA [SIZE]`, `segments [MAX]` | what IDA shows |
 | `state` | process state, whether a session is up, where |
 | `stop` | end the session |

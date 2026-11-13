@@ -17,12 +17,16 @@ Open the trace (File > Open, or the MCP's open_database), then:
 
 Each line of the result is "ok" or "FAIL" with the check's name.
 
+The checks go through ida_ttd.py, the Python API scripts use: the movements
+through Session, a recording without the debugger through Recording, and
+every other command through ida_ttd.raw() and py(), so the API's quoting
+and its number conversion are tested with the plugin.
+
 On a Sogen recording, run_sogen() also checks the Sogen-only commands
 (syscalls, self-modifying code, and, when the recording carries its registry
 hives or a folder of them is given, recovered strings and a fork); see its
 docstring.
 """
-import json
 import os
 import time
 
@@ -33,9 +37,13 @@ import ida_segment
 import idautils
 import idc
 
+import ida_ttd
+
 
 def T(cmd):
-    return json.loads(idc.eval_idc('ttd(%s)' % json.dumps(cmd)))
+    """One command line, answered as ida_ttd's classes see it: failures are
+    returned (ok false), not raised, and numbers are ints."""
+    return ida_ttd.py(ida_ttd.raw(cmd))
 
 
 def sample_addresses():
@@ -98,44 +106,51 @@ def run():
             fails.append(name)
 
     def pc(r):
-        return int(r["pc"], 16) if r.get("pc") else None
+        return r.get("pc")
 
+    # The movements through the Python API's Session.
+    S = ida_ttd.Session()
     t0 = time.time()
-    r = T("start B4")
+    r = S.start(timeout=0xB4)
     chk("start", r.get("ok") and r.get("process_state") == -1, r.get("pos"))
-    r = T("runto %X" % A["store"])
+    r = S.run_to(A["store"])
     chk("runto the store", pc(r) == A["store"], r.get("pos"))
-    chk("old value before it", T("read %X 8" % G).get("bytes") == "1111111111111111")
-    r = T("step")
-    chk("step", pc(r) == A["next"])
-    chk("new value after it", T("read %X 8" % G).get("bytes") == "2222222222222222")
-    r = T("step back")
+    chk("old value before it", S.read(G, 8) == bytes.fromhex("11" * 8))
+    r = S.step()
+    chk("step", pc(r) == A["next"] and S.pc == A["next"])
+    chk("new value after it", S.read(G, 8) == bytes.fromhex("22" * 8))
+    r = S.step(back=True)
     chk("step back", pc(r) == A["store"])
+    chk("registers as ints", isinstance(S.reg("rip" if inf_64() else "eip"), int))
 
-    r = T("runto %X back" % A["call"])
+    r = S.run_to(A["call"], back=True)
     chk("runto backwards", pc(r) == A["call"])
     call_pos = r.get("pos")
-    r = T("over")
+    r = S.step_over()
     chk("step over a call", pc(r) == A["after_call"])
-    r = T("over back")
+    r = S.step_over(back=True)
     chk("step back over the call", pc(r) == A["call"] and r.get("pos") == call_pos, (r.get("pos"), r.get("pc")))
 
-    T("runto %X" % A["store"])
-    r = T("out")
+    S.run_to(A["store"])
+    r = S.step_out(timeout=0x3C)
     chk("step out of main", pc(r) == A["crt_next"], r.get("pc"))
-    r = T("step")
+    r = S.step()
     chk("step after it", pc(r) == A["crt_next2"], r.get("pc"))
     # The CRT's entry tail-jumps to the function that called main, so the call
     # that entered its frame is the system's call of the entry point.
-    r = T("out back")
+    r = S.step_out(back=True)
     lp = pc(r) or 0
     image_end = max(idc.get_segm_end(s) for s in idautils.Segments() if B <= s < B + 0x100000)
     chk("step out backwards lands on a call outside the image",
         not (B <= lp < image_end) and idc.print_insn_mnem(lp) == "call", r.get("pc"))
-    r = T("runto %X" % A["main"])
+    r = S.run_to(A["main"])
     chk("runto main", pc(r) == A["main"])
-    r = T("out back")
+    r = S.step_out(back=True)
     chk("step out backwards from main's entry lands on the call", pc(r) == A["crt_call"], r.get("pc"))
+
+    # A typo in a movement is refused, not read as some other movement.
+    r = T("runto %X bakc" % A["main"])
+    chk("an unknown word is refused", not r.get("ok") and "bakc" in r.get("error", ""), r.get("error"))
 
     # A write breakpoint on the global, as a user sets one: it stops on the
     # store itself, running forward from main and backward from past it.
@@ -169,12 +184,35 @@ def run():
     a = T("an.memmap 4")
     chk("memory map", a.get("changes", 0) > 50, a.get("changes"))
 
+    # The recording again without the debugger, through Recording; a second
+    # one supersedes the first, which must then refuse to go on.
+    trace = T("state").get("trace", "")
+    if trace:
+        first = ida_ttd.Recording(trace)
+        first.seek("first")
+        p0 = first.position
+        first.step()
+        chk("a Recording moves", first.position != p0, (p0, first.position))
+        second = ida_ttd.Recording(trace)
+        try:
+            first.position
+            chk("an older Recording refuses after a newer one opens", False)
+        except ida_ttd.TtdError:
+            chk("an older Recording refuses after a newer one opens", True)
+        second.close()
+        first.close()
+
     r = T("state")
     chk("still responsive", r.get("session") and r.get("process_state") == -1)
     r = T("stop")
     chk("stop", r.get("process_state") == 0, r.get("process_state"))
     res.append("%.1f s, %d failed" % (time.time() - t0, len(fails)))
     return res
+
+
+def inf_64():
+    import ida_ida
+    return ida_ida.inf_is_64bit()
 
 
 def run_sogen(registry=None, host=False, fork_path=None):
@@ -264,7 +302,7 @@ def run_sogen(registry=None, host=False, fork_path=None):
         sw = T('switch "%s"' % path2)
         chk("switching replays the fork in this database",
             sw.get("ok") and os.path.normcase(sw.get("trace", "")) == os.path.normcase(path2)
-            and sw.get("pc") and int(sw["pc"], 16) == A["store"]
+            and sw.get("pc") == A["store"]
             and ida_dbg.get_reg_val("RAX") == 0x1234 and idc.read_dbg_memory(G, 8) == bytes.fromhex("33" * 8),
             (sw.get("trace"), sw.get("pc"), sw.get("error")))
         sw = T('switch "%s"' % parent)

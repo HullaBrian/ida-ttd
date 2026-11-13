@@ -33,7 +33,6 @@ plugin loaded, exec() this file's source and call ensure_loaded().
 """
 
 import json
-import re
 
 import ida_expr
 import ida_idaapi
@@ -105,30 +104,24 @@ def h(value):
     return int(value, 16)
 
 
-_HEX = re.compile(r"^0x[0-9a-fA-F]+$")
-
-
-# Keys whose values are free text (recovered strings, names, paths, notes,
-# messages), kept as they are even when one reads "0x41": a string the
-# program wrote is not a number. Every other "0x..." value is an address or
-# a number the plugin wrote in hex.
-_TEXT_KEYS = frozenset((
-    "text", "preview", "name", "path", "file", "dir", "comment", "note", "notice",
-    "error", "why", "command", "commands", "trace", "main_module", "backend_name",
-    "label", "title", "status", "filter", "symbol_server", "emulation_root",
-    "registry_folder", "registry_hint", "chosen_root", "event_log", "windows_version",
-))
-
-
 def py(value):
-    """An answer with every "0x..." string turned into an int, recursively,
-    except under keys that hold free text (_TEXT_KEYS)."""
+    """An answer with its numbers as ints, recursively. The plugin writes a
+    number as a "0x..." string and lists its key in the object's "_hex", so
+    only those are converted: text that happens to read "0x41" (a string the
+    program wrote, a name) stays text. "_hex" itself is dropped."""
     if isinstance(value, dict):
-        return {k: v if k in _TEXT_KEYS else py(v) for k, v in value.items()}
+        hexed = set(value.get("_hex", ()))
+        out = {}
+        for k, v in value.items():
+            if k == "_hex":
+                continue
+            if k in hexed:
+                out[k] = [int(x, 16) for x in v] if isinstance(v, list) else int(v, 16)
+            else:
+                out[k] = py(v)
+        return out
     if isinstance(value, list):
         return [py(v) for v in value]
-    if isinstance(value, str) and _HEX.match(value):
-        return int(value, 16)
     return value
 
 
@@ -139,7 +132,11 @@ def _bytes(text):
 
 
 def _kinds(kinds):
-    return "".join(k for k in kinds.lower() if k in "rwx") or "rw"
+    """Access kinds as the plugin takes them: any of "r", "w", "x"."""
+    k = kinds.lower()
+    if not k or any(c not in "rwx" for c in k):
+        raise ValueError("access kinds are the letters r, w and x: %r" % kinds)
+    return k
 
 
 def _record_options(net, checkpoint_interval, access, elevated, log):
@@ -195,8 +192,9 @@ class Session(object):
 
     # ---- state and movement ----------------------------------------------
     def start(self, timeout=120):
-        """Start the replay (if it is not running) and wait for the first stop."""
-        return py(call("start", timeout))
+        """Start the replay and wait for the first stop. Fails when a
+        debugging session is already running."""
+        return py(call("start", "timeout=%X" % timeout))
 
     def stop(self):
         """End the session."""
@@ -214,28 +212,34 @@ class Session(object):
     def pc(self):
         return h(call("state")["pc"])
 
-    def _move(self, what, back, *args):
-        return py(call(what, *(list(args) + (["back"] if back else []))))
+    # Each movement waits for the stop, 'timeout' seconds at most (the
+    # answer then has "timed_out", and the replay is still moving).
+    def _move(self, what, back, timeout, *args):
+        words = list(args) + (["back"] if back else [])
+        if timeout is not None:
+            words.append("timeout=%X" % timeout)
+        return py(call(what, *words))
 
-    def step(self, back=False):
-        return self._move("step", back)
+    def step(self, back=False, timeout=None):
+        return self._move("step", back, timeout)
 
-    def step_over(self, back=False):
-        return self._move("over", back)
+    def step_over(self, back=False, timeout=None):
+        return self._move("over", back, timeout)
 
-    def step_out(self, back=False):
-        return self._move("out", back)
+    def step_out(self, back=False, timeout=None):
+        return self._move("out", back, timeout)
 
-    def run(self, back=False):
+    def run(self, back=False, timeout=None):
         """To the next breakpoint, or the edge of the recording."""
-        return self._move("run", back)
+        return self._move("run", back, timeout)
 
-    def run_to(self, ea, back=False):
-        return self._move("runto", back, ea)
+    def run_to(self, ea, back=False, timeout=None):
+        return self._move("runto", back, timeout, ea)
 
-    def goto(self, position):
+    def goto(self, position, timeout=None):
         # A position is passed as written: Sogen's are decimal step counts.
-        return py(call("goto", str(position)))
+        words = [str(position)] + ([] if timeout is None else ["timeout=%X" % timeout])
+        return py(call("goto", *words))
 
     # ---- what is there -----------------------------------------------------
     def regs(self):
@@ -341,9 +345,21 @@ class Recording(object):
     to move and read at, and the backend's queries. One at a time; close() it,
     or use it as a context manager."""
 
+    # The handle of the recording drv.* drives now: opening another closes
+    # this one in the plugin, so an older object must refuse to go on.
+    _current = None
+
     def __init__(self, path, backend=None):
         args = [path] + ([backend] if backend else [])
         self.info = py(call("drv.open", *args))
+        self._handle = self.info.get("handle")
+        Recording._current = self._handle
+
+    def _call(self, command, *args):
+        if self._handle is None or Recording._current != self._handle:
+            raise TtdError("%s: this Recording was closed, or another one was opened "
+                           "since (one at a time)" % command)
+        return call(command, *args)
 
     def __enter__(self):
         return self
@@ -352,36 +368,40 @@ class Recording(object):
         self.close()
 
     def close(self):
-        call("drv.close")
+        """Close it; closing one already closed, or superseded, does nothing."""
+        if self._handle is not None and Recording._current == self._handle:
+            call("drv.close")
+            Recording._current = None
+        self._handle = None
 
     # ---- the cursor --------------------------------------------------------
     def where(self):
         """The cursor: position, thread, pc, sp."""
-        return py(call("drv.pos"))
+        return py(self._call("drv.pos"))
 
     @property
     def position(self):
-        return call("drv.pos")["pos"]
+        return self._call("drv.pos")["pos"]
 
     def seek(self, position):
         """A position, or "first" / "last"."""
-        return py(call("drv.seek", str(position)))
+        return py(self._call("drv.seek", str(position)))
 
     def step(self, back=False):
-        return py(call("drv.step", *(["back"] if back else [])))
+        return py(self._call("drv.step", *(["back"] if back else [])))
 
     def step_over(self, back=False):
-        return py(call("drv.over", *(["back"] if back else [])))
+        return py(self._call("drv.over", *(["back"] if back else [])))
 
     def step_out(self, back=False):
-        return py(call("drv.out", *(["back"] if back else [])))
+        return py(self._call("drv.out", *(["back"] if back else [])))
 
     def run(self, back=False):
         """To a breakpoint set with breakpoints(), or the edge."""
-        return py(call("drv.run", *(["back"] if back else [])))
+        return py(self._call("drv.run", *(["back"] if back else [])))
 
     def run_to(self, ea, back=False):
-        return py(call("drv.runto", ea, *(["back"] if back else [])))
+        return py(self._call("drv.runto", ea, *(["back"] if back else [])))
 
     def breakpoints(self, *bps):
         """Replace the breakpoints: addresses, or (ea, size, "rwx") tuples."""
@@ -391,40 +411,40 @@ class Recording(object):
                 args.append("%X:%X:%s" % (b[0], b[1], _kinds(b[2])))
             else:
                 args.append(_arg(b))
-        return py(call("drv.bp", *args))
+        return py(self._call("drv.bp", *args))
 
     def regs(self):
-        return py(call("drv.regs")["regs"])
+        return py(self._call("drv.regs")["regs"])
 
     def read(self, ea, size=0x40):
         """Memory at the cursor; bytes the recording does not have read as 0."""
-        return _bytes(call("drv.read", ea, size)["bytes"])
+        return _bytes(self._call("drv.read", ea, size)["bytes"])
 
     def instructions(self, n=16):
-        return py(call("drv.insns", n)["instructions"])
+        return py(self._call("drv.insns", n)["instructions"])
 
     # ---- the recording -------------------------------------------------------
     def modules(self):
-        return py(call("drv.modules")["modules"])
+        return py(self._call("drv.modules")["modules"])
 
     def threads(self, live=False):
-        return py(call("drv.threads", *(["live"] if live else []))["threads"])
+        return py(self._call("drv.threads", *(["live"] if live else []))["threads"])
 
     def timeline(self, limit=10000):
-        return py(call("drv.timeline", limit)["events"])
+        return py(self._call("drv.timeline", limit)["events"])
 
     def accesses(self, lo, hi=None, kinds="rw", limit=10000):
         hi = lo + 1 if hi is None else hi
-        return py(call("drv.accesses", lo, hi, _kinds(kinds), limit)["accesses"])
+        return py(self._call("drv.accesses", lo, hi, _kinds(kinds), limit)["accesses"])
 
     def calls_to(self, ea, limit=10000):
-        return py(call("drv.calls", ea, limit)["calls"])
+        return py(self._call("drv.calls", ea, limit)["calls"])
 
     def syscalls(self, limit=100000):
-        return py(call("drv.syscalls", limit)["syscalls"])
+        return py(self._call("drv.syscalls", limit)["syscalls"])
 
     def exceptions(self):
-        return py(call("drv.exceptions")["exceptions"])
+        return py(self._call("drv.exceptions")["exceptions"])
 
     def memory_changes(self, limit=100000):
-        return py(call("drv.map", limit)["changes"])
+        return py(self._call("drv.map", limit)["changes"])

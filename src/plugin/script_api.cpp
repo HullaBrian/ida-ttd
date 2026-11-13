@@ -117,10 +117,25 @@ namespace idattd
             j.sprnt("%lld", (long long)v);
             return raw(key, j);
         }
+        // A number written as a "0x..." string (JSON numbers lose 64-bit
+        // values in many parsers). Its key is listed in the object's "_hex",
+        // which is how ida_ttd.py's py() knows to make it an int: a text
+        // field that happens to read "0x41" stays text.
         JObj &hex(const char *key, uint64_t v)
         {
             qstring j;
             j.sprnt("\"0x%llX\"", (unsigned long long)v);
+            mark_hex(key);
+            return raw(key, j);
+        }
+        // An array of such numbers, listed in "_hex" the same way.
+        JObj &hex_list(const char *key, const uint64_t *v, size_t n)
+        {
+            qstring j = "[";
+            for ( size_t i = 0; i < n; i++ )
+                j.cat_sprnt("%s\"0x%llX\"", i == 0 ? "" : ",", (unsigned long long)v[i]);
+            j.append(']');
+            mark_hex(key);
             return raw(key, j);
         }
         JObj &boolean(const char *key, bool v) { return raw(key, qstring(v ? "true" : "false")); }
@@ -128,13 +143,32 @@ namespace idattd
         {
             qstring s = "{";
             s.append(m_s);
+            if ( !m_hexKeys.empty() )
+            {
+                s.append(m_s.empty() ? "\"_hex\":[" : ",\"_hex\":[");
+                for ( size_t i = 0; i < m_hexKeys.size(); i++ )
+                {
+                    if ( i != 0 )
+                        s.append(',');
+                    json_escape(&s, m_hexKeys[i].c_str());
+                }
+                s.append(']');
+            }
             s.append('}');
             return s;
         }
 
     private:
         void sep() { if ( !m_s.empty() ) m_s.append(','); }
+        void mark_hex(const char *key)
+        {
+            for ( const qstring &k : m_hexKeys )
+                if ( k == key )
+                    return;
+            m_hexKeys.push_back(key);
+        }
         qstring m_s;
+        std::vector<qstring> m_hexKeys;
     };
 
     class JArr
@@ -189,18 +223,28 @@ namespace idattd
         return out;
     }
 
+    // Every number a command takes is hex, with or without "0x", as IDA and
+    // WinDbg show addresses; "0n" marks a decimal one, as in WinDbg ("0n10"
+    // is ten). One rule for addresses and counts alike: "an.strings 10" is
+    // sixteen characters.
     static bool parse_u64(const qstring &s, uint64_t *out)
     {
         const char *p = s.c_str();
+        int base = 16;
         if ( p[0] == '0' && (p[1] == 'x' || p[1] == 'X') )
             p += 2;
+        else if ( p[0] == '0' && (p[1] == 'n' || p[1] == 'N') )
+        {
+            p += 2;
+            base = 10;
+        }
         // Reject what strtoull would accept but is no number here: leading
         // blanks, a sign ("-1" as 0xFFFF...), overflow.
-        if ( !isxdigit((unsigned char)*p) )
+        if ( base == 16 ? !isxdigit((unsigned char)*p) : !isdigit((unsigned char)*p) )
             return false;
         char *end = nullptr;
         errno = 0;
-        *out = strtoull(p, &end, 16);
+        *out = strtoull(p, &end, base);
         return end != nullptr && *end == '\0' && errno != ERANGE;
     }
 
@@ -239,24 +283,71 @@ namespace idattd
             return x;
         }
         uint64_t u64_or(size_t i, uint64_t dflt) const { return i < count() ? u64(i) : dflt; }
-        // A "back", "backward" or "backwards" anywhere reverses a movement.
+        static bool is_back(const qstring &w)
+        {
+            return w == "back" || w == "backward" || w == "backwards";
+        }
+        // A "back", "backward" or "backwards" after the positional arguments
+        // reverses a movement.
         bool back() const
         {
             for ( size_t i = 1; i < v.size(); i++ )
-                if ( v[i] == "back" || v[i] == "backward" || v[i] == "backwards" )
+                if ( is_back(v[i]) )
                     return true;
             return false;
         }
+        // The value of a "name=VALUE" word, or nullptr.
+        const char *option(const char *name) const
+        {
+            const size_t n = qstrlen(name);
+            for ( size_t i = 1; i < v.size(); i++ )
+                if ( v[i].length() > n && v[i][n] == '=' && strneq(v[i].c_str(), name, n) )
+                    return v[i].c_str() + n + 1;
+            return nullptr;
+        }
+        // Refuse any word after the first 'positional' arguments that is
+        // not one of 'words' (a flag, or "name=" for an option): a typo
+        // ("runto 401000 bakc") must not quietly do something else.
+        void only(size_t positional, std::initializer_list<const char *> words) const
+        {
+            for ( size_t i = positional + 1; i < v.size(); i++ )
+            {
+                bool known = false;
+                for ( const char *w : words )
+                {
+                    const size_t n = qstrlen(w);
+                    known = n != 0 && w[n - 1] == '='
+                          ? strneq(v[i].c_str(), w, n)
+                          : v[i] == w;
+                    if ( known )
+                        break;
+                }
+                if ( !known )
+                    fail("'%s': unknown word '%s'; see 'help'", v[0].c_str(), v[i].c_str());
+            }
+        }
     };
 
-    // An "rwx"-style word as access bits. The backend ABI and the analyses
-    // number the kinds differently, so the caller supplies the bits.
+    // An "rwx"-style word as access bits: any of the letters r, w and x, at
+    // least one, nothing else (so "an.search LO HI 50", a MAX where the kinds
+    // go, is refused rather than read as no kinds). The backend ABI and the
+    // analyses number the kinds differently, so the caller supplies the bits.
     static uint8_t rwx_mask(const qstring &k, uint8_t r, uint8_t w, uint8_t x)
     {
         uint8_t m = 0;
-        if ( k.find('r') != qstring::npos ) m |= r;
-        if ( k.find('w') != qstring::npos ) m |= w;
-        if ( k.find('x') != qstring::npos ) m |= x;
+        for ( size_t i = 0; i < k.length(); i++ )
+        {
+            switch ( k[i] )
+            {
+                case 'r': m |= r; break;
+                case 'w': m |= w; break;
+                case 'x': m |= x; break;
+                default:
+                    fail("'%s': access kinds are the letters r, w and x", k.c_str());
+            }
+        }
+        if ( m == 0 )
+            fail("'%s': name at least one of r, w and x", k.c_str());
         return m;
     }
 
@@ -298,22 +389,7 @@ namespace idattd
         }
         else if ( t.starts_with("access=") )
         {
-            uint32_t mask = 0;
-            const qstring kinds = t.substr(7);
-            for ( size_t i = 0; i < kinds.length(); i++ )
-            {
-                switch ( kinds[i] )
-                {
-                    case 'r': mask |= ITTD_ACCESS_READ;  break;
-                    case 'w': mask |= ITTD_ACCESS_WRITE; break;
-                    case 'x': mask |= ITTD_ACCESS_EXEC;  break;
-                    default:
-                        fail("'%s': access= takes the letters r, w and x", t.c_str());
-                }
-            }
-            if ( mask == 0 )
-                fail("'%s': name at least one of r, w and x", t.c_str());
-            o->access_mask = mask;
+            o->access_mask = rwx_mask(t.substr(7), ITTD_ACCESS_READ, ITTD_ACCESS_WRITE, ITTD_ACCESS_EXEC);
         }
         else
             return false;
@@ -361,6 +437,10 @@ namespace idattd
         CursorPtr      cursor;
         std::unique_ptr<INavigator> nav;
         qstring        path;
+        // Counts drv.open calls. A script holding an older handle (a second
+        // Recording in Python closed the first) is told so rather than
+        // driving the newer recording by mistake.
+        uint64_t       handle = 0;
 
         void close()
         {
@@ -465,7 +545,8 @@ namespace idattd
             fail("%s opened the recording but made no cursor", id.c_str());
         }
         g_drv.cursor->seek(b->info().first);
-        out.str("backend", b->id());
+        g_drv.handle++;
+        out.str("backend", b->id()).num("handle", (int64_t)g_drv.handle);
     }
 
     static void cmd_drv_info(const Args &, JObj &out)
@@ -818,12 +899,29 @@ namespace idattd
             fail("no replay session is running; use 'start'");
     }
 
-    // Wait for the debugger to stop again, and say where.
-    static void wait_stop(const Args &a, size_t timeout_arg, JObj &out)
+    // How long to wait for a stop: "timeout=N" seconds anywhere, else the
+    // positional argument 'positional' when the command has one (start,
+    // wait and switch take it bare), else a minute.
+    static int timeout_of(const Args &a, size_t positional = SIZE_MAX)
     {
-        // Seconds, hex like every number. Capped at a day: a cast alone would
-        // turn a large value negative, which IDA reads as "wait forever".
-        int timeout = (int)qmin(a.u64_or(timeout_arg, 0x3C), uint64_t(86400));
+        uint64_t s = 0x3C;
+        if ( const char *t = a.option("timeout") )
+        {
+            if ( !parse_u64(t, &s) )
+                fail("'timeout=%s': the timeout is a number of seconds (hex, or 0n for decimal)", t);
+        }
+        else if ( positional != SIZE_MAX && positional < a.count() )
+        {
+            s = a.u64(positional);
+        }
+        // Capped at a day: a cast alone would turn a large value negative,
+        // which IDA reads as "wait forever".
+        return (int)qmin(s, uint64_t(86400));
+    }
+
+    // Wait for the debugger to stop again, and say where.
+    static void wait_stop(int timeout, JObj &out)
+    {
         // WFNE_SILENT: a script has nobody to answer a modal box.
         dbg_event_code_t code = wait_for_next_event(WFNE_SUSP | WFNE_SILENT, timeout);
         out.num("event", code);
@@ -865,18 +963,26 @@ namespace idattd
         // No dialogs from a script: a modal box (the recording moved, the
         // debugger cannot be selected) would hang the caller.
         qstring err;
+        a.only(1, { "timeout=" });
+        const int timeout = timeout_of(a, 0);
         if ( !g_plugin->start_trace_session(&err) )
             fail("%s", err.c_str());
-        wait_stop(a, 0, out);
+        wait_stop(timeout, out);
     }
 
-    static void cmd_wait(const Args &a, JObj &out) { wait_stop(a, 0, out); }
+    static void cmd_wait(const Args &a, JObj &out)
+    {
+        a.only(1, { "timeout=" });
+        wait_stop(timeout_of(a, 0), out);
+    }
 
     // switch PATH [TIMEOUT]: end any session and replay PATH in this
     // database, as the Fork manager's switch does but without its timer.
     static void cmd_switch(const Args &a, JObj &out)
     {
         qstring path = a.at(0);
+        a.only(2, { "timeout=" });
+        const int timeout = timeout_of(a, 1);
         // Before ending anything: a mistyped path must not cost the session.
         if ( !qfileexist(path.c_str()) )
             fail("there is no recording at %s", path.c_str());
@@ -889,11 +995,7 @@ namespace idattd
             fail("the running session did not end");
         if ( !g_plugin->start_trace_at(path.c_str(), true) )
             fail("the replay of %s did not start (see the output window)", path.c_str());
-        Args rest;
-        rest.v.push_back(a.v[0]);
-        for ( size_t i = 1; i < a.count(); i++ )
-            rest.v.push_back(a.at(i));
-        wait_stop(rest, 0, out);
+        wait_stop(timeout, out);
         out.str("trace", mgr().trace_path());
     }
 
@@ -911,39 +1013,45 @@ namespace idattd
     {
         need_session();
         const qstring &c = a.v[0];
-        bool back = a.back();
+        // runto takes its address first; every movement takes a direction
+        // and a timeout, and nothing else.
+        a.only(c == "runto" ? 1 : 0, { "back", "backward", "backwards", "timeout=" });
+        const bool back = a.back();
+        const int timeout = timeout_of(a);
         if ( c == "step" )
             back ? request_step_into_backwards() : request_step_into();
         else if ( c == "over" )
             back ? request_step_over_backwards() : request_step_over();
         else if ( c == "out" )
         {
-            if ( back ) { mgr().request_step_out_backward(); wait_stop(a, 99, out); return; }
+            if ( back ) { mgr().request_step_out_backward(); wait_stop(timeout, out); return; }
             request_step_until_ret();
         }
         else if ( c == "run" )
         {
-            if ( back ) { mgr().request_run(false); wait_stop(a, 99, out); return; }
+            if ( back ) { mgr().request_run(false); wait_stop(timeout, out); return; }
             request_continue_process();
         }
         else if ( c == "runto" )
         {
             ea_t ea = (ea_t)a.u64(0);
             back ? mgr().request_run_to_cursor_backward(ea) : mgr().request_run_to_cursor_forward(ea);
-            wait_stop(a, 99, out);
+            wait_stop(timeout, out);
             return;
         }
         run_requests();
-        wait_stop(a, 99, out);
+        wait_stop(timeout, out);
     }
 
     static void cmd_goto(const Args &a, JObj &out)
     {
         need_session();
+        a.only(1, { "timeout=" });
+        const int timeout = timeout_of(a);
         mgr().set_next_position(position_arg(a.at(0)));
         request_continue_process();
         run_requests();
-        wait_stop(a, 99, out);
+        wait_stop(timeout, out);
     }
 
     static void cmd_regs(const Args &, JObj &out)
@@ -1148,16 +1256,7 @@ namespace idattd
             o.str("pos", format_position(v[i].pos)).num("tid", v[i].tid)
              .hex("number", v[i].number).str("name", v[i].name).hex("result", v[i].result);
             if ( i < args.size() && args[i].has_value() )
-            {
-                JArr av;
-                for ( uint64_t x : *args[i] )
-                {
-                    qstring t;
-                    t.sprnt("\"0x%llX\"", (unsigned long long)x);
-                    av.add(t);
-                }
-                o.raw("args", av.done());
-            }
+                o.hex_list("args", args[i]->data(), args[i]->size());
             arr.add(o.done());
         }
         out.boolean("cancelled", cancelled).num("count", (int64_t)v.size()).raw("syscalls", arr.done());
@@ -2045,18 +2144,18 @@ namespace idattd
     static void cmd_settings(const Args &, JObj &out);
 
     static const Command g_commands[] = {
-        { "help",           cmd_help,           "this list" },
+        { "help",           cmd_help,           "this list; every number is hex (0x optional), 0n10 is decimal ten" },
         { "state",          cmd_state,          "the debugger and session state" },
         { "backends",       cmd_backends,       "the backends loaded, and the folders they came from" },
         { "settings",       cmd_settings,       "the plugin's settings, as it holds them" },
-        { "start",          cmd_start,          "[TIMEOUT] start the replay for this database and wait for the first stop" },
-        { "wait",           cmd_wait,           "[TIMEOUT] wait for the debugger to stop" },
-        { "step",           cmd_move,           "[back] one instruction" },
-        { "over",           cmd_move,           "[back] step over" },
-        { "out",            cmd_move,           "[back] step out" },
-        { "run",            cmd_move,           "[back] to a breakpoint or the edge of the trace" },
-        { "runto",          cmd_move,           "EA [back] run to an address" },
-        { "goto",           cmd_goto,           "POS travel to a position" },
+        { "start",          cmd_start,          "[TIMEOUT|timeout=N] start the replay for this database and wait for the first stop" },
+        { "wait",           cmd_wait,           "[TIMEOUT|timeout=N] wait for the debugger to stop" },
+        { "step",           cmd_move,           "[back] [timeout=N] one instruction" },
+        { "over",           cmd_move,           "[back] [timeout=N] step over" },
+        { "out",            cmd_move,           "[back] [timeout=N] step out" },
+        { "run",            cmd_move,           "[back] [timeout=N] to a breakpoint or the edge of the trace" },
+        { "runto",          cmd_move,           "EA [back] [timeout=N] run to an address" },
+        { "goto",           cmd_goto,           "POS [timeout=N] travel to a position" },
         { "regs",           cmd_regs,           "the registers IDA shows" },
         { "read",           cmd_read,           "EA [SIZE] debugger memory, as IDA reads it" },
         { "segments",       cmd_segments,       "[MAX] the segments, debugger ones included" },
@@ -2076,14 +2175,14 @@ namespace idattd
         { "ui.graphact",    cmd_ui_graphact,    "KIND NODE ACTION run a graph node's action (NODE in hex, as every number)" },
         { "an.inputs",      cmd_an_inputs,      "[POS] the values the instruction about to run there read" },
         { "an.autocalls",   cmd_an_autocalls,   "EA resolve indirect calls in the function there, as a stop does automatically" },
-        { "an.decode",      cmd_an_decode,      "[MAX] decode every syscall's arguments as the Syscalls window does (not saved), with where the time went" },
+        { "an.decode",      cmd_an_decode,      "[MAX] [file=PATH] [saved] decode every syscall's arguments as the Syscalls window does (not saved), with where the time went; file= writes every row, saved: the database's rows" },
         { "an.syscalls",    cmd_an_syscalls,    "[MAX] the recording's syscalls, with arguments" },
         { "an.selfmod",     cmd_an_selfmod,     "[MAX] code the program wrote and then ran" },
         { "an.calltree",    cmd_an_calltree,    "[MAX] the calls the function at the playhead made in this run of it" },
         { "an.registry",    cmd_an_registry,    "where the recording's registry hives are looked for, and what each place holds" },
-        { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [strict] [host] strings recovered by a replay" },
-        { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [strict] [host] buffers recovered by a replay" },
-        { "switch",         cmd_switch,         "PATH [TIMEOUT] replay another recording (a fork) in this database" },
+        { "an.strings",     cmd_an_strings,     "[MIN [MAX]] [registry=DIR] [root=DIR] [strict] [host] [anyregistry] [net] strings recovered by a replay" },
+        { "an.buffers",     cmd_an_buffers,     "[MAX] [registry=DIR] [root=DIR] [strict] [host] [anyregistry] [net] buffers recovered by a replay" },
+        { "switch",         cmd_switch,         "PATH [TIMEOUT|timeout=N] replay another recording (a fork) in this database" },
         { "ui.calltree",    cmd_ui_calltree,    "the call tree last built by the TTD menu (for its window)" },
         { "ui.heat",        cmd_ui_heat,        "the memory heatmap's counts (for its window)" },
         { "ui.heatnow",     cmd_ui_heatnow,     "the heatmap slice the current position is in (-1: outside the span)" },
@@ -2091,14 +2190,14 @@ namespace idattd
         { "ui.showbytes",   cmd_ui_showbytes,   "POS EA travel there and show EA in the hex view" },
         { "an.heat",        cmd_an_heat,        "count every access by page and slice of time (the heatmap)" },
         { "ui.travel",      cmd_ui_travel,      "POS travel there, returning at once (as a double-click does)" },
-        { "switch.ui",      cmd_switch_ui,      "PATH the same, the way the Fork manager does it (returns at once)" },
+        { "switch.ui",      cmd_switch_ui,      "PATH replay another recording the way the Fork manager does it (returns at once)" },
         { "an.forks",       cmd_an_forks,       "the forks recorded in this database" },
         { "an.forget",      cmd_an_forget,      "PATH take a fork out of the fork graph" },
         { "an.forkhere",    cmd_an_forkhere,    "make this position a fork; change it with IDA's debugger calls" },
         { "an.forkdraft",   cmd_an_forkdraft,   "the fork being prepared and its changes" },
         { "an.forkdiscard", cmd_an_forkdiscard, "drop the fork being prepared" },
-        { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] record the fork being prepared" },
-        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [strict] [host] [net] [ckpt=N] [access=rwx] [log] [REG=V ...] [mem:EA=HEX ...] fork here" },
+        { "an.forkrecord",  cmd_an_forkrecord,  "PATH N [registry=DIR] [root=DIR] [strict] [host] [anyregistry] [net] [ckpt=N] [access=rwx] [log] record the fork being prepared" },
+        { "an.fork",        cmd_an_fork,        "PATH N [registry=DIR] [root=DIR] [strict] [host] [anyregistry] [net] [ckpt=N] [access=rwx] [log] [REG=V ...] [mem:EA=HEX ...] fork here" },
         { "an.record",      cmd_an_record,      "PROGRAM PATH [N] [args=\"...\"] [cwd=DIR] [registry=DIR] [root=DIR] [place=DIR] [replace] [host] [start=now|1970|DATE] [net] [ckpt=N] [access=rwx] [elevated] [log] record a program with Sogen" },
         { "drv.open",       cmd_drv_open,       "PATH [BACKEND] open a recording through a backend, no debugger" },
         { "drv.close",      cmd_drv_close,      "close it" },
@@ -2249,6 +2348,11 @@ namespace idattd
         catch ( const std::exception &e )
         {
             out.boolean("ok", false).str("command", a.v[0]).str("error", why(e.what()));
+        }
+        catch ( ... )
+        {
+            // Nothing may unwind into IDA's IDC evaluator.
+            out.boolean("ok", false).str("command", a.v[0]).str("error", why("the command failed"));
         }
         return out.done();
     }
