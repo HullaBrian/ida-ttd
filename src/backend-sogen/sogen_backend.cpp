@@ -870,6 +870,95 @@ namespace
         }
     }
 
+    // An MMIO page as of 'position', from the accesses within kMmioWindow
+    // steps of it. memory_at shows a byte of MMIO by the latest access up to
+    // the position, else the first after it, and a byte no access touches
+    // sends it through every access to the page in the recording, both ways.
+    // KUSER_SHARED_DATA is MMIO in Sogen recordings, read all the time, and
+    // most of it never: a 0x400-byte read there took 24 s in a 488 MB
+    // recording, at every step that crossed one of its reads (the cached page
+    // holds only between accesses). Bytes not shown within the window are
+    // left unknown here; read_page fills them from other reads of the page.
+    static const uint64_t kMmioWindow = 1ull << 20;
+
+    void mmio_page_near(ttd::trace &t, uint64_t page, uint64_t position, uint8_t *dst, uint8_t *kn)
+    {
+        memset(dst, 0, kPage);
+        memset(kn, 0, kPage);
+        // Not across a change to the page's mapping.
+        uint64_t lo = position > kMmioWindow ? position - kMmioWindow : 0;
+        uint64_t hi = position + kMmioWindow;
+        if ( t.has_memory_regions() )
+            for ( const ttd::memory_region &r : t.memory_regions().regions )
+            {
+                if ( r.address >= page + kPage || r.address + r.size <= page )
+                    continue;
+                if ( r.step <= position && r.step > lo )
+                    lo = r.step;
+                else if ( r.step > position && r.step - 1 < hi )
+                    hi = r.step - 1;
+            }
+        const uint64_t W = (uint64_t)ttd::access_kind::write | (uint64_t)ttd::access_kind::host_write;
+        auto bytes_of = [&t](const ttd::access_event &e) -> std::vector<std::byte>
+        {
+            if ( e.kind == ttd::access_kind::execute )
+            {
+                const std::byte *p = reinterpret_cast<const std::byte *>(e.payload.data());
+                return std::vector<std::byte>(p, p + std::min<uint64_t>(e.size, e.payload.size()));
+            }
+            return t.access_data(e);
+        };
+        auto by_step = [](const ttd::access_event &a, const ttd::access_event &b) { return a.step < b.step; };
+
+        // The latest access up to the position shows a byte.
+        std::vector<ttd::access_event> before = t.accesses(page, kPage, lo, position);
+        std::stable_sort(before.begin(), before.end(), by_step);
+        for ( const ttd::access_event &e : before )
+        {
+            std::vector<std::byte> d = bytes_of(e);
+            for ( uint64_t a = std::max(e.address, page); a < std::min(e.address + e.size, page + kPage); a++ )
+            {
+                const size_t i = (size_t)(a - e.address);
+                if ( i < d.size() )
+                {
+                    dst[a - page] = (uint8_t)d[i];
+                    kn[a - page]  = 1;
+                }
+            }
+        }
+        // Any other byte still holds what the first later read shows, unless
+        // something wrote it first.
+        if ( position >= hi )
+            return;
+        std::vector<bool> settled(kPage);
+        for ( size_t i = 0; i < kPage; i++ )
+            settled[i] = kn[i] != 0;
+        std::vector<ttd::access_event> after = t.accesses(page, kPage, position + 1, hi);
+        std::stable_sort(after.begin(), after.end(), by_step);
+        for ( const ttd::access_event &e : after )
+        {
+            const bool shows = ((uint64_t)e.kind & W) == 0;
+            std::vector<std::byte> d;
+            for ( uint64_t a = std::max(e.address, page); a < std::min(e.address + e.size, page + kPage); a++ )
+            {
+                const size_t o = (size_t)(a - page);
+                if ( settled[o] )
+                    continue;
+                settled[o] = true;
+                if ( !shows )
+                    continue;
+                if ( d.empty() )
+                    d = bytes_of(e);
+                const size_t i = (size_t)(a - e.address);
+                if ( i < d.size() )
+                {
+                    dst[o] = (uint8_t)d[i];
+                    kn[o]  = 1;
+                }
+            }
+        }
+    }
+
     // The page at 'page' as of the cursor's position, from the cache or from
     // memory_at. 'dst' and 'kn' receive kPage bytes each.
     void read_page(cursor_t *c, uint64_t page, uint8_t *dst, uint8_t *kn)
@@ -889,29 +978,76 @@ namespace
                     }
         }
 
-        cached_page e;
-        std::vector<std::optional<uint8_t>> v = c->trace->memory_at(c->position, page, kPage);
-        e.bytes.assign(kPage, 0);
-        e.known.assign(kPage, 0);
-        for ( size_t i = 0; i < kPage && i < v.size(); i++ )
-            if ( v[i] )
-            {
-                e.bytes[i] = *v[i];
-                e.known[i] = 1;
-            }
-        memcpy(dst, e.bytes.data(), kPage);
-        memcpy(kn, e.known.data(), kPage);
         // Never caching MMIO pages made every read of KUSER_SHARED_DATA (MMIO
         // in Sogen recordings, and read constantly by IDA's analysis of
         // ntdll) cost over a second, freezing IDA. They are cached over the
         // shorter span between accesses instead.
-        bool mmio = false;
+        bool mmio = false, all_mmio = false;
         for ( const auto &[lo, hi] : c->owner->mmio )
             if ( lo < page + kPage && page < hi )
             {
                 mmio = true;
-                break;
+                all_mmio = all_mmio || (lo <= page && page + kPage <= hi);
             }
+
+        cached_page e;
+        e.bytes.assign(kPage, 0);
+        e.known.assign(kPage, 0);
+        if ( all_mmio )
+        {
+            // From the accesses near the position (mmio_page_near). What they
+            // do not show comes from the page's other cached reads, nearest
+            // first: most of KUSER_SHARED_DATA is read once, as the process
+            // starts, and never changes. The first read of the page also
+            // reads it at the start for that.
+            mmio_page_near(*c->trace, page, c->position, e.bytes.data(), e.known.data());
+            std::vector<cached_page> others;
+            {
+                std::lock_guard<std::mutex> lock(pc.mtx);
+                auto it = pc.pages.find(page);
+                if ( it != pc.pages.end() )
+                    others = it->second;
+            }
+            if ( others.empty() && c->position > kMmioWindow )
+            {
+                cached_page s;
+                s.bytes.assign(kPage, 0);
+                s.known.assign(kPage, 0);
+                mmio_page_near(*c->trace, page, 0, s.bytes.data(), s.known.data());
+                stable_span(*c->trace, page, 0, true, &s.from, &s.to);
+                others.push_back(s);
+                std::lock_guard<std::mutex> lock(pc.mtx);
+                s.used = ++pc.clock;
+                pc.pages[page].push_back(std::move(s));
+                pc.count++;
+            }
+            auto distance = [&](const cached_page &o)
+            {
+                return c->position < o.from ? o.from - c->position
+                     : c->position > o.to   ? c->position - o.to : 0;
+            };
+            std::sort(others.begin(), others.end(),
+                      [&](const cached_page &a, const cached_page &b) { return distance(a) < distance(b); });
+            for ( size_t i = 0; i < kPage; i++ )
+                for ( const cached_page &o : others )
+                    if ( !e.known[i] && o.known[i] )
+                    {
+                        e.bytes[i] = o.bytes[i];
+                        e.known[i] = 1;
+                    }
+        }
+        else
+        {
+            std::vector<std::optional<uint8_t>> v = c->trace->memory_at(c->position, page, kPage);
+            for ( size_t i = 0; i < kPage && i < v.size(); i++ )
+                if ( v[i] )
+                {
+                    e.bytes[i] = *v[i];
+                    e.known[i] = 1;
+                }
+        }
+        memcpy(dst, e.bytes.data(), kPage);
+        memcpy(kn, e.known.data(), kPage);
         stable_span(*c->trace, page, c->position, mmio, &e.from, &e.to);
 
         std::lock_guard<std::mutex> lock(pc.mtx);

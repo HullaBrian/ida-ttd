@@ -339,14 +339,27 @@ int main(int argc, char **argv)
             ittd_position p = info.first;
             uint8_t mem[32], kn[32];
             size_t j;
+            double t_read;
             p.lo = lo + k - 1;
-            if ( api->cursor_seek(pc, p) != ITTD_OK
-              || api->cursor_read_memory(pc, addr, mem, kn, sizeof(mem), NULL) != ITTD_OK )
+            if ( api->cursor_seek(pc, p) != ITTD_OK )
                 continue;
-            printf("  at %s:", pos_text(p));
+            t_read = now_ms();
+            if ( api->cursor_read_memory(pc, addr, mem, kn, sizeof(mem), NULL) != ITTD_OK )
+                continue;
+            printf("  at %s (%.1f ms):", pos_text(p), now_ms() - t_read);
             for ( j = 0; j < sizeof(mem); j++ )
                 printf(kn[j] ? " %02x" : " ??", mem[j]);
             printf("\n");
+            /* And what reading 0x400 bytes there costs, as IDA asks for after
+               a stop (a slow one stalls single-stepping). */
+            {
+                static uint8_t big[0x400], bigk[0x400];
+                size_t got = 0;
+                double t1 = now_ms();
+                api->cursor_read_memory(pc, addr & ~0xFFFull, big, bigk, sizeof(big), &got);
+                printf("    0x400 bytes at %llx: %.1f ms, %zu known\n",
+                       (unsigned long long)(addr & ~0xFFFull), now_ms() - t1, got);
+            }
         }
         if ( pc != NULL )
             api->cursor_close(pc);
