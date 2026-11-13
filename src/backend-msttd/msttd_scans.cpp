@@ -23,7 +23,6 @@
 #include "backend-msttd/msttd_sweep.h"
 #include "backend-msttd/msttd_host.h"
 #include "common/write_scans.h"
-#include <chrono>
 
 using namespace TTD;
 using namespace TTD::Replay;
@@ -69,6 +68,16 @@ namespace idattd
                 if ( lo >= hi )
                     return;
                 auto it = m_map.lower_bound(lo);
+                // The same span written again (a stack slot, a loop's
+                // variable), which is most writes: updated in place rather
+                // than erased and allocated again. The spans do not overlap,
+                // so nothing before it reaches past 'lo'.
+                if ( it != m_map.end() && it->first == lo && it->second.end == hi )
+                {
+                    it->second.pos = pos;
+                    it->second.ip  = ip;
+                    return;
+                }
                 if ( it != m_map.begin() )
                 {
                     auto prev = std::prev(it);
@@ -192,55 +201,23 @@ namespace idattd
         p = nullptr;
     }
 
-    bool MsTtdBackend::run_scans(ProgressSink *progress, QueryResult *qr)
+    namespace
     {
-        {
-            std::lock_guard<std::mutex> lock(m_scansMtx);
-            if ( m_scans.p != nullptr )
-                return true;
-        }
-        const uint64_t space = user_space_end();
-
         // ---- 1: where the program writes ------------------------------------
-        Ranges written;
-        bool   capped = false;
-        // ITTD_MSTTD_SCAN_STATS=1: how large the engine's write events get,
-        // on stderr. Pass 2 takes at most 4096 bytes of a write; this says
-        // whether a recording ever has a larger one. Callbacks run one at a
-        // time (msttd_sweep replays segments sequentially).
-        const bool stats = getenv("ITTD_MSTTD_SCAN_STATS") != nullptr;
-        // ITTD_MSTTD_SCAN_SKIP=writes|exec, for measuring pass 2 only: skip
-        // its per-write work, or its execute watchpoints. The results are
-        // wrong while it is set, and it is only read with the stats switch.
-        const char *skip = stats ? getenv("ITTD_MSTTD_SCAN_SKIP") : nullptr;
-        const bool skip_writes = skip != nullptr && strstr(skip, "writes") != nullptr;
-        const bool skip_exec   = skip != nullptr && strstr(skip, "exec") != nullptr;
-        if ( skip_writes || skip_exec )
-            fprintf(stderr, "[msttd scans] ITTD_MSTTD_SCAN_SKIP=%s: the scan results are not valid\n", skip);
-        uint64_t writes = 0, over_4k = 0, largest = 0;
+        // False when stopped.
+        bool scan_written(ICursorView *cur, uint64_t space, ProgressSink *progress, Ranges *written, bool *capped)
         {
-            UniqueCursor cur = new_engine_cursor();
-            if ( !cur )
-                return false;
             auto on_write = [&](ICursorView::MemoryWatchpointResult const &w, IThreadView const *) noexcept -> bool
             {
                 if ( w.AccessType != DataAccessType::Write )
                     return false;
-                if ( stats )
-                {
-                    writes++;
-                    if ( w.Size > 4096 )
-                        over_4k++;
-                    if ( w.Size > largest )
-                        largest = w.Size;
-                }
                 try
                 {
-                    add_range(written, (uint64_t)w.Address, (uint64_t)w.Address + w.Size, 16);
+                    add_range(*written, (uint64_t)w.Address, (uint64_t)w.Address + w.Size, 16);
                 }
                 catch ( ... )
                 {
-                    capped = true;
+                    *capped = true;
                 }
                 return false;
             };
@@ -248,144 +225,188 @@ namespace idattd
             wp.Address    = GuestAddress{ 0 };
             wp.Size       = space;
             wp.AccessMask = DataAccessMask::Write;
-            cur->AddMemoryWatchpoint(wp);
-            cur->SetMemoryWatchpointCallback(on_write);
-            cur->SetEventMask(EventMask::MemoryWatchpoint);
-            cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-            ScaledProgress stage(progress, 0, 30);
-            const auto t_pass = std::chrono::steady_clock::now();
-            bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
-            if ( stats )
-                fprintf(stderr, "[msttd scans] %s: %.1f s\n", "pass 1",
-                        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count());
-            cur->SetMemoryWatchpointCallback(nullptr, 0);
-            if ( stats )
-                fprintf(stderr, "[msttd scans] %llu write event(s), %llu over 4096 bytes, largest %llu\n",
-                        (unsigned long long)writes, (unsigned long long)over_4k, (unsigned long long)largest);
-            if ( !complete )
-            {
-                qr->cancelled = true;
-                return false;
-            }
+            ArmedSweep arm(cur, ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+            arm.watch(wp);
+            arm.on_watchpoint(on_write);
+            return arm.sweep(TtdPosition::Min, TtdPosition::Max, progress);
         }
-        const std::vector<ModuleInfo> mods = modules();
-        bool exec_capped = false;
-        const std::vector<std::pair<uint64_t, uint64_t>> exec = watch_ranges(written, mods, &exec_capped);
 
         // ---- 2: the writes again, and what ran of them ------------------------
-        std::unique_ptr<MsTtdScanResults> res(new MsTtdScanResults);
-        BufferScan  buffers(kNearbyWrites);
-        LastWrites  last;
-        std::map<uint64_t, SelfModHit> selfmod;
-        bool        truncated = capped || exec_capped;
+        //
+        // Each write feeds the buffer scan, the string windows and, when it
+        // lands in code watched for execution, the last-write map; each
+        // execution is matched against that map. The callback is all of it,
+        // on the replay thread.
+        class WriteReplay
+        {
+        public:
+            WriteReplay(const std::vector<std::pair<uint64_t, uint64_t>> &exec, StringScan &strings)
+                : m_exec(exec), m_strings(strings), m_buffers(kNearbyWrites) {}
 
-        // Strings are scanned one burst of writing at a time, per thread: the
-        // bytes a thread writes forwards through memory, plus what was just
-        // before them. A copy is kept as written, so a later overwrite does not
-        // change what is scanned.
-        struct Window
-        {
-            uint64_t             base = 0;      // bytes[0] is here
-            uint64_t             lo = 0, hi = 0; // what was written
-            std::vector<uint8_t> bytes;
-            TtdPosition          pos;
-            bool                 live = false;
-        };
-        std::map<uint32_t, Window> windows;
-        auto read = [](IThreadView const *t, uint64_t a, size_t n, uint8_t *out) -> bool
-        {
-            MemoryBuffer mb = t->QueryMemoryBuffer(GuestAddress{ a }, BufferView{ out, n });
-            return mb.Memory.Size == n;
-        };
-        auto flush = [&](Window &w, IThreadView const *t)
-        {
-            if ( !w.live )
-                return;
-            w.live = false;
-            // The terminator after the last byte, as memory has it now.
-            uint8_t tail[2] = { 0xFF, 0xFF };
-            if ( t != nullptr )
-                read(t, w.hi, 2, tail);
-            w.bytes.push_back(tail[0]);
-            w.bytes.push_back(tail[1]);
-            res->strings.inspect(w.base, w.bytes, w.pos);
-        };
+            bool on_hit(ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept
+            {
+                try
+                {
+                    if ( w.AccessType == DataAccessType::Execute )
+                        executed(w, t);
+                    else if ( w.AccessType == DataAccessType::Write && w.Size != 0 )
+                        wrote(w, t);
+                }
+                catch ( ... )
+                {
+                    truncated = true;
+                }
+                return false;
+            }
 
-        uint64_t clock = 0;
-        uint64_t exec_events = 0;       // ITTD_MSTTD_SCAN_STATS only
-        std::vector<uint64_t> range_hits(stats ? exec.size() : 0);
-        // A write too long for the callback's stack buffer is read into
-        // this, which keeps its capacity from one such write to the next.
-        std::vector<uint8_t> large_write;
-        UniqueCursor cur = new_engine_cursor();
-        if ( !cur )
-            return false;
-        auto on_hit = [&](ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept -> bool
-        {
-            try
+            // The bursts still open at the end, read where the recording
+            // ends ('cur' is positioned there).
+            void finish_windows(ICursorView *cur)
+            {
+                for ( auto &[tid, win] : m_windows )
+                {
+                    if ( !win.live )
+                        continue;
+                    win.live = false;
+                    uint8_t tail[2] = { 0xFF, 0xFF };
+                    cur->QueryMemoryBuffer(GuestAddress{ win.hi }, BufferView{ tail, 2 },
+                                           QueryMemoryPolicy::GloballyAggressive);
+                    win.bytes.push_back(tail[0]);
+                    win.bytes.push_back(tail[1]);
+                    m_strings.inspect(win.base, win.bytes, win.pos);
+                }
+            }
+
+            BufferScan &buffers() { return m_buffers; }
+            const std::map<uint64_t, SelfModHit> &selfmod() const { return m_selfmod; }
+            bool last_truncated() const { return m_last.truncated; }
+
+            bool truncated = false;
+
+        private:
+            // Strings are scanned one burst of writing at a time, per thread:
+            // the bytes a thread writes forwards through memory, plus what
+            // was just before them. A copy is kept as written, so a later
+            // overwrite does not change what is scanned.
+            struct Window
+            {
+                uint64_t             base = 0;          // bytes[0] is here
+                uint64_t             lo = 0, hi = 0;    // what was written
+                std::vector<uint8_t> bytes;
+                TtdPosition          pos;
+                bool                 live = false;
+            };
+
+            static bool read(IThreadView const *t, uint64_t a, size_t n, uint8_t *out)
+            {
+                MemoryBuffer mb = t->QueryMemoryBuffer(GuestAddress{ a }, BufferView{ out, n });
+                return mb.Memory.Size == n;
+            }
+
+            void flush(Window &w, IThreadView const *t)
+            {
+                if ( !w.live )
+                    return;
+                w.live = false;
+                // The terminator after the last byte, as memory has it now.
+                uint8_t tail[2] = { 0xFF, 0xFF };
+                if ( t != nullptr )
+                    read(t, w.hi, 2, tail);
+                w.bytes.push_back(tail[0]);
+                w.bytes.push_back(tail[1]);
+                m_strings.inspect(w.base, w.bytes, w.pos);
+            }
+
+            // Whether [lo, hi) touches code watched for execution. Only those
+            // bytes are ever asked about (an execution is matched against
+            // its own bytes), so only those writes go in the last-write map.
+            // The ranges were made from these same writes, so while they are
+            // not capped every write lands in one (measured: none left out
+            // on either test recording); past the cap, the writes to what is
+            // not watched stay out of the map instead of filling it. The
+            // writes of one stretch of code mostly land in one range, which
+            // is cached.
+            bool watched_for_exec(uint64_t lo, uint64_t hi)
+            {
+                if ( m_lastExec != nullptr && m_lastExec->first < hi && lo < m_lastExec->second )
+                    return true;
+                auto it = std::upper_bound(m_exec.begin(), m_exec.end(), lo,
+                                           [](uint64_t v, const std::pair<uint64_t, uint64_t> &r) { return v < r.first; });
+                if ( it != m_exec.begin() && std::prev(it)->second > lo )
+                {
+                    m_lastExec = &*std::prev(it);
+                    return true;
+                }
+                if ( it != m_exec.end() && it->first < hi )
+                {
+                    m_lastExec = &*it;
+                    return true;
+                }
+                return false;
+            }
+
+            void executed(ICursorView::MemoryWatchpointResult const &w, IThreadView const *t)
             {
                 const uint64_t a = (uint64_t)w.Address;
-                if ( w.AccessType == DataAccessType::Execute )
+                const size_t n = w.Size != 0 ? (size_t)w.Size : 1;
+                m_buffers.executed(a, n);
+                auto hit = m_selfmod.find(a);
+                if ( hit != m_selfmod.end() )
                 {
-                    if ( stats )
-                    {
-                        exec_events++;
-                        auto r = std::upper_bound(exec.begin(), exec.end(), std::make_pair(a, UINT64_MAX));
-                        if ( r != exec.begin() )
-                            range_hits[size_t(r - exec.begin()) - 1]++;
-                    }
-                    const size_t n = w.Size != 0 ? (size_t)w.Size : 1;
-                    buffers.executed(a, n);
-                    auto hit = selfmod.find(a);
-                    if ( hit != selfmod.end() )
-                    {
-                        hit->second.executions++;
-                        return false;
-                    }
-                    // The write that made it is the one that wrote its first
-                    // byte, the opcode, as Sogen has it; then any of its others.
-                    const LastWrites::Write *lw = last.latest(a, a + 1);
-                    if ( lw == nullptr )
-                        lw = last.latest(a, a + n);
-                    if ( lw == nullptr )
-                        return false;
-                    if ( selfmod.size() >= kMaxSelfMod )
-                    {
-                        truncated = true;
-                        return false;
-                    }
-                    SelfModHit h;
-                    h.address     = (ea_t)a;
-                    h.size        = n;
-                    h.write_pos   = to_core(lw->pos);
-                    h.write_ip    = (ea_t)lw->ip;
-                    h.execute_pos = to_core(t->GetPosition());
-                    h.executions  = 1;
-                    selfmod.emplace(a, h);
-                    return false;
+                    hit->second.executions++;
+                    return;
                 }
-                if ( w.AccessType != DataAccessType::Write || w.Size == 0 )
-                    return false;
-                if ( skip_writes )
-                    return false;
+                // The write that made it is the one that wrote its first
+                // byte, the opcode, as Sogen has it; then any of its others.
+                const LastWrites::Write *lw = m_last.latest(a, a + 1);
+                if ( lw == nullptr )
+                    lw = m_last.latest(a, a + n);
+                if ( lw == nullptr )
+                    return;
+                if ( m_selfmod.size() >= kMaxSelfMod )
+                {
+                    truncated = true;
+                    return;
+                }
+                SelfModHit h;
+                h.address     = (ea_t)a;
+                h.size        = n;
+                h.write_pos   = to_core(lw->pos);
+                h.write_ip    = (ea_t)lw->ip;
+                h.execute_pos = to_core(t->GetPosition());
+                h.executions  = 1;
+                m_selfmod.emplace(a, h);
+            }
+
+            void wrote(ICursorView::MemoryWatchpointResult const &w, IThreadView const *t)
+            {
+                const uint64_t a = (uint64_t)w.Address;
                 const size_t n = (size_t)std::min<uint64_t>(w.Size, 4096);
                 uint8_t stack[64];
                 uint8_t *bytes = stack;
                 if ( n > sizeof(stack) )
                 {
-                    if ( large_write.size() < n )
-                        large_write.resize(n);
-                    bytes = large_write.data();
+                    if ( m_largeWrite.size() < n )
+                        m_largeWrite.resize(n);
+                    bytes = m_largeWrite.data();
                 }
                 if ( !read(t, a, n, bytes) )
-                    return false;
+                    return;
                 const TtdPosition pos = t->GetPosition();
                 const uint64_t    ip  = (uint64_t)t->GetProgramCounter();
-                ++clock;
-                last.assign(a, a + n, pos, ip);
-                buffers.ingest(a, bytes, n, clock, pos, ip);
+                ++m_clock;
+                if ( watched_for_exec(a, a + n) )
+                    m_last.assign(a, a + n, pos, ip);
+                m_buffers.ingest(a, bytes, n, m_clock, pos, ip);
 
-                Window &win = windows[(uint32_t)t->GetThreadInfo().UniqueId];
+                // Threads write in bursts, so the window lookup is cached.
+                const uint32_t utid = (uint32_t)t->GetThreadInfo().UniqueId;
+                if ( m_lastWin == nullptr || utid != m_lastUtid )
+                {
+                    m_lastWin  = &m_windows[utid];
+                    m_lastUtid = utid;
+                }
+                Window &win = *m_lastWin;
                 if ( win.live && a >= win.hi && a <= win.hi + 16 && a + n - win.lo <= kStringWindowMax )
                 {
                     // Onwards from the last write: the gap, then these bytes.
@@ -397,7 +418,7 @@ namespace idattd
                     memcpy(win.bytes.data() + at + gap, bytes, n);
                     win.hi  = a + n;
                     win.pos = pos;
-                    return false;
+                    return;
                 }
                 flush(win, t);
                 // What was there just before, which a string written in
@@ -420,101 +441,38 @@ namespace idattd
                 win.bytes.insert(win.bytes.end(), bytes, bytes + n);
                 win.live = true;
             }
-            catch ( ... )
-            {
-                truncated = true;
-            }
-            return false;
+
+            const std::vector<std::pair<uint64_t, uint64_t>> &m_exec;
+            const std::pair<uint64_t, uint64_t> *m_lastExec = nullptr;
+            StringScan                     &m_strings;
+            BufferScan                      m_buffers;
+            LastWrites                      m_last;
+            std::map<uint64_t, SelfModHit>  m_selfmod;
+            std::map<uint32_t, Window>      m_windows;
+            Window                         *m_lastWin  = nullptr;   // std::map nodes stay put
+            uint32_t                        m_lastUtid = 0;
+            uint64_t                        m_clock    = 0;
+            // A write too long for the callback's stack buffer is read into
+            // this, which keeps its capacity from one such write to the next.
+            std::vector<uint8_t>            m_largeWrite;
         };
-
-        MemoryWatchpointData wp{};
-        wp.Address    = GuestAddress{ 0 };
-        wp.Size       = space;
-        wp.AccessMask = DataAccessMask::Write;
-        cur->AddMemoryWatchpoint(wp);
-        if ( stats )
-        {
-            uint64_t span = 0;
-            for ( const auto &[lo, hi] : exec )
-                span += hi - lo;
-            fprintf(stderr, "[msttd scans] pass 2: %zu execute range(s), %llu bytes%s%s\n", exec.size(),
-                    (unsigned long long)span, skip_writes ? ", per-write work skipped" : "",
-                    skip_exec ? ", execute watchpoints skipped" : "");
-        }
-        for ( const auto &[lo, hi] : exec )
-        {
-            if ( skip_exec )
-                break;
-            MemoryWatchpointData x{};
-            x.Address    = GuestAddress{ lo };
-            x.Size       = hi - lo;
-            x.AccessMask = DataAccessMask::Execute;
-            cur->AddMemoryWatchpoint(x);
-        }
-        cur->SetMemoryWatchpointCallback(on_hit);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        ScaledProgress stage(progress, 30, 60);
-        const auto t_pass = std::chrono::steady_clock::now();
-        bool complete = msttd_sweep(cur.get(), TtdPosition::Min, TtdPosition::Max, &stage);
-        if ( stats )
-        {
-            fprintf(stderr, "[msttd scans] %s: %.1f s\n", "pass 2",
-                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pass).count());
-            fprintf(stderr, "[msttd scans] pass 2: %llu execute event(s), %zu self-modifying address(es)\n",
-                    (unsigned long long)exec_events, selfmod.size());
-            std::vector<size_t> order(range_hits.size());
-            for ( size_t i = 0; i < order.size(); i++ )
-                order[i] = i;
-            std::sort(order.begin(), order.end(), [&](size_t x, size_t y) { return range_hits[x] > range_hits[y]; });
-            for ( size_t k = 0; k < order.size() && k < 8 && range_hits[order[k]] != 0; k++ )
-            {
-                const auto &[lo, hi] = exec[order[k]];
-                const char *mod = "(no module)";
-                for ( const ModuleInfo &m : mods )
-                    if ( m.base <= lo && lo < m.base + m.size )
-                        mod = m.name.c_str();
-                fprintf(stderr, "[msttd scans]   %llx..%llx (%llu bytes, %s): %llu execute event(s)\n",
-                        (unsigned long long)lo, (unsigned long long)hi, (unsigned long long)(hi - lo), mod,
-                        (unsigned long long)range_hits[order[k]]);
-            }
-        }
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
-        if ( !complete )
-        {
-            qr->cancelled = true;
-            return false;
-        }
-
-        // The bursts still open at the end, read where the recording ends.
-        cur->SetPosition(TtdPosition::Max);
-        for ( auto &[tid, win] : windows )
-        {
-            if ( !win.live )
-                continue;
-            win.live = false;
-            uint8_t tail[2] = { 0xFF, 0xFF };
-            cur->QueryMemoryBuffer(GuestAddress{ win.hi }, BufferView{ tail, 2 }, QueryMemoryPolicy::GloballyAggressive);
-            win.bytes.push_back(tail[0]);
-            win.bytes.push_back(tail[1]);
-            res->strings.inspect(win.base, win.bytes, win.pos);
-        }
 
         // ---- 3: the text the modules brought with them ----------------------
         //
         // What was in memory from the start (Sogen scans its initial memory):
-        // each image, at its load position.
+        // each image, at its load position. False when cancelled.
+        bool scan_module_strings(ICursorView *cur, const std::vector<ModuleInfo> &mods, StringScan &strings,
+                                 ProgressSink *progress)
         {
-            ScaledProgress stage3(progress, 90, 10);
             std::vector<uint8_t> bytes;      // one buffer for every chunk
             for ( size_t i = 0; i < mods.size(); i++ )
             {
-                if ( progress != nullptr && progress->cancelled() )
+                if ( progress != nullptr )
                 {
-                    qr->cancelled = true;
-                    return false;
+                    if ( progress->cancelled() )
+                        return false;
+                    progress->report(uint32_t(i * 100 / std::max<size_t>(mods.size(), 1)));
                 }
-                stage3.report(uint32_t(i * 100 / std::max<size_t>(mods.size(), 1)));
                 const ModuleInfo &m = mods[i];
                 cur->SetPosition(from_core(m.loaded));
                 const TtdPosition at = cur->GetPosition();
@@ -530,11 +488,85 @@ namespace idattd
                     if ( mb.Memory.Size == 0 )
                         continue;
                     bytes.resize(size_t(mb.Memory.Size));
-                    res->strings.inspect(m.base + b, bytes, at);
+                    strings.inspect(m.base + b, bytes, at);
                 }
+            }
+            return true;
+        }
+    }
+
+    bool MsTtdBackend::run_scans(ProgressSink *progress, QueryResult *qr)
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_scansMtx);
+            if ( m_scans.p != nullptr )
+                return true;
+        }
+        const uint64_t space = user_space_end();
+
+        UniqueCursor cur = new_engine_cursor();
+        if ( !cur )
+            return false;
+        Ranges written;
+        bool   capped = false;
+        {
+            ScaledProgress stage(progress, 0, 30);
+            if ( !scan_written(cur.get(), space, &stage, &written, &capped) )
+            {
+                qr->cancelled = true;
+                return false;
+            }
+        }
+        const std::vector<ModuleInfo> mods = modules();
+        bool exec_capped = false;
+        const std::vector<std::pair<uint64_t, uint64_t>> exec = watch_ranges(written, mods, &exec_capped);
+
+        std::unique_ptr<MsTtdScanResults> res(new MsTtdScanResults);
+        WriteReplay pass(exec, res->strings);
+        // A fresh cursor for the second replay, as for the first.
+        cur = new_engine_cursor();
+        if ( !cur )
+            return false;
+        {
+            auto on_hit = [&pass](ICursorView::MemoryWatchpointResult const &w, IThreadView const *t) noexcept -> bool
+            {
+                return pass.on_hit(w, t);
+            };
+            ArmedSweep arm(cur.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+            MemoryWatchpointData wp{};
+            wp.Address    = GuestAddress{ 0 };
+            wp.Size       = space;
+            wp.AccessMask = DataAccessMask::Write;
+            arm.watch(wp);
+            for ( const auto &[lo, hi] : exec )
+            {
+                MemoryWatchpointData x{};
+                x.Address    = GuestAddress{ lo };
+                x.Size       = hi - lo;
+                x.AccessMask = DataAccessMask::Execute;
+                arm.watch(x);
+            }
+            arm.on_watchpoint(on_hit);
+            ScaledProgress stage(progress, 30, 60);
+            if ( !arm.sweep(TtdPosition::Min, TtdPosition::Max, &stage) )
+            {
+                qr->cancelled = true;
+                return false;
+            }
+        }
+        cur->SetPosition(TtdPosition::Max);
+        pass.finish_windows(cur.get());
+
+        {
+            ScaledProgress stage(progress, 90, 10);
+            if ( !scan_module_strings(cur.get(), mods, res->strings, &stage) )
+            {
+                qr->cancelled = true;
+                return false;
             }
         }
 
+        BufferScan &buffers = pass.buffers();
         buffers.finish();
         res->buffers.reserve(buffers.results.size());
         for ( const scans::FoundBuffer<TtdPosition> &f : buffers.results )
@@ -550,10 +582,11 @@ namespace idattd
             h.preview   = f.preview.c_str();
             res->buffers.push_back(std::move(h));
         }
-        res->selfmod.reserve(selfmod.size());
-        for ( auto &[a, h] : selfmod )
+        res->selfmod.reserve(pass.selfmod().size());
+        for ( const auto &[a, h] : pass.selfmod() )
             res->selfmod.push_back(h);
-        res->truncated = truncated || buffers.truncated || last.truncated || res->strings.truncated;
+        res->truncated = capped || exec_capped || pass.truncated || buffers.truncated || pass.last_truncated()
+                      || res->strings.truncated;
         msttd_log("[ida-ttd] write scan: %d range(s) written, %d watched for execution%s; %d self-modifying "
                   "instruction(s), %d buffer(s).\n", (int)written.size(), (int)exec.size(),
                   exec_capped ? " (capped)" : "", (int)res->selfmod.size(), (int)res->buffers.size());
@@ -573,8 +606,9 @@ namespace idattd
         if ( !run_scans(progress, &r) )
             return r;
         r.ran = true;
-        out->insert(out->end(), m_scans.p->selfmod.begin(), m_scans.p->selfmod.end());
-        r.truncated = m_scans.p->truncated;
+        const MsTtdScanResults *s = m_scans.p;
+        out->insert(out->end(), s->selfmod.begin(), s->selfmod.end());
+        r.truncated = s->truncated;
         return r;
     }
 
@@ -590,7 +624,8 @@ namespace idattd
             return r;
         r.ran = true;
         const uint32_t want = std::max(min_length, kStringMinimum);
-        m_scans.p->strings.for_each([&](uint64_t address, const StringScan::Entry &e)
+        const MsTtdScanResults *s = m_scans.p;
+        s->strings.for_each([&](uint64_t address, const StringScan::Entry &e)
         {
             if ( e.value.size() < want )
                 return;
@@ -602,7 +637,7 @@ namespace idattd
             h.text    = e.value.c_str();
             out->push_back(std::move(h));
         });
-        r.truncated = m_scans.p->truncated;
+        r.truncated = s->truncated;
         return r;
     }
 
@@ -617,8 +652,9 @@ namespace idattd
         if ( !run_scans(progress, &r) )
             return r;
         r.ran = true;
-        out->insert(out->end(), m_scans.p->buffers.begin(), m_scans.p->buffers.end());
-        r.truncated = m_scans.p->truncated;
+        const MsTtdScanResults *s = m_scans.p;
+        out->insert(out->end(), s->buffers.begin(), s->buffers.end());
+        r.truncated = s->truncated;
         return r;
     }
 
@@ -709,14 +745,14 @@ namespace idattd
         wp.Size       = space;
         wp.AccessMask = (DataAccessMask)((uint8_t)DataAccessMask::Read | (uint8_t)DataAccessMask::Write
                                        | (uint8_t)DataAccessMask::Execute);
-        cur->AddMemoryWatchpoint(wp);
-        cur->SetMemoryWatchpointCallback(on_hit);
-        cur->SetEventMask(EventMask::MemoryWatchpoint);
-        cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-        const bool whole    = when.whole_trace();
-        const bool complete = msttd_sweep(cur.get(), whole ? TtdPosition::Min : first,
-                                          whole ? TtdPosition::Max : last, progress);
-        cur->SetMemoryWatchpointCallback(nullptr, 0);
+        const bool whole = when.whole_trace();
+        bool complete;
+        {
+            ArmedSweep arm(cur.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
+            arm.watch(wp);
+            arm.on_watchpoint(on_hit);
+            complete = arm.sweep(whole ? TtdPosition::Min : first, whole ? TtdPosition::Max : last, progress);
+        }
         r.cancelled = !complete;
         r.truncated = capped;
         const size_t before = out->size();
