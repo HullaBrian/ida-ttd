@@ -24,8 +24,14 @@ namespace idattd
     static qstring form_text(const qstring &s)
     {
         qstring out;
-        for ( char c : s )
-            out.append(strchr("#<>~@", c) != nullptr ? '\'' : c);
+        // Not strchr(): it finds the terminating zero too, and a range-for
+        // over a qstring reaches that zero (body.end() is past it), so every
+        // text ended in a stray quote.
+        for ( size_t i = 0; i < s.length(); i++ )
+        {
+            const char c = s[i];
+            out.append(c == '#' || c == '<' || c == '>' || c == '~' || c == '@' ? '\'' : c);
+        }
         return out;
     }
 
@@ -150,9 +156,9 @@ namespace idattd
                     "Registry hives\n"
                     "\n"
                     "\n"
-                    "%A\n"
+                    "%q\n"
                     "\n"
-                    "%A\n"
+                    "%q\n"
                     "\n"
                     "<~F~older:F::64::>\n"
                     "<~R~eplay with these hives even if they are not the recording's:C>>\n"
@@ -161,9 +167,9 @@ namespace idattd
                     "Emulation root\n"
                     "\n"
                     "\n"
-                    "%A\n"
+                    "%q\n"
                     "\n"
-                    "%A\n"
+                    "%q\n"
                     "\n"
                     "<~E~mulation root:F::64::>\n"
                     "<~R~eplay with its hives even if they are not the recording's:C>>\n"
@@ -175,7 +181,7 @@ namespace idattd
                                                                      : rs->emulation_root.c_str())
                                       : rs->registry_dir.c_str(), sizeof(dir));
                 ushort anyway = 0;
-                if ( ask_form(in_root ? root_form : form, why.c_str(), about.c_str(), dir, &anyway) <= 0
+                if ( ask_form(in_root ? root_form : form, &why, &about, dir, &anyway) <= 0
                   || dir[0] == '\0' )
                     return false;
                 if ( in_root )
@@ -269,10 +275,10 @@ namespace idattd
         m->fill_fork_request(&req);
 
         static const char form[] =
-            "Record the fork\n"
+            "Record Fork\n"
             "\n"
             "\n"
-            "Fork at %A. %A\n"
+            "Fork at %q. %q\n"
             "\n"
             "<#The new recording. This one is not touched#~N~ew trace        :f:1:64::>\n"
             "<#0 records until the program exits#~I~nstruction limit:D::18::>\n"
@@ -293,7 +299,7 @@ namespace idattd
         ushort checks = (settings().sogen_network ? 1 : 0) | (settings().sogen_log ? 2 : 0);
         for ( ;; )
         {
-            if ( ask_form(form, where.c_str(), changes.c_str(), path, &count, &checks) <= 0 )
+            if ( ask_form(form, &where, &changes, path, &count, &checks) <= 0 )
                 return 1;
             if ( path[0] == '\0' )
             {
