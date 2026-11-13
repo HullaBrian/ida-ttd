@@ -488,13 +488,95 @@ namespace idattd
         return get_input_file_path(path, sizeof(path)) > 0 && base_name_lower(path) == want;
     }
 
-    int idaapi RecordProgramHandler::activate(action_activation_ctx_t *)
+    // The Record a program dialog's fields, as ask_form fills them.
+    struct RecordProgramForm
     {
-        if ( find_recorder() == nullptr )
+        char    program[QMAXPATH] = {};
+        qstring args;
+        char    cwd[QMAXPATH]     = {};
+        char    out[QMAXPATH]     = {};
+        sval_t  count             = 0;      // instruction limit; 0: until the program exits
+        char    root[QMAXPATH]    = {};     // emulation root; empty: this machine's files
+        qstring place;                      // guest folder a program outside the root is copied to
+        char    hives[QMAXPATH]   = {};     // without a root
+        ushort  checks            = 0;      // 1 network, 2 administrator, 4 current date, 8 log
+        qstring run_program;                // the program as recorded: a copy in the root, or itself
+    };
+
+    // The last answers this session. The program starts as the database's
+    // own executable, the hives as the first folder that has some, and the
+    // copy goes to a folder of its own, so none of the root's files is
+    // replaced unasked.
+    static struct
+    {
+        qstring program, args, cwd, root, hives, place = "C:\\ida-ttd";
+        sval_t  count = 0;
+        bool    asked = false;  // root holds an answer (perhaps "none")
+    } g_recordAnswers;
+
+    // Why the dialog's answers cannot be recorded, or empty when they can.
+    // Only checks: the questions (replace the output file, replace a copy
+    // in the root) and the copy itself come after, in ask_record_program.
+    static qstring record_form_problem(const RecordProgramForm &f, const TraceManager *mgr)
+    {
+        if ( f.program[0] == '\0' || !qfileexist(f.program) )
+            return "Choose the program to record.";
+        if ( f.out[0] == '\0' )
+            return "Choose the output file.";
+        // The replay reads it as it goes: writing over it would change the
+        // recording under the session. (The backend refuses any file that is
+        // open, in another IDA too; this says it before asking anything else.)
+        if ( mgr != nullptr && mgr->is_active() && stricmp(mgr->trace_path().c_str(), f.out) == 0 )
+            return "That recording is open in this window. Choose another output file.";
+        if ( f.root[0] != '\0' )
         {
-            warning("No installed backend can record programs (the Sogen backend can).");
-            return 1;
+            const qstring problem = emulation_root_problem(f.root);
+            if ( !problem.empty() )
+                return problem;
+            if ( !visible_in_emulation_root(f.root, f.program) && f.place.empty() )
+                return "The program is outside the emulation root. Name a folder to copy it to.";
+            if ( f.cwd[0] != '\0' && !visible_in_emulation_root(f.root, f.cwd) )
+                return "The working folder must be inside the emulation root.";
         }
+        else if ( !has_hives(f.hives) )
+        {
+            return "Choose a folder of registry hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...).";
+        }
+        return qstring();
+    }
+
+    // Copy a program from outside the emulation root into it, asking before
+    // replacing a different copy. False, having said why, to ask again.
+    static bool place_program(RecordProgramForm *f)
+    {
+        f->run_program = f->program;
+        if ( f->root[0] == '\0' || visible_in_emulation_root(f->root, f->program) )
+            return true;
+        qstring placed, err;
+        PlaceResult pr = place_in_emulation_root(f->root, f->program, f->place.c_str(), false, &placed, &err);
+        if ( pr == PlaceResult::Differs )
+        {
+            if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nThe emulation root already has a different\n%s\n\n"
+                                   "Replace it?", placed.c_str()) != ASKBTN_YES )
+                return false;
+            pr = place_in_emulation_root(f->root, f->program, f->place.c_str(), true, &placed, &err);
+        }
+        if ( pr == PlaceResult::Failed )
+        {
+            warning("Could not copy the program into the emulation root: %s", err.c_str());
+            return false;
+        }
+        if ( pr == PlaceResult::Placed )
+            msg("[ida-ttd] copied %s into the emulation root: %s\n", f->program, placed.c_str());
+        f->run_program = placed;
+        return true;
+    }
+
+    // Ask until the answers hold (or Cancel: false), copy the program into
+    // the emulation root if it must be, and remember the answers for the
+    // next time.
+    static bool ask_record_program(RecordProgramForm *f, const TraceManager *mgr)
+    {
         // Short labels, the details in the tooltips. IDA places a field
         // right after its label's characters, so the labels are padded with
         // spaces to one length (17, the longest) to line the fields up.
@@ -516,140 +598,83 @@ namespace idattd
             "<#The program sees the date and time recording starts. Off, it starts on 1 January 1970. Replays see the same dates either way#S~t~art at the current date:C>\n"
             "<#The recording window shows it either way#Sogen's ~l~og to the Output window:C>>\n"
             "\n";
-        // The last answers this session. The program starts as the database's
-        // own executable, the hives as the first folder that has some, and
-        // the copy goes to a folder of its own, so none of the root's files
-        // is replaced unasked.
-        static qstring s_program, s_args, s_cwd, s_root, s_hives, s_place = "C:\\ida-ttd";
-        static sval_t s_count = 0;
-        static bool s_asked = false;    // s_root holds an answer (perhaps "none")
-        if ( !s_asked )
-            s_root = settings().sogen_emulation_root;
-        if ( s_program.empty() )
-            s_program = database_program();
-        if ( s_hives.empty() )
+        auto &last = g_recordAnswers;
+        if ( !last.asked )
+            last.root = settings().sogen_emulation_root;
+        if ( last.program.empty() )
+            last.program = database_program();
+        if ( last.hives.empty() )
             for ( const qstring &dir : registry_candidates(nullptr) )
                 if ( has_hives(dir) )
                 {
-                    s_hives = dir;
+                    last.hives = dir;
                     break;
                 }
-        char program[QMAXPATH], cwd[QMAXPATH], out[QMAXPATH], root[QMAXPATH], hives[QMAXPATH];
-        qstrncpy(program, s_program.c_str(), sizeof(program));
-        qstrncpy(cwd, s_cwd.c_str(), sizeof(cwd));
-        qstrncpy(root, s_root.c_str(), sizeof(root));
-        qstrncpy(hives, s_hives.c_str(), sizeof(hives));
-        out[0] = '\0';
-        if ( program[0] != '\0' )
-            timestamped_output(out, sizeof(out), program);
-        qstring args = s_args;
-        qstring place = s_place;
-        qstring run_program;        // the program as recorded: a copy in the root, or itself
-        sval_t count = s_count;
+        qstrncpy(f->program, last.program.c_str(), sizeof(f->program));
+        qstrncpy(f->cwd, last.cwd.c_str(), sizeof(f->cwd));
+        qstrncpy(f->root, last.root.c_str(), sizeof(f->root));
+        qstrncpy(f->hives, last.hives.c_str(), sizeof(f->hives));
+        f->out[0] = '\0';
+        if ( f->program[0] != '\0' )
+            timestamped_output(f->out, sizeof(f->out), f->program);
+        f->args  = last.args;
+        f->place = last.place;
+        f->count = last.count;
         const RecordOptions defaults = recording_options();
-        ushort checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0)
-                      | (settings().sogen_start_now ? 4 : 0) | (defaults.log ? 8 : 0);
+        f->checks = (defaults.network ? 1 : 0) | (defaults.elevated ? 2 : 0)
+                  | (settings().sogen_start_now ? 4 : 0) | (defaults.log ? 8 : 0);
         for ( ;; )
         {
-            if ( ask_form(form, program, &args, cwd, out, &count, root, &place, hives, &checks) <= 0 )
-                return 1;
-            place.trim2();
-            if ( program[0] == '\0' || !qfileexist(program) )
+            if ( ask_form(form, f->program, &f->args, f->cwd, f->out, &f->count, f->root, &f->place,
+                          f->hives, &f->checks) <= 0 )
+                return false;
+            f->place.trim2();
+            const qstring problem = record_form_problem(*f, mgr);
+            if ( !problem.empty() )
             {
-                warning("Choose the program to record.");
+                warning("%s", problem.c_str());
                 continue;
             }
-            if ( out[0] == '\0' )
-            {
-                warning("Choose the output file.");
-                continue;
-            }
-            // The replay reads it as it goes: writing over it would change
-            // the recording under the session. (The backend refuses any file
-            // that is open, in another IDA too; this says it before asking
-            // anything else.)
-            if ( ctx != nullptr && ctx->mgr != nullptr && ctx->mgr->is_active()
-              && stricmp(ctx->mgr->trace_path().c_str(), out) == 0 )
-            {
-                warning("That recording is open in this window. Choose another output file.");
-                continue;
-            }
-            if ( root[0] != '\0' )
-            {
-                const qstring problem = emulation_root_problem(root);
-                if ( !problem.empty() )
-                {
-                    warning("%s", problem.c_str());
-                    continue;
-                }
-                if ( !visible_in_emulation_root(root, program) && place.empty() )
-                {
-                    warning("The program is outside the emulation root. Name a folder to copy it to.");
-                    continue;
-                }
-                if ( cwd[0] != '\0' && !visible_in_emulation_root(root, cwd) )
-                {
-                    warning("The working folder must be inside the emulation root.");
-                    continue;
-                }
-            }
-            else if ( !has_hives(hives) )
-            {
-                warning("Choose a folder of registry hives (SYSTEM, SOFTWARE, NTUSER.DAT, ...).");
-                continue;
-            }
-            if ( qfileexist(out)
-              && ask_yn(ASKBTN_NO, "HIDECANCEL\n%s already exists. Replace it?", out) != ASKBTN_YES )
+            if ( qfileexist(f->out)
+              && ask_yn(ASKBTN_NO, "HIDECANCEL\n%s already exists. Replace it?", f->out) != ASKBTN_YES )
                 continue;
             // Last, once everything else holds: the copy into the root.
-            run_program = program;
-            if ( root[0] != '\0' && !visible_in_emulation_root(root, program) )
-            {
-                qstring placed, err;
-                PlaceResult pr = place_in_emulation_root(root, program, place.c_str(), false, &placed, &err);
-                if ( pr == PlaceResult::Differs )
-                {
-                    if ( ask_yn(ASKBTN_NO, "HIDECANCEL\nThe emulation root already has a different\n%s\n\n"
-                                           "Replace it?", placed.c_str()) != ASKBTN_YES )
-                        continue;
-                    pr = place_in_emulation_root(root, program, place.c_str(), true, &placed, &err);
-                }
-                if ( pr == PlaceResult::Failed )
-                {
-                    warning("Could not copy the program into the emulation root: %s", err.c_str());
-                    continue;
-                }
-                if ( pr == PlaceResult::Placed )
-                    msg("[ida-ttd] copied %s into the emulation root: %s\n", program, placed.c_str());
-                run_program = placed;
-            }
+            if ( !place_program(f) )
+                continue;
             break;
         }
-        s_program = program;
-        s_args    = args;
-        s_cwd     = cwd;
-        s_root    = root;
-        s_hives   = hives;
-        s_place   = place;
-        s_count   = count;
-        s_asked   = true;
-        if ( root[0] == '\0' )
-            save_registry_dir(hives);
+        last.program = f->program;
+        last.args    = f->args;
+        last.cwd     = f->cwd;
+        last.root    = f->root;
+        last.hives   = f->hives;
+        last.place   = f->place;
+        last.count   = f->count;
+        last.asked   = true;
+        if ( f->root[0] == '\0' )
+            save_registry_dir(f->hives);
+        return true;
+    }
 
+    // Record what the dialog asked for, say how it went, and offer to open
+    // the recording: here (replacing this window's replay) when the database
+    // is of the same program, else in a new IDA.
+    static void run_program_recording(const ActionContext *ctx, const RecordProgramForm &f)
+    {
         RecordRequest req;
-        req.application      = run_program;
-        req.arguments        = args;
-        req.working_dir      = cwd;
-        req.path             = out;
-        req.max_instructions = count > 0 ? (uint64_t)count : 0;
-        req.emulation_root   = root;
-        req.registry_dir     = root[0] == '\0' ? qstring(hives) : qstring();
-        req.rec              = defaults;
-        req.rec.network      = (checks & 1) != 0;
-        req.rec.elevated     = (checks & 2) != 0;
-        req.rec.log          = (checks & 8) != 0;
+        req.application      = f.run_program;
+        req.arguments        = f.args;
+        req.working_dir      = f.cwd;
+        req.path             = f.out;
+        req.max_instructions = f.count > 0 ? (uint64_t)f.count : 0;
+        req.emulation_root   = f.root;
+        req.registry_dir     = f.root[0] == '\0' ? qstring(f.hives) : qstring();
+        req.rec              = recording_options();
+        req.rec.network      = (f.checks & 1) != 0;
+        req.rec.elevated     = (f.checks & 2) != 0;
+        req.rec.log          = (f.checks & 8) != 0;
         // Each time: consent for one program is not consent for the next.
-        if ( root[0] == '\0' )
+        if ( f.root[0] == '\0' )
         {
             if ( ask_yn(ASKBTN_NO,
                         "HIDECANCEL\n"
@@ -657,7 +682,7 @@ namespace idattd
                         "own files: whatever it creates, changes or deletes happens for real%s.\n\n"
                         "Record it? Only for programs you trust.",
                         req.rec.network ? ", and it reaches the network" : "") != ASKBTN_YES )
-                return 1;
+                return;
             req.allow_host = true;
         }
 
@@ -666,7 +691,7 @@ namespace idattd
                 "operations needing real administrator rights on this machine's files still fail.\n");
 
         // Taken now, after the questions, so it is when the program starts.
-        if ( (checks & 4) != 0 )
+        if ( (f.checks & 4) != 0 )
             req.start_time = (int64_t)time(nullptr);
         const uint64 started = GetTickCount64();
         ForkResult r = run_record(req);
@@ -677,21 +702,21 @@ namespace idattd
                 msg("[ida-ttd] recording cancelled after %s.\n", took.c_str());
             else
                 warning("The program was not recorded: %s", r.error.c_str());
-            return 1;
+            return;
         }
-        msg("[ida-ttd] recorded %s: %llu instruction(s) in %s into %s%s.\n", run_program.c_str(),
-            (unsigned long long)r.instructions, took.c_str(), out,
+        msg("[ida-ttd] recorded %s: %llu instruction(s) in %s into %s%s.\n", f.run_program.c_str(),
+            (unsigned long long)r.instructions, took.c_str(), f.out,
             r.cancelled ? " (stopped early; what ran is a complete recording)" : "");
 
         // Replaying it here suits only a database of the same program: this
         // window's analysis then goes on over the new recording.
-        const bool here_ok = ctx != nullptr && ctx->switch_trace && database_is_of(program);
+        const bool here_ok = ctx != nullptr && ctx->switch_trace && database_is_of(f.program);
         bool here = false, elsewhere = false;
         if ( here_ok )
         {
             const int choice = ask_buttons("~T~his window", "~N~ew window", "~D~on't open", ASKBTN_YES,
                                            "Recorded %llu instruction(s) in %s into\n%s\n\nOpen it?",
-                                           (unsigned long long)r.instructions, took.c_str(), out);
+                                           (unsigned long long)r.instructions, took.c_str(), f.out);
             here = choice == ASKBTN_YES;
             elsewhere = choice == ASKBTN_NO;
         }
@@ -699,14 +724,26 @@ namespace idattd
         {
             elsewhere = ask_yn(ASKBTN_YES, "HIDECANCEL\nRecorded %llu instruction(s) in %s into\n%s\n\n"
                                            "Open it in a new IDA window?",
-                               (unsigned long long)r.instructions, took.c_str(), out) == ASKBTN_YES;
+                               (unsigned long long)r.instructions, took.c_str(), f.out) == ASKBTN_YES;
         }
         // Here: the replay switches to it in this database, as the Fork
         // manager's switch does (any running session ends first).
         if ( here )
-            ctx->switch_trace(qstring(out));
-        else if ( elsewhere && !open_in_new_ida(out) )
-            warning("Could not start another IDA. Open %s from IDA's File menu.", out);
+            ctx->switch_trace(qstring(f.out));
+        else if ( elsewhere && !open_in_new_ida(f.out) )
+            warning("Could not start another IDA. Open %s from IDA's File menu.", f.out);
+    }
+
+    int idaapi RecordProgramHandler::activate(action_activation_ctx_t *)
+    {
+        if ( find_recorder() == nullptr )
+        {
+            warning("No installed backend can record programs (the Sogen backend can).");
+            return 1;
+        }
+        RecordProgramForm f;
+        if ( ask_record_program(&f, ctx != nullptr ? ctx->mgr : nullptr) )
+            run_program_recording(ctx, f);
         return 1;
     }
 
