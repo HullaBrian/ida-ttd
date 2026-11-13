@@ -42,6 +42,11 @@ namespace idattd
         }
 
         ITraceBackend *backend = mgr->backend();
+        if ( !backend->capabilities().access_queries )
+        {
+            *error = "This recording's backend cannot list memory accesses.";
+            return false;
+        }
         std::vector<Access> found;
         QueryResult qr = run_query("Searching the recording for accesses", [&](ProgressSink *p)
         {

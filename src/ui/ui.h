@@ -407,6 +407,15 @@ namespace idattd
 
         action_state_t idaapi update(action_update_ctx_t *) override
         { return AST_ENABLE_ALWAYS; }
+
+        // Enabled while the replayed recording can list memory accesses
+        // (ITTD_CAP_ACCESS_QUERIES), for the actions built on them.
+        action_state_t access_queries_state() const
+        {
+            TraceManager *m = mgr();
+            return m != nullptr && m->backend() != nullptr && m->backend()->capabilities().access_queries
+                 ? AST_ENABLE : AST_DISABLE;
+        }
     };
 
     // IDA has no native "continue backwards".
@@ -514,7 +523,10 @@ namespace idattd
     // under the cursor), else asked for, graphed: every chain at once,
     // following each input of an instruction that combined several values.
     struct OriginGraphHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override { return access_queries_state(); }
+    };
     // Build the graph of 'what' as of 'at' and show it (the action, without
     // asking: ttd("ui.origingraph")).
     void show_origin_graph(TraceManager *mgr, const OriginTarget &what, Position at);
@@ -524,7 +536,10 @@ namespace idattd
 
     // Find every read, write or execute of an address over the whole trace.
     struct MemSearchHandler : public TtdAction
-    { int idaapi activate(action_activation_ctx_t *) override; };
+    {
+        int idaapi activate(action_activation_ctx_t *) override;
+        action_state_t idaapi update(action_update_ctx_t *) override { return access_queries_state(); }
+    };
 
     // The self-modifying code listing. Enabled only for a backend that can
     // look for it.

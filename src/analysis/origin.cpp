@@ -776,9 +776,12 @@ namespace idattd
         return true;
     }
 
+    // A session to trace in, on a recording whose backend can list the reads
+    // each hop is found from (reads_at).
     static bool session_ready(TraceManager *mgr)
     {
-        return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr && mgr->cursor() != nullptr;
+        return mgr != nullptr && mgr->is_active() && mgr->backend() != nullptr && mgr->cursor() != nullptr
+            && mgr->backend()->capabilities().access_queries;
     }
 
     bool trace_value_origin(TraceManager *mgr, const OriginTarget &what, size_t max_hops,
