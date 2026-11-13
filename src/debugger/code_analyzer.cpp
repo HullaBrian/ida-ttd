@@ -32,11 +32,17 @@ namespace idattd
         m_fragmentChecked.clear();
         m_dynFuncBytes.clear();
         m_failedDyn.clear();
+        m_entryValid = false;
     }
 
     void CodeAnalyzer::on_stop(ITraceCursor *playhead, ea_t pc)
     {
+        // The frame entry is asked for by up to three steps of one stop
+        // (extend_into, merge_fragment, the rebuild path), each a bounded
+        // replay; it cannot change within the stop.
+        m_entryValid = false;
         analyze_current_function(playhead, pc);
+        m_entryValid = false;
     }
 
     // Define an instruction at exactly 'ea', an executed PC and so a true
@@ -87,7 +93,7 @@ namespace idattd
         return h;
     }
 
-    ea_t CodeAnalyzer::call_target_of(ITraceCursor *playhead, const insn_t &insn, ea_t &slot_out)
+    ea_t CodeAnalyzer::call_target_of(const insn_t &insn, ea_t &slot_out)
     {
         slot_out = BADADDR;
         const op_t &op = insn.ops[0];
@@ -182,7 +188,7 @@ namespace idattd
     // function (kernelbase's VirtualProtect, reached by kernel32's jmp
     // thunk) made it step back out with a breakpoint on the thunk, which
     // this thread never ran again: the step ran to the end of the recording.
-    void CodeAnalyzer::define_callees(ITraceCursor *playhead, ea_t lo, ea_t hi)
+    void CodeAnalyzer::define_callees(ea_t lo, ea_t hi)
     {
         if ( lo == BADADDR || hi <= lo )
             return;
@@ -215,7 +221,7 @@ namespace idattd
             if ( decode_insn(&insn, ip) > 0 && (is_call_insn(insn) || is_module_tail_jump(insn)) )
             {
                 ea_t slot = BADADDR;
-                ea_t tgt  = call_target_of(playhead, insn, slot);
+                ea_t tgt  = call_target_of(insn, slot);
                 // A tail jump's target is defined only when it is another
                 // module's code (an import thunk like kernel32's
                 // VirtualProtect, a jmp through its import slot). A jump
@@ -517,7 +523,7 @@ namespace idattd
             {
                 func_entry_info_t wfi;
                 if ( get_func_entry_info(&wfi, whole) )
-                    define_callees(playhead, wfi.start_ea, wfi.end_ea);
+                    define_callees(wfi.start_ea, wfi.end_ea);
                 return;
             }
 
@@ -527,7 +533,7 @@ namespace idattd
             {
                 func_entry_info_t mfi;
                 if ( get_func_entry_info(&mfi, merged) )
-                    define_callees(playhead, mfi.start_ea, mfi.end_ea);
+                    define_callees(mfi.start_ea, mfi.end_ea);
                 return;
             }
 
@@ -541,13 +547,13 @@ namespace idattd
                 // Its call targets may still be undefined (defined by the PDB
                 // plugin, or on an earlier visit before a callee's module was
                 // mapped). Cheap thanks to define_callees' memo.
-                define_callees(playhead, cur_fi.start_ea, cur_fi.end_ea);
+                define_callees(cur_fi.start_ea, cur_fi.end_ea);
                 return;
             }
             uint64_t h = hash_mem(cur_fi.start_ea, DYN_HASH_BYTES);
             if ( h == 0 || h == it->second )
             {
-                define_callees(playhead, cur_fi.start_ea, cur_fi.end_ea);
+                define_callees(cur_fi.start_ea, cur_fi.end_ea);
                 return;
             }
             ea_t fs = cur_fi.start_ea, fe = cur_fi.end_ea;
@@ -572,7 +578,7 @@ namespace idattd
             {
                 set_func_flag(fstart, FUNC_LIB, true);
             }
-            define_callees(playhead, fstart, fend);
+            define_callees(fstart, fend);
             return;
         }
 
@@ -601,7 +607,7 @@ namespace idattd
                 qstring nm;
                 if ( get_func_name(&nm, ks) > 0 && !nm.empty() )
                     set_debug_name(ks, nm.c_str());
-                define_callees(playhead, kfi.start_ea, kfi.end_ea);
+                define_callees(kfi.start_ea, kfi.end_ea);
                 return;
             }
         }
@@ -612,7 +618,7 @@ namespace idattd
         {
             func_entry_info_t gfi;
             if ( get_func_entry_info(&gfi, grown) )
-                define_callees(playhead, gfi.start_ea, gfi.end_ea);
+                define_callees(gfi.start_ea, gfi.end_ea);
             return;
         }
 
@@ -622,7 +628,7 @@ namespace idattd
             if ( failed->second == hash_mem(pc, DYN_HASH_BYTES) )
             {
                 lay_out_window(playhead, pc);
-                define_callees(playhead, m_winLo, m_winHi);
+                define_callees(m_winLo, m_winHi);
                 return;
             }
             m_failedDyn.erase(failed);      // the code there changed: try again
@@ -692,7 +698,7 @@ namespace idattd
             func_entry_info_t nfi;
             ea_t nfe = get_func_entry_info(&nfi, nfs) && nfi.end_ea > nfs
                      ? nfi.end_ea : aend;
-            define_callees(playhead, nfs, nfe);
+            define_callees(nfs, nfe);
         }
         else
         {
@@ -707,7 +713,7 @@ namespace idattd
                 m_failedDyn[pc] = h;
             }
             lay_out_window(playhead, pc);             // PC reachable only via an indirect edge
-            define_callees(playhead, m_winLo, m_winHi);
+            define_callees(m_winLo, m_winHi);
         }
     }
 
@@ -769,11 +775,19 @@ namespace idattd
     {
         if ( m_backend == nullptr || playhead == nullptr )
             return BADADDR;
+        const Position here = playhead->position();
+        const uint32_t tid  = playhead->thread_id();
+        if ( m_entryValid && m_entryPos == here && m_entryTid == tid && m_entryPc == pc )
+            return m_entry;
         ea_t entry = BADADDR;
-        if ( m_backend->query_frame_entry(playhead->position(), playhead->thread_id(), 65536,
-                                          nullptr, &entry) && entry != BADADDR )
-            return entry;
-        return stack_scan_entry(playhead, pc);
+        if ( !m_backend->query_frame_entry(here, tid, 65536, nullptr, &entry) || entry == BADADDR )
+            entry = stack_scan_entry(playhead, pc);
+        m_entryValid = true;
+        m_entryPos   = here;
+        m_entryTid   = tid;
+        m_entryPc    = pc;
+        m_entry      = entry;
+        return entry;
     }
 
     // The call is older than the bound: find its return address on the stack,

@@ -85,7 +85,7 @@ namespace idattd
         // The session runs with AF_PROC/AF_PROCPTR off, the rule that would
         // create a function at each call target; doing it here one level at a
         // time names callees without the runaway cascade those flags caused.
-        void  define_callees(ITraceCursor *playhead, ea_t lo, ea_t hi);
+        void  define_callees(ea_t lo, ea_t hi);
         // Define one function at 'ea', preferring its module's .pdata bounds
         // and marking library code FUNC_LIB. No-op when 'ea' already starts a
         // function. False when 'ea' is not mapped yet, so the caller can retry.
@@ -94,8 +94,7 @@ namespace idattd
         // the slot of an indirect call through memory (an IAT entry, which in
         // a replay holds its resolved value at the current position). BADADDR
         // when it cannot be known statically (a call through a register).
-        ea_t  call_target_of(ITraceCursor *playhead,
-                             const insn_t &insn, ea_t &slot_out);
+        ea_t  call_target_of(const insn_t &insn, ea_t &slot_out);
         // For dynamic code with no module and no .pdata: lay out the
         // instructions that executed around 'pc', from a window of the
         // thread's instruction stream.
@@ -144,5 +143,11 @@ namespace idattd
         // bytes there, so later stops skip the frame query and rebuild that
         // would fail the same way. Cleared with the session.
         std::map<ea_t, uint64_t> m_failedDyn;
+        // find_dynamic_function_entry's answer, for the rest of one on_stop.
+        bool     m_entryValid = false;
+        Position m_entryPos;
+        uint32_t m_entryTid = 0;
+        ea_t     m_entryPc  = BADADDR;
+        ea_t     m_entry    = BADADDR;
     };
 }
