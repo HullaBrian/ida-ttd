@@ -8,6 +8,12 @@
 
 namespace idattd
 {
+    // Lay [lo, hi) out as code in one linear pass, skipping existing code and
+    // stepping a byte over what does not decode (jump tables, other embedded
+    // data). Bounded, so a corrupt range cannot stall a stop. Also what
+    // KeptFunctions lays kept bounds out with.
+    void lay_out_linear(ea_t lo, ea_t hi);
+
     // Turning the code a recording executed into disassembly IDA can show.
     //
     // A recording contains code the binary does not: packed, injected and JIT

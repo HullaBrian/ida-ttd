@@ -1,6 +1,7 @@
 #include "debugger/kept_functions.h"
 #include "debugger/module_registry.h"
 #include "debugger/memory_reader.h"
+#include "debugger/code_analyzer.h"
 #include "common/dbstore.h"
 
 // As in ui/decompiler.cpp: hexrays.hpp warns at this project's level in
@@ -29,7 +30,6 @@ namespace idattd
     static const size_t   KF_MAX_LVARS    = 1024;
     static const uint64_t KF_MAX_BYTES    = 1u << 20;   // function bytes hashed
     static const int      KF_LOOKBACK     = 16;    // kept starts below a pc define_at tries
-    static const int      MAX_LINEAR_ITEMS = 0x20000;
 
     static nodeidx_t blob_slot(nodeidx_t id) { return id << 16; }
 
@@ -305,6 +305,16 @@ namespace idattd
         return out;
     }
 
+    // The blob store() writes for 'versions'.
+    static void encode(BlobWriter &w, const std::vector<Version> &versions)
+    {
+        w.u32(KF_MAGIC);
+        w.u32(KF_VERSION);
+        w.u32((uint32_t)versions.size());
+        for ( const Version &v : versions )
+            put_version(w, v);
+    }
+
     static void store(ea_t start, const std::vector<Version> &versions)
     {
         netnode nn(KF_NODE, 0, true);
@@ -325,11 +335,7 @@ namespace idattd
             nn.altset((nodeidx_t)start, id, KF_INDEX);
         }
         BlobWriter w;
-        w.u32(KF_MAGIC);
-        w.u32(KF_VERSION);
-        w.u32((uint32_t)versions.size());
-        for ( const Version &v : versions )
-            put_version(w, v);
+        encode(w, versions);
         nn.delblob(blob_slot(id), KF_BLOB);     // a shorter blob leaves no tail
         nn.setblob(w.data(), w.size(), blob_slot(id), KF_BLOB);
     }
@@ -425,12 +431,14 @@ namespace idattd
         out->defea = (ea_t)l.defea;
     }
 
-    // Everything the user set on the function at 'start', with its ranges
-    // and their hash. False when the function cannot be hashed.
-    static bool read_version(ea_t start, Version *v)
+    // Everything the user set on the function at 'start', with its ranges,
+    // but not their hash: that reads the function's bytes (up to a MiB
+    // through the debugger), and most functions have no work to keep. False
+    // when there is no function at 'start'.
+    static bool read_work(ea_t start, Version *v)
     {
         v->ranges = function_ranges(start);
-        if ( v->ranges.empty() || !hash_ranges(v->ranges, &v->hash) )
+        if ( v->ranges.empty() )
             return false;
 
         if ( has_user_name(get_flags(start)) )
@@ -511,24 +519,6 @@ namespace idattd
     //=======================================================================
     // Writing the database
     //=======================================================================
-    // Lay [lo, hi) out as code, skipping what already is and stepping a byte
-    // over what does not decode (as CodeAnalyzer's linear layout).
-    static void lay_out(ea_t lo, ea_t hi)
-    {
-        ea_t ip = lo;
-        for ( int guard = 0; ip < hi && guard < MAX_LINEAR_ITEMS; guard++ )
-        {
-            if ( is_code(get_flags(ip)) )
-            {
-                ea_t nxt = get_item_end(ip);
-                ip = nxt > ip ? nxt : ip + 1;
-                continue;
-            }
-            int len = create_insn(ip);
-            ip += len > 0 ? len : 1;
-        }
-    }
-
     // Give the function at 'start' the kept bounds: the entry chunk's end,
     // then every tail it does not have yet.
     static void apply_bounds(ea_t start, const Version &v)
@@ -540,7 +530,7 @@ namespace idattd
         if ( entry.lo == start && entry.hi != fi.end_ea )
         {
             if ( entry.hi > fi.end_ea )
-                lay_out(fi.end_ea, entry.hi);
+                lay_out_linear(fi.end_ea, entry.hi);
             set_func_end(start, entry.hi);
         }
         for ( size_t i = 1; i < v.ranges.size(); i++ )
@@ -548,7 +538,7 @@ namespace idattd
             const Range &t = v.ranges[i];
             if ( get_func_start(t.lo) == start )
                 continue;
-            lay_out(t.lo, t.hi);
+            lay_out_linear(t.lo, t.hi);
             append_func_tail_ea(start, t.lo, t.hi);
         }
     }
@@ -693,10 +683,14 @@ namespace idattd
         // did exactly that.
         if ( m_pending.count(start) != 0 )
             return;
+        // The work first: a function without any is skipped before its bytes
+        // are read, which keeps a layout change, a save (autosave included)
+        // and the session's end cheap.
         Version v;
-        if ( !read_version(start, &v) || !v.has_work() )
+        if ( !read_work(start, &v) || !v.has_work() || !hash_ranges(v.ranges, &v.hash) )
             return;
-        std::vector<Version> kept = load(start);
+        const std::vector<Version> was = load(start);
+        std::vector<Version> kept = was;
         // Superseded: the same bytes (this copy's hash), or an older copy
         // whose bytes still match what is here, so the work is this one's.
         kept.erase(std::remove_if(kept.begin(), kept.end(), [&](const Version &o)
@@ -707,6 +701,13 @@ namespace idattd
         kept.insert(kept.begin(), std::move(v));
         if ( kept.size() > KF_MAX_VERSIONS )
             kept.resize(KF_MAX_VERSIONS);
+        // Rewriting an unchanged copy would dirty the database, so a save
+        // with nothing new would leave it unsaved again.
+        BlobWriter a, b;
+        encode(a, was);
+        encode(b, kept);
+        if ( a.size() == b.size() && memcmp(a.data(), b.data(), a.size()) == 0 )
+            return;
         store(start, kept);
     }
 
@@ -825,7 +826,7 @@ namespace idattd
             if ( v == nullptr )
                 continue;
             for ( const Range &rg : v->ranges )
-                lay_out(rg.lo, rg.hi);
+                lay_out_linear(rg.lo, rg.hi);
             if ( !add_func(v->ranges[0].lo, v->ranges[0].hi) )
                 continue;
             for ( size_t i = 1; i < v->ranges.size(); i++ )

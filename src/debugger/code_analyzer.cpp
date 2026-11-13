@@ -51,10 +51,8 @@ namespace idattd
         create_insn(ea);
     }
 
-    // Lay [lo, hi) out as code in one linear pass, skipping existing code and
-    // stepping a byte over what does not decode (jump tables, other embedded
-    // data). Bounded by MAX_LINEAR_ITEMS.
-    static void lay_out_linear(ea_t lo, ea_t hi)
+    // Bounded by MAX_LINEAR_ITEMS (see the header).
+    void lay_out_linear(ea_t lo, ea_t hi)
     {
         ea_t ip = lo;
         for ( int guard = 0; ip < hi && guard < MAX_LINEAR_ITEMS; guard++ )
