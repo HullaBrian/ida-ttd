@@ -278,7 +278,7 @@ namespace idattd
             "Record Fork\n"
             "\n"
             "\n"
-            "Fork at %q. %q\n"
+            "%q\n"
             "\n"
             "<#The new recording. This one is not touched#~N~ew trace        :f:1:64::>\n"
             "<#0 records until the program exits#~I~nstruction limit:D::18::>\n"
@@ -286,8 +286,9 @@ namespace idattd
             "<#The replay up to the fork stays offline either way#Ne~t~work access after the fork:C>\n"
             "<#The recording window shows it either way#Sogen's ~l~og to the Output window:C>>\n"
             "\n";
-        qstring where   = form_text(format_position(req.at));
-        qstring changes = form_text(describe_changes(req));
+        // One text field for the whole line: IDA puts a space after each
+        // %q field, which showed as "Fork at 54:55 . No changes".
+        qstring where = form_text(qstring("Fork at ") + format_position(req.at) + ". " + describe_changes(req));
         char path[QMAXPATH];
         qstrncpy(path, default_fork_path(m, req.at).c_str(), sizeof(path));
         // The fork_instructions setting at first, then the last answer this
@@ -299,7 +300,7 @@ namespace idattd
         ushort checks = (settings().sogen_network ? 1 : 0) | (settings().sogen_log ? 2 : 0);
         for ( ;; )
         {
-            if ( ask_form(form, &where, &changes, path, &count, &checks) <= 0 )
+            if ( ask_form(form, &where, path, &count, &checks) <= 0 )
                 return 1;
             if ( path[0] == '\0' )
             {

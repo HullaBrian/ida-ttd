@@ -394,8 +394,9 @@ namespace idattd
                 status.sprnt(sink.holding() ? "Paused after %s" : "Pausing after %s...", clock_text(ran).c_str());
             else
                 status.sprnt("Running for %s", clock_text(ran).c_str());
-            if ( !cancelled && sink.percent() != 0 )
-                status.cat_sprnt(", %u%%", sink.percent());
+            // No percentage: a recording runs until the program exits, so
+            // the backend's progress (the share of an instruction limit, if
+            // any) says little about how far along it is.
             const qstring asked = win.update(status, lines);
             if ( !cancelled && (asked == "stop" || asked == "gone") )
             {
@@ -435,7 +436,9 @@ namespace idattd
             }
             if ( !cancelled )
             {
-                const uint32_t now = sink.percent();
+                // Recordings (the ones with a title) show no percentage, as in
+                // the recording window; scans over a recording do.
+                const uint32_t now = show != nullptr && show->title != nullptr ? 0 : sink.percent();
                 const ULONGLONG t = GetTickCount64();
                 const uint64 secs = show != nullptr && show->elapsed ? (t - started) / 1000 : 0;
                 const uint64_t seq = show != nullptr && show->log_lines != 0 ? emulator_log_tail(0, nullptr) : 0;
