@@ -202,6 +202,9 @@
     <ClInclude Include="$(SrcDir)\plugin\plugin.h">
       <Filter>plugin</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\plugin_internal.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\debugger\apidecode.h">
       <Filter>debugger</Filter>
     </ClInclude>
@@ -409,6 +412,21 @@
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\plugin_actions.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\plugin_menu.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\plugin_session.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\plugin_stopviews.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\plugin_events.cpp">
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\debugger\apidecode.cpp">

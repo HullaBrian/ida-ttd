@@ -101,6 +101,7 @@
     <ClInclude Include="$(SrcDir)\plugin\script_api.h" />
     <ClInclude Include="$(SrcDir)\plugin\settings.h" />
     <ClInclude Include="$(SrcDir)\plugin\plugin.h" />
+    <ClInclude Include="$(SrcDir)\plugin\plugin_internal.h" />
   </ItemGroup>
 
   <ItemGroup>
@@ -170,6 +171,11 @@
     <ClCompile Include="$(SrcDir)\plugin\script_api.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\settings.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\plugin_actions.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\plugin_menu.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\plugin_session.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\plugin_stopviews.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\plugin_events.cpp" />
     <ClCompile Include="$(SrcDir)\debugger\apidecode.cpp" />
     <ClCompile Include="$(SrcDir)\common\apimeta\win32meta.cpp" />
     <ClCompile Include="$(SrcDir)\common\apimeta\builtinsigs.cpp" />

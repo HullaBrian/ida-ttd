@@ -279,7 +279,7 @@ namespace idattd
         // first time each action is seen (they register lazily) and restored
         // when the trace unloads: the override is global and would otherwise
         // re-skin the toolbar for every other debugger. Parallel to
-        // NATIVE_MOVEMENT_ACTIONS in plugin.cpp.
+        // NATIVE_MOVEMENT_ACTIONS in plugin_actions.cpp.
         int  m_nativeSaved[ICO_NATIVE_COUNT]   = { -1, -1, -1, -1, -1, -1 };
         bool m_nativeSavedOk[ICO_NATIVE_COUNT] = { false, false, false, false, false, false };
 
