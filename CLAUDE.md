@@ -83,12 +83,19 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   `scripts/ida_ttd_graph.py`, `ida_ttd_heatmap.py` and `ida_ttd_calltree.py`,
   run through IDAPython (`run_python_window` in `graph_view.h`, which
   reloads a module whose file changed).
-- **`src/plugin/`**: the `plugmod_t`. `plugin.cpp` holds the action table
-  (`build_action_table`: label, handler, shortcut, tooltip, icon, menu group,
-  submenu: adding a command is a handler + one row), menu/submenu/toolbar
-  construction, context-menu attachment (`ui_finish_populating_widget_popup`),
-  and the after-stop work (`do_after_stop`, run from a timer after IDA's own
-  stop handling). `script_api.cpp` is the `ttd("cmd args")` IDC function.
+- **`src/plugin/`**: the `plugmod_t`, split by what it does: `plugin.cpp`
+  (construction and teardown), `plugin_actions.cpp` (the action table,
+  `build_action_table`: label, handler, shortcut, tooltip, icon, menu group,
+  submenu: adding a command is a handler + one row; the toolbar),
+  `plugin_menu.cpp` (the TTD menu), `plugin_session.cpp` (starting and
+  switching sessions), `plugin_events.cpp` (IDA's notifications, context
+  menus in `ui_finish_populating_widget_popup`) and `plugin_stopviews.cpp`
+  (the after-stop work, `do_after_stop`, run from a timer after IDA's own
+  stop handling). `script_api.cpp` is the `ttd("cmd args")` IDC function and
+  its dispatch; the commands live in `script_session`, `script_analysis`,
+  `script_ui`, `script_fork` and `script_drv` (each file's own table of
+  rows), on `script_args.h` and `script_json.h`. IDAPython is called through
+  `common/python_eval.h`.
 - **`scripts/ida_ttd.py`**: the Python API (`Session`, `Recording`, `call`).
   The build copies it to `ida-ttd-python/` beside the plugin, and the plugin
   puts that folder on IDAPython's `sys.path` when it loads.

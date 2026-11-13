@@ -20,25 +20,9 @@ namespace idattd
         { "help",           cmd_help,           "this list; every number is hex (0x optional), 0n10 is decimal ten" },
     };
 
-    // The order 'help' lists the commands in. Each file holds its own rows;
-    // this is the one place that orders them.
-    static const char *const HELP_ORDER[] = {
-        "help", "state", "backends", "settings", "start", "wait", "step", "over", "out", "run",
-        "runto", "goto", "regs", "read", "segments", "stop", "an.search", "an.coverage",
-        "an.callsites", "an.trace", "an.memmap", "an.regions", "an.handles", "an.origin",
-        "an.origingraph", "ui.origingraph", "ui.graph", "ui.graphact", "an.inputs",
-        "an.autocalls", "an.decode", "an.syscalls", "an.selfmod", "an.calltree", "an.registry",
-        "an.strings", "an.buffers", "switch", "ui.calltree", "ui.heat", "ui.heatnow",
-        "ui.heatzoom", "ui.showbytes", "an.heat", "ui.travel", "switch.ui", "an.forks",
-        "an.forget", "an.forkhere", "an.forkdraft", "an.forkdiscard", "an.forkrecord",
-        "an.fork", "an.record", "drv.open", "drv.close", "drv.info", "drv.modules",
-        "drv.threads", "drv.timeline", "drv.pos", "drv.seek", "drv.step", "drv.over", "drv.out",
-        "drv.run", "drv.runto", "drv.bp", "drv.insns", "drv.regs", "drv.read", "drv.accesses",
-        "drv.calls", "drv.indirect", "drv.exceptions", "drv.syscalls", "drv.map", "drv.symbols",
-    };
-
-    // Every file's rows in HELP_ORDER. A row missing from HELP_ORDER still
-    // works and is listed last, so forgetting the list loses no command.
+    // Every file's rows, file by file: 'help' lists the commands grouped by
+    // what they drive (the session, the analyses, the windows, forks, drv.*),
+    // and a new command is added in one place, its own file's table.
     static std::vector<Command> merged_commands()
     {
         const std::span<const Command> parts[] =
@@ -46,23 +30,9 @@ namespace idattd
             API_COMMANDS, session_commands(), analysis_commands(), ui_commands(),
             fork_commands(), drv_commands(),
         };
-        auto listed = [](const std::vector<Command> &v, const char *name)
-        {
-            for ( const Command &c : v )
-                if ( strcmp(c.name, name) == 0 )
-                    return true;
-            return false;
-        };
         std::vector<Command> all;
-        for ( const char *name : HELP_ORDER )
-            for ( const std::span<const Command> &part : parts )
-                for ( const Command &c : part )
-                    if ( strcmp(c.name, name) == 0 && !listed(all, name) )
-                        all.push_back(c);
         for ( const std::span<const Command> &part : parts )
-            for ( const Command &c : part )
-                if ( !listed(all, c.name) )
-                    all.push_back(c);
+            all.insert(all.end(), part.begin(), part.end());
         return all;
     }
 
