@@ -51,113 +51,124 @@ namespace idattd
             return;
 
         m_modules = m_backend->modules();
+        m_names.resize(m_modules.size());
 
-        // The table: one span per distinct base, sorted.
-        std::set<ea_t> seen;
-        for ( const ModuleInfo &m : m_modules )
+        // One span per distinct base, over every load there; std::map keeps
+        // them sorted.
+        std::map<ea_t, Span> spans;
+        for ( size_t li = 0; li < m_modules.size(); li++ )
         {
-            if ( m.base == BADADDR || !seen.insert(m.base).second )
-                continue;
-            Span s;
-            s.base = m.base;
-            s.end  = m.base + (ea_t)m.size;
-
+            const ModuleInfo &m = m_modules[li];
             std::string bn = base_name(m.path.empty() ? m.name.c_str() : m.path.c_str());
-            s.file = bn.c_str();
-
-            // The segment identifier keeps the extension ("kernel32_dll" says
-            // more than "kernel32"); anything not legal in an IDA name becomes
-            // an underscore.
-            std::string ident = bn;
-            for ( char &c : ident )
-                if ( !qisalnum(c) && c != '_' )
-                    c = '_';
-            s.ident = ident.c_str();
-
+            LoadNames &ln = m_names[li];
+            ln.file = bn.c_str();
             // The display name drops the extension, the way a debugger writes
             // "kernel32!Foo".
-            size_t dot = bn.rfind('.');
+            std::string disp = bn;
+            size_t dot = disp.rfind('.');
             if ( dot != std::string::npos && dot != 0 )
-                bn.resize(dot);
-            s.name = bn.c_str();
-            m_spans.push_back(std::move(s));
+                disp.resize(dot);
+            ln.name = disp.c_str();
+            if ( m.base == BADADDR )
+                continue;
+
+            Span &s = spans[m.base];
+            if ( s.loads.empty() )
+            {
+                s.base = m.base;
+                s.file = ln.file;
+                s.name = ln.name;
+                // The segment identifier keeps the extension ("kernel32_dll"
+                // says more than "kernel32"); anything not legal in an IDA
+                // name becomes an underscore.
+                std::string ident = bn;
+                for ( char &c : ident )
+                    if ( !qisalnum(c) && c != '_' )
+                        c = '_';
+                s.ident = ident.c_str();
+            }
+            ea_t end = m.base + (ea_t)m.size;
+            if ( end > s.end )
+                s.end = end;
+            s.loads.push_back(li);
         }
-        std::sort(m_spans.begin(), m_spans.end());
+        ea_t reach = 0;
+        for ( auto &kv : spans )
+        {
+            reach = std::max(reach, kv.second.end);
+            m_spanReach.push_back(reach);
+            m_spans.push_back(std::move(kv.second));
+        }
 
         // The analysed binary: the module the recording names as its main
         // one, else the first loaded.
         const char *main = m_backend->info().main_module.c_str();
-        for ( const ModuleInfo &m : m_modules )
-            if ( main[0] != '\0' && _stricmp(m.name.c_str(), main) == 0 )
+        for ( size_t li = 0; li < m_modules.size() && main[0] != '\0'; li++ )
+            if ( _stricmp(m_modules[li].name.c_str(), main) == 0 )
             {
-                m_mainBase = m.base;
+                m_mainLoad = li;
                 break;
             }
-        if ( m_mainBase == BADADDR && !m_modules.empty() )
-            m_mainBase = m_modules.front().base;
+        if ( m_mainLoad == NONE && !m_modules.empty() )
+            m_mainLoad = 0;
     }
 
     void ModuleRegistry::reset()
     {
         m_symCursor.reset();
+        m_symAt   = Position::none();
         m_backend = nullptr;
+        m_now     = Position::none();
         m_modules.clear();
+        m_names.clear();
         m_spans.clear();
-        m_mainBase = BADADDR;
-        m_resolvedBases.clear();
+        m_spanReach.clear();
+        m_mainLoad = NONE;
+        m_namedBy.clear();
         m_pdbBases.clear();
         m_pdbRetried.clear();
         // Waits for any read still running (std::async futures join); a read
         // takes milliseconds.
         m_publics.clear();
-        m_funcRanges.clear();
-        m_funcTried.clear();
-        m_funcFromMemory.clear();
-        m_exports.clear();
-        m_loadImage.clear();
-        m_loadImageTried.clear();
-        m_lastImageLoad = (size_t)-1;
-        m_moduleImages.clear();
+        m_lastImageLoad = NONE;
+        m_images.clear();
         m_targetName.clear();
     }
 
     //=======================================================================
-    // The table
+    // The spans
     //=======================================================================
     size_t ModuleRegistry::index_at(ea_t ea) const
     {
-        const std::vector<Span> &v = m_spans;
-        // Last module whose base <= ea, then check ea falls inside it.
-        auto it = std::upper_bound(v.begin(), v.end(), ea,
+        // From the last span whose base <= ea down, while an earlier span can
+        // still reach ea: a span inside a larger, earlier one does not hide
+        // the larger one's addresses past its own end.
+        auto it = std::upper_bound(m_spans.begin(), m_spans.end(), ea,
                                    [](ea_t a, const Span &s) { return a < s.base; });
-        if ( it == v.begin() )
-            return (size_t)-1;
-        --it;
-        if ( ea >= it->base && ea < it->end )
-            return (size_t)(it - v.begin());
-        return (size_t)-1;
+        for ( size_t i = (size_t)(it - m_spans.begin()); i-- > 0; )
+        {
+            if ( m_spanReach[i] <= ea )
+                break;
+            if ( ea < m_spans[i].end )
+                return i;
+        }
+        return NONE;
     }
 
     bool ModuleRegistry::range_at(ea_t ea, ea_t &lo, ea_t &hi) const
     {
         size_t idx = index_at(ea);
-        if ( idx == (size_t)-1 )
+        if ( idx == NONE )
             return false;
         lo = m_spans[idx].base;
         hi = m_spans[idx].end;
         return true;
     }
 
-    qstring ModuleRegistry::name_at(ea_t ea) const
-    {
-        size_t idx = index_at(ea);
-        return idx == (size_t)-1 ? qstring() : m_spans[idx].name;
-    }
-
     qstring ModuleRegistry::ident_at(ea_t ea) const
     {
         size_t idx = index_at(ea);
-        return idx == (size_t)-1 ? qstring() : m_spans[idx].ident;
+        return idx == NONE ? qstring() : m_spans[idx].ident;
     }
 
     std::vector<std::pair<ea_t, ea_t>> ModuleRegistry::ranges() const
@@ -168,6 +179,9 @@ namespace idattd
         return out;
     }
 
+    //=======================================================================
+    // Loads
+    //=======================================================================
     std::vector<ModuleRegistry::Load> ModuleRegistry::loads() const
     {
         std::vector<Load> out;
@@ -184,6 +198,61 @@ namespace idattd
         return out;
     }
 
+    // Load 'li' is mapped over 'ea' at 'pos'. The rule loaded_at uses.
+    bool ModuleRegistry::live(size_t li, ea_t ea, Position pos) const
+    {
+        const ModuleInfo &m = m_modules[li];
+        return m.base != BADADDR
+            && ea >= m.base && ea - m.base < (ea_t)m.size
+            && (!m.loaded.is_valid() || m.loaded <= pos)
+            && (!m.unloaded.is_valid() || pos < m.unloaded);
+    }
+
+    size_t ModuleRegistry::load_index_at(ea_t ea, Position pos) const
+    {
+        if ( !pos.is_valid() )
+            return NONE;
+        // The spans that hold 'ea', innermost first (see index_at), and in
+        // each the load mapped at 'pos'.
+        auto it = std::upper_bound(m_spans.begin(), m_spans.end(), ea,
+                                   [](ea_t a, const Span &s) { return a < s.base; });
+        for ( size_t i = (size_t)(it - m_spans.begin()); i-- > 0; )
+        {
+            if ( m_spanReach[i] <= ea )
+                break;
+            const Span &s = m_spans[i];
+            if ( ea >= s.end )
+                continue;
+            for ( size_t li : s.loads )
+                if ( live(li, ea, pos) )
+                    return li;
+        }
+        return NONE;
+    }
+
+    // The load mapped at 'ea' at 'pos', else the first load at the span
+    // holding 'ea' that covers it: an address the user looks at where its
+    // module is not mapped (before its load) still belongs to it.
+    size_t ModuleRegistry::load_for(ea_t ea, Position pos) const
+    {
+        size_t li = load_index_at(ea, pos);
+        if ( li != NONE )
+            return li;
+        size_t idx = index_at(ea);
+        if ( idx == NONE )
+            return NONE;
+        for ( size_t k : m_spans[idx].loads )
+            if ( ea - m_modules[k].base < (ea_t)m_modules[k].size )
+                return k;
+        return m_spans[idx].loads.front();
+    }
+
+    const ModuleInfo *ModuleRegistry::load_at(ea_t ea, Position pos) const
+    {
+        size_t li = load_index_at(ea, pos);
+        return li == NONE ? nullptr : &m_modules[li];
+    }
+
     std::vector<const ModuleInfo *> ModuleRegistry::loaded_at(Position pos) const
     {
         std::vector<const ModuleInfo *> out;
@@ -197,51 +266,187 @@ namespace idattd
         return out;
     }
 
-    const ModuleInfo *ModuleRegistry::record_at(ea_t base) const
+    size_t ModuleRegistry::record_index(ea_t base) const
     {
         if ( base == BADADDR )
-            return nullptr;
-        for ( const ModuleInfo &m : m_modules )
-            if ( m.base == base )
-                return &m;
-        return nullptr;
+            return NONE;
+        auto it = std::lower_bound(m_spans.begin(), m_spans.end(), base,
+                                   [](const Span &s, ea_t b) { return s.base < b; });
+        if ( it == m_spans.end() || it->base != base )
+            return NONE;
+        for ( size_t li : it->loads )
+            if ( m_now.is_valid() && live(li, base, m_now) )
+                return li;
+        return it->loads.front();
+    }
+
+    const ModuleInfo *ModuleRegistry::record_at(ea_t base) const
+    {
+        size_t li = record_index(base);
+        return li == NONE ? nullptr : &m_modules[li];
     }
 
     const ModuleInfo *ModuleRegistry::main_module() const
     {
-        return record_at(m_mainBase);
+        return m_mainLoad == NONE ? nullptr : &m_modules[m_mainLoad];
+    }
+
+    bool ModuleRegistry::is_main_load(size_t li) const
+    {
+        if ( li == m_mainLoad )
+            return true;
+        if ( m_mainLoad == NONE || li == NONE )
+            return false;
+        // The analysed binary unloaded and loaded again at its base.
+        const ModuleInfo &a = m_modules[li];
+        const ModuleInfo &m = m_modules[m_mainLoad];
+        return a.base == m.base && _stricmp(a.path.c_str(), m.path.c_str()) == 0;
+    }
+
+    qstring ModuleRegistry::name_at(ea_t ea, Position pos) const
+    {
+        size_t li = load_for(ea, pos);
+        return li == NONE ? qstring() : m_names[li].name;
     }
 
     bool ModuleRegistry::is_library_address(ea_t ea) const
     {
-        size_t idx = index_at(ea);
-        if ( idx == (size_t)-1 )
-            return false;
-        return m_spans[idx].base != m_mainBase;
+        size_t li = load_for(ea, m_now);
+        return li != NONE && !is_main_load(li);
     }
 
-    bool ModuleRegistry::function_range_at(ea_t pc, ea_t &start, ea_t &end) const
+    //=======================================================================
+    // Images
+    //=======================================================================
+    ModuleRegistry::Image &ModuleRegistry::image_of(size_t li)
     {
-        size_t mi = index_at(pc);
-        if ( mi == (size_t)-1 )
-            return false;
+        LoadNames &ln = m_names[li];
+        if ( ln.image != nullptr )
+            return *ln.image;
+        const ModuleInfo &m = m_modules[li];
 
+        // The backend's timestamp and checksum, else the recorded headers'.
+        uint32_t ts = m.timestamp;
+        uint32_t cs = m.checksum;
+        if ( ts == 0 && cs == 0 )
+        {
+            GuestPeInfo pe;
+            GuestRead rd = read_at_record(li);
+            if ( rd && read_guest_pe_info(rd, m.base, &pe) )
+            {
+                ts = pe.timestamp;
+                cs = pe.checksum;
+            }
+        }
+        ln.timestamp = ts;
+        ln.checksum  = cs;
+
+        // Paths compare without case, as Windows does. An image with no
+        // identity at all is shared only by loads at the same base, which
+        // is what every cache was keyed by before.
+        std::string path = m.path.empty() ? m.name.c_str() : m.path.c_str();
+        for ( char &c : path )
+            c = (char)tolower((unsigned char)c);
+        qstring key;
+        if ( ts == 0 && cs == 0 )
+            key.sprnt("%s|%llX|@%llX", path.c_str(), (uint64_t)m.size, (uint64_t)m.base);
+        else
+            key.sprnt("%s|%llX|%08X|%08X", path.c_str(), (uint64_t)m.size, ts, cs);
+        Image &img = m_images[key];
+        ln.image = &img;
+        return img;
+    }
+
+    const std::vector<std::pair<ea_t, std::string>> &ModuleRegistry::exports_of(size_t li)
+    {
+        Image &img = image_of(li);
+        if ( img.exports_read )
+            return img.exports;
+        img.exports_read = true;
+        const ModuleInfo &m = m_modules[li];
+        std::vector<std::pair<ea_t, std::string>> v;
+        if ( m_backend->capabilities().recorded_exports )
+        {
+            for ( const ITraceBackend::Symbol &s : m_backend->module_symbols(m.base) )
+                if ( s.is_export )
+                    v.emplace_back(s.ea, s.name.c_str());
+        }
+        else
+        {
+            const uint32_t MACHINE_AMD64 = 0x8664;    // IMAGE_FILE_MACHINE_AMD64
+            bool is64 = m.machine != 0 ? m.machine == MACHINE_AMD64 : m_is64;
+            GuestRead rd = read_at_record(li);
+            if ( rd )
+                read_guest_exports(rd, m.base, is64, &v);
+        }
+        // Kept as RVAs, so another load of the image at another base shares
+        // them; wrapping arithmetic keeps even an address below the base
+        // exact.
+        for ( auto &e : v )
+            e.first -= m.base;
+        // export_name_at looks names up by address once per decoded call.
+        std::stable_sort(v.begin(), v.end(),
+                         [](const std::pair<ea_t, std::string> &a, const std::pair<ea_t, std::string> &b)
+                         { return a.first < b.first; });
+        img.exports = std::move(v);
+        return img.exports;
+    }
+
+    // Function bounds, so a whole function (including code before the PC) can
+    // be laid out: from the backend if it knows them, else the module's
+    // .pdata, read from the on-disk file when it is the recorded build
+    // (complete), otherwise from recorded memory (right, sometimes
+    // incomplete). Once per image.
+    void ModuleRegistry::function_ranges(size_t li)
+    {
+        Image &img = image_of(li);
+        if ( img.funcs_tried )
+            return;
+        img.funcs_tried = true;
+        DiagTimer diag_timer("function ranges");
+        const ModuleInfo &m = m_modules[li];
+        const ea_t base = m.base;
+        std::vector<std::pair<ea_t, ea_t>> franges = m_backend->module_functions(base);
+        if ( franges.empty() )
+            parse_pdata_functions_from_file(m.path.c_str(), base, m_is64,
+                                            m_names[li].timestamp, m_names[li].checksum, franges);
+        if ( franges.empty() )
+        {
+            img.funcs_from_memory = true;
+            GuestRead rd = read_at_record(li);
+            if ( rd )
+                parse_pdata_functions(rd, base, m_is64, franges);
+        }
+        for ( auto &f : franges )
+        {
+            f.first  -= base;
+            f.second -= base;
+        }
+        std::sort(franges.begin(), franges.end());
+        img.funcs = std::move(franges);
+    }
+
+    bool ModuleRegistry::function_range_at(ea_t pc, Position pos, ea_t &start, ea_t &end) const
+    {
+        size_t li = load_for(pc, pos);
+        if ( li == NONE )
+            return false;
         // Worked out on first use when the backend's reads are not cheap.
-        const_cast<ModuleRegistry *>(this)->function_ranges(m_spans[mi].base);
-        auto it = m_funcRanges.find(m_spans[mi].base);
-        if ( it == m_funcRanges.end() )
-            return false;
+        ModuleRegistry *self = const_cast<ModuleRegistry *>(this);
+        self->function_ranges(li);
+        const std::vector<std::pair<ea_t, ea_t>> &v = m_names[li].image->funcs;
+        const ea_t base = m_modules[li].base;
+        const ea_t rva  = pc - base;
 
-        // Last range whose start <= pc, then verify pc is within it.
-        const std::vector<std::pair<ea_t, ea_t>> &v = it->second;
-        auto up = std::upper_bound(v.begin(), v.end(), std::make_pair(pc, (ea_t)BADADDR));
+        // Last range whose start <= rva, then verify rva is within it.
+        auto up = std::upper_bound(v.begin(), v.end(), std::make_pair(rva, (ea_t)BADADDR));
         if ( up == v.begin() )
             return false;
         --up;
-        if ( pc >= up->first && pc < up->second )
+        if ( rva >= up->first && rva < up->second )
         {
-            start = up->first;
-            end   = up->second;
+            start = base + up->first;
+            end   = base + up->second;
             return true;
         }
         return false;
@@ -249,35 +454,42 @@ namespace idattd
 
     bool ModuleRegistry::has_function_table(ea_t ea) const
     {
-        size_t mi = index_at(ea);
-        if ( mi == (size_t)-1 )
+        size_t li = load_for(ea, m_now);
+        if ( li == NONE )
             return false;
-        const_cast<ModuleRegistry *>(this)->function_ranges(m_spans[mi].base);
-        auto it = m_funcRanges.find(m_spans[mi].base);
-        return it != m_funcRanges.end() && !it->second.empty();
+        ModuleRegistry *self = const_cast<ModuleRegistry *>(this);
+        self->function_ranges(li);
+        return !m_names[li].image->funcs.empty();
     }
 
     bool ModuleRegistry::refresh_function_ranges(ea_t pc, ITraceCursor *now)
     {
+        if ( now == nullptr )
+            return false;
+        const Position pos = now->position();
         ea_t s, e;
-        size_t mi = index_at(pc);
-        if ( now == nullptr || mi == (size_t)-1 || function_range_at(pc, s, e) )
+        size_t li = load_for(pc, pos);
+        if ( li == NONE || function_range_at(pc, pos, s, e) )
             return false;
-        const ea_t base = m_spans[mi].base;
-        if ( m_funcFromMemory.count(base) == 0 )
+        Image &img = *m_names[li].image;     // function_range_at identified it
+        if ( !img.funcs_from_memory )
             return false;
+        const ea_t base = m_modules[li].base;
+        GuestRead rd = guest_read(now);
         std::vector<std::pair<ea_t, ea_t>> v;
-        if ( parse_pdata_functions(guest_read(now), base, m_is64, v) == 0 )
+        if ( parse_pdata_functions(rd, base, m_is64, v) == 0 )
             return false;
+        for ( auto &f : v )
+        {
+            f.first  -= base;
+            f.second -= base;
+        }
         std::sort(v.begin(), v.end());
-        std::vector<std::pair<ea_t, ea_t>> &cur = m_funcRanges[base];
-        if ( v == cur )
+        if ( v == img.funcs )
             return false;
-        cur = std::move(v);
-        const ModuleInfo *rec = record_at(base);
+        img.funcs = std::move(v);
         msg("[ida-ttd] %s: its exception table changed after it loaded (unpacked code): "
-            "%u function range(s) now.\n",
-            rec != nullptr ? qbasename(rec->path.c_str()) : "module", (unsigned)cur.size());
+            "%u function range(s) now.\n", m_names[li].file.c_str(), (unsigned)img.funcs.size());
         return true;
     }
 
@@ -303,6 +515,15 @@ namespace idattd
         if ( namepat.empty() )
             return out;
 
+        // The table holds each name with and without its extension, so this
+        // is two compares.
+        auto module_matches = [&](size_t li)
+        {
+            return modpat.empty()
+                || wildcard_match(modpat.c_str(), m_names[li].file.c_str())
+                || wildcard_match(modpat.c_str(), m_names[li].name.c_str());
+        };
+
         std::set<ea_t> seen;
         size_t nn = get_nlist_size();
         for ( size_t i = 0; i < nn; i++ )
@@ -319,14 +540,8 @@ namespace idattd
 
             if ( !modpat.empty() )
             {
-                // The table holds each name with and without its extension,
-                // so this is one binary search and two compares.
-                size_t idx = index_at(ea);
-                if ( idx == (size_t)-1 )
-                    continue;
-                const Span &s = m_spans[idx];
-                if ( !wildcard_match(modpat.c_str(), s.file.c_str())
-                  && !wildcard_match(modpat.c_str(), s.name.c_str()) )
+                size_t li = load_for(ea, m_now);
+                if ( li == NONE || !module_matches(li) )
                     continue;
             }
 
@@ -343,75 +558,45 @@ namespace idattd
         // IDA names a module only once it is mapped where the user is, so a
         // module loaded later (kernel32, seen from the very start) has no
         // names yet. Its exports are known anyway: the recording's list, or
-        // the export directory read where it loaded.
+        // the export directory read where it loaded. Once per image at each
+        // base it took.
         ModuleRegistry *self = const_cast<ModuleRegistry *>(this);
-        for ( const Span &s : m_spans )
+        std::set<std::pair<ea_t, const Image *>> done;
+        for ( size_t li = 0; li < m_modules.size(); li++ )
         {
-            if ( !modpat.empty()
-              && !wildcard_match(modpat.c_str(), s.file.c_str())
-              && !wildcard_match(modpat.c_str(), s.name.c_str()) )
+            const ea_t base = m_modules[li].base;
+            if ( base == BADADDR || !module_matches(li)
+              || !done.insert({ base, &self->image_of(li) }).second )
                 continue;
-            for ( const auto &e : self->exports_of(s.base) )
-                if ( wildcard_match(namepat.c_str(), e.second.c_str()) && seen.insert(e.first).second )
-                    out.push_back(e.first);
+            for ( const auto &e : self->exports_of(li) )
+                if ( wildcard_match(namepat.c_str(), e.second.c_str()) && seen.insert(base + e.first).second )
+                    out.push_back(base + e.first);
         }
         return out;
     }
 
-    qstring ModuleRegistry::export_name_at(ea_t ea)
+    qstring ModuleRegistry::export_name_at(ea_t ea, Position pos)
     {
-        size_t idx = index_at(ea);
-        if ( idx == (size_t)-1 )
+        size_t li = load_for(ea, pos);
+        if ( li == NONE )
             return qstring();
-        // Stable-sorted by address, so of several names at 'ea' this is the
-        // first the module lists.
-        const std::vector<std::pair<ea_t, std::string>> &v = exports_of(m_spans[idx].base);
-        auto it = std::lower_bound(v.begin(), v.end(), ea,
+        // Stable-sorted by RVA, so of several names at 'ea' this is the first
+        // the module lists.
+        const std::vector<std::pair<ea_t, std::string>> &v = exports_of(li);
+        const ea_t rva = ea - m_modules[li].base;
+        auto it = std::lower_bound(v.begin(), v.end(), rva,
                                    [](const std::pair<ea_t, std::string> &e, ea_t a) { return e.first < a; });
-        if ( it == v.end() || it->first != ea )
+        if ( it == v.end() || it->first != rva )
             return qstring();
         qstring out;
-        out.sprnt("%s!%s", m_spans[idx].name.c_str(), it->second.c_str());
+        out.sprnt("%s!%s", m_names[li].name.c_str(), it->second.c_str());
         return out;
-    }
-
-    const std::vector<std::pair<ea_t, std::string>> &ModuleRegistry::exports_of(ea_t base)
-    {
-        auto it = m_exports.find(base);
-        if ( it != m_exports.end() )
-            return it->second;
-        std::vector<std::pair<ea_t, std::string>> &v = m_exports[base];
-        if ( m_backend->capabilities().recorded_exports )
-        {
-            for ( const ITraceBackend::Symbol &s : m_backend->module_symbols(base) )
-                if ( s.is_export )
-                    v.emplace_back(s.ea, s.name.c_str());
-        }
-        else
-        {
-            const ModuleInfo *m = record_at(base);
-            const uint32_t MACHINE_AMD64 = 0x8664;    // IMAGE_FILE_MACHINE_AMD64
-            bool is64 = m != nullptr && m->machine != 0 ? m->machine == MACHINE_AMD64 : m_is64;
-            GuestRead rd = read_at_load(base);
-            if ( rd )
-                read_guest_exports(rd, base, is64, &v);
-        }
-        // export_name_at looks names up by address once per decoded call.
-        std::stable_sort(v.begin(), v.end(),
-                         [](const std::pair<ea_t, std::string> &a, const std::pair<ea_t, std::string> &b)
-                         { return a.first < b.first; });
-        return v;
     }
 
     //=======================================================================
     // Naming
     //=======================================================================
-    GuestRead ModuleRegistry::read_at_load(ea_t base)
-    {
-        return read_at_record(record_at(base));
-    }
-
-    GuestRead ModuleRegistry::read_at_record(const ModuleInfo *m)
+    GuestRead ModuleRegistry::read_at_record(size_t li)
     {
         if ( m_backend == nullptr )
             return GuestRead{};
@@ -419,112 +604,105 @@ namespace idattd
             m_symCursor = m_backend->make_cursor();
         if ( !m_symCursor )
             return GuestRead{};
-        m_symCursor->seek(m != nullptr && m->loaded.is_valid() ? m->loaded : m_backend->info().first);
+        const Position at = li != NONE && m_modules[li].loaded.is_valid()
+                          ? m_modules[li].loaded : m_backend->info().first;
+        // A seek is dear on some backends (Microsoft TTD: about 15 ms), and a
+        // load's headers, exports and table are read one after another.
+        if ( at != m_symAt )
+            m_symAt = m_symCursor->seek(at) ? at : Position::none();
         return guest_read(m_symCursor.get());
     }
 
     void ModuleRegistry::resolve_symbols(ea_t base)
     {
+        size_t li = record_index(base);
+        if ( li != NONE )
+            resolve_load(li);
+    }
+
+    // Take the names of the image that held 'base' off its exports, where
+    // they are still what it set: another image now holds the base, and its
+    // own names cannot replace ones that are there (apply_export_name).
+    void ModuleRegistry::unname_exports(ea_t base, const Image &img)
+    {
+        size_t removed = 0;
+        for ( const auto &e : img.exports )
+        {
+            const ea_t ea = base + e.first;
+            qstring cur;
+            if ( get_name(&cur, ea) > 0 && cur == e.second.c_str() && set_name(ea, "", SN_NOWARN) )
+                removed++;
+        }
+        diag("module symbols: %u name(s) of the image unloaded at 0x%llX removed",
+             (unsigned)removed, (uint64_t)base);
+    }
+
+    void ModuleRegistry::resolve_load(size_t li)
+    {
         // Called per mapped module on every stop, so a module already done
         // returns before any logging.
-        if ( m_backend == nullptr || base == BADADDR || m_resolvedBases.count(base) != 0 )
+        const ModuleInfo &m = m_modules[li];
+        const ea_t base = m.base;
+        if ( m_backend == nullptr || base == BADADDR )
+            return;
+        auto named = m_namedBy.find(base);
+        if ( named != m_namedBy.end() && named->second == m_names[li].image )
             return;
         // Not before the module has a segment: names on memory IDA lacks are
         // dropped, and marking the module done would leave it unnamed for the
         // session. The next stop tries again (resolve_loaded).
         if ( get_segment_ea(base) == BADADDR )
             return;
-        m_resolvedBases.insert(base);
+        Image &img = image_of(li);
+        if ( named != m_namedBy.end() && named->second == &img )
+            return;
 
         qstring what;
         what.sprnt("%a", base);
         diag("module symbols begin %s", what.c_str());
         DiagTimer diag_timer("module symbols", what);
 
-        const ModuleInfo *rec = record_at(base);
-        std::string modpath = rec != nullptr ? rec->path.c_str() : "";
+        // Another image named this base before (a DLL unloaded, another
+        // mapped there): its names go, and the new one's PDB may be asked for.
+        if ( named != m_namedBy.end() )
+        {
+            msg("[ida-ttd] %s now holds 0x%llX; naming it in place of the module that held it before.\n",
+                m_names[li].file.c_str(), (uint64_t)base);
+            unname_exports(base, *named->second);
+            m_pdbBases.erase(base);
+            m_pdbRetried.erase(base);
+        }
+        m_namedBy[base] = &img;
 
         // Names: the recording's export list when the backend keeps one, else
         // the image's export directory read where it is mapped.
-        size_t named = 0;
-        if ( m_backend->capabilities().recorded_exports )
-        {
-            for ( const ITraceBackend::Symbol &s : m_backend->module_symbols(base) )
-                if ( s.is_export && apply_export_name(s.ea, s.name.c_str()) )
-                    named++;
-        }
-        else
-        {
-            GuestRead rd = read_at_load(base);
-            if ( rd )
-                named = apply_module_exports(rd, base, m_is64);
-        }
+        size_t nnamed = 0;
+        for ( const auto &e : exports_of(li) )
+            if ( apply_export_name(base + e.first, e.second.c_str()) )
+                nnamed++;
 
         // Function bounds: now when reads are cheap, else when a stop first
         // asks (function_range_at), since they can mean reading the whole
         // .pdata out of the recording.
-        size_t nfunc = 0;
-        if ( m_backend->capabilities().cheap_reads )
-            nfunc = function_ranges(base);
+        const bool cheap = m_backend->capabilities().cheap_reads;
+        if ( cheap )
+            function_ranges(li);
 
         msg("[ida-ttd] %s @ 0x%llX: %u export(s)%s\n",
-            base_name(modpath).c_str(), (uint64_t)base, (unsigned)named,
-            m_backend->capabilities().cheap_reads ? qstring().sprnt(", %u function range(s)", (unsigned)nfunc).c_str()
-                                                  : "");
-    }
-
-    // Function bounds, so a whole function (including code before the PC) can
-    // be laid out: from the backend if it knows them, else the module's
-    // .pdata, read from the on-disk file when it is the recorded build
-    // (complete), otherwise from recorded memory (right, sometimes
-    // incomplete). Once per module; returns how many.
-    size_t ModuleRegistry::function_ranges(ea_t base)
-    {
-        if ( !m_funcTried.insert(base).second )
-        {
-            auto it = m_funcRanges.find(base);
-            return it != m_funcRanges.end() ? it->second.size() : 0;
-        }
-        DiagTimer diag_timer("function ranges");
-        const ModuleInfo *rec = record_at(base);
-        std::string modpath = rec != nullptr ? rec->path.c_str() : "";
-        std::vector<std::pair<ea_t, ea_t>> franges = m_backend->module_functions(base);
-        size_t nfunc = franges.size();
-        if ( nfunc == 0 )
-        {
-            uint32_t ts = rec != nullptr ? rec->timestamp : 0;
-            uint32_t cs = rec != nullptr ? rec->checksum : 0;
-            if ( ts == 0 && cs == 0 )
-            {
-                GuestPeInfo pe;
-                GuestRead rd = read_at_load(base);
-                if ( rd && read_guest_pe_info(rd, base, &pe) )
-                {
-                    ts = pe.timestamp;
-                    cs = pe.checksum;
-                }
-            }
-            nfunc = parse_pdata_functions_from_file(modpath.c_str(), base, m_is64, ts, cs, franges);
-        }
-        if ( nfunc == 0 )
-        {
-            m_funcFromMemory.insert(base);
-            GuestRead rd = read_at_load(base);
-            if ( rd )
-                nfunc = parse_pdata_functions(rd, base, m_is64, franges);
-        }
-        if ( nfunc > 0 )
-        {
-            std::sort(franges.begin(), franges.end());
-            m_funcRanges[base] = std::move(franges);
-        }
-        return nfunc;
+            m_names[li].file.c_str(), (uint64_t)base, (unsigned)nnamed,
+            cheap ? qstring().sprnt(", %u function range(s)", (unsigned)img.funcs.size()).c_str() : "");
     }
 
     void ModuleRegistry::resolve_loaded(Position pos)
     {
-        for ( const ModuleInfo *m : loaded_at(pos) )
-            resolve_symbols(m->base);
+        for ( size_t li = 0; li < m_modules.size(); li++ )
+        {
+            const ModuleInfo &m = m_modules[li];
+            bool after_load = !m.loaded.is_valid() || m.loaded <= pos;
+            bool before_unload = !m.unloaded.is_valid() || pos < m.unloaded;
+            if ( after_load && before_unload )
+                resolve_load(li);
+        }
     }
 
     void ModuleRegistry::load_pdb(ea_t base, bool stopped_here)
@@ -538,16 +716,16 @@ namespace idattd
             return;
 
         // Never for the analysed binary: IDA already has its database, and a
-        // lookup would be redundant and possibly networked. Matched by base,
+        // lookup would be redundant and possibly networked. Matched by load,
         // which is authoritative.
-        if ( base == m_mainBase )
+        const size_t li = record_index(base);
+        if ( li == NONE || is_main_load(li) )
             return;
 
         if ( !m_pdbBases.insert(base).second )
             return;     // already requested for this module
 
-        const ModuleInfo *m = record_at(base);
-        std::string path = m != nullptr ? m->path.c_str() : "";
+        std::string path = m_modules[li].path.c_str();
         if ( path.empty() )
             return;
 
@@ -797,14 +975,14 @@ namespace idattd
 
     bool ModuleRegistry::load_full_pdb(ea_t ea)
     {
-        ea_t lo = 0, hi = 0;
-        if ( m_backend == nullptr || !range_at(ea, lo, hi) )
+        const size_t li = m_backend != nullptr ? load_for(ea, m_now) : NONE;
+        if ( li == NONE )
         {
             msg("[ida-ttd] 0x%llX is in no module of this recording.\n", (uint64_t)ea);
             return false;
         }
-        const ModuleInfo *m = record_at(lo);
-        std::string path = m != nullptr ? m->path.c_str() : "";
+        const ea_t lo = m_modules[li].base;
+        std::string path = m_modules[li].path.c_str();
         GuestPdbInfo pdb;
         if ( path.empty() || !pdb_identity(lo, &pdb) )
         {
@@ -852,101 +1030,55 @@ namespace idattd
         if ( m_backend == nullptr )
             return nullptr;
 
-        // The load mapped at 'ea' at 'pos', by the same rule as loaded_at.
-        // The module table spans the whole recording, so without the
-        // position a read before a module's load or after its unload would
-        // be served from its file as if it were mapped. This runs once per
-        // gap of every memory read: the last match is tried first, and the
-        // scan over every load (a few hundred at most) only on a miss.
-        auto live = [&](const ModuleInfo &m)
-        {
-            return m.base != BADADDR
-                && ea >= m.base && ea - m.base < (ea_t)m.size
-                && (!m.loaded.is_valid() || m.loaded <= pos)
-                && (!m.unloaded.is_valid() || pos < m.unloaded);
-        };
-        size_t li = (size_t)-1;
-        if ( m_lastImageLoad < m_modules.size() && live(m_modules[m_lastImageLoad]) )
-        {
+        // The load mapped at 'ea' at 'pos'. The spans cover the whole
+        // recording, so without the position a read before a module's load or
+        // after its unload would be served from its file as if it were
+        // mapped. This runs once per gap of every memory read: the last match
+        // is tried first.
+        size_t li = NONE;
+        if ( m_lastImageLoad != NONE && live(m_lastImageLoad, ea, pos) )
             li = m_lastImageLoad;
-        }
         else
-        {
-            for ( size_t i = 0; i < m_modules.size(); i++ )
-            {
-                if ( live(m_modules[i]) )
-                {
-                    li = i;
-                    break;
-                }
-            }
-        }
-        if ( li == (size_t)-1 )
+            li = load_index_at(ea, pos);
+        if ( li == NONE )
             return nullptr;
         m_lastImageLoad = li;
 
-        const ModuleInfo *m = &m_modules[li];
-        ea_t base = m->base;
-        base_out = base;
+        const ModuleInfo &m = m_modules[li];
+        base_out = m.base;
+        Image &img = image_of(li);
+        if ( img.file_tried )
+            return img.file.ok ? &img.file : nullptr;
+        img.file_tried = true;
 
-        if ( m_loadImage.size() != m_modules.size() )
-        {
-            m_loadImage.assign(m_modules.size(), nullptr);
-            m_loadImageTried.assign(m_modules.size(), 0);
-        }
-        if ( m_loadImageTried[li] != 0 )
-            return m_loadImage[li];
-        m_loadImageTried[li] = 1;
-
-        std::string path = m->path.c_str();
-        qstring key;
-        key.sprnt("%s|%llX|%llX|%08X|%08X", path.c_str(), (uint64_t)base, (uint64_t)m->size,
-                  m->timestamp, m->checksum);
-        auto it = m_moduleImages.find(key);
-        if ( it != m_moduleImages.end() )
-        {
-            m_loadImage[li] = it->second.ok ? &it->second : nullptr;
-            return m_loadImage[li];
-        }
-
-        ModuleImage img;
-        load_module_image(path.c_str(), img);   // img.ok == false on failure
+        std::string path = m.path.c_str();
+        ModuleImage file;
+        load_module_image(path.c_str(), file);   // file.ok == false on failure
 
         // The path was recorded on another machine, where the file may be a
         // different build (commonly another ntdll patch level) whose bytes
         // would be served as truth. So the timestamp and checksum must match
-        // the recording's: the backend's, else the recorded headers'.
-        uint32_t ts = m->timestamp;
-        uint32_t cs = m->checksum;
-        if ( img.ok && ts == 0 && cs == 0 )
-        {
-            GuestPeInfo pe;
-            GuestRead rd = read_at_record(m);
-            if ( rd && read_guest_pe_info(rd, base, &pe) )
-            {
-                ts = pe.timestamp;
-                cs = pe.checksum;
-            }
-        }
-        bool mismatch = img.ok
-                     && ((ts != 0 && img.timestamp != 0 && img.timestamp != ts)
-                      || (cs != 0 && img.checksum != 0 && img.checksum != cs));
+        // the recording's: the backend's, else the recorded headers'
+        // (image_of worked out which).
+        const uint32_t ts = m_names[li].timestamp;
+        const uint32_t cs = m_names[li].checksum;
+        bool mismatch = file.ok
+                     && ((ts != 0 && file.timestamp != 0 && file.timestamp != ts)
+                      || (cs != 0 && file.checksum != 0 && file.checksum != cs));
         if ( mismatch )
         {
             msg("[ida-ttd] image fallback for %s @ 0x%llX: rejected, the on-disk "
                 "file is a different build (trace %08X/%08X, file %08X/%08X).\n",
-                base_name(path).c_str(), (uint64_t)base, ts, cs, img.timestamp, img.checksum);
-            img = ModuleImage{};     // ok == false: never consulted again
+                base_name(path).c_str(), (uint64_t)m.base, ts, cs, file.timestamp, file.checksum);
+            file = ModuleImage{};     // ok == false: never consulted again
         }
         else
         {
             msg("[ida-ttd] image fallback for %s @ 0x%llX: %s\n",
-                base_name(path).c_str(), (uint64_t)base,
-                img.ok ? "loaded" : "file unavailable / not a PE");
+                base_name(path).c_str(), (uint64_t)m.base,
+                file.ok ? "loaded" : "file unavailable / not a PE");
         }
-
-        it = m_moduleImages.emplace(key, std::move(img)).first;
-        m_loadImage[li] = it->second.ok ? &it->second : nullptr;
-        return m_loadImage[li];
+        img.file = std::move(file);
+        return img.file.ok ? &img.file : nullptr;
     }
 }

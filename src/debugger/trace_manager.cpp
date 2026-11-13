@@ -319,6 +319,7 @@ namespace idattd
             return start_failed(errbuf, DRC_FAILED, "Failed to create a cursor over the trace.");
         }
         m_cursor->seek(m_backend->info().first);
+        m_modules.set_now(m_cursor->position());
 
         // Tell the analysis stores which recording is open, so results saved
         // for another one are not shown.
@@ -675,6 +676,9 @@ namespace idattd
             } moving(m_nav.get(), &sink);
             sr = move();
         }
+        // Module lookups that take no position answer for the playhead's,
+        // from now on (never mid-movement: see ModuleRegistry::set_now).
+        m_modules.set_now(m_cursor->position());
 
         // Breakpoints IDA changed during the movement (on_update_bpts).
         if ( m_bptsDeferred )
