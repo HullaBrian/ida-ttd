@@ -28,6 +28,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\json_str.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\common\installer_labels.h">
       <Filter>common</Filter>
     </ClInclude>
@@ -207,6 +210,9 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\json_str.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\common\dbstore.cpp">
       <Filter>common</Filter>
     </ClCompile>

@@ -14,8 +14,14 @@
     <Filter Include="loader">
       <UniqueIdentifier>{C4DBC2E1-E8EC-1059-6718-19B92738A99C}</UniqueIdentifier>
     </Filter>
+    <Filter Include="ui">
+      <UniqueIdentifier>{442BFBD5-56F8-CE66-8866-1A6934DF517B}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="$(SrcDir)\common\json_str.h">
+      <Filter>common</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\analysis\query_runner.h">
       <Filter>analysis</Filter>
     </ClInclude>
@@ -60,6 +66,12 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="$(SrcDir)\common\json_str.cpp">
+      <Filter>common</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\ui\query_view.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="$(SrcDir)\core\position.cpp">
       <Filter>core</Filter>
     </ClCompile>
