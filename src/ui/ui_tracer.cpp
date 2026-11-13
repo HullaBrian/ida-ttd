@@ -76,12 +76,11 @@ namespace idattd
 
     TraceEventsChooser::TraceEventsChooser(TraceManager *mgr, FunctionTracer *tracer)
         : EventColumns(tracer),
-          chooser_t(CH_CAN_DEL,
-                    EventColumns::n(), EventColumns::w(), EventColumns::h(), EventColumns::t()),
-          m_mgr(mgr),
-          m_events(tracer != nullptr ? tracer->snapshot_events() : std::vector<FunctionInvocation>())
+          ListingChooser(mgr, CH_CAN_DEL,
+                         EventColumns::n(), EventColumns::w(), EventColumns::h(), EventColumns::t(),
+                         tracer != nullptr ? tracer->snapshot_events() : std::vector<FunctionInvocation>())
     {
-        for ( const FunctionInvocation &ev : m_events )
+        for ( const FunctionInvocation &ev : m_rows )
         {
             auto [it, added] = m_labels.try_emplace(ev.func_ea);
             if ( !added )
@@ -99,17 +98,12 @@ namespace idattd
         }
     }
 
-    size_t idaapi TraceEventsChooser::get_count() const
-    {
-        return m_events.size();
-    }
-
     void idaapi TraceEventsChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                             chooser_item_attrs_t * /*attrs*/, size_t n) const
     {
-        if ( n >= m_events.size() )
+        if ( row(n) == nullptr )
             return;
-        const FunctionInvocation &ev = m_events[n];
+        const FunctionInvocation &ev = *row(n);
 
         cols->at(0) = format_position(ev.pos);
         // No return in the recording (thread exit, ExitProcess, an unwind).
@@ -146,21 +140,6 @@ namespace idattd
             if ( ev.has_ret )
                 cols->at(LEAD + 1) = ev.retval;
         }
-    }
-
-    chooser_t::cbret_t idaapi TraceEventsChooser::enter(size_t n)
-    {
-        if ( n < m_events.size() )
-            travel_to(m_mgr, m_events[n].pos, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
-    }
-
-    chooser_t::cbret_t idaapi TraceEventsChooser::del(size_t n)
-    {
-        if ( n < m_events.size() )
-            m_events.erase(m_events.begin() + n);
-        // A bare ALL_CHANGED would convert to cbret_t(1, ...) and select row 1.
-        return cbret_t(adjust_last_item(n), ALL_CHANGED);
     }
 
     //=======================================================================

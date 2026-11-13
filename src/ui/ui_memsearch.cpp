@@ -13,31 +13,25 @@ namespace idattd
 
     MemAccessChooser::MemAccessChooser(TraceManager *mgr, ea_t lo, ea_t hi,
                                        std::vector<MemAccess> &&hits)
-        : chooser_t(CH_CAN_DEL, qnumber(g_ma_widths), g_ma_widths, g_ma_header, nullptr),
-          m_mgr(mgr), m_hits(std::move(hits))
+        : ListingChooser(mgr, CH_CAN_DEL, qnumber(g_ma_widths), g_ma_widths, g_ma_header, nullptr,
+                         std::move(hits))
     {
-        // A unique title per search, so two searches open as two tabs. A
-        // member: chooser_base_t keeps the pointer, not a copy.
+        // A unique title per search, so two searches open as two tabs.
+        qstring t;
         if ( hi - lo <= 1 )
-            m_title.sprnt("TTD accesses: 0x%llX [%d]", (uint64_t)lo, (int)m_hits.size());
+            t.sprnt("TTD accesses: 0x%llX [%d]", (uint64_t)lo, (int)m_rows.size());
         else
-            m_title.sprnt("TTD accesses: 0x%llX..0x%llX [%d]",
-                          (uint64_t)lo, (uint64_t)hi, (int)m_hits.size());
-        make_title_unique(&m_title);
-        title = m_title.c_str();
-    }
-
-    size_t idaapi MemAccessChooser::get_count() const
-    {
-        return m_hits.size();
+            t.sprnt("TTD accesses: 0x%llX..0x%llX [%d]",
+                    (uint64_t)lo, (uint64_t)hi, (int)m_rows.size());
+        set_unique_title(t);
     }
 
     void idaapi MemAccessChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                           chooser_item_attrs_t * /*attrs*/, size_t n) const
     {
-        if ( n >= m_hits.size() )
+        if ( row(n) == nullptr )
             return;
-        const MemAccess &a = m_hits[n];
+        const MemAccess &a = *row(n);
         cols->at(0) = format_position(a.pos);
         cols->at(1).sprnt("0x%X", a.tid);
         cols->at(2) = access_name(a.kind);
@@ -49,22 +43,7 @@ namespace idattd
 
     ea_t idaapi MemAccessChooser::get_ea(size_t n) const
     {
-        return n < m_hits.size() ? m_hits[n].pc : BADADDR;
-    }
-
-    chooser_t::cbret_t idaapi MemAccessChooser::enter(size_t n)
-    {
-        if ( n < m_hits.size() )
-            travel_to(m_mgr, m_hits[n].pos, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
-    }
-
-    chooser_t::cbret_t idaapi MemAccessChooser::del(size_t n)
-    {
-        if ( n < m_hits.size() )
-            m_hits.erase(m_hits.begin() + n);
-        // A bare ALL_CHANGED would convert to cbret_t(1, ...) and select row 1.
-        return cbret_t(adjust_last_item(n), ALL_CHANGED);
+        return n < m_rows.size() ? m_rows[n].pc : BADADDR;
     }
 
     //=======================================================================

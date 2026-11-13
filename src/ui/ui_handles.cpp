@@ -8,22 +8,15 @@ namespace idattd
     static const char *g_hd_header[] = { "Handle", "Type", "Name", "Opened", "By", "Closed", "Thread" };
 
     HandlesChooser::HandlesChooser(TraceManager *mgr, std::vector<HandleRecord> &&rows)
-        : chooser_t(CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_hd_widths), g_hd_widths, g_hd_header, nullptr),
-          m_mgr(mgr), m_rows(std::move(rows))
-    {
-        set_title();
-        popup_names[POPUP_EDIT]    = "Travel to where it was closed";
-        popup_names[POPUP_REFRESH] = "Rebuild from the recording";
-    }
-
-    void HandlesChooser::set_title()
+        : ListingChooser(mgr, CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_hd_widths), g_hd_widths, g_hd_header,
+                         nullptr, std::move(rows))
     {
         size_t open = 0;
         for ( const HandleRecord &h : m_rows )
             open += h.opened.is_valid() && !h.closed.is_valid();
-        m_title.sprnt("TTD handles [%d, %d open at the end]", (int)m_rows.size(), (int)open);
-        make_title_unique(&m_title);
-        title = m_title.c_str();
+        set_unique_title(qstring().sprnt("TTD handles [%d, %d open at the end]", (int)m_rows.size(), (int)open));
+        popup_names[POPUP_EDIT]    = "Travel to where it was closed";
+        popup_names[POPUP_REFRESH] = "Rebuild from the recording";
     }
 
     chooser_t::cbret_t idaapi HandlesChooser::refresh(ssize_t n)
@@ -31,28 +24,19 @@ namespace idattd
         std::vector<HandleRecord> rows;
         bool cancelled = false;
         if ( m_mgr != nullptr && m_mgr->is_active() && list_handles(m_mgr, &rows, &cancelled) && !cancelled )
-        {
-            m_rows = std::move(rows);
-            // The rows now come from the recording being replayed.
-            m_made = RecordingStamp{};
-        }
+            restamp(std::move(rows));
         // The title is not remade: the widget is keyed by it, and
         // make_title_unique would find this chooser's own window and add
         // ' (2)'.
         return cbret_t(n, ALL_CHANGED);
     }
 
-    size_t idaapi HandlesChooser::get_count() const
-    {
-        return m_rows.size();
-    }
-
     void idaapi HandlesChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                         chooser_item_attrs_t *attrs, size_t n) const
     {
-        if ( n >= m_rows.size() )
+        if ( row(n) == nullptr )
             return;
-        const HandleRecord &h = m_rows[n];
+        const HandleRecord &h = *row(n);
         cols->at(0).sprnt("0x%llX", (unsigned long long)h.handle);
         cols->at(1) = h.type;
         cols->at(2) = h.name;
@@ -64,13 +48,6 @@ namespace idattd
         // Still open when the recording ended: what the program held on to.
         if ( attrs != nullptr && h.opened.is_valid() && !h.closed.is_valid() )
             attrs->flags |= CHITEM_BOLD;
-    }
-
-    chooser_t::cbret_t idaapi HandlesChooser::enter(size_t n)
-    {
-        if ( n < m_rows.size() )
-            travel_to(m_mgr, m_rows[n].opened.is_valid() ? m_rows[n].opened : m_rows[n].closed, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
     }
 
     chooser_t::cbret_t idaapi HandlesChooser::edit(size_t n)

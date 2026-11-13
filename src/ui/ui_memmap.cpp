@@ -21,26 +21,17 @@ namespace idattd
     static const uint32_t MEM_DECOMMIT_BIT = 0x4000;
 
     MemoryTimelineChooser::MemoryTimelineChooser(TraceManager *mgr, std::vector<RegionChange> &&rows)
-        : chooser_t(0, qnumber(g_mm_widths), g_mm_widths, g_mm_header, nullptr),
-          m_mgr(mgr), m_rows(std::move(rows))
+        : ListingChooser(mgr, 0, qnumber(g_mm_widths), g_mm_widths, g_mm_header, nullptr, std::move(rows))
     {
-        // A member: chooser_base_t keeps the pointer, not a copy.
-        m_title.sprnt("TTD memory timeline [%d]", (int)m_rows.size());
-        make_title_unique(&m_title);
-        title = m_title.c_str();
-    }
-
-    size_t idaapi MemoryTimelineChooser::get_count() const
-    {
-        return m_rows.size();
+        set_unique_title(qstring().sprnt("TTD memory timeline [%d]", (int)m_rows.size()));
     }
 
     void idaapi MemoryTimelineChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                           chooser_item_attrs_t * /*attrs*/, size_t n) const
     {
-        if ( n >= m_rows.size() )
+        if ( row(n) == nullptr )
             return;
-        const RegionChange &c = m_rows[n];
+        const RegionChange &c = *row(n);
         cols->at(0) = format_position(c.pos);
         cols->at(1).sprnt("0x%X", c.tid);
 
@@ -112,15 +103,6 @@ namespace idattd
         // Follow what the row names: the code that asked for the memory.
         ea_t origin = chain_origin(m_mgr, m_rows[n]);
         return origin != BADADDR ? origin : m_rows[n].pc;
-    }
-
-    chooser_t::cbret_t idaapi MemoryTimelineChooser::enter(size_t n)
-    {
-        // The call, not the return: the return is inside the syscall stub,
-        // not the function the row names.
-        if ( n < m_rows.size() )
-            travel_to(m_mgr, m_rows[n].call_pos.is_valid() ? m_rows[n].call_pos : m_rows[n].pos, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
     }
 
     //=======================================================================
@@ -309,15 +291,14 @@ namespace idattd
                                          "Type", "Use", "Allocated at" };
 
     MemoryMapChooser::MemoryMapChooser(TraceManager *mgr)
-        : chooser_t(CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_am_widths), g_am_widths,
-                    g_am_header, TITLE),
-          m_mgr(mgr)
+        : ListingChooser(mgr, CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_am_widths), g_am_widths,
+                         g_am_header, TITLE)
     {
         popup_names[POPUP_EDIT]    = "Travel to where it was allocated";
         popup_names[POPUP_REFRESH] = "Refresh";
     }
 
-    void MemoryMapChooser::rebuild() const
+    void MemoryMapChooser::rebuild()
     {
         if ( m_mgr == nullptr || !m_mgr->is_active() )
         {
@@ -329,9 +310,10 @@ namespace idattd
         size_t map_size = m_mgr->memmap().size();
         if ( now.is_valid() && now == m_at && map_size == m_mapSize )
             return;
-        address_space_at(m_mgr, &m_rows);
         // Rebuilt from the session being replayed, a fork's after a switch.
-        m_made    = RecordingStamp{};
+        std::vector<AddressRegion> rows;
+        address_space_at(m_mgr, &rows);
+        restamp(std::move(rows));
         m_at      = now;
         m_mapSize = map_size;
     }
@@ -342,18 +324,20 @@ namespace idattd
             refresh_chooser(TITLE);
     }
 
+    // IDA asks for the count first whenever it redraws, so the rows follow
+    // the playhead from here; rebuild() is a cache refresh, hence the cast.
     size_t idaapi MemoryMapChooser::get_count() const
     {
-        rebuild();
+        const_cast<MemoryMapChooser *>(this)->rebuild();
         return m_rows.size();
     }
 
     void idaapi MemoryMapChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                           chooser_item_attrs_t *attrs, size_t n) const
     {
-        if ( n >= m_rows.size() )
+        if ( row(n) == nullptr )
             return;
-        const AddressRegion &r = m_rows[n];
+        const AddressRegion &r = *row(n);
         cols->at(0).sprnt("0x%llX", (uint64_t)r.base);
         cols->at(1).sprnt("0x%llX", (uint64_t)r.end());
         cols->at(2).sprnt("0x%llX", r.size);

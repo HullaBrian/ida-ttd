@@ -55,22 +55,88 @@ namespace idattd
     // again after a fork switch, would never show.
     void make_title_unique(qstring *title);
 
+    // The base of the listings made from the recording: a snapshot of rows,
+    // the manager, the recording they came from (RecordingStamp), and the
+    // title, owned here since chooser_base_t keeps the pointer, not a copy.
+    // get_count() is the rows'; enter() travels to the row's position_of(),
+    // refused for a listing of another recording. A listing that lists
+    // again (Refresh) hands the new rows to restamp(), which also stamps
+    // them with the recording replayed now.
+    template <class Row>
+    class ListingChooser : public chooser_t
+    {
+    public:
+        size_t  idaapi get_count() const override { return m_rows.size(); }
+        cbret_t idaapi enter(size_t n) override
+        {
+            if ( n < m_rows.size() )
+                travel_to(m_mgr, position_of(m_rows[n]), m_made);
+            return cbret_t(n, NOTHING_CHANGED);
+        }
+
+    protected:
+        // 'fixed_title' for a listing with one window (it is then not made
+        // unique); else nullptr and set_unique_title() in the constructor.
+        ListingChooser(TraceManager *mgr, uint32 flags, int columns, const int *widths,
+                       const char *const *header, const char *fixed_title,
+                       std::vector<Row> &&rows = {})
+            : chooser_t(flags, columns, widths, header, fixed_title),
+              m_mgr(mgr), m_rows(std::move(rows))
+        {
+        }
+
+        // Where enter() travels for a row. A listing whose double-click does
+        // something else overrides enter() instead.
+        virtual Position position_of(const Row &) const { return Position::none(); }
+
+        // Row n, or nullptr past the end (IDA can ask for a row a refresh
+        // just removed).
+        const Row *row(size_t n) const { return n < m_rows.size() ? &m_rows[n] : nullptr; }
+
+        // 'text', suffixed while another window has it (make_title_unique).
+        // Once, from the constructor: on a refresh it would find this
+        // listing's own window and add ' (2)'.
+        void set_unique_title(const qstring &text)
+        {
+            m_title = text;
+            make_title_unique(&m_title);
+            title = m_title.c_str();
+        }
+
+        // New rows, listed again from the recording replayed now.
+        void restamp(std::vector<Row> &&rows)
+        {
+            m_rows = std::move(rows);
+            m_made = RecordingStamp{};
+        }
+
+        // del() for a listing whose rows can be dropped from view.
+        cbret_t erase_row(size_t n)
+        {
+            if ( n < m_rows.size() )
+                m_rows.erase(m_rows.begin() + n);
+            // A bare ALL_CHANGED would convert to cbret_t(1, ...) and select row 1.
+            return cbret_t(adjust_last_item(n), ALL_CHANGED);
+        }
+
+        TraceManager     *m_mgr;
+        RecordingStamp    m_made;       // the recording the rows come from
+        std::vector<Row>  m_rows;       // frozen snapshot
+        qstring           m_title;      // set_unique_title's
+    };
+
     // A non-modal "Timeline" chooser listing notable trace positions
     // (thread create/exit, module load/unload, exceptions). Double-clicking a
     // row moves the cursor to that position.
-    class PositionChooser : public chooser_t
+    class PositionChooser : public ListingChooser<TraceManager::NamedPosition>
     {
     public:
         explicit PositionChooser(TraceManager *mgr);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
 
     private:
-        TraceManager                            *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<TraceManager::NamedPosition> m_positions;
+        Position position_of(const TraceManager::NamedPosition &r) const override { return r.pos; }
     };
 
     // The trace-events column layout: Start/End/Thread/Function, then one
@@ -99,17 +165,17 @@ namespace idattd
     // Results of the call-trace sweep: one row per recorded call. Holds its own
     // snapshot so several "TTD calls" tabs can coexist. Double-click travels
     // to the call.
-    class TraceEventsChooser : public EventColumns, public chooser_t
+    class TraceEventsChooser : public EventColumns, public ListingChooser<FunctionInvocation>
     {
     public:
         TraceEventsChooser(TraceManager *mgr, FunctionTracer *tracer);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
-        cbret_t idaapi del(size_t n) override;
+        cbret_t idaapi del(size_t n) override { return erase_row(n); }
 
     private:
+        Position position_of(const FunctionInvocation &r) const override { return r.pos; }
+
         // A row's function label, computed once per function rather than per
         // repaint (the signature lookups read type information).
         struct FuncLabel
@@ -120,9 +186,6 @@ namespace idattd
             std::vector<qstring> params;
         };
 
-        TraceManager                    *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<FunctionInvocation>  m_events;  // frozen snapshot
         std::map<ea_t, FuncLabel>        m_labels;  // by FunctionInvocation::func_ea
     };
 
@@ -150,28 +213,23 @@ namespace idattd
     // Results of a memory access search: one row per access to the range.
     // Holds its own snapshot so several searches can be open at once. Enter
     // travels to the access; get_ea() is the instruction that made it.
-    class MemAccessChooser : public chooser_t
+    class MemAccessChooser : public ListingChooser<MemAccess>
     {
     public:
         MemAccessChooser(TraceManager *mgr, ea_t lo, ea_t hi,
                          std::vector<MemAccess> &&hits);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
-        cbret_t idaapi del(size_t n) override;
+        cbret_t idaapi del(size_t n) override { return erase_row(n); }
 
     private:
-        TraceManager           *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<MemAccess>  m_hits;   // frozen snapshot
-        qstring                 m_title;  // owned: chooser_base_t keeps the pointer
+        Position position_of(const MemAccess &r) const override { return r.pos; }
     };
 
     // The syscalls the recording made, with their result and arguments.
     // Enter time-travels to the call.
-    class SyscallChooser : public chooser_t
+    class SyscallChooser : public ListingChooser<SyscallEvent>
     {
     public:
         // 'decoded' lines up with 'calls': each call's arguments by name, or
@@ -179,101 +237,77 @@ namespace idattd
         SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls,
                        std::vector<qstring> &&decoded);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
         // Ctrl+E: decode one call that was not (the decoding was stopped).
         cbret_t idaapi edit(size_t n) override;
         // Refresh (Ctrl+U): list and decode them again from the recording.
         cbret_t idaapi refresh(ssize_t n) override;
 
     private:
+        Position position_of(const SyscallEvent &r) const override { return r.pos; }
         void reset_rows();
 
-        TraceManager              *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<SyscallEvent>  m_calls;
+        // Both line up with the rows.
         std::vector<qstring>       m_decoded;
         // The registers of each undecoded call (reset_rows).
         std::vector<std::optional<SyscallArgs>> m_args;
-        qstring                    m_title;  // owned: chooser_base_t keeps the pointer
     };
 
     // Code the program wrote and then ran, one row per executed address.
     // Selecting a row shows the code; Enter time-travels to the write.
-    class SelfModChooser : public chooser_t
+    class SelfModChooser : public ListingChooser<SelfModHit>
     {
     public:
         SelfModChooser(TraceManager *mgr, std::vector<SelfModHit> &&hits);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
 
     private:
-        TraceManager             *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<SelfModHit>   m_hits;
-        qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+        // The write, in the stub that unpacked the code.
+        Position position_of(const SelfModHit &r) const override { return r.write_pos; }
     };
 
     // Strings recovered by replaying the recording. Selecting a row shows the
     // address; Enter time-travels to where the string appeared.
-    class StringsChooser : public chooser_t
+    class StringsChooser : public ListingChooser<StringHit>
     {
     public:
         StringsChooser(TraceManager *mgr, std::vector<StringHit> &&hits);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
         cbret_t idaapi enter(size_t n) override;
-
-    private:
-        TraceManager            *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<StringHit>   m_hits;
-        qstring                  m_title;  // owned: chooser_base_t keeps the pointer
     };
 
     // Buffers recovered by replaying the recording. Enter time-travels to the
     // last write, where the buffer is complete.
-    class BuffersChooser : public chooser_t
+    class BuffersChooser : public ListingChooser<BufferHit>
     {
     public:
         BuffersChooser(TraceManager *mgr, std::vector<BufferHit> &&hits);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
         cbret_t idaapi enter(size_t n) override;
-
-    private:
-        TraceManager            *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<BufferHit>   m_hits;
-        qstring                  m_title;  // owned: chooser_base_t keeps the pointer
     };
 
     // The reconstructed memory map, as a timeline. One row per allocation,
     // protection change or free the recording made, in the order they happened.
     // Enter time-travels to the call that made the change.
-    class MemoryTimelineChooser : public chooser_t
+    class MemoryTimelineChooser : public ListingChooser<RegionChange>
     {
     public:
         MemoryTimelineChooser(TraceManager *mgr, std::vector<RegionChange> &&rows);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
 
     private:
-        TraceManager             *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<RegionChange> m_rows;   // frozen snapshot
-        qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+        // The call, not the return: the return is inside the syscall stub,
+        // not the function the row names.
+        Position position_of(const RegionChange &r) const override
+        { return r.call_pos.is_valid() ? r.call_pos : r.pos; }
         // describe_address per address: IDA asks for every row when the
         // list is filtered or sorted, and each description is a name lookup,
         // a function-table search and a walk of the names. Dropped when the
@@ -285,35 +319,31 @@ namespace idattd
 
     // The handles the program opened and closed. Enter travels to where one
     // was opened; Edit (Ctrl+E) to where it was closed.
-    class HandlesChooser : public chooser_t
+    class HandlesChooser : public ListingChooser<HandleRecord>
     {
     public:
         HandlesChooser(TraceManager *mgr, std::vector<HandleRecord> &&rows);
 
-        size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
-        cbret_t idaapi enter(size_t n) override;
         cbret_t idaapi edit(size_t n) override;
         // Refresh (Ctrl+U): rebuild the list from the recording.
         cbret_t idaapi refresh(ssize_t n) override;
 
     private:
-        void set_title();
-
-        TraceManager             *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
-        std::vector<HandleRecord> m_rows;
-        qstring                   m_title;  // owned: chooser_base_t keeps the pointer
+        // Where it was opened; one open before the recording, where it closed.
+        Position position_of(const HandleRecord &r) const override
+        { return r.opened.is_valid() ? r.opened : r.closed; }
     };
 
     // The memory map at the playhead (address_space_at), refreshed at each
     // stop. Enter jumps to the region; Edit travels to where it was made.
-    class MemoryMapChooser : public chooser_t
+    class MemoryMapChooser : public ListingChooser<AddressRegion>
     {
     public:
         static const char *const TITLE;
         explicit MemoryMapChooser(TraceManager *mgr);
 
+        // The rows' count, after rebuilding them if the playhead moved.
         size_t  idaapi get_count() const override;
         void    idaapi get_row(qstrvec_t *cols, int *icon, chooser_item_attrs_t *attrs, size_t n) const override;
         ea_t    idaapi get_ea(size_t n) const override;
@@ -325,15 +355,12 @@ namespace idattd
         static void refresh_open();
 
     private:
-        void rebuild() const;
+        void rebuild();
 
-        TraceManager *m_mgr;
-        mutable RecordingStamp m_made;     // the recording the rows come from
-        mutable std::vector<AddressRegion> m_rows;
         // What m_rows was built from: the playhead and the change timeline's
         // size (it grows if the map is built with the listing open).
-        mutable Position                   m_at = Position::none();
-        mutable size_t                     m_mapSize = 0;
+        Position                   m_at = Position::none();
+        size_t                     m_mapSize = 0;
     };
 
     // Travel to 'p' and, once there, show 'ea' in the hex view if one is open

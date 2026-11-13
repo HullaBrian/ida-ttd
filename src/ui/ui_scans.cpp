@@ -18,24 +18,16 @@ namespace idattd
     static const char *g_rs_header[] = { "Appeared at", "Address", "Enc", "Text" };
 
     StringsChooser::StringsChooser(TraceManager *mgr, std::vector<StringHit> &&hits)
-        : chooser_t(0, qnumber(g_rs_widths), g_rs_widths, g_rs_header, nullptr),
-          m_mgr(mgr), m_hits(std::move(hits))
+        : ListingChooser(mgr, 0, qnumber(g_rs_widths), g_rs_widths, g_rs_header, nullptr, std::move(hits))
     {
-        m_title.sprnt("TTD recovered strings [%d]", (int)m_hits.size());
-        make_title_unique(&m_title);
-        title = m_title.c_str();
-    }
-
-    size_t idaapi StringsChooser::get_count() const
-    {
-        return m_hits.size();
+        set_unique_title(qstring().sprnt("TTD recovered strings [%d]", (int)m_rows.size()));
     }
 
     void idaapi StringsChooser::get_row(qstrvec_t *cols, int *, chooser_item_attrs_t *, size_t n) const
     {
-        if ( n >= m_hits.size() )
+        if ( row(n) == nullptr )
             return;
-        const StringHit &h = m_hits[n];
+        const StringHit &h = *row(n);
         cols->at(0) = format_position(h.pos);
         cols->at(1).sprnt("0x%llX", (uint64_t)h.address);
         cols->at(2) = h.wide ? "W" : "A";
@@ -49,15 +41,15 @@ namespace idattd
 
     ea_t idaapi StringsChooser::get_ea(size_t n) const
     {
-        return n < m_hits.size() ? m_hits[n].address : BADADDR;
+        return n < m_rows.size() ? m_rows[n].address : BADADDR;
     }
 
     // To where it appeared, showing it in the hex view when one is open.
     chooser_t::cbret_t idaapi StringsChooser::enter(size_t n)
     {
-        if ( n < m_hits.size() )
+        if ( n < m_rows.size() )
             if ( listing_is_current(m_made) )
-                travel_and_show_bytes(m_mgr, m_hits[n].pos, m_hits[n].address);
+                travel_and_show_bytes(m_mgr, m_rows[n].pos, m_rows[n].address);
         return cbret_t(n, NOTHING_CHANGED);
     }
 
@@ -69,24 +61,16 @@ namespace idattd
                                          "Written by", "Writes", "Preview" };
 
     BuffersChooser::BuffersChooser(TraceManager *mgr, std::vector<BufferHit> &&hits)
-        : chooser_t(0, qnumber(g_rb_widths), g_rb_widths, g_rb_header, nullptr),
-          m_mgr(mgr), m_hits(std::move(hits))
+        : ListingChooser(mgr, 0, qnumber(g_rb_widths), g_rb_widths, g_rb_header, nullptr, std::move(hits))
     {
-        m_title.sprnt("TTD recovered buffers [%d]", (int)m_hits.size());
-        make_title_unique(&m_title);
-        title = m_title.c_str();
-    }
-
-    size_t idaapi BuffersChooser::get_count() const
-    {
-        return m_hits.size();
+        set_unique_title(qstring().sprnt("TTD recovered buffers [%d]", (int)m_rows.size()));
     }
 
     void idaapi BuffersChooser::get_row(qstrvec_t *cols, int *, chooser_item_attrs_t *, size_t n) const
     {
-        if ( n >= m_hits.size() )
+        if ( row(n) == nullptr )
             return;
-        const BufferHit &h = m_hits[n];
+        const BufferHit &h = *row(n);
         cols->at(0).sprnt("0x%llX", (uint64_t)h.address);
         cols->at(1).sprnt("0x%llX", (uint64_t)h.size);
         cols->at(2) = h.kind;
@@ -99,16 +83,16 @@ namespace idattd
 
     ea_t idaapi BuffersChooser::get_ea(size_t n) const
     {
-        return n < m_hits.size() ? m_hits[n].address : BADADDR;
+        return n < m_rows.size() ? m_rows[n].address : BADADDR;
     }
 
     // To the last write, where the buffer is complete, showing it in the hex
     // view when one is open.
     chooser_t::cbret_t idaapi BuffersChooser::enter(size_t n)
     {
-        if ( n < m_hits.size() )
+        if ( n < m_rows.size() )
             if ( listing_is_current(m_made) )
-                travel_and_show_bytes(m_mgr, m_hits[n].last_pos, m_hits[n].address);
+                travel_and_show_bytes(m_mgr, m_rows[n].last_pos, m_rows[n].address);
         return cbret_t(n, NOTHING_CHANGED);
     }
 

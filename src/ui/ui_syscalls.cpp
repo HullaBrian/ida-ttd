@@ -12,14 +12,13 @@ namespace idattd
 
     SyscallChooser::SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls,
                                    std::vector<qstring> &&decoded)
-        : chooser_t(CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_sc_widths), g_sc_widths, g_sc_header, nullptr),
-          m_mgr(mgr), m_calls(std::move(calls)), m_decoded(std::move(decoded))
+        : ListingChooser(mgr, CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_sc_widths), g_sc_widths, g_sc_header,
+                         nullptr, std::move(calls)),
+          m_decoded(std::move(decoded))
     {
         popup_names[POPUP_EDIT]    = "Decode arguments";
         popup_names[POPUP_REFRESH] = "Rebuild from the recording";
-        m_title.sprnt("TTD syscalls [%d]", (int)m_calls.size());
-        make_title_unique(&m_title);
-        title = m_title.c_str();
+        set_unique_title(qstring().sprnt("TTD syscalls [%d]", (int)m_rows.size()));
         reset_rows();
     }
 
@@ -29,24 +28,19 @@ namespace idattd
     // the recording there froze the UI (a seek is ~17 ms on Microsoft TTD).
     void SyscallChooser::reset_rows()
     {
-        m_decoded.resize(m_calls.size());
+        m_decoded.resize(m_rows.size());
         if ( m_made.current() )
-            undecoded_syscall_arguments(m_mgr, m_calls, m_decoded, &m_args);
+            undecoded_syscall_arguments(m_mgr, m_rows, m_decoded, &m_args);
         else
-            m_args.assign(m_calls.size(), std::nullopt);
-    }
-
-    size_t idaapi SyscallChooser::get_count() const
-    {
-        return m_calls.size();
+            m_args.assign(m_rows.size(), std::nullopt);
     }
 
     void idaapi SyscallChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                         chooser_item_attrs_t *attrs, size_t n) const
     {
-        if ( n >= m_calls.size() )
+        if ( row(n) == nullptr )
             return;
-        const SyscallEvent &c = m_calls[n];
+        const SyscallEvent &c = *row(n);
         cols->at(0) = format_position(c.pos);
         if ( c.tid != 0 )
             cols->at(1).sprnt("0x%X", c.tid);
@@ -79,23 +73,16 @@ namespace idattd
             cols->at(4) = "(not read; Ctrl+E decodes it)";
     }
 
-    chooser_t::cbret_t idaapi SyscallChooser::enter(size_t n)
-    {
-        if ( n < m_calls.size() )
-            travel_to(m_mgr, m_calls[n].pos, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
-    }
-
     // One call the full decoding did not reach (it was stopped).
     chooser_t::cbret_t idaapi SyscallChooser::edit(size_t n)
     {
-        if ( n >= m_calls.size() || m_mgr == nullptr || !m_mgr->is_active() )
+        if ( n >= m_rows.size() || m_mgr == nullptr || !m_mgr->is_active() )
             return cbret_t(n, NOTHING_CHANGED);
-        if ( api_signature(m_calls[n].name.c_str()) == nullptr )
+        if ( api_signature(m_rows[n].name.c_str()) == nullptr )
         {
             const qstring &why = api_metadata_error();
             info("There is no signature for %s%s%s.",
-                 m_calls[n].name.empty() ? "this syscall" : m_calls[n].name.c_str(),
+                 m_rows[n].name.empty() ? "this syscall" : m_rows[n].name.c_str(),
                  why.empty() ? "" : ": ", why.c_str());
             return cbret_t(n, NOTHING_CHANGED);
         }
@@ -103,7 +90,7 @@ namespace idattd
         // recording.
         if ( !listing_is_current(m_made) )
             return cbret_t(n, NOTHING_CHANGED);
-        std::vector<SyscallEvent> one{ m_calls[n] };
+        std::vector<SyscallEvent> one{ m_rows[n] };
         std::vector<qstring> text;
         bool cancelled = false;
         if ( decode_syscalls(m_mgr, one, &text, &cancelled) && !cancelled && !text.empty() )
@@ -123,9 +110,8 @@ namespace idattd
         // every row blank, which would then be kept as the final answer.
         if ( decode_syscalls(m_mgr, calls, &decoded, &cancelled) && !cancelled )
             save_syscalls(calls, decoded);
-        m_calls   = std::move(calls);
+        restamp(std::move(calls));
         m_decoded = std::move(decoded);
-        m_made    = RecordingStamp{};
         reset_rows();
         return cbret_t(n, ALL_CHANGED);
     }

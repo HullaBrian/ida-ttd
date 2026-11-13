@@ -12,25 +12,17 @@ namespace idattd
                                          "First run at", "Runs" };
 
     SelfModChooser::SelfModChooser(TraceManager *mgr, std::vector<SelfModHit> &&hits)
-        : chooser_t(0, qnumber(g_sm_widths), g_sm_widths, g_sm_header, nullptr),
-          m_mgr(mgr), m_hits(std::move(hits))
+        : ListingChooser(mgr, 0, qnumber(g_sm_widths), g_sm_widths, g_sm_header, nullptr, std::move(hits))
     {
-        m_title.sprnt("TTD self-modifying code [%d]", (int)m_hits.size());
-        make_title_unique(&m_title);
-        title = m_title.c_str();
-    }
-
-    size_t idaapi SelfModChooser::get_count() const
-    {
-        return m_hits.size();
+        set_unique_title(qstring().sprnt("TTD self-modifying code [%d]", (int)m_rows.size()));
     }
 
     void idaapi SelfModChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                         chooser_item_attrs_t * /*attrs*/, size_t n) const
     {
-        if ( n >= m_hits.size() )
+        if ( row(n) == nullptr )
             return;
-        const SelfModHit &h = m_hits[n];
+        const SelfModHit &h = *row(n);
         cols->at(0).sprnt("0x%llX", (uint64_t)h.address);
         cols->at(1).sprnt("%llu", (unsigned long long)h.size);
         cols->at(2) = format_position(h.write_pos);
@@ -40,17 +32,10 @@ namespace idattd
     }
 
     // Selecting a row shows the written code; travelling goes to the write,
-    // in the stub that unpacked it.
+    // in the stub that unpacked it (position_of).
     ea_t idaapi SelfModChooser::get_ea(size_t n) const
     {
-        return n < m_hits.size() ? m_hits[n].address : BADADDR;
-    }
-
-    chooser_t::cbret_t idaapi SelfModChooser::enter(size_t n)
-    {
-        if ( n < m_hits.size() )
-            travel_to(m_mgr, m_hits[n].write_pos, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
+        return n < m_rows.size() ? m_rows[n].address : BADADDR;
     }
 
     //=======================================================================

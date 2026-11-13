@@ -14,33 +14,19 @@ namespace idattd
     static const char *g_pos_header[] = { "Position", "Event" };
 
     PositionChooser::PositionChooser(TraceManager *mgr)
-        : chooser_t(0, qnumber(g_pos_widths), g_pos_widths, g_pos_header, "TTD Timeline"),
-          m_mgr(mgr)
+        : ListingChooser(mgr, 0, qnumber(g_pos_widths), g_pos_widths, g_pos_header, "TTD Timeline",
+                         mgr != nullptr ? mgr->collect_positions() : std::vector<TraceManager::NamedPosition>())
     {
-        if ( m_mgr != nullptr )
-            m_positions = m_mgr->collect_positions();
-    }
-
-    size_t idaapi PositionChooser::get_count() const
-    {
-        return m_positions.size();
     }
 
     void idaapi PositionChooser::get_row(qstrvec_t *cols, int * /*icon*/,
                                          chooser_item_attrs_t * /*attrs*/, size_t n) const
     {
-        if ( n >= m_positions.size() )
+        const TraceManager::NamedPosition *e = row(n);
+        if ( e == nullptr )
             return;
-        const TraceManager::NamedPosition &e = m_positions[n];
-        cols->at(0) = format_position(e.pos);
-        cols->at(1) = e.name.c_str();
-    }
-
-    chooser_t::cbret_t idaapi PositionChooser::enter(size_t n)
-    {
-        if ( n < m_positions.size() )
-            travel_to(m_mgr, m_positions[n].pos, m_made);
-        return cbret_t(n, NOTHING_CHANGED);
+        cols->at(0) = format_position(e->pos);
+        cols->at(1) = e->name.c_str();
     }
 
     void travel_to(TraceManager *mgr, Position p)
