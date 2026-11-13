@@ -99,6 +99,9 @@
     <ClInclude Include="$(SrcDir)\ui\ui.h" />
     <ClInclude Include="$(SrcDir)\plugin\one_shot_timer.h" />
     <ClInclude Include="$(SrcDir)\plugin\script_api.h" />
+    <ClInclude Include="$(SrcDir)\plugin\script_json.h" />
+    <ClInclude Include="$(SrcDir)\plugin\script_args.h" />
+    <ClInclude Include="$(SrcDir)\plugin\script_internal.h" />
     <ClInclude Include="$(SrcDir)\plugin\settings.h" />
     <ClInclude Include="$(SrcDir)\plugin\plugin.h" />
     <ClInclude Include="$(SrcDir)\plugin\plugin_internal.h" />
@@ -169,6 +172,12 @@
     <ClCompile Include="$(SrcDir)\ui\ui_tracer.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\dllmain.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\script_api.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_args.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_drv.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_session.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_analysis.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_fork.cpp" />
+    <ClCompile Include="$(SrcDir)\plugin\script_ui.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\settings.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\plugin.cpp" />
     <ClCompile Include="$(SrcDir)\plugin\plugin_actions.cpp" />

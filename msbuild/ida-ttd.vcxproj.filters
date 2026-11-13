@@ -196,6 +196,15 @@
     <ClInclude Include="$(SrcDir)\plugin\script_api.h">
       <Filter>plugin</Filter>
     </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\script_json.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\script_args.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
+    <ClInclude Include="$(SrcDir)\plugin\script_internal.h">
+      <Filter>plugin</Filter>
+    </ClInclude>
     <ClInclude Include="$(SrcDir)\plugin\settings.h">
       <Filter>plugin</Filter>
     </ClInclude>
@@ -406,6 +415,24 @@
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\script_api.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_args.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_drv.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_session.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_analysis.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_fork.cpp">
+      <Filter>plugin</Filter>
+    </ClCompile>
+    <ClCompile Include="$(SrcDir)\plugin\script_ui.cpp">
       <Filter>plugin</Filter>
     </ClCompile>
     <ClCompile Include="$(SrcDir)\plugin\settings.cpp">
