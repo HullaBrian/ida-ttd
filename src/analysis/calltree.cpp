@@ -142,9 +142,8 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            *err = backend->last_error();
-            if ( err->empty() )
-                *err = "the call listing did not run";
+            *err = query_error(mgr, backend, "the replay session ended during the call listing",
+                               "the call listing did not run");
             return false;
         }
         out->cancelled = qr.cancelled;

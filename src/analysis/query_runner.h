@@ -5,6 +5,8 @@
 
 namespace idattd
 {
+    class TraceManager;
+
     // Run a whole-trace query behind a cancellable wait box.
     //
     // 'query' runs on a worker thread (a query can take minutes, and on the
@@ -42,6 +44,13 @@ namespace idattd
     };
     QueryResult run_query(const char *what, const std::function<QueryResult(ProgressSink *)> &query,
                           bool cancellable = true, const QueryShow *show = nullptr);
+
+    // Why a query on 'backend' did not run. The session can end during it
+    // (the wait box pumps the UI) and close the backend, whose last error is
+    // then not this query's and must not be read: 'ended' is said instead.
+    // Never empty: 'fallback' when the backend gave no reason.
+    qstring query_error(TraceManager *mgr, ITraceBackend *backend, const char *ended,
+                        const char *fallback);
 
     // A running time to the second: "45 s", "3 min 07 s", "2 h 05 min 09 s".
     qstring clock_text(uint64 ms);

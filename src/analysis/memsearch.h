@@ -31,10 +31,12 @@ namespace idattd
     // 'mask'. A watchpoint is maskable, so the engine skips stretches that
     // cannot touch the range. Behind a cancellable wait box.
     //
-    // False when it could not run. 'truncated' (the record cap was hit) and
-    // 'cancelled' both leave 'out' holding what was gathered.
+    // False when it could not run, with the reason in 'error' (no dialog: the
+    // caller shows it). 'truncated' (the record cap was hit) and 'cancelled'
+    // both leave 'out' holding what was gathered.
     bool search_memory(TraceManager *mgr, ea_t lo, ea_t hi, uint8_t mask,
-                       std::vector<MemAccess> *out, bool *truncated, bool *cancelled);
+                       std::vector<MemAccess> *out, bool *truncated, bool *cancelled,
+                       qstring *error);
 
     // Human-readable name for an ACC_* value ("Read", "Write", "Execute").
     const char *access_name(uint8_t kind);

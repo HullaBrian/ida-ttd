@@ -260,7 +260,7 @@ namespace idattd
         show.title     = "Recording the fork";
         show.pausable  = true;
         clear_emulator_log_tail();
-        run_query("Replaying to the fork position, then recording from there", [&](ProgressSink *p)
+        const QueryResult qr = run_query("Replaying to the fork position, then recording from there", [&](ProgressSink *p)
         {
             started = true;
             result = backend->record_fork(full, p);
@@ -269,6 +269,10 @@ namespace idattd
             q.cancelled = result.cancelled;
             return q;
         }, true, &show);
+        // Stopped by the session's end (stop_running_query) counts as
+        // cancelled, whatever the backend said.
+        if ( started && qr.cancelled && !result.ok )
+            result.cancelled = true;
         // Refused before it ran (another query, a movement), or the session
         // ended during it: the backend's last error is not this fork's.
         if ( !started )

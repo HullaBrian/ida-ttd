@@ -513,12 +513,15 @@ namespace idattd
         if ( cancelled != nullptr )
             *cancelled = false;
 
+        // Failures are said in 'error', never in a dialog: the caller (a UI
+        // action, or a script that a dialog would hang) decides how to show
+        // them.
+        qstring ignored;
+        if ( error == nullptr )
+            error = &ignored;
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
         {
-            if ( error != nullptr )
-                *error = "the memory map can only be built while replaying a trace";
-            else
-                warning("The memory map can only be built while replaying a trace.");
+            *error = "the memory map can only be built while replaying a trace";
             return false;
         }
         ITraceBackend *backend = mgr->backend();
@@ -529,18 +532,11 @@ namespace idattd
         {
             return backend->query_mapping_changes(&found, &files, p);
         });
-        if ( !qr.ran && error != nullptr )
-        {
-            *error = "the memory map could not be built for this recording (the output window has the details)";
-            return false;
-        }
         if ( !qr.ran )
         {
-            warning("The memory map could not be built for this recording.\n\n"
-                    "For a Microsoft TTD trace this happens when ntdll's export "
-                    "table was never read during recording; for another kind of "
-                    "recording, its backend may not record the memory map. The "
-                    "output window has the details.");
+            *error = !mgr->is_active() || mgr->backend() != backend
+                   ? "the replay session ended while the memory map was built"
+                   : "the memory map could not be built for this recording (the output window has the details)";
             return false;
         }
 

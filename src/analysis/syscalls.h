@@ -26,6 +26,15 @@ namespace idattd
                            size_t first, size_t count,
                            std::vector<std::optional<SyscallArgs>> *out);
 
+    // The same registers for every call left undecoded (decoded[i] empty), in
+    // one batch behind a cancellable wait box, for a listing to show without
+    // reading the recording as rows are drawn. out[i] is empty for a decoded
+    // call, or where the registers were not recovered. False when nothing was
+    // read (no session, or cancelled).
+    bool undecoded_syscall_arguments(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
+                                     const std::vector<qstring> &decoded,
+                                     std::vector<std::optional<SyscallArgs>> *out);
+
     // Every syscall's arguments decoded from the native API metadata (phnt):
     // decoded[i] is "name=value, ..." for calls[i], empty without a
     // signature. Arguments are read at the call, out values after it. Behind

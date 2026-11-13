@@ -149,8 +149,8 @@ namespace idattd
     // names to the modules holding the called stubs and the attributed callers
     // (chain_origin), and loads PDBs for those callers in library modules.
     //
-    // With 'error' (a script's call) a failure is returned in it rather than
-    // shown in a dialog, which would hang the script.
+    // A failure is returned in 'error', never shown in a dialog (which would
+    // hang a script): the caller shows it.
     bool build_memory_map(TraceManager *mgr, MemoryMap *out, bool *cancelled, qstring *error = nullptr);
 
     // The session's memory map: the one IDA's segments, the Memory map

@@ -188,16 +188,14 @@ namespace idattd
         cbret_t idaapi refresh(ssize_t n) override;
 
     private:
-        const std::optional<SyscallArgs> &args_of(size_t n) const;
         void reset_rows();
 
         TraceManager              *m_mgr;
         RecordingStamp m_made;     // the recording the rows come from
         std::vector<SyscallEvent>  m_calls;
         std::vector<qstring>       m_decoded;
-        // Read a chunk at a time as rows are drawn; see ARG_CHUNK.
-        mutable std::vector<std::optional<SyscallArgs>> m_args;
-        mutable std::vector<bool>                       m_argsRead;
+        // The registers of each undecoded call (reset_rows).
+        std::vector<std::optional<SyscallArgs>> m_args;
         qstring                    m_title;  // owned: chooser_base_t keeps the pointer
     };
 
@@ -330,7 +328,7 @@ namespace idattd
         void rebuild() const;
 
         TraceManager *m_mgr;
-        RecordingStamp m_made;     // the recording the rows come from
+        mutable RecordingStamp m_made;     // the recording the rows come from
         mutable std::vector<AddressRegion> m_rows;
         // What m_rows was built from: the playhead and the change timeline's
         // size (it grows if the map is built with the listing open).

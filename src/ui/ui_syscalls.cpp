@@ -10,10 +10,6 @@ namespace idattd
     static const int   g_sc_widths[] = { 16, 8, 30, 36, 100 };
     static const char *g_sc_header[] = { "Position", "Thread", "Syscall", "Result", "Arguments" };
 
-    // A call without a decoding shows its registers, read in chunks as rows
-    // are drawn, since each needs a register reconstruction.
-    static const size_t ARG_CHUNK = 64;
-
     SyscallChooser::SyscallChooser(TraceManager *mgr, std::vector<SyscallEvent> &&calls,
                                    std::vector<qstring> &&decoded)
         : chooser_t(CH_CAN_EDIT | CH_CAN_REFRESH, qnumber(g_sc_widths), g_sc_widths, g_sc_header, nullptr),
@@ -27,30 +23,22 @@ namespace idattd
         reset_rows();
     }
 
+    // A call without a decoding shows its registers instead. They are read
+    // here, for every such call in one batch behind a wait box, and never
+    // from get_row: IDA draws every row to sort or filter a list, and reading
+    // the recording there froze the UI (a seek is ~17 ms on Microsoft TTD).
     void SyscallChooser::reset_rows()
     {
         m_decoded.resize(m_calls.size());
-        m_args.assign(m_calls.size(), std::nullopt);
-        m_argsRead.assign((m_calls.size() + ARG_CHUNK - 1) / ARG_CHUNK, false);
+        if ( m_made.current() )
+            undecoded_syscall_arguments(m_mgr, m_calls, m_decoded, &m_args);
+        else
+            m_args.assign(m_calls.size(), std::nullopt);
     }
 
     size_t idaapi SyscallChooser::get_count() const
     {
         return m_calls.size();
-    }
-
-    const std::optional<SyscallArgs> &SyscallChooser::args_of(size_t n) const
-    {
-        size_t chunk = n / ARG_CHUNK;
-        if ( !m_argsRead[chunk] && m_mgr != nullptr && m_mgr->is_active() )
-        {
-            m_argsRead[chunk] = true;
-            std::vector<std::optional<SyscallArgs>> got;
-            syscall_arguments(m_mgr->backend(), m_calls, chunk * ARG_CHUNK, ARG_CHUNK, &got);
-            for ( size_t i = 0; i < got.size(); i++ )
-                m_args[chunk * ARG_CHUNK + i] = got[i];
-        }
-        return m_args[n];
     }
 
     void idaapi SyscallChooser::get_row(qstrvec_t *cols, int * /*icon*/,
@@ -82,11 +70,13 @@ namespace idattd
             cols->at(4) = m_decoded[n];
             return;
         }
-        const std::optional<SyscallArgs> &a = args_of(n);
+        const std::optional<SyscallArgs> &a = m_args[n];
         if ( a.has_value() )
             cols->at(4).sprnt("r10=0x%llX, rdx=0x%llX, r8=0x%llX, r9=0x%llX",
                               (uint64_t)(*a)[0], (uint64_t)(*a)[1],
                               (uint64_t)(*a)[2], (uint64_t)(*a)[3]);
+        else
+            cols->at(4) = "(not read; Ctrl+E decodes it)";
     }
 
     chooser_t::cbret_t idaapi SyscallChooser::enter(size_t n)
@@ -135,6 +125,7 @@ namespace idattd
             save_syscalls(calls, decoded);
         m_calls   = std::move(calls);
         m_decoded = std::move(decoded);
+        m_made    = RecordingStamp{};
         reset_rows();
         return cbret_t(n, ALL_CHANGED);
     }

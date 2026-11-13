@@ -722,13 +722,20 @@ typedef struct ittd_buffer_hit
 typedef size_t (*ittd_read_fn)(void *read_ctx, uint64_t addr, void *buf, size_t size);
 typedef void (*ittd_visit_fn)(void *ud, size_t index, int phase, ittd_read_fn read, void *read_ctx);
 
+/* What *out_truncated says, when non-zero: the answer is a prefix because a
+ * cap was hit, or because the query was cancelled part-way. */
+#define ITTD_TRUNC_CAP        1
+#define ITTD_TRUNC_CANCELLED  2
+
 typedef struct ittd_progress
 {
     void *ud;
     /* 0..1000, so a long query can show tenths of a percent. */
     void (*report)(void *ud, uint32_t permille);
     /* Non-zero means stop as soon as convenient and return ITTD_E_CANCELLED,
-     * or ITTD_OK with what was gathered and *out_truncated set. */
+     * or ITTD_OK with what was gathered and *out_truncated set to
+     * ITTD_TRUNC_CANCELLED (a backend built before that value sets 1, which
+     * the core cannot tell from a cap). */
     int  (*cancelled)(void *ud);
 } ittd_progress;
 
@@ -873,7 +880,8 @@ typedef struct ittd_backend_api
      * watchpoints and a replay loop.
      *
      * All are count queries, take an optional progress sink, and set
-     * *out_truncated when a cap or a cancellation makes the answer a prefix.
+     * *out_truncated when a cap (ITTD_TRUNC_CAP) or a cancellation
+     * (ITTD_TRUNC_CANCELLED) makes the answer a prefix.
      */
     int (*query_accesses)(ittd_backend *b, uint64_t lo, uint64_t hi, uint32_t kinds,
                           ittd_position_range when,

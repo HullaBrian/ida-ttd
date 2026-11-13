@@ -476,6 +476,45 @@ namespace idattd
         }
     }
 
+    bool undecoded_syscall_arguments(TraceManager *mgr, const std::vector<SyscallEvent> &calls,
+                                     const std::vector<qstring> &decoded,
+                                     std::vector<std::optional<SyscallArgs>> *out)
+    {
+        out->assign(calls.size(), std::nullopt);
+        if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
+            return false;
+        ITraceBackend *b = mgr->backend();
+        std::vector<Position> where;
+        std::vector<size_t>   which;
+        for ( size_t i = 0; i < calls.size(); i++ )
+            if ( i >= decoded.size() || decoded[i].empty() )
+            {
+                where.push_back(calls[i].pos);
+                which.push_back(i);
+            }
+        if ( where.empty() )
+            return true;
+        std::vector<ittd_regs> regs;
+        QueryResult qr = run_query("Reading the undecoded syscalls' registers", [&](ProgressSink *sink)
+        {
+            QueryResult r;
+            r.ran = true;
+            b->registers_at(where, &regs, sink);
+            r.cancelled = sink != nullptr && sink->cancelled();
+            return r;
+        });
+        if ( !qr.ran || qr.cancelled )
+            return false;
+        for ( size_t k = 0; k < which.size() && k < regs.size(); k++ )
+        {
+            const ittd_regs &r = regs[k];
+            if ( (r.have & ITTD_REGS_GP) != 0 )
+                (*out)[which[k]] = SyscallArgs{ r.gp[SYSCALL_ARG_REGS[0]], r.gp[SYSCALL_ARG_REGS[1]],
+                                                r.gp[SYSCALL_ARG_REGS[2]], r.gp[SYSCALL_ARG_REGS[3]] };
+        }
+        return true;
+    }
+
     const char *ntstatus_name(uint32_t status)
     {
         switch ( status )

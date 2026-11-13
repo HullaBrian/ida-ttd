@@ -398,6 +398,32 @@ namespace idattd
         return out;
     }
 
+    qstring ttd_call_note(const qstring &cmt)
+    {
+        qstring out;
+        bool in_note = false;
+        size_t start = 0;
+        while ( start <= cmt.length() )
+        {
+            size_t nl = cmt.find('\n', start);
+            if ( nl == qstring::npos )
+                nl = cmt.length();
+            qstring line = cmt.substr(start, nl);
+            if ( strncmp(line.c_str(), CS_NOTE_PREFIX, sizeof(CS_NOTE_PREFIX) - 1) == 0 )
+                in_note = true;
+            else if ( in_note && strncmp(line.c_str(), "  ", 2) != 0 )
+                break;                          // the note has ended
+            if ( in_note )
+            {
+                if ( !out.empty() )
+                    out.append('\n');
+                out.append(line);
+            }
+            start = nl + 1;
+        }
+        return out;
+    }
+
     // Put the annotation's note on 'site' after the user's own repeatable
     // comment, replacing a note an earlier annotation left. An empty 'note'
     // removes it and leaves the user's text alone.
@@ -508,13 +534,18 @@ namespace idattd
                                  CallSiteResult *out)
     {
         CallSiteResult res;
+        // Why it did not run goes in out->error: a dialog raised here would
+        // hang a script (ttd("an.callsites")).
+        auto refuse = [&](const char *why)
+        {
+            if ( out != nullptr )
+                out->error = why;
+            return false;
+        };
         if ( out != nullptr )
             *out = res;
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
-        {
-            warning("This is only available while replaying a trace.");
-            return false;
-        }
+            return refuse("This is only available while replaying a trace.");
 
         // Sorted scope, as the backend is handed it.
         std::vector<std::pair<ea_t, ea_t>> spans;
@@ -523,20 +554,14 @@ namespace idattd
                 spans.push_back(r);
         std::sort(spans.begin(), spans.end());
         if ( spans.empty() )
-        {
-            warning("Nothing to annotate: the chosen scope covers no addresses.");
-            return false;
-        }
+            return refuse("Nothing to annotate: the chosen scope covers no addresses.");
 
         clear_stale_annotations();
 
         SiteTargets seen;
         QueryResult qr;
         if ( !collect_sites(mgr, spans, &seen, &qr) )
-        {
-            warning("This recording's backend could not report indirect call targets.");
-            return false;
-        }
+            return refuse("This recording's backend could not report indirect call targets.");
 
         show_wait_box("HIDECANCEL\nAnnotating call sites...");
         write_annotations(mgr, seen, 0, BADADDR, &res);

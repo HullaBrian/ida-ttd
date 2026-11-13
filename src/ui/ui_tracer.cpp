@@ -198,7 +198,12 @@ namespace idattd
         // A focused "calls to this function" query: drop earlier picks.
         tracer()->reset();
         tracer()->add_func(target);
-        tracer()->run_sweep();
+        qstring err;
+        if ( !tracer()->run_sweep(&err) )
+        {
+            warning("%s", err.c_str());
+            return 1;
+        }
 
         show_trace_events(mgr(), tracer());
         return 1;
@@ -243,7 +248,12 @@ namespace idattd
         tracer()->reset();
         for ( ea_t ea : hits )
             tracer()->add_func(ea);
-        tracer()->run_sweep();
+        qstring err;
+        if ( !tracer()->run_sweep(&err) )
+        {
+            warning("%s", err.c_str());
+            return 1;
+        }
 
         show_trace_events(mgr(), tracer());
         return 1;

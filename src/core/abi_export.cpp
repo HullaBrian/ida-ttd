@@ -198,7 +198,7 @@ namespace idattd
             QueryResult r = run(v.get());
             data      = v;
             rc        = !r.ran ? ITTD_E_UNSUPPORTED : r.cancelled ? ITTD_E_CANCELLED : ITTD_OK;
-            truncated = r.truncated || r.cancelled ? 1 : 0;
+            truncated = r.cancelled ? ITTD_TRUNC_CANCELLED : r.truncated ? ITTD_TRUNC_CAP : 0;
             std::lock_guard<std::mutex> lock(h->mtx);
             c.key       = key;
             c.data      = data;
@@ -232,7 +232,8 @@ namespace idattd
             }
         }
         // A cancelled count still reports what it gathered, as ITTD_OK with
-        // the truncated flag set.
+        // the truncated flag saying it was cancelled: ITTD_E_CANCELLED would
+        // make the core's count-then-fill drop the partial answer.
         return rc == ITTD_E_CANCELLED ? ITTD_OK : rc;
     }
 
@@ -1179,7 +1180,7 @@ namespace idattd
             if ( out_count != nullptr )
                 *out_count = n;
             if ( out_truncated != nullptr )
-                *out_truncated = r.truncated || r.cancelled ? 1 : 0;
+                *out_truncated = r.cancelled ? ITTD_TRUNC_CANCELLED : r.truncated ? ITTD_TRUNC_CAP : 0;
             return ITTD_OK;
         });
     }

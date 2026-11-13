@@ -31,8 +31,14 @@ namespace idattd
         std::vector<HandleRecord> rows;
         bool cancelled = false;
         if ( m_mgr != nullptr && m_mgr->is_active() && list_handles(m_mgr, &rows, &cancelled) && !cancelled )
+        {
             m_rows = std::move(rows);
-        set_title();
+            // The rows now come from the recording being replayed.
+            m_made = RecordingStamp{};
+        }
+        // The title is not remade: the widget is keyed by it, and
+        // make_title_unique would find this chooser's own window and add
+        // ' (2)'.
         return cbret_t(n, ALL_CHANGED);
     }
 

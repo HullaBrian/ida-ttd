@@ -47,14 +47,16 @@ namespace idattd
         uint64_t colored   = 0;   // ...of those, ones IDA has an instruction at
         uint64_t undefined = 0;   // ...and ones it does not (nothing to colour)
         bool     cancelled = false;
+        qstring  error;           // why run_coverage returned false, for the caller to show
     };
 
     // Replay the recording and colour every instruction in 'ranges' that ran.
     // Ranges are [lo, hi), any order; they become Execute watchpoints, so a
     // narrow scope lets the engine skip stretches of the trace.
     //
-    // Runs behind a cancellable wait box. False when there is no trace, the
-    // scope is unusable, or the backend could not run it; a cancelled sweep
+    // Runs behind a cancellable wait box. False, with 'error' set and no
+    // dialog shown, when there is no trace, the scope is unusable, or the
+    // backend could not run it; a cancelled sweep
     // returns true with 'cancelled' set and paints nothing.
     bool run_coverage(TraceManager *mgr,
                       const std::vector<std::pair<ea_t, ea_t>> &ranges,

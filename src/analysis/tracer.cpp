@@ -408,7 +408,7 @@ namespace idattd
     // target directly (4 calls instead of 29 in beacon). A slot is read
     // where it holds the bound value: at the playhead, and at the end of
     // the recording for a playhead the loader had not bound it by yet.
-    std::vector<ea_t> FunctionTracer::resolve_targets(ea_t func_ea) const
+    std::vector<ea_t> FunctionTracer::resolve_targets(ea_t func_ea, CursorPtr *at_end) const
     {
         std::set<ea_t> out;
         func_entry_info_t fi;
@@ -425,12 +425,17 @@ namespace idattd
         {
             std::set<ea_t> vals;
             add_live_ptr(slot, m_is64, vals);
-            CursorPtr cur = backend != nullptr ? backend->make_cursor() : CursorPtr();
-            if ( cur && cur->seek(backend->info().last) )
+            if ( !*at_end && backend != nullptr )
+            {
+                *at_end = backend->make_cursor();
+                if ( *at_end && !(*at_end)->seek(backend->info().last) )
+                    at_end->reset();
+            }
+            if ( *at_end )
             {
                 uint64_t v = 0;
                 std::vector<uint8_t> known;
-                if ( cur->read_memory(slot, &v, ptrsz, &known) == ptrsz )
+                if ( (*at_end)->read_memory(slot, &v, ptrsz, &known) == ptrsz )
                     vals.insert((ea_t)v);
             }
             for ( ea_t v : vals )
@@ -459,33 +464,35 @@ namespace idattd
         return std::vector<ea_t>(out.begin(), out.end());
     }
 
-    void FunctionTracer::run_sweep()
+    bool FunctionTracer::run_sweep(qstring *error)
     {
-        if ( m_mgr == nullptr )
-            return;
+        qstring ignored;
+        if ( error == nullptr )
+            error = &ignored;
+        if ( m_mgr == nullptr || !m_mgr->is_active() || m_mgr->backend() == nullptr )
+        {
+            *error = "Tracing is only available while replaying a trace.";
+            return false;
+        }
 
         // Each resolved runtime target to the picked function (for display and
         // types).
         std::map<ea_t, ea_t> tgt2disp;
         {
             std::lock_guard<std::mutex> g(m_traces_mtx);
+            CursorPtr at_end;
             for ( ea_t picked : m_traces )
-                for ( ea_t t : resolve_targets(picked) )
+                for ( ea_t t : resolve_targets(picked, &at_end) )
                     tgt2disp.emplace(t, picked);
         }
         if ( tgt2disp.empty() )
         {
-            info("No functions are being traced. Right-click a function and pick "
-                 "'TTD: Find calls to this function'.");
-            return;
+            *error = "No functions are being traced. Right-click a function and pick "
+                     "'TTD: Find calls to this function'.";
+            return false;
         }
 
         ITraceBackend *backend = m_mgr->backend();
-        if ( !m_mgr->is_active() || backend == nullptr )
-        {
-            warning("Tracing is only available while replaying a trace.");
-            return;
-        }
 
         std::vector<ea_t> targets;
         targets.reserve(tgt2disp.size());
@@ -501,8 +508,9 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            warning("This recording's backend could not search for calls.");
-            return;
+            *error = query_error(m_mgr, backend, "The replay session ended during the call search.",
+                                 "This recording's backend could not search for calls.");
+            return false;
         }
         if ( qr.truncated )
             msg("[ida-ttd] tracer: hit the backend's call limit; results are "
@@ -822,5 +830,6 @@ namespace idattd
                 (int)nbuilt, (int)calls.size());
         else
             msg("[ida-ttd] tracer: recorded %d call(s).\n", (int)nbuilt);
+        return true;
     }
 }

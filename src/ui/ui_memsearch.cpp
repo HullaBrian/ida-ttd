@@ -111,9 +111,13 @@ namespace idattd
 
         std::vector<MemAccess> hits;
         bool truncated = false, cancelled = false;
+        qstring err;
         if ( !search_memory(mgr(), addr, addr + (ea_t)len, (uint8_t)bits,
-                            &hits, &truncated, &cancelled) )
+                            &hits, &truncated, &cancelled, &err) )
+        {
+            warning("%s", err.c_str());
             return 1;
+        }
 
         msg("[ida-ttd] memory search: %d access(es) to 0x%llX..0x%llX%s%s.\n",
             (int)hits.size(), (uint64_t)addr, (uint64_t)(addr + (ea_t)len),

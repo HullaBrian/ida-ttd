@@ -1036,8 +1036,9 @@ namespace idattd
         uint64_t max = a.u64_or(3, 200);
         std::vector<MemAccess> v;
         bool truncated = false, cancelled = false;
-        if ( !search_memory(&mgr(), lo, hi, access_mask(a, 2), &v, &truncated, &cancelled) )
-            fail("the search did not run");
+        qstring err;
+        if ( !search_memory(&mgr(), lo, hi, access_mask(a, 2), &v, &truncated, &cancelled, &err) )
+            fail("the search did not run: %s", err.c_str());
         JArr arr;
         for ( size_t i = 0; i < v.size() && i < max; i++ )
         {
@@ -1674,7 +1675,7 @@ namespace idattd
         CoverageResult r;
         bgcolor_t color = (bgcolor_t)a.u64_or(2, COVERAGE_DEFAULT_COLOR);
         if ( !run_coverage(&mgr(), { { (ea_t)a.u64(0), (ea_t)a.u64(1) } }, color, &r) )
-            fail("coverage did not run");
+            fail("coverage did not run: %s", r.error.c_str());
         out.num("executed", (int64_t)r.executed).num("colored", (int64_t)r.colored)
            .num("undefined", (int64_t)r.undefined).boolean("cancelled", r.cancelled);
     }
@@ -1685,7 +1686,7 @@ namespace idattd
         ea_t lo = (ea_t)a.u64(0), hi = (ea_t)a.u64(1);
         CallSiteResult r;
         if ( !annotate_indirect_calls(&mgr(), { { lo, hi } }, &r) )
-            fail("the call site sweep did not run");
+            fail("the call site sweep did not run: %s", r.error.c_str());
         // What it wrote: the repeatable comment at each annotated site.
         JArr arr;
         for ( ea_t ea = lo; ea < hi && ea != BADADDR && arr.size() < 64; ea = next_head(ea, hi) )
@@ -1735,7 +1736,9 @@ namespace idattd
                 tr.add_func((ea_t)ea);
         }
         out.num("traced", (int64_t)tr.count_traced());
-        tr.run_sweep();
+        qstring err;
+        if ( !tr.run_sweep(&err) )
+            fail("the trace did not run: %s", err.c_str());
         std::vector<FunctionInvocation> v = tr.snapshot_events();
         JArr arr;
         for ( size_t i = 0; i < v.size() && i < max; i++ )

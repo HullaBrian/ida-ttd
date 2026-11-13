@@ -16,8 +16,12 @@ namespace idattd
     }
 
     bool search_memory(TraceManager *mgr, ea_t lo, ea_t hi, uint8_t mask,
-                       std::vector<MemAccess> *out, bool *truncated, bool *cancelled)
+                       std::vector<MemAccess> *out, bool *truncated, bool *cancelled,
+                       qstring *error)
     {
+        qstring ignored;
+        if ( error == nullptr )
+            error = &ignored;
         if ( out != nullptr )
             out->clear();
         if ( truncated != nullptr )
@@ -27,13 +31,13 @@ namespace idattd
 
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
         {
-            warning("Memory searching is only available while replaying a trace.");
+            *error = "Memory searching is only available while replaying a trace.";
             return false;
         }
         if ( lo >= hi || mask == 0 )
         {
-            warning("Nothing to search for: give a non-empty range and at least "
-                    "one of read, write or execute.");
+            *error = "Nothing to search for: give a non-empty range and at least "
+                     "one of read, write or execute.";
             return false;
         }
 
@@ -45,7 +49,8 @@ namespace idattd
         });
         if ( !qr.ran )
         {
-            warning("This recording's backend could not search for accesses.");
+            *error = query_error(mgr, backend, "The replay session ended during the search.",
+                                 "This recording's backend could not search for accesses.");
             return false;
         }
 

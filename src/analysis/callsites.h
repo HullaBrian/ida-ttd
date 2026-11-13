@@ -15,6 +15,7 @@ namespace idattd
         size_t typed       = 0;  // sites given their callee's prototype
         bool   truncated  = false;
         bool   cancelled  = false;
+        qstring error;           // why annotate_indirect_calls returned false
     };
 
     // Replay the recording, see where each indirect call went, and write it
@@ -27,11 +28,20 @@ namespace idattd
     // type, as IDA types a direct call to an import, so the decompiler types
     // the arguments. A site that already has a type keeps it.
     //
+    // False, with out->error set and no dialog shown (the caller shows it),
+    // when there is no trace, the scope is empty or the backend failed.
+    //
     // 'ranges' limits which sites are annotated, not the sweep's cost: the
     // call/return callback is not maskable, so the engine replays everything.
     bool annotate_indirect_calls(TraceManager *mgr,
                                  const std::vector<std::pair<ea_t, ea_t>> &ranges,
                                  CallSiteResult *out);
+
+    // The note an annotation put in a repeatable comment ("TTD: calls ...",
+    // with its indented target lines), wherever it sits in the comment: it
+    // follows the user's own text when there is some. Empty when there is
+    // none.
+    qstring ttd_call_note(const qstring &cmt);
 
     // Remove the comments, cross-references and types a previous run wrote.
     size_t clear_indirect_call_annotations();

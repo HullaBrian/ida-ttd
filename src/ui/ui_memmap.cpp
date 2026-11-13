@@ -211,8 +211,19 @@ namespace idattd
         // The session's map, which IDA's segments and the scripts read too;
         // saved and handed to IDA there.
         bool cancelled = false;
-        if ( !session_memory_map(mgr, false, &cancelled) )
+        qstring err;
+        if ( !session_memory_map(mgr, false, &cancelled, &err) )
+        {
+            if ( mgr->is_active() && !err.empty() && err.find("could not be built") != qstring::npos )
+                warning("The memory map could not be built for this recording.\n\n"
+                        "For a Microsoft TTD trace this happens when ntdll's export "
+                        "table was never read during recording; for another kind of "
+                        "recording, its backend may not record the memory map. The "
+                        "output window has the details.");
+            else if ( !err.empty() )
+                warning("The memory map was not built: %s.", err.c_str());
             return false;
+        }
         if ( mgr->memmap_for_update().empty() )
         {
             info("The recording made no memory allocations, protection changes "
@@ -319,6 +330,8 @@ namespace idattd
         if ( now.is_valid() && now == m_at && map_size == m_mapSize )
             return;
         address_space_at(m_mgr, &m_rows);
+        // Rebuilt from the session being replayed, a fork's after a switch.
+        m_made    = RecordingStamp{};
         m_at      = now;
         m_mapSize = map_size;
     }

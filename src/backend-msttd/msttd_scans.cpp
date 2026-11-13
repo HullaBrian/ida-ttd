@@ -568,9 +568,11 @@ namespace idattd
         QueryResult r;
         if ( !m_engine || out == nullptr )
             return r;
-        r.ran = true;
+        // Ran only once the scans exist: a failed run (no cursor, say) must
+        // not read as a complete, empty answer that a caller would save.
         if ( !run_scans(progress, &r) )
             return r;
+        r.ran = true;
         out->insert(out->end(), m_scans.p->selfmod.begin(), m_scans.p->selfmod.end());
         r.truncated = m_scans.p->truncated;
         return r;
@@ -582,9 +584,11 @@ namespace idattd
         QueryResult r;
         if ( !m_engine || out == nullptr )
             return r;
-        r.ran = true;
+        // Ran only once the scans exist: a failed run (no cursor, say) must
+        // not read as a complete, empty answer that a caller would save.
         if ( !run_scans(progress, &r) )
             return r;
+        r.ran = true;
         const uint32_t want = std::max(min_length, kStringMinimum);
         m_scans.p->strings.for_each([&](uint64_t address, const StringScan::Entry &e)
         {
@@ -608,9 +612,11 @@ namespace idattd
         QueryResult r;
         if ( !m_engine || out == nullptr )
             return r;
-        r.ran = true;
+        // Ran only once the scans exist: a failed run (no cursor, say) must
+        // not read as a complete, empty answer that a caller would save.
         if ( !run_scans(progress, &r) )
             return r;
+        r.ran = true;
         out->insert(out->end(), m_scans.p->buffers.begin(), m_scans.p->buffers.end());
         r.truncated = m_scans.p->truncated;
         return r;

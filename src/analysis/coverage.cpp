@@ -221,7 +221,13 @@ namespace idattd
             return false;
         std::vector<std::pair<ea_t, ea_t>> one{ { start, end } };
         CoverageResult r;
-        if ( !run_coverage(mgr, one, coverage_color(), &r) || r.cancelled )
+        if ( !run_coverage(mgr, one, coverage_color(), &r) )
+        {
+            // Automatic: said in the output window, not in a dialog.
+            msg("[ida-ttd] coverage of the function at 0x%llX: %s\n", (uint64_t)start, r.error.c_str());
+            return false;
+        }
+        if ( r.cancelled )
             return false;
         // Recorded even when nothing ran: "none" is a result, and re-measuring
         // on every stop would not change it.
@@ -257,13 +263,18 @@ namespace idattd
                       CoverageResult *out)
     {
         CoverageResult res;
+        // Why it did not run goes in out->error, for the caller to show: a
+        // dialog raised here would hang a script (ttd("an.coverage")).
+        auto refuse = [&](const qstring &why)
+        {
+            if ( out != nullptr )
+                out->error = why;
+            return false;
+        };
         if ( out != nullptr )
             *out = res;
         if ( mgr == nullptr || !mgr->is_active() || mgr->backend() == nullptr )
-        {
-            warning("Execution coverage is only available while replaying a trace.");
-            return false;
-        }
+            return refuse("Execution coverage is only available while replaying a trace.");
 
         // Repaint another recording's coverage first, or this sweep's paint
         // would be repainted with it.
@@ -271,21 +282,19 @@ namespace idattd
 
         std::vector<std::pair<ea_t, ea_t>> spans = normalize(ranges);
         if ( spans.empty() )
-        {
-            warning("Nothing to measure: the chosen scope covers no addresses.");
-            return false;
-        }
+            return refuse("Nothing to measure: the chosen scope covers no addresses.");
 
         uint64_t total = 0;
         for ( const auto &r : spans )
             total += (uint64_t)(r.second - r.first);
         if ( total > kMaxCoverageBytes )
         {
-            warning("That scope spans %llu MiB of address space, more than the "
-                    "%llu MiB this command will map at once.\n\n"
-                    "Measure a single module or function instead.",
-                    total >> 20, kMaxCoverageBytes >> 20);
-            return false;
+            qstring why;
+            why.sprnt("That scope spans %llu MiB of address space, more than the "
+                      "%llu MiB this command will map at once.\n\n"
+                      "Measure a single module or function instead.",
+                      total >> 20, kMaxCoverageBytes >> 20);
+            return refuse(why);
         }
 
         ITraceBackend *backend = mgr->backend();
@@ -295,10 +304,8 @@ namespace idattd
             return backend->query_executed(spans, &executed, p);
         });
         if ( !qr.ran )
-        {
-            warning("This recording's backend could not measure execution coverage.");
-            return false;
-        }
+            return refuse(query_error(mgr, backend, "The replay session ended during the coverage sweep.",
+                                      "This recording's backend could not measure execution coverage."));
         res.cancelled = qr.cancelled;
 
         // A cancelled sweep is partial, and partial paint would look complete.

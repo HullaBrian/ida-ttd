@@ -55,7 +55,10 @@ namespace idattd
 
         CoverageResult r;
         if ( !run_coverage(mgr(), ranges, color, &r) )
+        {
+            warning("%s", r.error.c_str());
             return 1;
+        }
 
         msg("[ida-ttd] coverage%s: %llu addresses executed, %llu instructions "
             "coloured, %llu with no code defined.\n",

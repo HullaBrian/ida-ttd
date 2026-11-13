@@ -1,5 +1,6 @@
 #include "ui/decompiler.h"
 #include "analysis/coverage.h"
+#include "analysis/callsites.h"
 
 // hexrays.hpp is the one SDK header that warns at this project's level
 // (narrowing and a signed/unsigned compare, in inline code the plugin never
@@ -140,11 +141,16 @@ namespace idattd
             if ( already.find(ea) != already.end() )
                 continue;
 
-            qstring cmt;
-            if ( get_cmt(&cmt, ea, true) <= 0 || cmt.empty() )
+            // The flag first: most anchors have no comment, and this runs
+            // for every line on every repaint.
+            qstring full;
+            if ( !has_cmt(get_flags(ea)) || get_cmt(&full, ea, true) <= 0 || full.empty() )
                 continue;
-            if ( strncmp(cmt.c_str(), "TTD: ", 5) != 0 )
-                continue;                    // somebody else's comment
+            // Only the annotation's note, which follows the user's own text
+            // when the site has some.
+            qstring cmt = ttd_call_note(full);
+            if ( cmt.empty() )
+                continue;
 
             qstring flat;
             for ( size_t i = 0; i < cmt.length(); i++ )

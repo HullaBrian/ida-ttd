@@ -1,6 +1,7 @@
 #include "analysis/query_runner.h"
 #include "core/backend_module.h"
 #include "core/diag.h"
+#include "debugger/trace_manager.h"
 
 #include <expr.hpp>
 #include <psapi.h>     // K32EnumProcessModules: kernel32, no psapi.lib
@@ -571,5 +572,16 @@ namespace idattd
     bool WaitBoxSink::cancelled()
     {
         return user_cancelled();
+    }
+
+    qstring query_error(TraceManager *mgr, ITraceBackend *backend, const char *ended,
+                        const char *fallback)
+    {
+        if ( mgr == nullptr || !mgr->is_active() || backend == nullptr || mgr->backend() != backend )
+            return qstring(ended);
+        qstring why = backend->last_error();
+        if ( why.empty() )
+            why = fallback;
+        return why;
     }
 }

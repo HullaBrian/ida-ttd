@@ -337,7 +337,7 @@ namespace idattd
         {
             if ( r.cancelled )
                 msg("[ida-ttd] fork cancelled.\n");
-            else if ( m->backend()->last_replay_block() == ReplayBlock::None )
+            else if ( m->backend() == nullptr || m->backend()->last_replay_block() == ReplayBlock::None )
                 warning("The fork failed: %s", r.error.c_str());
             else
                 msg("[ida-ttd] fork not recorded: %s.\n", r.error.c_str());

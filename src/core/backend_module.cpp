@@ -83,11 +83,18 @@ namespace idattd
     #define ITTD_HAS(api, f) \
         (offsetof(ittd_backend_api, f) + sizeof((api)->f) <= (api)->size && (api)->f != nullptr)
 
-    static QueryResult result_of(int rc, int truncated)
+    // A query's outcome. A cancelled query comes back three ways: as
+    // ITTD_E_CANCELLED, as a prefix flagged ITTD_TRUNC_CANCELLED, or (from a
+    // backend that predates that flag) as a prefix flagged like a cap. The
+    // sink settles the last: a caller with its own sink (not run_query, which
+    // keeps a flag of its own) would otherwise act on half an answer as if it
+    // were whole.
+    static QueryResult result_of(int rc, int truncated, const ProgressBridge &pb)
     {
         QueryResult r;
         r.ran       = rc == ITTD_OK || rc == ITTD_E_CANCELLED;
-        r.cancelled = rc == ITTD_E_CANCELLED;
+        r.cancelled = rc == ITTD_E_CANCELLED || truncated == ITTD_TRUNC_CANCELLED
+                   || (r.ran && truncated != 0 && pb.sink != nullptr && pb.sink->cancelled());
         r.truncated = truncated != 0;
         return r;
     }
@@ -634,7 +641,7 @@ namespace idattd
                    : a.kind == ITTD_ACCESS_WRITE ? ACCESS_WRITE : ACCESS_EXEC;
             out->push_back(x);
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_executed(const std::vector<std::pair<ea_t, ea_t>> &ranges,
@@ -654,7 +661,7 @@ namespace idattd
         // Already sorted and distinct. A module's worth is millions of
         // addresses: one append, not a push_back each.
         out->insert(out->end(), v.begin(), v.end());
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_calls(const std::vector<ea_t> &targets, PositionRange when,
@@ -684,7 +691,7 @@ namespace idattd
             e.is_call   = (c.flags & ITTD_CALL_F_NOT_CALL) == 0;
             out->push_back(e);
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_indirect_targets(const std::vector<std::pair<ea_t, ea_t>> &ranges,
@@ -713,7 +720,7 @@ namespace idattd
             t.is_call = (c.flags & ITTD_CALL_F_NOT_CALL) == 0;
             (*out)[(ea_t)c.site].push_back(t);
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_exceptions(std::vector<ExceptionEvent> *out, ProgressSink *progress)
@@ -741,7 +748,7 @@ namespace idattd
             e.information[1] = x.information[1];
             out->push_back(e);
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_syscalls(std::vector<SyscallEvent> *out, ProgressSink *progress)
@@ -767,7 +774,7 @@ namespace idattd
             e.name   = fixed_str(x.name);
             out->push_back(std::move(e));
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_self_modifying(std::vector<SelfModHit> *out, ProgressSink *progress)
@@ -794,7 +801,7 @@ namespace idattd
             h.executions  = x.executions;
             out->push_back(h);
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     static void backend_log(void *, const char *line);
@@ -971,7 +978,7 @@ namespace idattd
             h.text    = fixed_str(x.text);
             out->push_back(std::move(h));
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::query_buffers(const ReplaySettings &settings,
@@ -1004,7 +1011,7 @@ namespace idattd
             h.preview   = fixed_str(x.preview);
             out->push_back(std::move(h));
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     ForkResult BackendModule::record_fork(const ForkRequest &req, ProgressSink *progress)
@@ -1139,7 +1146,7 @@ namespace idattd
                 for ( const ittd_name &n : names )
                     files->push_back(fixed_str(n.name));
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     Position BackendModule::position_add(Position p, int64_t delta) const
@@ -1195,7 +1202,7 @@ namespace idattd
             return m_api->query_access_heat(m_handle, page_shift, slices, b, cap, n, &trunc, pb.get());
         }, &trunc);
         append_heat(v, out);
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     bool BackendModule::can_window_heat() const
@@ -1224,7 +1231,7 @@ namespace idattd
             return m_api->query_access_heat_window(m_handle, page_shift, slices, w, b, cap, n, &trunc, pb.get());
         }, &trunc);
         append_heat(v, out);
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     Position BackendModule::heat_window_slice_position(uint32_t slices, uint32_t slice, PositionRange when)
@@ -1335,7 +1342,7 @@ namespace idattd
                 out->push_back(x);
             }
         }
-        return result_of(rc, trunc);
+        return result_of(rc, trunc, pb);
     }
 
     QueryResult BackendModule::registers_at(const std::vector<Position> &positions,
@@ -1352,7 +1359,7 @@ namespace idattd
             p.push_back(to_abi(x));
         out->assign(positions.size(), ittd_regs{});
         int rc = m_api->regs_at(m_handle, p.data(), p.size(), out->data(), pb.get());
-        return result_of(rc, 0);
+        return result_of(rc, 0, pb);
     }
 
     QueryResult BackendModule::read_memory_at(const std::vector<MemAt> &reads, std::vector<uint8_t> *data,
@@ -1378,7 +1385,7 @@ namespace idattd
         int rc = m_api->read_memory_at(m_handle, in.data(), in.size(), data->data(), known->data(), pb.get());
         if ( rc == ITTD_E_UNSUPPORTED )
             return ITraceBackend::read_memory_at(reads, data, known, progress);
-        return result_of(rc, 0);
+        return result_of(rc, 0, pb);
     }
 
     // visit_positions' callback, through the C ABI: 'ud' is the VisitFn, and
@@ -1420,7 +1427,7 @@ namespace idattd
                                               visit_trampoline, const_cast<VisitFn *>(&fn), pb.get());
         if ( rc == ITTD_E_UNSUPPORTED )
             return QueryResult{};
-        return result_of(rc, 0);
+        return result_of(rc, 0, pb);
     }
 
     std::vector<ITraceBackend::Symbol> BackendModule::module_symbols(ea_t base)

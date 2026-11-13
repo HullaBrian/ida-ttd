@@ -366,7 +366,8 @@ namespace idattd
     // Reported by a query that could not return everything it found.
     struct QueryResult
     {
-        bool ran       = false;   // the query was attempted at all
+        bool ran       = false;   // it ran to the end or was cancelled; false when
+                                  // the backend cannot answer it or it failed
         bool cancelled = false;   // the user stopped it part-way
         bool truncated = false;   // a record cap was hit; results are a prefix
     };

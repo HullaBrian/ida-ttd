@@ -2,6 +2,7 @@
 
 #include "common/pch.h"
 #include "core/position.h"
+#include "core/backend.h"
 
 namespace idattd
 {
@@ -69,13 +70,18 @@ namespace idattd
         std::vector<FunctionInvocation> snapshot_events();
 
         // Rebuild the event list for the traced functions from the whole
-        // recording. Shows a wait box; safe from a UI action.
-        void run_sweep();
+        // recording. Shows a wait box; safe from a UI action. False, with the
+        // reason in 'error' and no dialog (a script would hang on one), when
+        // it could not run.
+        bool run_sweep(qstring *error);
 
     private:
         // The runtime callee addresses for a picked address (through import
-        // thunks and the live IAT pointer).
-        std::vector<ea_t> resolve_targets(ea_t func_ea) const;
+        // thunks and the live IAT pointer). 'at_end' is a cursor at the end of
+        // the recording, made on first use and shared by every call: one seek
+        // for the whole pattern, not one per import slot (~17 ms each on
+        // Microsoft TTD).
+        std::vector<ea_t> resolve_targets(ea_t func_ea, CursorPtr *at_end) const;
 
         TraceManager      *m_mgr  = nullptr;
         bool               m_is64 = false;

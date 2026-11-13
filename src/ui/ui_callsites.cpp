@@ -40,7 +40,10 @@ namespace idattd
 
         CallSiteResult r;
         if ( !annotate_indirect_calls(mgr(), ranges, &r) )
+        {
+            warning("%s", r.error.c_str());
             return 1;
+        }
 
         msg("[ida-ttd] indirect calls: %d site(s) annotated, %d distinct target(s), "
             "%d site(s) reached more than one, %d given their callee's prototype%s%s.\n",
