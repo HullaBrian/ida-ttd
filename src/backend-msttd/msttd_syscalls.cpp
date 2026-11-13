@@ -651,6 +651,29 @@ namespace idattd
         };
         if ( std::shared_ptr<const SyscallCensus> c = from_cache() )
             return c;
+        // The listing and the map are often asked for together, and the
+        // second would otherwise replay the whole recording again.
+        switch ( m_censusRun.enter(progress, [this] { return cached_census() != nullptr; }) )
+        {
+            case SharedRun::Turn::Ready:
+                return from_cache();
+            case SharedRun::Turn::Cancelled:
+            {
+                // Cancelled while waiting: an empty census, which both
+                // callers present as the partial answer a cancelled census
+                // gives.
+                auto none = std::make_shared<SyscallCensus>();
+                none->table  = std::make_shared<SyscallTable>();
+                none->memmap = empty_memmap_records();
+                qr->ran       = true;
+                qr->cancelled = true;
+                return none;
+            }
+            case SharedRun::Turn::Run:
+                break;
+        }
+        SharedRun::Runner runner(m_censusRun, progress);
+
         auto table = std::make_shared<SyscallTable>();
         const bool named = build_syscall_table(this, table.get());
         std::unique_ptr<MemmapHooks> mm = make_memmap_hooks(this, *table);
@@ -671,7 +694,7 @@ namespace idattd
         if ( mm != nullptr )
             mm->arm(&opts);
         std::vector<KernelCall> calls;
-        QueryResult kr = collect_kernel_calls(this, *table, opts, &calls, progress);
+        QueryResult kr = collect_kernel_calls(this, *table, opts, &calls, &runner);
         if ( !kr.ran )
             return nullptr;
 

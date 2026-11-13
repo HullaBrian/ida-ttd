@@ -502,6 +502,24 @@ namespace idattd
             if ( m_scans.p != nullptr )
                 return true;
         }
+        // A second query asking while the first replays waits for its answer
+        // (the strings and the buffers are often asked for together).
+        auto ready = [this]
+        {
+            std::lock_guard<std::mutex> lock(m_scansMtx);
+            return m_scans.p != nullptr;
+        };
+        switch ( m_scansRun.enter(progress, ready) )
+        {
+            case SharedRun::Turn::Ready:
+                return true;
+            case SharedRun::Turn::Cancelled:
+                qr->cancelled = true;
+                return false;
+            case SharedRun::Turn::Run:
+                break;
+        }
+        SharedRun::Runner runner(m_scansRun, progress);
         const uint64_t space = user_space_end();
 
         UniqueCursor cur = new_engine_cursor();
@@ -510,7 +528,7 @@ namespace idattd
         Ranges written;
         bool   capped = false;
         {
-            ScaledProgress stage(progress, 0, 30);
+            ScaledProgress stage(&runner, 0, 30);
             if ( !scan_written(cur.get(), space, &stage, &written, &capped) )
             {
                 qr->cancelled = true;
@@ -547,7 +565,7 @@ namespace idattd
                 arm.watch(x);
             }
             arm.on_watchpoint(on_hit);
-            ScaledProgress stage(progress, 30, 60);
+            ScaledProgress stage(&runner, 30, 60);
             if ( !arm.sweep(TtdPosition::Min, TtdPosition::Max, &stage) )
             {
                 qr->cancelled = true;
@@ -558,7 +576,7 @@ namespace idattd
         pass.finish_windows(cur.get());
 
         {
-            ScaledProgress stage(progress, 90, 10);
+            ScaledProgress stage(&runner, 90, 10);
             if ( !scan_module_strings(cur.get(), mods, res->strings, &stage) )
             {
                 qr->cancelled = true;

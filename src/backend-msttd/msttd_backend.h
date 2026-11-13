@@ -179,10 +179,11 @@ namespace idattd
         // The syscall census (msttd_syscalls.cpp), shared by query_syscalls,
         // query_mapping_changes and registers_at. Only a census that ran to
         // the end is cached. m_censusMtx guards the pointer only, never a
-        // replay: two queries that both miss each run their own, and the
-        // last one kept is as good as the first.
+        // replay: m_censusRun has a query that misses while another replays
+        // wait for that one's census.
         std::mutex                      m_censusMtx;
         std::shared_ptr<const SyscallCensus> m_census;
+        SharedRun                       m_censusRun;
         std::shared_ptr<const SyscallCensus> cached_census();
         // The cached census, else one replay for it. 'need_memmap': when the
         // recording names no memory syscall, return a census with no
@@ -203,8 +204,10 @@ namespace idattd
         ScanResultsPtr                  m_scans;
         // Guards only reading and publishing m_scans.p, never the scan: two
         // scans that finish together keep the first's results, and the
-        // second's are dropped instead of leaked.
+        // second's are dropped instead of leaked. m_scansRun has a query
+        // that misses while another scans wait for that one's results.
         std::mutex                      m_scansMtx;
+        SharedRun                       m_scansRun;
         bool run_scans(ProgressSink *progress, QueryResult *qr);
         TraceInfo                       m_info;
         Capabilities                    m_caps;

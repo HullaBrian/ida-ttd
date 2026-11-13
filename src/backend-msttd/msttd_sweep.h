@@ -3,6 +3,8 @@
 #include "backend-msttd/msttd_pch.h"
 #include "core/backend.h"
 
+#include <condition_variable>
+
 namespace idattd
 {
     // Replay a Microsoft recording from 'first' to 'last' on 'cursor' for a
@@ -80,6 +82,57 @@ namespace idattd
         bool m_gapCb     = false;
         bool m_events    = false;   // the mask was set, and is put back
         bool m_armed     = true;
+    };
+
+    // One whole-recording replay whose answer is kept (the syscall census,
+    // the write scans), shared between callers that ask at the same time:
+    // the first runs it and the others wait for its answer instead of each
+    // replaying the whole recording too. A waiter still polls its own
+    // Cancel, and sees the runner's percentage. When the runner gives up
+    // (cancelled, or failed), the next waiter runs its own.
+    class SharedRun
+    {
+    public:
+        enum class Turn
+        {
+            Run,        // the caller runs it, wrapping its progress in a Runner
+            Ready,      // the answer is kept: take it
+            Cancelled,  // the caller's own Cancel, while it waited
+        };
+        // 'ready' says whether the answer is kept. It is asked with this
+        // object's lock held, so it takes no lock that a runner holds while
+        // it calls back in here.
+        Turn enter(ProgressSink *progress, const std::function<bool()> &ready);
+
+        // The runner's side, from enter() returning Run until it goes out of
+        // scope, which lets the waiters look again: the runner keeps its
+        // answer first. Its progress is passed on and shown to the waiters.
+        class Runner : public ProgressSink
+        {
+        public:
+            Runner(SharedRun &run, ProgressSink *progress) : m_run(run), m_to(progress) {}
+            ~Runner() { m_run.leave(); }
+            Runner(const Runner &) = delete;
+            Runner &operator=(const Runner &) = delete;
+            void report(uint32_t pct) override
+            {
+                m_run.m_pct.store(pct, std::memory_order_relaxed);
+                if ( m_to != nullptr )
+                    m_to->report(pct);
+            }
+            bool cancelled() override { return m_to != nullptr && m_to->cancelled(); }
+        private:
+            SharedRun    &m_run;
+            ProgressSink *m_to;
+        };
+
+    private:
+        void leave();
+
+        std::mutex              m_mu;
+        std::condition_variable m_cv;
+        bool                    m_running = false;
+        std::atomic<uint32_t>   m_pct{ 0 };
     };
 
     // Independent work on 'items' things that each need the engine at a

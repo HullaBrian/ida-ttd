@@ -302,6 +302,11 @@ namespace idattd
         bool truncated = false;
     };
 
+    std::shared_ptr<const MemmapRecords> empty_memmap_records()
+    {
+        return std::make_shared<MemmapRecords>();
+    }
+
     namespace
     {
         // The census callbacks that settle each memory syscall. Everything

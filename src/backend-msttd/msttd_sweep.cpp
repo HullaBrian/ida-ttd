@@ -2,8 +2,6 @@
 
 #include <condition_variable>
 
-#include <condition_variable>
-
 using namespace TTD;
 using namespace TTD::Replay;
 
@@ -139,6 +137,45 @@ namespace idattd
         m_watched.clear();
         if ( m_events )
             m_cursor->SetEventMask(m_oldEvents);
+    }
+
+    SharedRun::Turn SharedRun::enter(ProgressSink *progress, const std::function<bool()> &ready)
+    {
+        std::unique_lock<std::mutex> lock(m_mu);
+        for ( ;; )
+        {
+            if ( ready() )
+                return Turn::Ready;
+            if ( !m_running )
+            {
+                m_running = true;
+                m_pct.store(0, std::memory_order_relaxed);
+                return Turn::Run;
+            }
+            // The caller's sink is not called with the lock held: it calls
+            // into the core, which the runner may be calling too. Each turn
+            // of the loop looks at 'ready' and 'm_running' again under the
+            // lock, so a runner that finishes meanwhile is not missed.
+            lock.unlock();
+            if ( progress != nullptr )
+            {
+                if ( progress->cancelled() )
+                    return Turn::Cancelled;
+                progress->report(m_pct.load(std::memory_order_relaxed));
+            }
+            lock.lock();
+            if ( m_running )
+                m_cv.wait_for(lock, std::chrono::milliseconds(POLL_MS));
+        }
+    }
+
+    void SharedRun::leave()
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_mu);
+            m_running = false;
+        }
+        m_cv.notify_all();
     }
 
     // More workers than this gain little (measured: 16 workers on a 24-thread

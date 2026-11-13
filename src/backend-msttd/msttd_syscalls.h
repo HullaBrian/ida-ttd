@@ -147,6 +147,9 @@ namespace idattd
         std::shared_ptr<const MemmapRecords> memmap;
     };
 
+    // Records with nothing in them, for a census given up while waiting for
+    // another (msttd_memmap.cpp).
+    std::shared_ptr<const MemmapRecords> empty_memmap_records();
 
     // The memory map's part of the census (msttd_memmap.cpp): callbacks that
     // settle each memory syscall as the replay passes its return.
