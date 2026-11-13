@@ -68,7 +68,7 @@ or the rest of ida-ttd; it meets the plugin at `src/abi/ida_ttd_backend.h`
 | zstd | BSD OR GPL-2.0 | |
 | base64, reflect (headers) | MIT | |
 | Vulkan-Headers (headers) | Apache-2.0 OR MIT | |
-| ida-ttd: `sogen_backend.cpp` | GPL-2.0-only | |
+| ida-ttd: `src/backend-sogen/` | GPL-2.0-only | |
 | ida-ttd: `write_scans.h` | Apache-2.0 OR GPL-2.0-only | taken under the GPL |
 
 Two of Sogen's dependencies would be problems and are **not** in the DLL:

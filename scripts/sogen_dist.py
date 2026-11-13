@@ -153,7 +153,7 @@ def readme(pin, commits, urls):
         "This DLL is licensed under the GNU General Public License, version 2 only",
         "(COPYING.txt). It contains:",
         "",
-        "  - ida-ttd's Sogen backend (src/backend-sogen/sogen_backend.cpp, GPL-2.0-only)",
+        "  - ida-ttd's Sogen backend (src/backend-sogen/, GPL-2.0-only)",
         "    and its string and buffer scanners (src/common/write_scans.h, taken here",
         "    under GPL-2.0-only)",
         "  - Sogen, GPL-2.0-only (Sogen-LICENSE)",

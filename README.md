@@ -468,7 +468,7 @@ can ship together with the Sogen backend.
 
 Exceptions:
 
-- The Sogen backend (`src/backend-sogen/sogen_backend.cpp`, and the
+- The Sogen backend (`src/backend-sogen/`, and the
   `ida-ttd-sogen.dll` built from it) is GPL-2.0-only, because Sogen and
   Unicorn are. The package carries its license, notices and where its source
   is in `ida-ttd-backends\ida-ttd-sogen-licenses\`; the source itself is

@@ -83,5 +83,7 @@ namespace idattd::sogen
 
 extern "C" __declspec(dllexport) const ittd_backend_api *ida_ttd_backend(uint32_t abi_version)
 {
-    return abi_version == ITTD_ABI_VERSION ? &idattd::sogen::g_api : nullptr;
+    // Any core since the last layout change: what the core passes in is read
+    // only up to its 'size' (setting() in sogen_emulator.cpp).
+    return abi_version >= ITTD_ABI_LAYOUT ? &idattd::sogen::g_api : nullptr;
 }

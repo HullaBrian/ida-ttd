@@ -44,8 +44,11 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   Syscalls come from `KernelCall` gaps (`msttd_syscalls`); the memory map is built
   from those syscalls (`msttd_memmap`); strings, buffers and self-modifying code
   come from two write-watchpoint replays (`msttd_scans`).
-- **`src/backend-sogen/sogen_backend.cpp`**: one file, implements the C ABI
-  directly against Sogen's reader. Not in the solution (see Building).
+- **`src/backend-sogen/`**: implements the C ABI directly against Sogen's
+  reader and emulator, split by what each part does (`sogen_state.h`, the
+  shared types; `sogen_session`, `sogen_memory`, `sogen_nav`, `sogen_queries`,
+  `sogen_emulator`, `sogen_fork`, `sogen_scans`; `sogen_backend.cpp`, the
+  table and the export). Not in the solution (see Building).
 - **`src/common/`**: shared helpers. `write_scans.h` is header-only and
   standard-library-only on purpose: the string and buffer scanners, shared by
   both backends (the Sogen backend builds without the rest of the plugin).
@@ -54,8 +57,8 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   GPL-2.0-only and the rest of ida-ttd is `Apache-2.0 OR GPL-2.0-only`
   (dual, so the plugin can ship with the GPL backend; `docs/licensing.md`).
   Never copy code from Sogen into anything outside `src/backend-sogen/`;
-  change a rule in the document, then the code. `sogen_backend.cpp` is
-  GPL-2.0-only (SPDX header), so code shared with the Sogen backend must not
+  change a rule in the document, then the code. `src/backend-sogen/` is
+  GPL-2.0-only (an SPDX header on every file), so code shared with the Sogen backend must not
   pull in more of the plugin. The package ships `ida-ttd-sogen.dll` with
   its licenses folder (`scripts/sogen_dist.py`), and its source goes on
   the release; the Sogen commit it is built from is `msbuild/sogen.pin`.
