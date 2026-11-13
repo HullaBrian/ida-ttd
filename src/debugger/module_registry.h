@@ -132,7 +132,10 @@ namespace idattd
         // When no range covers 'pc' and its module's table was read from
         // recorded memory, read the table again as it stands at 'now': a
         // packer writes the real one when it unpacks, after the module
-        // loaded. True when the ranges changed.
+        // loaded. True when the ranges changed. A system module is never
+        // packed, and a table whose bytes have not changed since the last
+        // read is not parsed again, so a leaf function costs a few small
+        // reads, not the whole table, per stop.
         bool refresh_function_ranges(ea_t pc, ITraceCursor *now);
         // "kernel32!SleepStub" for an export at 'ea', or empty: a name for a
         // listing when IDA has none yet (the module is not mapped where the
@@ -200,6 +203,12 @@ namespace idattd
             bool funcs_tried = false;
             bool funcs_from_memory = false;   // ... read from recorded memory
             std::vector<std::pair<ea_t, ea_t>> funcs;
+            // A fingerprint of the in-memory table as last parsed, so a miss
+            // re-reads it only once its bytes change.
+            uint64_t table_stamp = 0;
+            // Under the Windows directory: never packed, so its table is
+            // never re-read.
+            bool system = false;
             // The file on disk: loaded once, ok == false when it was
             // unavailable or a different build.
             bool        file_tried = false;

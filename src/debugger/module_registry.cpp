@@ -41,6 +41,66 @@ namespace idattd
         return *p == '\0';
     }
 
+    // A path under the Windows directory, as the recording machine wrote it:
+    // "C:\Windows\System32\ntdll.dll", "\SystemRoot\...", with or without a
+    // "\??\" or "\\?\" prefix. Such a module is the OS's own, never packed.
+    static bool is_system_path(const char *path)
+    {
+        if ( path == nullptr )
+            return false;
+        std::string p = path;
+        for ( char &c : p )
+            c = (char)tolower((unsigned char)c);
+        if ( p.rfind("\\??\\", 0) == 0 || p.rfind("\\\\?\\", 0) == 0 )
+            p.erase(0, 4);
+        if ( p.rfind("\\systemroot\\", 0) == 0 )
+            return true;
+        return p.size() > 3 && p[1] == ':' && p.compare(2, 9, "\\windows\\") == 0;
+    }
+
+    // A fingerprint of a module's exception table as it stands where 'rd'
+    // reads: the directory entry and the table's first and last 4 KiB. A
+    // packer writes the real table whole when it unpacks, so this changes
+    // when it does, at three small reads rather than the whole table. Zero
+    // when the headers cannot be read.
+    static uint64_t table_stamp(const GuestRead &rd, ea_t base, bool is64)
+    {
+        if ( !rd || base == BADADDR || !is64 )
+            return 0;
+        const uint64_t b = (uint64_t)base;
+        IMAGE_DOS_HEADER dos{};
+        if ( !pe_read_val(rd, b, &dos) || dos.e_magic != IMAGE_DOS_SIGNATURE
+          || dos.e_lfanew < 0 || (uint32_t)dos.e_lfanew > 0x10000000u )
+            return 0;
+        IMAGE_NT_HEADERS64 nt{};
+        if ( !pe_read_val(rd, b + (uint32_t)dos.e_lfanew, &nt) || nt.Signature != IMAGE_NT_SIGNATURE
+          || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC
+          || nt.OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION )
+            return 0;
+        const IMAGE_DATA_DIRECTORY &dd = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+
+        uint64_t h = 1469598103934665603ULL;
+        auto mix = [&](const uint8_t *p, size_t n)
+        {
+            for ( size_t i = 0; i < n; i++ )
+            {
+                h ^= p[i];
+                h *= 1099511628211ULL;
+            }
+        };
+        mix((const uint8_t *)&dd, sizeof(dd));
+        const size_t PIECE = 4096;
+        uint8_t buf[PIECE];
+        if ( dd.VirtualAddress != 0 && dd.Size != 0 )
+        {
+            size_t n = dd.Size < PIECE ? dd.Size : PIECE;
+            mix(buf, rd(b + dd.VirtualAddress, buf, n));
+            if ( dd.Size > PIECE )
+                mix(buf, rd(b + dd.VirtualAddress + dd.Size - PIECE, buf, PIECE));
+        }
+        return h | 1;   // a readable table is never zero
+    }
+
     void ModuleRegistry::bind(ITraceBackend *backend, bool is64, const char *target_name)
     {
         reset();
@@ -353,6 +413,7 @@ namespace idattd
         else
             key.sprnt("%s|%llX|%08X|%08X", path.c_str(), (uint64_t)m.size, ts, cs);
         Image &img = m_images[key];
+        img.system = is_system_path(m.path.c_str());
         ln.image = &img;
         return img;
     }
@@ -415,7 +476,10 @@ namespace idattd
             img.funcs_from_memory = true;
             GuestRead rd = read_at_record(li);
             if ( rd )
+            {
                 parse_pdata_functions(rd, base, m_is64, franges);
+                img.table_stamp = table_stamp(rd, base, m_is64);
+            }
         }
         for ( auto &f : franges )
         {
@@ -472,10 +536,16 @@ namespace idattd
         if ( li == NONE || function_range_at(pc, pos, s, e) )
             return false;
         Image &img = *m_names[li].image;     // function_range_at identified it
-        if ( !img.funcs_from_memory )
+        if ( !img.funcs_from_memory || img.system )
             return false;
         const ea_t base = m_modules[li].base;
         GuestRead rd = guest_read(now);
+        // A leaf function misses on every stop in it: the table is parsed
+        // again only once its bytes have changed.
+        uint64_t stamp = table_stamp(rd, base, m_is64);
+        if ( stamp == img.table_stamp )
+            return false;
+        img.table_stamp = stamp;
         std::vector<std::pair<ea_t, ea_t>> v;
         if ( parse_pdata_functions(rd, base, m_is64, v) == 0 )
             return false;
