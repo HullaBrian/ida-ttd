@@ -304,16 +304,25 @@ namespace idattd
 
         // The callback is shared by all watchpoints on the cursor: accept the
         // step target only on the right thread and frame, but always stop on
-        // any other (user) breakpoint.
-        auto stop_cb = [this, addr, min_sp, utid](ICursorView::MemoryWatchpointResult const &w,
-                                                  IThreadView const *t) noexcept -> bool
+        // any other (user) breakpoint. When the user has a breakpoint on the
+        // target itself (not owned), the watchpoint is the user's: a hit on
+        // another thread or in a deeper frame is that breakpoint, and stops.
+        // Which of the two stopped the replay is told by 'reached', not by
+        // where it stopped, since both stop at 'addr'.
+        bool reached = false;
+        auto stop_cb = [this, addr, min_sp, utid, owned, &reached](ICursorView::MemoryWatchpointResult const &w,
+                                                                   IThreadView const *t) noexcept -> bool
         {
             if ( (uint64_t)w.Address == (uint64_t)addr && w.AccessType != DataAccessType::Read
               && w.AccessType != DataAccessType::Write && w.AccessType != DataAccessType::Overwrite )
             {
                 m_lastHitData = false;
-                return (uint32_t)t->GetThreadInfo().UniqueId == utid
-                    && (uint64_t)t->GetStackPointer() >= min_sp;
+                if ( (uint32_t)t->GetThreadInfo().UniqueId == utid && (uint64_t)t->GetStackPointer() >= min_sp )
+                {
+                    reached = true;
+                    return true;
+                }
+                return !owned;
             }
             m_lastHitData = is_data_access(w.AccessType);
             return true; // user breakpoint
@@ -329,7 +338,7 @@ namespace idattd
 
         if ( r.StopReason != EventType::MemoryWatchpoint )
             return RunStop::TraceBoundary;
-        return (ea_t)(uint64_t)cur()->GetProgramCounter() == addr ? RunStop::Reached : RunStop::Breakpoint;
+        return reached ? RunStop::Reached : RunStop::Breakpoint;
     }
 
     // Run backward to 'addr': a temporary Execute watchpoint and one backward
