@@ -853,10 +853,13 @@ namespace idattd
         uint64_t    searched = 0, window = 4096;
         *found = false;
 
+        // Confined to the thread in the engine, which then calls back only
+        // for its instructions rather than for every thread's.
         MemoryWatchpointData wp{};
         wp.Address    = GuestAddress{ 0 };
         wp.Size       = user_space_end();
         wp.AccessMask = DataAccessMask::Execute;
+        wp.ThreadId   = (UniqueThreadId)utid;
         cur->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
 
         while ( searched < max_back )
