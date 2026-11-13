@@ -284,11 +284,6 @@ namespace idattd
             m_insnScratch.reset();
         }
         {
-            std::lock_guard<std::mutex> lock(m_regsMtx);
-            m_regsScratch.reset();
-            m_syscallRegs.clear();
-        }
-        {
             std::lock_guard<std::mutex> lock(m_censusMtx);
             m_census.reset();
         }

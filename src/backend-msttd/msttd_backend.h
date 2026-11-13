@@ -174,21 +174,13 @@ namespace idattd
         // are not locked: a main thread blocked behind them would hang IDA.
         TTD::Replay::UniqueCursor       m_frameScratch;
         TTD::Replay::UniqueCursor       m_insnScratch;     // query_instructions, likewise
-        TTD::Replay::UniqueCursor       m_regsScratch;     // registers_at
         std::mutex                      m_frameMtx;        // m_frameScratch
         std::mutex                      m_insnMtx;         // m_insnScratch
-        std::mutex                      m_regsMtx;         // m_regsScratch, m_syscallRegs
-        struct SyscallRegs
-        {
-            uint64_t gp[ITTD_REG_GP_COUNT];
-            uint64_t rflags;
-        };
-        std::map<std::pair<uint64_t, uint64_t>, SyscallRegs> m_syscallRegs;  // by (sequence, steps)
-        // The syscall census (msttd_syscalls.cpp), shared by query_syscalls
-        // and query_mapping_changes. Only a census that ran to the end is
-        // cached. m_censusMtx guards the pointer only, never a replay: two
-        // queries that both miss each run their own, and the last one kept
-        // is as good as the first.
+        // The syscall census (msttd_syscalls.cpp), shared by query_syscalls,
+        // query_mapping_changes and registers_at. Only a census that ran to
+        // the end is cached. m_censusMtx guards the pointer only, never a
+        // replay: two queries that both miss each run their own, and the
+        // last one kept is as good as the first.
         std::mutex                      m_censusMtx;
         std::shared_ptr<const SyscallCensus> m_census;
         std::shared_ptr<const SyscallCensus> cached_census();

@@ -289,17 +289,30 @@ namespace idattd
         // The shadow call stacks, when chains are wanted: every call pushes a
         // frame and every matching return pops it. The lookup is cached: it
         // runs on every call, and threads execute in bursts.
-        std::map<uint32_t, std::vector<ShadowFrame>> shadow;
-        uint32_t                  lastTid   = 0xFFFFFFFF;
-        std::vector<ShadowFrame> *lastStack = nullptr;
-        auto stack_for = [&](uint32_t tid) -> std::vector<ShadowFrame> *
+        //
+        // The same callback takes each syscall's result. A thread makes one
+        // syscall at a time, so its latest is the one waiting to come back
+        // ('pending', an index into 'calls'), and the kernel comes back to
+        // the instruction after the syscall (x86: the return into the stub).
+        // In a stub that instruction is the stub's ret, so the callback
+        // fires on it before it runs, with the result still in rax: what an
+        // execute watchpoint there reads, without a replay of its own.
+        struct ThreadShadow
         {
-            if ( tid != lastTid || lastStack == nullptr )
+            std::vector<ShadowFrame> frames;
+            size_t                   pending = SIZE_MAX;
+        };
+        std::map<uint32_t, ThreadShadow> shadow;
+        uint32_t      lastTid    = 0xFFFFFFFF;
+        ThreadShadow *lastShadow = nullptr;
+        auto shadow_for = [&](uint32_t tid) -> ThreadShadow *
+        {
+            if ( tid != lastTid || lastShadow == nullptr )
             {
-                lastStack = &shadow[tid];
-                lastTid   = tid;
+                lastShadow = &shadow[tid];
+                lastTid    = tid;
             }
-            return lastStack;
+            return lastShadow;
         };
 
         auto on_call_ret = [&](GuestAddress instr, GuestAddress fall_through, IThreadView const *t) noexcept
@@ -307,7 +320,19 @@ namespace idattd
             try
             {
                 const uint32_t utid = (uint32_t)t->GetThreadInfo().UniqueId;
-                std::vector<ShadowFrame> *sh = stack_for(utid);
+                ThreadShadow *ts = shadow_for(utid);
+                std::vector<ShadowFrame> *sh = &ts->frames;
+                if ( ts->pending != SIZE_MAX && (uint64_t)fall_through == 0 )
+                {
+                    KernelCall &k = calls[ts->pending];
+                    if ( (uint64_t)t->GetProgramCounter() == k.ret_pc )
+                    {
+                        const CROSS_PLATFORM_CONTEXT ctx = t->GetCrossPlatformContext();
+                        k.result   = is64 ? (uint64_t)ctx.Amd64Context.Rax : (uint64_t)ctx.X86Nt5Context.Eax;
+                        k.returned = true;
+                        ts->pending = SIZE_MAX;
+                    }
+                }
                 if ( (uint64_t)fall_through != 0 )
                 {
                     // A call. Whichever instruction the position sits on, the
@@ -392,7 +417,7 @@ namespace idattd
                         // frame: the innermost there is often a helper (its
                         // malloc) that every allocation goes through, and
                         // only the frames beyond it tell the callers apart.
-                        const std::vector<ShadowFrame> *sh = stack_for(k.utid);
+                        const std::vector<ShadowFrame> *sh = &shadow_for(k.utid)->frames;
                         if ( !sh->empty() )
                             k.frame_ret = sh->back().ret_addr;
                         size_t lastMod = (size_t)-2;    // distinct from "none"
@@ -417,6 +442,10 @@ namespace idattd
                     }
                 }
                 calls.push_back(k);
+                // A call still pending never came back (the thread ended in
+                // it): this one is the thread's now.
+                if ( chains )
+                    shadow_for(k.utid)->pending = k.ret_pc != 0 ? calls.size() - 1 : SIZE_MAX;
                 if ( opts.on_syscall )
                     opts.on_syscall(calls.back(), t);
             }
@@ -427,20 +456,18 @@ namespace idattd
             return false;       // collecting them, not stopping on them
         };
 
-        census->SetGapEventCallback(on_gap);
-        census->SetGapKindMask(GapKindMask::All);
-        census->SetGapEventMask(GapEventMask::KernelCall);
-        census->SetEventMask(EventMask::Gap);
-        if ( chains )
-            census->SetCallReturnCallback(on_call_ret);
-        // No filtering: a call/return callback gives the engine nothing to
-        // filter on, and every stretch of a recording ends in kernel calls.
-        census->SetReplayFlags(ReplayFlags::ReplayAllSegmentsWithoutFiltering
-                             | ReplayFlags::ReplaySegmentsSequentially);
-        bool complete = msttd_sweep(census.get(), TtdPosition::Min, TtdPosition::Max, progress);
-        census->SetGapEventCallback(nullptr, 0);
-        if ( chains )
-            census->SetCallReturnCallback(nullptr, 0);
+        bool complete;
+        {
+            // No filtering: a call/return callback gives the engine nothing
+            // to filter on, and every stretch of a recording ends in kernel
+            // calls.
+            ArmedSweep arm(census.get(), ReplayFlags::ReplayAllSegmentsWithoutFiltering
+                                       | ReplayFlags::ReplaySegmentsSequentially, EventMask::Gap);
+            arm.on_gap(on_gap, GapKindMask::All, GapEventMask::KernelCall);
+            if ( chains )
+                arm.on_call_return(on_call_ret);
+            complete = arm.sweep(TtdPosition::Min, TtdPosition::Max, progress);
+        }
         census.reset();
         shadow.clear();
 
@@ -458,12 +485,15 @@ namespace idattd
         return r;
     }
 
-    // ---- the returns: each one's result ------------------------------------
+    // ---- the returns the census could not see --------------------------------
     //
-    // An execute watchpoint on every instruction the kernel returns to (the
-    // stubs' few, plus any code that makes its own syscalls). A thread makes
-    // one syscall at a time, so a return belongs to that thread's latest call
-    // before it. 'calls' is in position order. False when stopped.
+    // An execute watchpoint on every instruction the kernel returns to that
+    // the census left open (to_watch: code making its own syscalls, and on
+    // x86 every syscall the census did not see come back). A thread makes
+    // one syscall at a time, so a return belongs to that thread's latest
+    // call before it; every call is kept in that order, the settled ones
+    // included, so a later return is never taken for an earlier call's.
+    // 'calls' is in position order. False when stopped.
     static bool collect_kernel_returns(const MsTtdBackend *backend, std::vector<CensusSyscall> *callsp,
                                        ProgressSink *progress, bool *truncatedp)
     {
@@ -476,7 +506,7 @@ namespace idattd
         for ( size_t i = 0; i < calls.size(); i++ )
         {
             per_thread[calls[i].utid].push_back(i);
-            if ( calls[i].ret_pc != 0 )
+            if ( calls[i].to_watch )
                 ret_pcs.insert(calls[i].ret_pc);
         }
         if ( !ret_pcs.empty() )
@@ -503,7 +533,7 @@ namespace idattd
                         if ( k >= mine.size() )
                             return false;
                         CensusSyscall &c = calls[mine[k]];
-                        if ( c.returned || !(c.pos < here) || c.ret_pc != (uint64_t)w.Address )
+                        if ( !c.to_watch || c.returned || !(c.pos < here) || c.ret_pc != (uint64_t)w.Address )
                             return false;
                         CROSS_PLATFORM_CONTEXT ctx = t->GetCrossPlatformContext();
                         c.result   = is64 ? (uint64_t)ctx.Amd64Context.Rax : (uint64_t)ctx.X86Nt5Context.Eax;
@@ -516,27 +546,25 @@ namespace idattd
                     }
                     return false;
                 };
+                ArmedSweep arm(ret.get(), ReplayFlags::ReplaySegmentsSequentially, EventMask::MemoryWatchpoint);
                 for ( uint64_t a : ret_pcs )
                 {
                     MemoryWatchpointData wp{};
                     wp.Address    = GuestAddress{ a };
                     wp.Size       = 1;
                     wp.AccessMask = DataAccessMask::Execute;
-                    ret->AddMemoryWatchpoint(wp);
+                    arm.watch(wp);
                 }
-                ret->SetMemoryWatchpointCallback(on_exec);
-                ret->SetEventMask(EventMask::MemoryWatchpoint);
-                ret->SetReplayFlags(ReplayFlags::ReplaySegmentsSequentially);
-                complete = msttd_sweep(ret.get(), TtdPosition::Min, TtdPosition::Max, progress);
-                ret->SetMemoryWatchpointCallback(nullptr, 0);
+                arm.on_watchpoint(on_exec);
+                complete = arm.sweep(TtdPosition::Min, TtdPosition::Max, progress);
             }
         }
         *truncatedp = truncated;
         return complete;
     }
 
-    // The registers of the syscalls in the census, so the listing's argument
-    // column costs no seek per row. Capped: it is a convenience.
+    // The registers of the first syscalls in the census, so the listing's
+    // argument column costs no seek per row. Capped: it is a convenience.
     static const size_t kMaxCachedRegs = 250000;
 
     QueryResult MsTtdBackend::registers_at(const std::vector<Position> &positions,
@@ -549,24 +577,29 @@ namespace idattd
         out->assign(positions.size(), ittd_regs{});
 
         // The census's registers first; what it does not have (past its cap,
-        // or not a syscall) is read below.
+        // or not a syscall) is read below. The census is immutable, so its
+        // registers are read without a lock however many queries ask at once.
+        const std::shared_ptr<const SyscallCensus> census = cached_census();
+        const std::vector<CensusRegs> *known = census != nullptr && census->regs != nullptr
+                                             ? census->regs.get() : nullptr;
         std::vector<size_t> missing;
+        for ( size_t i = 0; i < positions.size(); i++ )
         {
-            std::lock_guard<std::mutex> lock(m_regsMtx);
-            for ( size_t i = 0; i < positions.size(); i++ )
+            const TtdPosition p = from_core(positions[i]);
+            if ( known != nullptr )
             {
-                TtdPosition p = from_core(positions[i]);
-                auto it = m_syscallRegs.find({ (uint64_t)p.Sequence, (uint64_t)p.Steps });
-                if ( it == m_syscallRegs.end() )
+                auto it = std::lower_bound(known->begin(), known->end(), p,
+                                           [](const CensusRegs &a, const TtdPosition &b) { return a.pos < b; });
+                if ( it != known->end() && it->pos == p )
                 {
-                    missing.push_back(i);
+                    ittd_regs &o = (*out)[i];
+                    memcpy(o.gp, it->gp, sizeof(o.gp));
+                    o.rflags = it->rflags;
+                    o.have   = ITTD_REGS_GP;
                     continue;
                 }
-                ittd_regs &o = (*out)[i];
-                memcpy(o.gp, it->second.gp, sizeof(o.gp));
-                o.rflags = it->second.rflags;
-                o.have   = ITTD_REGS_GP;
             }
+            missing.push_back(i);
         }
         if ( missing.empty() )
             return r;
@@ -606,12 +639,18 @@ namespace idattd
                                                                       QueryResult *qr)
     {
         *qr = QueryResult{};
-        if ( std::shared_ptr<const SyscallCensus> c = cached_census() )
+        auto from_cache = [this, qr]() -> std::shared_ptr<const SyscallCensus>
         {
-            qr->ran       = true;
-            qr->truncated = c->truncated;
+            std::shared_ptr<const SyscallCensus> c = cached_census();
+            if ( c != nullptr )
+            {
+                qr->ran       = true;
+                qr->truncated = c->truncated;
+            }
             return c;
-        }
+        };
+        if ( std::shared_ptr<const SyscallCensus> c = from_cache() )
+            return c;
         auto table = std::make_shared<SyscallTable>();
         const bool named = build_syscall_table(this, table.get());
         std::unique_ptr<MemmapHooks> mm = make_memmap_hooks(this, *table);
@@ -641,30 +680,45 @@ namespace idattd
         c->truncated = kr.truncated;
         if ( mm != nullptr )
             c->memmap = mm->finish();
+        // Which returns the census settles for good. With the call/return
+        // callback (chains) it saw every return made by a ret. A stub's
+        // syscall is followed by its ret on x64, so one the census did not
+        // see come back never did. Code making its own syscalls may come
+        // back to anything, and on x86 the return into the stub has not been
+        // measured against the watchpoints, so those are left to the return
+        // pass, which watches the instruction itself.
+        const bool settled = opts.chains && m_info.is64;
+        bool to_watch = false;
         c->calls.reserve(calls.size());
         for ( const KernelCall &k : calls )
         {
             CensusSyscall s;
-            s.pos    = k.pos;
-            s.ret_pc = k.ret_pc;
-            s.name   = k.name;
-            s.utid   = k.utid;
-            s.tid    = k.tid;
-            s.number = k.number;
+            s.pos      = k.pos;
+            s.ret_pc   = k.ret_pc;
+            s.name     = k.name;
+            s.utid     = k.utid;
+            s.tid      = k.tid;
+            s.number   = k.number;
+            s.result   = k.result;
+            s.returned = k.returned;
+            s.to_watch = !k.returned && k.ret_pc != 0 && (!settled || k.stub == BADADDR);
+            to_watch  |= s.to_watch;
             c->calls.push_back(s);
         }
+        c->results = !kr.cancelled && !to_watch;
+        auto regs = std::make_shared<std::vector<CensusRegs>>();
+        regs->reserve(std::min(calls.size(), kMaxCachedRegs));
+        for ( const KernelCall &k : calls )
         {
-            std::lock_guard<std::mutex> lock(m_regsMtx);
-            m_syscallRegs.clear();
-            for ( const KernelCall &k : calls )
-            {
-                if ( m_syscallRegs.size() >= kMaxCachedRegs )
-                    break;
-                SyscallRegs &sr = m_syscallRegs[{ (uint64_t)k.pos.Sequence, (uint64_t)k.pos.Steps }];
-                memcpy(sr.gp, k.gp, sizeof(sr.gp));
-                sr.rflags = k.rflags;
-            }
+            if ( regs->size() >= kMaxCachedRegs )
+                break;
+            CensusRegs cr;
+            cr.pos = k.pos;
+            memcpy(cr.gp, k.gp, sizeof(cr.gp));
+            cr.rflags = k.rflags;
+            regs->push_back(cr);
         }
+        c->regs = std::move(regs);
         *qr = kr;
         if ( !kr.cancelled )
         {
@@ -679,13 +733,13 @@ namespace idattd
         QueryResult r;
         if ( !m_engine || out == nullptr )
             return r;
-        // The census and the return pass cost about the same, so each is
-        // half the percentage, unless the census was already taken.
+        // The census takes most of the results, and is most of the time; the
+        // return pass watches a few addresses, which the engine filters on.
         std::shared_ptr<const SyscallCensus> c = cached_census();
         const bool fresh = c == nullptr;
         if ( fresh )
         {
-            ScaledProgress first(progress, 0, 50);
+            ScaledProgress first(progress, 0, 90);
             c = syscall_census(false, &first, &r);
             if ( c == nullptr || !r.ran )
                 return r;
@@ -700,7 +754,7 @@ namespace idattd
         if ( !c->results && !r.cancelled )
         {
             with_results = c->calls;
-            ScaledProgress second(progress, fresh ? 50 : 0, fresh ? 50 : 100);
+            ScaledProgress second(progress, fresh ? 90 : 0, fresh ? 10 : 100);
             bool trunc = false;
             const bool complete = collect_kernel_returns(this, &with_results, &second, &trunc);
             r.cancelled = !complete;
@@ -712,6 +766,7 @@ namespace idattd
                 // query replaced or dropped that one meanwhile.
                 auto done = std::make_shared<SyscallCensus>();
                 done->table             = c->table;
+                done->regs              = c->regs;
                 done->truncated         = c->truncated;
                 done->memmap            = c->memmap;
                 done->results           = true;
