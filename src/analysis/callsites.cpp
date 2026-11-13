@@ -442,14 +442,16 @@ namespace idattd
             set_cmt(site, cmt.c_str(), true);
     }
 
-    // Write the answers for the sites in [lo, hi) into the database.
-    static void write_annotations(TraceManager *mgr, const SiteTargets &seen,
-                                  ea_t lo, ea_t hi, CallSiteResult *res)
+    // Global function pointer -> the targets reached through it.
+    typedef std::map<ea_t, std::set<ea_t>> PtrTargets;
+
+    // Targets reached through each global function pointer over every site
+    // seen, not just the ones being written: a pointer is typed only when
+    // every call through it went to one API. A decode per site, so built once
+    // per sweep (an automatic scope is a whole module, up to kMaxSites).
+    static PtrTargets pointer_targets(const SiteTargets &seen)
     {
-        // Targets reached through each global function pointer over every site
-        // seen, not just [lo, hi): a pointer is typed only when every call
-        // through it went to one API.
-        std::map<ea_t, std::set<ea_t>> ptr_targets;
+        PtrTargets out;
         for ( const auto &kv : seen )
         {
             insn_t call;
@@ -457,9 +459,16 @@ namespace idattd
                 continue;
             ea_t ptr = loaded_pointer(call);
             if ( ptr != BADADDR )
-                ptr_targets[ptr].insert(kv.second.begin(), kv.second.end());
+                out[ptr].insert(kv.second.begin(), kv.second.end());
         }
+        return out;
+    }
 
+    // Write the answers for the sites in [lo, hi) into the database.
+    static void write_annotations(TraceManager *mgr, const SiteTargets &seen,
+                                  const PtrTargets &ptr_targets,
+                                  ea_t lo, ea_t hi, CallSiteResult *res)
+    {
         for ( auto it = seen.lower_bound(lo); it != seen.end() && it->first < hi; ++it )
         {
             ea_t site = it->first;
@@ -564,7 +573,7 @@ namespace idattd
             return refuse("This recording's backend could not report indirect call targets.");
 
         show_wait_box("HIDECANCEL\nAnnotating call sites...");
-        write_annotations(mgr, seen, 0, BADADDR, &res);
+        write_annotations(mgr, seen, pointer_targets(seen), 0, BADADDR, &res);
         hide_wait_box();
 
         res.truncated = qr.truncated;
@@ -586,6 +595,7 @@ namespace idattd
     {
         bool        ran = false;
         SiteTargets sites;
+        PtrTargets  ptrs;       // pointer_targets(sites), made with them
     };
     static std::map<ea_t, AutoScope> g_autoScopes;   // module base, or 0
     static std::set<ea_t>            g_autoDone;     // functions annotated
@@ -651,11 +661,12 @@ namespace idattd
                 sc.sites.clear();
                 return false;
             }
+            sc.ptrs = pointer_targets(sc.sites);
             sc.ran = true;
         }
 
         CallSiteResult res;
-        write_annotations(mgr, sc.sites, start, end, &res);
+        write_annotations(mgr, sc.sites, sc.ptrs, start, end, &res);
         g_autoDone.insert(start);
         if ( res.sites != 0 )
             msg("[ida-ttd] resolved %d indirect call(s) in the function at %a.\n",
