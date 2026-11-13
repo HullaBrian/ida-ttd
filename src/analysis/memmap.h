@@ -111,11 +111,19 @@ namespace idattd
         void   set_changes(std::vector<RegionChange> v);
         void   clear();
 
-        // Fold the timeline up to and including 'pos' into a sorted,
-        // non-overlapping region list; an invalid position folds all of it.
-        // Called on every stop, so the fold is cached: moving forward applies
-        // only the changes crossed, moving backward rebuilds.
-        void state_at(const Position &pos, std::vector<Region> &out) const;
+        // How many changes lie at or before 'pos' (all of them for an invalid
+        // position). Two positions with the same count fold to the same map,
+        // so this is what a cache of the fold is keyed by.
+        size_t count_at(const Position &pos) const;
+        // Fold the first 'n' changes into a sorted, non-overlapping region
+        // list. Called on stops, so the fold is cached: moving forward
+        // applies only the changes crossed, and moving backward starts from
+        // the nearest checkpoint before the target instead of the beginning.
+        void state_upto(size_t n, std::vector<Region> &out) const;
+        // The same up to and including 'pos'; an invalid position folds all
+        // of it.
+        void state_at(const Position &pos, std::vector<Region> &out) const
+        { state_upto(count_at(pos), out); }
 
         // ---- persistence in the database ----------------------------------
         //
@@ -133,9 +141,13 @@ namespace idattd
         // mutable: state_at() is logically a query).
         mutable std::map<ea_t, Region> m_live;
         mutable size_t                 m_liveIdx = 0;   // changes applied so far
-        // Invalid: every change has been applied (a fold with no position).
-        mutable Position               m_livePos = Position::none();
         mutable bool                   m_liveValid = false;
+        // The fold after every checkpoint_every() changes, in order, made as
+        // the fold first passes them. At most about 64, so a recording that
+        // allocates in a loop does not keep thousands of copies.
+        mutable std::vector<std::pair<size_t, std::map<ea_t, Region>>> m_checkpoints;
+        size_t checkpoint_every() const;
+        void   drop_fold();
     };
 
     // Ask the backend for every allocation, protection change and free

@@ -15,9 +15,13 @@ namespace idattd
     //
     // Two caches:
     //
-    //   - The folded map. Folding the map's change timeline up to a position
-    //     is not free, and a stop asks twice (did the layout change, then the
-    //     layout itself), so it is folded once per position.
+    //   - The folded layout. Folding the map's change timeline up to a
+    //     position is not free, and a stop asks several times (did the
+    //     layout change, then the layout itself). Every position between two
+    //     changes has the same layout, so the fold is keyed by how many
+    //     changes lie before the position, not by the position: stepping
+    //     where nothing is allocated or freed reuses it, along with its
+    //     comparison against what IDA was last given.
     //   - The layout IDA was last given. Rebuilding IDA's debugger segments
     //     is documented as slow, so an unchanged layout is reported as
     //     unchanged.
@@ -37,7 +41,7 @@ namespace idattd
         // The same map, for a caller about to change it. Taking it drops the
         // cached fold, which any change makes stale, so no call site can
         // forget to.
-        MemoryMap &map_for_update() { m_foldValid = false; m_foldConst = false; return m_map; }
+        MemoryMap &map_for_update() { m_foldValid = false; return m_map; }
 
         // ev_get_memory_info: the layout at 'now', or DRC_NOCHG when it is the
         // one IDA already has.
@@ -51,15 +55,15 @@ namespace idattd
         // it was last given. Called on every stop, hence the comparison.
         void refresh(Position now);
         // Would refresh(now) make IDA rebuild its debugger segments?
-        bool changes_at(Position now) const
-        {
-            return m_haveLayout && !(build(now) == m_lastLayout);
-        }
+        bool changes_at(Position now) const;
 
     private:
         // The layout IDA should see at 'now'. The reference is to the fold
         // cache, valid until the next build() or map_for_update().
         const meminfo_vec_t &build(Position now) const;
+        // What the fold at 'now' is keyed by (see the class comment).
+        size_t fold_key(Position now) const;
+        static const size_t NO_REGIONS = (size_t)-1;
 
         ModuleRegistry *m_modules = nullptr;
         bool            m_is64    = false;
@@ -69,14 +73,14 @@ namespace idattd
         bool          m_haveLayout = false;
         uint32_t      m_changes = 0;
 
-        // The layout folded for one position.
-        //
-        // m_foldConst: the fold cannot vary with the position, which holds
-        // whenever there is no memory map (the modules come from the whole
-        // recording). The session then reuses one fold.
+        // The layout folded for one key. Without a memory map (or before the
+        // first position) the key is NO_REGIONS everywhere, since the modules
+        // come from the whole recording, so the session reuses one fold.
         mutable meminfo_vec_t         m_foldLayout;
-        mutable Position              m_foldPos;
+        mutable size_t                m_foldKey = NO_REGIONS;
         mutable bool                  m_foldValid = false;
-        mutable bool                  m_foldConst = false;
+        // Whether m_foldLayout differs from m_lastLayout: -1 not compared yet
+        // (a new fold, or a new layout given to IDA), else 0 or 1.
+        mutable int                   m_foldDiffers = -1;
     };
 }

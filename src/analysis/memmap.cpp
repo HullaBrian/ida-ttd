@@ -312,31 +312,62 @@ namespace idattd
         }
     }
 
-    void MemoryMap::state_at(const Position &pos, std::vector<Region> &out) const
+    size_t MemoryMap::count_at(const Position &pos) const
+    {
+        if ( !pos.is_valid() )
+            return m_changes.size();
+        auto it = std::upper_bound(m_changes.begin(), m_changes.end(), pos,
+                                   [](const Position &p, const RegionChange &c) { return p < c.pos; });
+        return (size_t)(it - m_changes.begin());
+    }
+
+    size_t MemoryMap::checkpoint_every() const
+    {
+        const size_t MIN_EVERY = 256;
+        const size_t MAX_CHECKPOINTS = 64;
+        size_t every = m_changes.size() / MAX_CHECKPOINTS;
+        return every < MIN_EVERY ? MIN_EVERY : every;
+    }
+
+    void MemoryMap::state_upto(size_t n, std::vector<Region> &out) const
     {
         out.clear();
+        if ( n > m_changes.size() )
+            n = m_changes.size();
 
         // Moving forward from the cache is the common case (a step crosses few
-        // changes, if any). Moving backward starts over, since a change cannot
-        // be undone without knowing what it displaced. An invalid position
-        // means "the whole timeline" and sorts after every real one: it can be
-        // reached from anywhere, and nothing can be reached from it.
-        bool backward = pos.is_valid() && (!m_livePos.is_valid() || pos < m_livePos);
-        if ( !m_liveValid || backward )
+        // changes, if any). A change cannot be undone without knowing what it
+        // displaced, so moving backward starts again from the last checkpoint
+        // at or before 'n'.
+        if ( !m_liveValid || n < m_liveIdx )
         {
-            m_live.clear();
-            m_liveIdx = 0;
+            auto it = std::upper_bound(m_checkpoints.begin(), m_checkpoints.end(), n,
+                                       [](size_t k, const std::pair<size_t, LiveMap> &c) { return k < c.first; });
+            if ( it != m_checkpoints.begin() )
+            {
+                --it;
+                m_live    = it->second;
+                m_liveIdx = it->first;
+            }
+            else
+            {
+                m_live.clear();
+                m_liveIdx = 0;
+            }
         }
 
-        while ( m_liveIdx < m_changes.size() )
+        // Every multiple of 'every' up to the last checkpoint has one (the
+        // fold only ever walks forward through them), so a checkpoint is
+        // added only past the last.
+        const size_t every = checkpoint_every();
+        while ( m_liveIdx < n )
         {
-            const RegionChange &c = m_changes[m_liveIdx];
-            if ( pos.is_valid() && c.pos > pos )
-                break;
-            apply_change(m_live, c);
+            apply_change(m_live, m_changes[m_liveIdx]);
             m_liveIdx++;
+            if ( m_liveIdx % every == 0
+              && (m_checkpoints.empty() || m_checkpoints.back().first < m_liveIdx) )
+                m_checkpoints.emplace_back(m_liveIdx, m_live);
         }
-        m_livePos   = pos;
         m_liveValid = true;
 
         out.reserve(m_live.size());
@@ -344,12 +375,18 @@ namespace idattd
             out.push_back(kv.second);
     }
 
-    void MemoryMap::set_changes(std::vector<RegionChange> v)
+    void MemoryMap::drop_fold()
     {
-        m_changes = std::move(v);
         m_live.clear();
         m_liveIdx   = 0;
         m_liveValid = false;
+        m_checkpoints.clear();
+    }
+
+    void MemoryMap::set_changes(std::vector<RegionChange> v)
+    {
+        m_changes = std::move(v);
+        drop_fold();
         std::stable_sort(m_changes.begin(), m_changes.end(),
                          [](const RegionChange &a, const RegionChange &b)
                          { return a.pos < b.pos; });
@@ -358,9 +395,7 @@ namespace idattd
     void MemoryMap::clear()
     {
         m_changes.clear();
-        m_live.clear();
-        m_liveIdx   = 0;
-        m_liveValid = false;
+        drop_fold();
     }
 
     //=======================================================================

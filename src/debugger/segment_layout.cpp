@@ -16,8 +16,26 @@ namespace idattd
         m_lastLayout.qclear();
         m_haveLayout = false;
         m_foldLayout.qclear();
-        m_foldValid  = false;
-        m_foldConst  = false;
+        m_foldValid   = false;
+        m_foldKey     = NO_REGIONS;
+        m_foldDiffers = -1;
+    }
+
+    size_t SegmentLayout::fold_key(Position now) const
+    {
+        if ( m_map.empty() || !now.is_valid() )
+            return NO_REGIONS;
+        return m_map.count_at(now);
+    }
+
+    bool SegmentLayout::changes_at(Position now) const
+    {
+        if ( !m_haveLayout )
+            return false;
+        const meminfo_vec_t &layout = build(now);
+        if ( m_foldDiffers < 0 )
+            m_foldDiffers = layout == m_lastLayout ? 0 : 1;
+        return m_foldDiffers != 0;
     }
 
     const meminfo_vec_t &SegmentLayout::build(Position now) const
@@ -29,12 +47,14 @@ namespace idattd
         const ea_t  HI   = m_is64 ? (ea_t)0x7FFFFFFFFFFFull : (ea_t)0xFFFFFFFFull;
         const uchar BITS = m_is64 ? 2 : 1;
 
-        if ( m_foldValid && (m_foldConst || now == m_foldPos) )
+        const size_t key = fold_key(now);
+        if ( m_foldValid && key == m_foldKey )
             return m_foldLayout;
 
         meminfo_vec_t *out = &m_foldLayout;
         out->qclear();
-        m_foldValid = false;
+        m_foldValid   = false;
+        m_foldDiffers = -1;
 
         // Named pieces of the address space, gathered first so they can be
         // sorted and the gaps filled in one pass.
@@ -55,8 +75,8 @@ namespace idattd
         // value is the memory no module covers, where RWX allocations and
         // manually mapped payloads live.
         std::vector<Region> regs;
-        if ( !m_map.empty() && now.is_valid() )
-            m_map.state_at(now, regs);
+        if ( key != NO_REGIONS )
+            m_map.state_upto(key, regs);
 
         for ( const Region &r : regs )
         {
@@ -111,9 +131,15 @@ namespace idattd
                     ident.sprnt("mod_%a", mlo);
 
                 // A region is more specific than its module, so the module
-                // claims only what the regions leave.
+                // claims only what the regions leave. The regions are sorted
+                // and do not overlap, so their ends are sorted too: the first
+                // that can reach into the module is found by binary search,
+                // not by walking every region below it for every module.
                 ea_t cur = mlo;
-                for ( size_t k = 0; k < nregions && cur < mhi; k++ )
+                size_t k0 = (size_t)(std::partition_point(named.begin(), named.begin() + nregions,
+                                                          [&](const Named &r) { return r.hi <= cur; })
+                                   - named.begin());
+                for ( size_t k = k0; k < nregions && cur < mhi; k++ )
                 {
                     // Copies, not references: the push_back below can
                     // reallocate this vector.
@@ -192,11 +218,10 @@ namespace idattd
         }
         filler(cur, HI);
 
-        m_foldPos    = now;
-        m_foldValid  = true;
-        // Only the regions vary with the position, and without a map there
-        // are none. map_for_update() drops the fold.
-        m_foldConst  = m_map.empty();
+        // Only the regions vary with the position, and they only change at a
+        // change. map_for_update() drops the fold.
+        m_foldKey   = key;
+        m_foldValid = true;
         return m_foldLayout;
     }
 
@@ -206,7 +231,7 @@ namespace idattd
 
         // Rebuilding IDA's debugger segments is not cheap; report no change
         // when there is none.
-        if ( m_haveLayout && layout == m_lastLayout )
+        if ( m_haveLayout && !changes_at(now) )
             return DRC_NOCHG;
 
         // Logged because a layout change makes IDA rebuild every debugger
@@ -219,8 +244,9 @@ namespace idattd
             m_changes++;
         }
 
-        m_lastLayout = layout;
-        m_haveLayout = true;
+        m_lastLayout  = layout;
+        m_haveLayout  = true;
+        m_foldDiffers = 0;          // the fold is now what IDA has
         *ranges = layout;
         return DRC_OK;
     }
@@ -230,7 +256,7 @@ namespace idattd
         // Without a memory map the layout is the same everywhere and build()
         // answers from its cache. With one, a travel can cross an allocation
         // or a free.
-        if ( !m_haveLayout || build(now) == m_lastLayout )
+        if ( !changes_at(now) )
             return;
         // Documented as slow, hence the comparison above.
         invalidate_dbgmem_config();
