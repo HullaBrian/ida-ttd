@@ -144,11 +144,51 @@ namespace idattd
         return false;
     }
 
-    // Show the annotation an indirect call site carries on its pseudocode line.
-    // The decompiler does not surface a repeatable comment on an arbitrary
-    // instruction, so the note is appended here.
+    // The text of the function's lines that show a note already, without
+    // colour tags, one per line. From 9.5 Hex-Rays prints a call
+    // instruction's repeatable comment itself, the annotation's note
+    // included; before, it printed none. It puts the comment wherever its own
+    // map of instructions to statements says, which is often not a line
+    // naming the call: a neighbouring statement, or a comment line of its own
+    // above it. So what it shows is matched by text, over the whole function,
+    // and those notes are not added a second time. Notes the plugin appended
+    // in an earlier paint are in it too, which keeps a repaint from adding
+    // one again on an earlier line naming the same call.
+    static qstring notes_already_shown(const cfunc_t *cf)
+    {
+        qstring shown, text;
+        for ( const simpleline_t &sl : cf->sv )
+        {
+            // Cheap first: the note's prefix survives the colour tags whole.
+            if ( strstr(sl.line.c_str(), "TTD: ") == nullptr )
+                continue;
+            tag_remove(&text, sl.line.c_str());
+            shown.append(text);
+            shown.append('\n');
+        }
+        return shown;
+    }
+
+    // Whether 'shown' holds the note whose first line is 'note' as a whole
+    // note: "calls a!foo" must not count as shown because of "calls a!foo_impl".
+    static bool note_shown(const qstring &shown, const qstring &note)
+    {
+        if ( note.empty() || shown.empty() )
+            return false;
+        for ( const char *at = strstr(shown.c_str(), note.c_str()); at != nullptr;
+              at = strstr(at + 1, note.c_str()) )
+        {
+            const char end = at[note.length()];
+            if ( end == '\0' || end == '\n' || end == ' ' || end == ';' )
+                return true;
+        }
+        return false;
+    }
+
+    // Show the annotation an indirect call site carries on its pseudocode line,
+    // unless the function's text shows it already (notes_already_shown).
     static void append_ttd_comments(simpleline_t &sl, const std::vector<ea_t> &eas,
-                                    std::set<ea_t> &already)
+                                    std::set<ea_t> &already, const qstring &shown)
     {
         // Painted by an earlier pass (every open or refresh of a cached view
         // paints again). Its call sites still count as annotated; otherwise
@@ -180,6 +220,11 @@ namespace idattd
             qstring cmt = ttd_call_note(full);
             if ( cmt.empty() )
                 continue;
+            if ( note_shown(shown, qstring(cmt.c_str(), strcspn(cmt.c_str(), "\r\n"))) )
+            {
+                already.insert(ea);
+                continue;                          // Hex-Rays prints it
+            }
 
             qstring flat;
             for ( size_t i = 0; i < cmt.length(); i++ )
@@ -307,6 +352,7 @@ namespace idattd
         if ( get_func_entry_info(&fi, cf->entry_ea) )
             untaken = untaken_conditional_moves(fi.start_ea, fi.end_ea);
         std::vector<const citem_t *> items;
+        const qstring shown = notes_already_shown(cf);
 
         for ( size_t i = 0; i < cf->sv.size(); i++ )
         {
@@ -326,7 +372,7 @@ namespace idattd
             {
                 if ( was_ours )
                     uncovered = true;
-                append_ttd_comments(sl, eas, annotated);
+                append_ttd_comments(sl, eas, annotated, shown);
                 continue;
             }
 
@@ -347,7 +393,7 @@ namespace idattd
             else if ( was_ours )
                 uncovered = true;
 
-            append_ttd_comments(sl, eas, annotated);
+            append_ttd_comments(sl, eas, annotated, shown);
         }
         // A function printed and dropped again would leave its entry behind;
         // the map only needs the open views, so an overgrown one is reset.
