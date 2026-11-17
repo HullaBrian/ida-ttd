@@ -353,9 +353,9 @@ s.origin("rax")                          # where rax's value came from
 
 The same module opens a recording headless with no debugger (`Recording`), and
 works in idat, idalib and an MCP server's Python, which makes it the way to give
-an AI agent the recording. [docs/python.md](docs/python.md) is the guide;
-[docs/scripting.md](docs/scripting.md) is the reference for the underlying
-`ttd("...")` IDC command.
+an AI agent the recording. [docs/scripting.md](docs/scripting.md) is the
+guide to the module and the reference for the `ttd("...")` IDC command
+underneath it.
 
 ### Keep your work on code outside the modules
 
