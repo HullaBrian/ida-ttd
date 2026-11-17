@@ -27,6 +27,11 @@ namespace idattd
     // coverage sweep or an annotation pass changes what the database says.
     void refresh_pseudocode_views();
 
+    // Something a paint reads changed without an IDB event (the conditional
+    // moves found never to have moved), so the next refresh repaints even a
+    // view painted since the last colour change.
+    void pseudocode_paint_inputs_changed();
+
     // Close, without saving to the desktop, pseudocode views of code that
     // exists only while a trace is loaded. Called at session end: runtime
     // allocated code has no segment afterwards, and a view restored from the

@@ -4,6 +4,8 @@
 #include "debugger/trace_manager.h"
 #include "plugin/settings.h"
 
+#include <allins.hpp>
+
 namespace idattd
 {
     // Ceiling on the address space one sweep may cover. A backend keeps a bit
@@ -19,15 +21,17 @@ namespace idattd
     static const uchar CV_USED_TAG = 'C';   // alt <colour> -> 1
     static const uchar CV_FUNC_TAG = 'F';   // alt <function start> -> 1
     static const uchar CV_PREV_TAG = 'P';   // alt <colour> -> 1: shows another recording's coverage
+    static const uchar CV_CMOV_TAG = 'M';   // alt <instruction> -> 1: a conditional move that never moved
+    static const uchar CV_CMVF_TAG = 'K';   // alt <function start> -> 1: its conditional moves were checked
 
     // Shade painted by builds before the colour was configurable; always
     // cleared too, so those databases can still be cleaned.
     static const bgcolor_t CV_LEGACY_COLOR = 0xD5F2D5;
 
-    // Which functions were swept belongs to a recording: marks from an older
-    // execution must not suppress a fresh sweep. Colours are a user preference
-    // and survive.
-    static const uchar CV_TRACE_TAGS[] = { CV_FUNC_TAG };
+    // Which functions were swept, and what their conditional moves did,
+    // belong to a recording: marks from an older execution must not suppress
+    // a fresh sweep. Colours are a user preference and survive.
+    static const uchar CV_TRACE_TAGS[] = { CV_FUNC_TAG, CV_CMOV_TAG, CV_CMVF_TAG };
 
     // The same shade in the opposite hue: each channel mirrored about the
     // midpoint of the brightest and darkest, which keeps the lightness (so it
@@ -185,6 +189,10 @@ namespace idattd
     // Microsoft recording's system DLLs) and their colours vanish when the
     // session ends, so a saved mark would block repainting in later sessions.
     static std::set<ea_t> g_session_done;
+    // The same for the conditional-move check: the functions checked, and
+    // the moves found never to have moved.
+    static std::set<ea_t> g_session_cmov_done;
+    static std::set<ea_t> g_session_cmov_untaken;
 
     static bool in_debug_segment(ea_t ea)
     {
@@ -195,6 +203,8 @@ namespace idattd
     void coverage_session_ended()
     {
         g_session_done.clear();
+        g_session_cmov_done.clear();
+        g_session_cmov_untaken.clear();
     }
 
     bool coverage_function_done(ea_t start)
@@ -349,12 +359,14 @@ namespace idattd
         std::set<bgcolor_t> ours = coverage_colors();
 
         // Also forget which functions were measured, so the automatic pass
-        // paints them again.
+        // paints them again, and what their conditional moves did.
         g_session_done.clear();
+        g_session_cmov_done.clear();
+        g_session_cmov_untaken.clear();
         netnode nn = cv_node(true);
         if ( nn != BADNODE )
         {
-            for ( uchar tag : { CV_FUNC_TAG, CV_PREV_TAG } )
+            for ( uchar tag : { CV_FUNC_TAG, CV_PREV_TAG, CV_CMOV_TAG, CV_CMVF_TAG } )
                 for ( nodeidx_t i = nn.altfirst(tag); i != BADNODE; )
                 {
                     nodeidx_t next = nn.altnext(i, tag);
@@ -382,5 +394,225 @@ namespace idattd
         }
         hide_wait_box();
         return n;
+    }
+
+    //-----------------------------------------------------------------------
+    // Conditional moves
+    //-----------------------------------------------------------------------
+    // How many executions a move may have and still be tested, and how many
+    // positions go to the backend at once. One that ran more often than that
+    // is not tested and counts as having moved, which keeps its body painted,
+    // as it was before this check: reading the flags at every run of a move
+    // in a hot loop would cost more than the answer is worth.
+    static const size_t kCmovMaxTested = 4096;
+    static const size_t kCmovBatch     = 256;
+
+    // The instruction's condition code as its itype, or 0 when 'ea' holds no
+    // conditional move. Only x86 has them in this sense.
+    static uint16 cmov_itype(ea_t ea)
+    {
+        if ( PH.id != PLFM_386 )
+            return 0;
+        insn_t insn;
+        if ( decode_insn(&insn, ea) <= 0 )
+            return 0;
+        return insn.itype >= NN_cmova && insn.itype <= NN_cmovz ? insn.itype : 0;
+    }
+
+    // Whether a conditional move of this itype moves under 'rflags'. Pure, so
+    // the worker thread can call it.
+    static bool cmov_holds(uint16 itype, uint64_t rflags)
+    {
+        const bool cf = (rflags & 0x001) != 0;
+        const bool pf = (rflags & 0x004) != 0;
+        const bool zf = (rflags & 0x040) != 0;
+        const bool sf = (rflags & 0x080) != 0;
+        const bool of = (rflags & 0x800) != 0;
+        switch ( itype )
+        {
+            case NN_cmova:  return !cf && !zf;
+            case NN_cmovb:  return cf;
+            case NN_cmovbe: return cf || zf;
+            case NN_cmovg:  return !zf && sf == of;
+            case NN_cmovge: return sf == of;
+            case NN_cmovl:  return sf != of;
+            case NN_cmovle: return zf || sf != of;
+            case NN_cmovnb: return !cf;
+            case NN_cmovno: return !of;
+            case NN_cmovnp: return !pf;
+            case NN_cmovns: return !sf;
+            case NN_cmovnz: return !zf;
+            case NN_cmovo:  return of;
+            case NN_cmovp:  return pf;
+            case NN_cmovs:  return sf;
+            case NN_cmovz:  return zf;
+            default:        return true;
+        }
+    }
+
+    bool conditional_move_at(ea_t ea, uint64_t rflags, bool *holds)
+    {
+        uint16 itype = cmov_itype(ea);
+        if ( itype == 0 )
+            return false;
+        if ( holds != nullptr )
+            *holds = cmov_holds(itype, rflags);
+        return true;
+    }
+
+    std::set<ea_t> untaken_conditional_moves(ea_t start, ea_t end)
+    {
+        std::set<ea_t> out;
+        for ( auto p = g_session_cmov_untaken.lower_bound(start);
+              p != g_session_cmov_untaken.end() && *p < end; ++p )
+            out.insert(*p);
+        netnode nn = cv_node(false);
+        if ( nn == BADNODE )
+            return out;
+        // altnext() steps to the next index that exists, so this walks only
+        // the marks inside the range, not every address in it.
+        nodeidx_t i = start == 0 ? nn.altfirst(CV_CMOV_TAG) : nn.altnext((nodeidx_t)start - 1, CV_CMOV_TAG);
+        for ( ; i != BADNODE && (ea_t)i < end; i = nn.altnext(i, CV_CMOV_TAG) )
+            out.insert((ea_t)i);
+        return out;
+    }
+
+    bool condmoves_function_done(ea_t start)
+    {
+        if ( in_debug_segment(start) )
+            return g_session_cmov_done.count(start) != 0;
+        netnode nn = cv_node(false);
+        return nn != BADNODE && nn.altval((nodeidx_t)start, CV_CMVF_TAG) != 0;
+    }
+
+    bool check_conditional_moves(TraceManager *mgr, ea_t start, ea_t end)
+    {
+        if ( start == BADADDR || start >= end || mgr == nullptr || !mgr->is_active()
+          || mgr->backend() == nullptr )
+            return false;
+
+        // The moves that ran: those coverage painted in this recording's
+        // shade. Another recording's shade says nothing about this one.
+        std::set<bgcolor_t> previous;
+        std::set<bgcolor_t> ours = coverage_colors(&previous);
+        struct Move
+        {
+            ea_t   ea;
+            uint16 itype;
+            bool   untaken = false;     // ran, and never moved
+        };
+        std::vector<Move> moves;
+        for ( ea_t ea = start; ea != BADADDR && ea < end; ea = next_head(ea, end) )
+        {
+            bgcolor_t c = get_item_color(ea);
+            if ( c == DEFCOLOR || ours.count(c) == 0 || previous.count(c) != 0 )
+                continue;
+            if ( uint16 it = cmov_itype(ea); it != 0 )
+                moves.push_back({ ea, it });
+        }
+
+        if ( !moves.empty() )
+        {
+            ITraceBackend *backend = mgr->backend();
+            QueryResult qr = run_query("Checking conditional moves", [&](ProgressSink *p)
+            {
+                QueryResult r;
+                r.ran = true;
+                for ( size_t i = 0; i < moves.size(); i++ )
+                {
+                    if ( p != nullptr )
+                    {
+                        if ( p->cancelled() )
+                        {
+                            r.cancelled = true;
+                            break;
+                        }
+                        p->report(uint32_t(i * 100 / moves.size()));
+                    }
+                    Move &m = moves[i];
+                    std::vector<Access> runs;
+                    QueryResult q = backend->query_accesses(m.ea, m.ea + 1, ACCESS_EXEC, PositionRange{},
+                                                            &runs, nullptr);
+                    if ( !q.ran || q.truncated )
+                        continue;                   // unknown: counts as moved
+                    std::vector<Position> at;
+                    for ( const Access &a : runs )
+                        if ( a.kind == ACCESS_EXEC && a.pc == m.ea )
+                            at.push_back(a.pos);
+                    if ( at.empty() || at.size() > kCmovMaxTested )
+                        continue;
+
+                    // Untaken only when every execution was read and none
+                    // moved. The registers at an execution's position are
+                    // those before it runs, which is what decides the move;
+                    // the instruction pointer confirms the position.
+                    bool moved = false, all_read = true;
+                    for ( size_t k = 0; k < at.size() && !moved && all_read; k += kCmovBatch )
+                    {
+                        if ( p != nullptr && p->cancelled() )
+                        {
+                            r.cancelled = true;
+                            return r;
+                        }
+                        std::vector<Position> chunk(at.begin() + k,
+                                                    at.begin() + std::min(k + kCmovBatch, at.size()));
+                        std::vector<ittd_regs> regs;
+                        QueryResult rq = backend->registers_at(chunk, &regs, nullptr);
+                        if ( !rq.ran || rq.cancelled || regs.size() != chunk.size() )
+                        {
+                            all_read = false;
+                            break;
+                        }
+                        for ( const ittd_regs &g : regs )
+                        {
+                            if ( (g.have & ITTD_REGS_GP) == 0 || g.gp[ITTD_REG_RIP] != m.ea )
+                            {
+                                all_read = false;
+                                break;
+                            }
+                            if ( cmov_holds(m.itype, g.rflags) )
+                            {
+                                moved = true;
+                                break;
+                            }
+                        }
+                    }
+                    m.untaken = all_read && !moved;
+                }
+                return r;
+            });
+            // A partial check would leave some moves unmarked for good.
+            if ( !qr.ran || qr.cancelled )
+            {
+                if ( !qr.ran )
+                    msg("[ida-ttd] conditional moves of the function at 0x%llX: %s\n", (uint64_t)start,
+                        query_error(mgr, backend, qr, "The replay session ended during the check.",
+                                    "This recording's backend could not list the moves' executions.").c_str());
+                return false;
+            }
+        }
+
+        // Each move set or cleared, so a check run again after the function's
+        // bounds or code changed leaves no stale mark behind.
+        if ( in_debug_segment(start) )
+        {
+            for ( const Move &m : moves )
+                if ( m.untaken )
+                    g_session_cmov_untaken.insert(m.ea);
+                else
+                    g_session_cmov_untaken.erase(m.ea);
+            g_session_cmov_done.insert(start);
+            return true;
+        }
+        netnode nn = cv_node(true);
+        if ( nn == BADNODE )
+            return false;
+        for ( const Move &m : moves )
+            if ( m.untaken )
+                nn.altset((nodeidx_t)m.ea, 1, CV_CMOV_TAG);
+            else
+                nn.altdel((nodeidx_t)m.ea, CV_CMOV_TAG);
+        nn.altset((nodeidx_t)start, 1, CV_CMVF_TAG);
+        return true;
     }
 }

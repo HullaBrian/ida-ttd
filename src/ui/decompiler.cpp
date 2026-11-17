@@ -58,10 +58,15 @@ namespace idattd
     // assigned variable, call, arguments) from different instructions. In
     // "v11 = v7(...)" the first anchor is the assignment, while the call's
     // annotation is on the call instruction a few bytes earlier.
+    //
+    // 'items', when given, receives the items themselves.
     static void line_addresses(const cfunc_t *cf, const char *line,
-                               std::vector<ea_t> &out)
+                               std::vector<ea_t> &out,
+                               std::vector<const citem_t *> *items = nullptr)
     {
         out.clear();
+        if ( items != nullptr )
+            items->clear();
         // Caps a pathological line, since this runs on every repaint.
         static const size_t kMaxPerLine = 32;
 
@@ -100,6 +105,8 @@ namespace idattd
             const citem_t *it = cf->treeitems[idx];
             if ( it == nullptr || it->ea == BADADDR )
                 continue;
+            if ( items != nullptr )
+                items->push_back(it);
             // Colours and comments live on item heads, and an item's address
             // need not be one.
             ea_t ea = it->ea;
@@ -213,6 +220,52 @@ namespace idattd
         sl.line.append(SCOLOR_REGCMT);
     }
 
+    // The if statement a conditional move at 'ea' became, when 'it' is part
+    // of one, else nullptr. Hex-Rays can write one CMOVcc as a whole if:
+    // the condition and the assignment in the body are then both items of
+    // that instruction, and the condition has its address. '*in_branch' says
+    // whether 'it' is in the then or else branch (the assignment the move
+    // makes, which only happens when the condition holds) rather than the
+    // condition itself (which always runs).
+    static const cinsn_t *cmov_if_of(const cfunc_t *cf, const citem_t *it, ea_t ea, bool *in_branch)
+    {
+        *in_branch = false;
+        if ( it->op == cit_if && ((const cinsn_t *)it)->cif->expr.ea == ea )
+            return (const cinsn_t *)it;
+        const citem_t *child = it;
+        for ( const citem_t *p = cf->body.find_parent_of(child);
+              p != nullptr;
+              child = p, p = cf->body.find_parent_of(p) )
+        {
+            if ( p->op != cit_if )
+                continue;
+            const cinsn_t *ifs = (const cinsn_t *)p;
+            const cif_t *ci = ifs->cif;
+            if ( ci->expr.ea != ea )
+                continue;                   // another if, around this one
+            *in_branch = child == ci->ithen || child == ci->ielse;
+            return ifs;
+        }
+        return nullptr;
+    }
+
+    // Whether a line is the body of an if made from a conditional move that
+    // never moved in this recording ('untaken'): the instruction ran, so
+    // coverage holds it, but what the line says never happened.
+    static bool in_untaken_branch(const cfunc_t *cf, const std::vector<const citem_t *> &items,
+                                  const std::set<ea_t> &untaken)
+    {
+        for ( const citem_t *it : items )
+        {
+            if ( untaken.count(it->ea) == 0 )
+                continue;
+            bool in_branch = false;
+            if ( cmov_if_of(cf, it, it->ea, &in_branch) != nullptr && in_branch )
+                return true;
+        }
+        return false;
+    }
+
     // On a coverage colour, dim grey text (Hex-Rays' argument names) in the
     // normal text colour, so it stays readable.
     static void brighten_dim_text(qstring &line)
@@ -230,6 +283,8 @@ namespace idattd
     // A line is covered when an address it came from carries one of the
     // plugin's coverage colours, and takes that colour, so a database
     // highlighted in two shades reads the same here as in the disassembly.
+    // The exception is the body of an if made from a conditional move that
+    // never moved (in_untaken_branch), which is left unpainted.
     //
     // True when a line lost its coverage colour: its text was brightened in
     // place (brighten_dim_text), and only regenerating it brings back the
@@ -245,6 +300,13 @@ namespace idattd
         std::vector<ea_t>   eas;              // reused; no per-line allocation
         // Call sites whose note is already placed (see append_ttd_comments).
         std::set<ea_t>      annotated;
+        // The function's conditional moves that never moved, and so the
+        // lines' items, needed only when there are some.
+        std::set<ea_t> untaken;
+        func_entry_info_t fi;
+        if ( get_func_entry_info(&fi, cf->entry_ea) )
+            untaken = untaken_conditional_moves(fi.start_ea, fi.end_ea);
+        std::vector<const citem_t *> items;
 
         for ( size_t i = 0; i < cf->sv.size(); i++ )
         {
@@ -257,9 +319,16 @@ namespace idattd
             if ( was_ours )
                 sl.bgcolor = DEFCOLOR;
 
-            line_addresses(cf, sl.line.c_str(), eas);
+            line_addresses(cf, sl.line.c_str(), eas, untaken.empty() ? nullptr : &items);
             if ( eas.empty() )
                 continue;
+            if ( !untaken.empty() && in_untaken_branch(cf, items, untaken) )
+            {
+                if ( was_ours )
+                    uncovered = true;
+                append_ttd_comments(sl, eas, annotated);
+                continue;
+            }
 
             // Covered if any instruction it came from ran. This recording's
             // shade wins over another recording's (a fork's parent, or a fork).
@@ -371,6 +440,11 @@ namespace idattd
         }
     }
 
+    void pseudocode_paint_inputs_changed()
+    {
+        g_paint_generation++;
+    }
+
     void refresh_pseudocode_views()
     {
         if ( !g_hooked )
@@ -465,6 +539,73 @@ namespace idattd
         }
     }
 
+    // The statement the caret goes to for the instruction at 'ea'.
+    //
+    // The candidates are the items made from exactly that instruction.
+    // Without any (most instructions: an item records one address, while a
+    // statement is built from several), they are the statements Hex-Rays'
+    // own map of instructions to statements gives (eamap), which is what it
+    // follows the instruction pointer by. A function's first instruction maps
+    // there to the body, so the caret starts on the first statement rather
+    // than the declaration.
+    //
+    // A conditional move Hex-Rays wrote as a whole if is both the condition's
+    // line and the body's: the body when the condition holds now, so a step
+    // shows the branch actually taken, and the condition when it does not.
+    // Otherwise the first statement among them: for code setting up a call's
+    // argument, the call, not the argument's line.
+    static const citem_t *caret_statement(cfunc_t *cf, ea_t ea)
+    {
+        std::vector<const citem_t *> cand;
+        for ( const citem_t *it : cf->treeitems )
+            if ( it != nullptr && it->ea == ea )
+                cand.push_back(it);
+        if ( cand.empty() )
+        {
+            eamap_t &em = cf->get_eamap();
+            eamap_iterator_t p = eamap_find(&em, ea);
+            if ( p != eamap_end(&em) )
+                for ( const cinsn_t *s : eamap_second(p) )
+                    if ( s != nullptr )
+                        cand.push_back(s);
+        }
+        if ( cand.empty() )
+            return nullptr;
+
+        regval_t efl;
+        bool holds = false;
+        if ( get_reg_val("EFL", &efl) && conditional_move_at(ea, efl.ival, &holds) )
+        {
+            const cinsn_t *ifs  = nullptr;
+            const citem_t *body = nullptr;
+            for ( const citem_t *it : cand )
+            {
+                bool in_branch = false;
+                const cinsn_t *f = cmov_if_of(cf, it, ea, &in_branch);
+                if ( f == nullptr )
+                    continue;
+                ifs = f;
+                if ( in_branch && body == nullptr )
+                    body = it;
+            }
+            if ( ifs != nullptr )
+            {
+                const citem_t *s = holds && body != nullptr ? body : ifs;
+                while ( s != nullptr && s->is_expr() )
+                    s = cf->body.find_parent_of(s);
+                return s;
+            }
+        }
+
+        const citem_t *best = nullptr;
+        for ( const citem_t *it : cand )
+            if ( best == nullptr || (best->is_expr() && !it->is_expr()) )
+                best = it;
+        while ( best != nullptr && best->is_expr() )
+            best = cf->body.find_parent_of(best);
+        return best;
+    }
+
     bool show_in_pseudocode(TWidget *view, ea_t ea)
     {
         if ( !g_hooked || view == nullptr )
@@ -486,18 +627,7 @@ namespace idattd
             vu->switch_to(cf, false);
         }
 
-        // Caret on the first line of the statement holding ea: for code
-        // setting up a call's argument, the call, not the argument's line.
-        const citem_t *best = nullptr;
-        for ( const citem_t *it : vu->cfunc->treeitems )
-        {
-            if ( it == nullptr || it->ea != ea )
-                continue;
-            if ( best == nullptr || (best->is_expr() && !it->is_expr()) )
-                best = it;
-        }
-        while ( best != nullptr && best->is_expr() )
-            best = vu->cfunc->body.find_parent_of(best);
+        const citem_t *best = caret_statement(vu->cfunc, ea);
         int x = 0;
         int y = 0;
         if ( best != nullptr && vu->cfunc->find_item_coords(best, &x, &y) )

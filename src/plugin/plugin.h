@@ -155,6 +155,7 @@ namespace idattd
         void do_auto_coverage();              // timer body: sweep the current function
         bool auto_coverage_wanted(ea_t start) const;
         bool auto_indirect_wanted(ea_t start) const;
+        bool auto_condmoves_wanted(ea_t start) const;
         static int idaapi autocover_cb(void *ud);
         static int idaapi kept_cb(void *ud);
         static int idaapi attach_cb(void *ud);  // timer body: wait for analysis, then offer

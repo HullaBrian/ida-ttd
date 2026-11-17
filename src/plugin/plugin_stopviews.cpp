@@ -179,6 +179,22 @@ namespace idattd
         TWidget *from = m_stepView;
         if ( from == nullptr )
         {
+            // A travel, or a step started elsewhere. Hex-Rays moves the caret
+            // of a view showing the stop's function itself, to whichever of
+            // the instruction's lines is nearest the old caret, so the line
+            // shown depended on where the view had been. The same placement
+            // as after a step instead, in each view already showing that
+            // function; none is switched to it.
+            ea_t pc = m_mgr.is_active() ? m_mgr.current_pc_ea() : BADADDR;
+            func_entry_info_t fi;
+            if ( pc != BADADDR && get_func_entry_info(&fi, pc) )
+            {
+                std::vector<TWidget *> views;
+                list_pseudocode_views(views);
+                for ( TWidget *w : views )
+                    if ( pseudocode_function(w) == fi.start_ea )
+                        show_in_pseudocode(w, pc);
+            }
             m_viewsBefore.clear();
             return;
         }
@@ -266,7 +282,8 @@ namespace idattd
             return;                                  // no function to measure yet
         if ( m_autoCoverDeclined.find(fi.start_ea) != m_autoCoverDeclined.end() )
             return;                                  // the user said no
-        if ( !auto_coverage_wanted(fi.start_ea) && !auto_indirect_wanted(fi.start_ea) )
+        if ( !auto_coverage_wanted(fi.start_ea) && !auto_indirect_wanted(fi.start_ea)
+          && !auto_condmoves_wanted(fi.start_ea) )
             return;                                  // nothing left to do there
         m_autoCoverFunc = fi.start_ea;
         m_autoCoverTimer.arm(DEFER_MS, autocover_cb, this);
@@ -280,6 +297,14 @@ namespace idattd
     bool Plugin::auto_indirect_wanted(ea_t start) const
     {
         return callsites_auto_enabled() && !callsites_function_done(start);
+    }
+
+    // After coverage, whether its conditional moves moved (coverage.h). Also
+    // for a function measured before this check existed, which is why it
+    // does not wait for a fresh sweep.
+    bool Plugin::auto_condmoves_wanted(ea_t start) const
+    {
+        return coverage_auto_enabled() && !condmoves_function_done(start);
     }
 
     void Plugin::do_auto_coverage()
@@ -303,6 +328,17 @@ namespace idattd
                 m_autoCoverDeclined.insert(start);
                 return;
             }
+            changed = true;
+        }
+        if ( auto_condmoves_wanted(start) )
+        {
+            if ( !check_conditional_moves(&m_mgr, fi.start_ea, fi.end_ea) )
+            {
+                m_autoCoverDeclined.insert(start);
+                return;
+            }
+            // Its marks raise no IDB event, so the paint cache needs telling.
+            pseudocode_paint_inputs_changed();
             changed = true;
         }
         if ( auto_indirect_wanted(start) )

@@ -67,4 +67,33 @@ namespace idattd
     // Remove every coverage colour from the database; returns the number of
     // instructions cleared.
     size_t clear_coverage();
+
+    // ---- Conditional moves ---------------------------------------------
+    //
+    // Hex-Rays can decompile one x86 CMOVcc as a whole if statement: the
+    // condition and the assignment in its body both come from that single
+    // instruction. The instruction runs whether or not its condition holds,
+    // so coverage alone would paint the body as executed even in a run where
+    // the move never happened. These say whether it did.
+
+    // Whether 'ea' holds a conditional move; *holds, when given, whether its
+    // condition holds under 'rflags'. Main thread (it decodes).
+    bool conditional_move_at(ea_t ea, uint64_t rflags = 0, bool *holds = nullptr);
+
+    // The conditional moves in [start, end) that ran in this recording but
+    // never moved, as check_conditional_moves found them.
+    std::set<ea_t> untaken_conditional_moves(ea_t start, ea_t end);
+
+    // Have the conditional moves of the function at 'start' been checked
+    // against this recording?
+    bool condmoves_function_done(ea_t start);
+
+    // For each conditional move in [start, end) that coverage painted, find
+    // its executions and test the flags at each, stopping at the first whose
+    // condition held; record those that never moved, then mark the function
+    // done. One with too many executions to test (over 4096), or whose
+    // registers could not be read, counts as having moved, so the body stays
+    // painted. Behind
+    // a cancellable wait box; false when it did not complete.
+    bool check_conditional_moves(TraceManager *mgr, ea_t start, ea_t end);
 }
