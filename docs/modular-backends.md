@@ -105,7 +105,7 @@ gaps.
   say whether the range was mapped or unmapped, carries no protection, and
   protection changes are not recorded at all. So Sogen does not yet earn
   `ITTD_CAP_MAPPING_CHANGES`; see
-  [sogen-ttd-requests-2.md](sogen-ttd-requests-2.md) §1. The memory map
+  `sogen-ttd-requests-2.md` §1. The memory map
   *model* — the change timeline, folding it to a position, exposing live
   regions as segments — is shared; only the acquisition differs.
 - **Microsoft has no recorded symbols.** `common/symbols.cpp` parses each
@@ -212,8 +212,8 @@ core does not speak, is named in the output window and skipped.
 `ida-ttd-sogen.dll` links Sogen's trace libraries and nothing of ida-ttd's.
 
 Sogen split `src/windows-ttd` in answer to
-[sogen-ttd-requests.md](sogen-ttd-requests.md) §1 (`ttd/next`, `31cfc3ea`;
-the answer is [sogen-ttd-requests-response.md](sogen-ttd-requests-response.md)).
+`sogen-ttd-requests.md` §1 (`ttd/next`, `31cfc3ea`;
+the answer is `sogen-ttd-requests-response.md`).
 There are now three static libraries:
 
 | Target | Header | Links | Gives |
@@ -421,8 +421,8 @@ Sogen's trace reader and `cpu_view` and calls them directly. What the backend
 does is translate, in both directions.
 
 Updated against `ttd/next` at `31cfc3ea`, which answered most of
-[sogen-ttd-requests.md](sogen-ttd-requests.md); see
-[sogen-ttd-requests-response.md](sogen-ttd-requests-response.md).
+`sogen-ttd-requests.md`; see
+`sogen-ttd-requests-response.md`.
 
 ### Positions
 
@@ -473,9 +473,9 @@ silent — a register view one instruction off — so it is worth a test.
 
 ### What Sogen added in round 2
 
-All of [sogen-ttd-requests-2.md](sogen-ttd-requests-2.md) landed on `ttd/next`,
+All of `sogen-ttd-requests-2.md` landed on `ttd/next`,
 up to `f2461773`, as optional v8 sections; see the status table in
-[sogen-ttd-requests-2-response.md](sogen-ttd-requests-2-response.md). The
+`sogen-ttd-requests-2-response.md`. The
 backend uses all of it, and the probe checks it on a trace recorded with them.
 
 - **The memory map (section 17).** `memory_regions()` is the map at the start
@@ -615,7 +615,8 @@ backend. The core does not load the DLL yet: that is still phase 4.
 
 *Since phase 4* the core loads it like the Microsoft one, and both pass the
 same self-test in IDA. Sogen answered four rounds of requests along the way
-(`docs/sogen-ttd-requests*.md`); the last two made `memory_at` read from
+(`docs/sogen-ttd-requests*.md`, local notes that are not in the
+repository); the last two made `memory_at` read from
 checkpoint memory and the writes since, which is what made a Sogen session
 usable in the GUI.
 
@@ -687,11 +688,11 @@ the open items of the existing code review.
    the Sogen tree. Something has to be decided before the first release that
    includes it; nothing before then.
 2. ~~**The SDK requests.**~~ Answered in
-   [sogen-ttd-requests-response.md](sogen-ttd-requests-response.md): §1–§6
+   `sogen-ttd-requests-response.md`: §1–§6
    done, §7 and three of the §8 items not yet. The ABI was reshaped to match
    (three call positions, indirect jumps, exceptions, module machine, batch
    registers). The follow-ups are in
-   [sogen-ttd-requests-2.md](sogen-ttd-requests-2.md), mainly the memory map.
+   `sogen-ttd-requests-2.md`, mainly the memory map.
 3. **One plugin or several?** This plan has one `ida-ttd.dll` that picks a
    backend from the file, so there is one `debugger_t`, one action set and one
    toolbar however many backends are installed. The alternative — one plugin
@@ -714,7 +715,7 @@ the open items of the existing code review.
 - `src/core/backend_registry.{h,cpp}` — which backends are available and which
   one owns a given file.
 - `docs/sogen-ttd-requests.md` — the SDK changes a Sogen backend wants, written
-  to be handed to that project.
+  to be handed to that project (a local note, not in the repository).
 
 The interfaces compile and are in the project; nothing is wired to them yet,
 since that is phase 3.
