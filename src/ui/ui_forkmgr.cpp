@@ -12,7 +12,8 @@
 // were a disassembly graph, calling virtual slots 35 and 39 ("node at this
 // address", "line in it"). A plugin graph (IDA's user_graph_t, the SDK's
 // interactive_graph_t) has 33 slots, so the calls ran into another class's
-// table and crashed IDA.
+// table and crashed IDA. Not yet checked whether IDA 9.5 still does this; the
+// guard is harmless if it does not.
 #include "ui/ui.h"
 #include "analysis/fork.h"
 #include "analysis/fork_registry.h"
@@ -271,7 +272,9 @@ namespace idattd
             size_t own = 0;
             while ( own < 256 && readable(vtbl + own, sizeof(void *)) && executable(vtbl[own]) )
                 own++;
-            // 33 in IDA 9.4; the lookups IDA makes are slots 35 and 39.
+            // 33 in IDA 9.4 and 9.5 (the 9.5 SDK leaves interactive_graph_t's
+            // virtual functions as they were); the lookups IDA makes are slots
+            // 35 and 39.
             if ( own < 30 || own >= 35 )
             {
                 msg("[ida-ttd] the fork graph's class has %d functions, not the 33 expected; "
