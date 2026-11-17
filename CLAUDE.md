@@ -1,6 +1,6 @@
 # ida-ttd
 
-An IDA Pro 9.4 plugin (C++, Windows x64) that turns a time-travel recording into
+An IDA Pro 9.5 plugin (C++, Windows x64) that turns a time-travel recording into
 an IDA debugger session: step forwards and backwards, jump to any position, and
 run whole-recording queries (calls, coverage, memory accesses, syscalls, memory
 map, self-modifying code, strings, buffers, forks). Two kinds of recording:

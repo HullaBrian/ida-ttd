@@ -23,7 +23,7 @@ Where the plugin is not loaded yet (an idalib worker may not load plugins on its
 own), run the file and load it:
 
 ```python
-exec(open(r"C:\Program Files\IDA Professional 9.4\plugins\ida-ttd-python\ida_ttd.py").read())
+exec(open(r"C:\Program Files\IDA Professional 9.5\plugins\ida-ttd-python\ida_ttd.py").read())
 ensure_loaded()
 ```
 
