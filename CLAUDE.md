@@ -12,10 +12,22 @@ map, self-modifying code, strings, buffers, forks). Two kinds of recording:
   (github.com/momo5502/sogen, `src/windows-ttd`). Sogen can also *replay* a
   recording in its emulator, which is what forking uses.
 
-README.md is the user-facing description (features, usage, build, layout).
-`docs/` holds design notes; `docs/scripting.md` and `docs/licensing.md`
-(what each binary contains and the terms it ships under) are current, while
+IDA 9.5 only: 9.5 raised the debugger interface version (IDD 32), so a build
+against one version's SDK does not load in the other.
+
+README.md is the user-facing description, and the page plugins.hex-rays.com
+shows (the package carries it). Hex-Rays asks for an overview, installation
+and usage, and credits; keep those sections, and keep it in step with
+features. `docs/` holds design notes: `docs/scripting.md` (the `ida_ttd`
+Python module, then the `ttd("...")` commands it wraps; one page since
+docs/python.md was merged into it) and `docs/licensing.md` (what each binary
+contains and the terms it ships under) are current, while
 `modular-backends.md` is historical and may be out of date.
+
+Local notes stay out of git: `docs/sogen-ttd-requests*.md` (requests to the
+Sogen side and its answers; ignored, and removed from the history on
+2026-11-16), `docs/code-review*.md`, `docs/how-the-analyses-work.md`,
+`TODO.txt`. Never add them.
 
 **Local setup** (where things live on this machine and on the test machine,
 reference material, test recordings) is in `CLAUDE.local.md`, which is
@@ -159,6 +171,13 @@ is working in: use a snapshot (`git archive` + a CMake configure with
 `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`) and pass
 `-p:SogenRoot=<snapshot> -p:SogenBuild=<build>`.
 
+**Releasing.** Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`:
+it checks the tag against `ida-plugin.json`'s `version` (bump that first),
+builds everything including the Sogen backend at `msbuild/sogen.pin`, runs
+`hcli plugin lint` on the zip and attaches `ida-ttd.zip`, `ttd-loader.dll`
+and `ida-ttd-sogen-source.zip` to the release. Hex-Rays' plugin repository
+indexes public GitHub repositories' releases daily; there is no submission.
+
 ## Testing
 
 1. **Backend changes: `ittd-probe`, locally, no IDA.**
@@ -175,8 +194,16 @@ is working in: use a snapshot (`git archive` + a CMake configure with
    tell them which DLLs changed with their sha256, then verify the installed
    hashes from inside IDA before testing. Drive the plugin with
    `idc.eval_idc('ttd("cmd")')` (JSON back; `ttd("help")` lists commands);
-   `scripts/selftest.py` is the end-to-end suite. Release the MCP lease
-   (`close_database`) when done, or the DLLs stay locked.
+   `scripts/selftest.py` is the end-to-end suite (`run()`: 28 checks on
+   either kind of recording; `run_sogen()`: the Sogen-only ones). Release
+   the MCP lease (`close_database`) when done, or the DLLs stay locked.
+   - The automatic passes after a stop (coverage, conditional moves,
+     indirect calls) run from UI timers, which a headless worker never
+     fires: test them on a GUI database, returning from `execute_python`
+     between the movement and the check.
+   - `ida_hexrays.decompile()` can hand back a decompilation cached before
+     the database changed; check pseudocode with `DECOMP_NO_CACHE` (after
+     `clear_cached_cfuncs()`) or in an open view.
 
 There is no unit-test suite; correctness is checked against known recordings
 (e.g. the sample program stores 0x2222222222222222 over 0x1111111111111111) and
@@ -208,9 +235,17 @@ by comparing MS and Sogen recordings of the same program.
   positions a view after a travel must run from `do_after_stop`, not inline.
 - Wait boxes only appear after a grace period while the UI pumps; long
   synchronous work (e.g. loading a PDB) looks like a hang instead.
+- From 9.5, Hex-Rays prints an instruction's repeatable comment in the
+  pseudocode itself, wherever its own map of instructions to statements puts
+  it. The indirect-call notes are repeatable comments, so `decompiler.cpp`
+  appends a note only where the function's text does not already show it
+  (`notes_already_shown`). Other decompiler plugins read those comments too:
+  hrtng's automatic renaming named a variable after a note.
 - Shell edits: don't pass code containing backslashes (`\n` in C strings,
   Windows paths) through bash heredocs; they get mangled. Use the Edit/Write
-  tools or a script file.
+  tools or a script file. Working copies are CRLF (`core.autocrlf=true`), and
+  `sed -i` in Git Bash writes a file back as LF: check `git ls-files --eol`
+  after one.
 
 ## Conventions
 
@@ -221,7 +256,9 @@ by comparing MS and Sogen recordings of the same program.
 - **User-facing text** (menus, tooltips, messages, README) is plain and
   specific; the README is kept in step with features.
 - **Git**: work directly on `main` (the user prefers few branches). Commit with a
-  short imperative subject and a prose body explaining the change. The user
-  pushes (`git push origin main`); don't push. `TODO.txt` (the user's
-  feature/bug list with a dated Done section) stays untracked; update it when
-  finishing an item.
+  short imperative subject and a prose body explaining the change. GitHub
+  is the `github` remote (`git push github main`); push only when the user
+  asks. The history was rewritten on 2026-11-16 (the request documents
+  removed), so clones and forks from before then do not share it.
+  `TODO.txt` (the user's feature/bug list with a dated Done section) stays
+  untracked; update it when finishing an item.
