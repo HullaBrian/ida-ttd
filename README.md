@@ -1,11 +1,24 @@
+> [!Warning]
+> Claude was used to program this project. I performed testing for my own use cases, but
+> you may run into issues. If you do, feel free to open an issue on this repository!
+
 # ida-ttd
 
-Replay time travel debugging recordings inside IDA Pro: step forwards and
-backwards through a recorded process with IDA's own debugger, and ask questions
-of the whole execution at once. Reads Microsoft TTD recordings (`.run`) and
-Sogen recordings (`.sogttd`).
+ida-ttd is an IDA Pro plugin that allows you to interact with time travel debugging (TTD)
+recordings from multiple TTD backends (Microsoft and Sogen) and holistically analyze 
+traces using a multitude of TTD analysis techniques.
 
 ## Overview
+
+Time Travel Debugging (TTD) is a technique that records binary execution and, in some cases, 
+memory accesses (ie reads, writes, executes). Using it grants reverse engineers the ability 
+to efficiently analyze a process's historical behavior and spend less time fighting typical 
+dynamic analysis headaches. Additionally, TTD extends analysis capabilities in a number of 
+ways, especially when it comes to higher level questions about *what* a process did.
+
+ida-ttd registers a custom debugger and loader which allows IDA to perform analysis. 
+
+------ 
 
 A time travel recording holds every instruction a process executed, so the
 answer to "where did this pointer come from" or "what wrote these bytes" is
