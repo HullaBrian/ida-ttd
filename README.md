@@ -16,8 +16,47 @@ to efficiently analyze a process's historical behavior and spend less time fight
 dynamic analysis headaches. Additionally, TTD extends analysis capabilities in a number of 
 ways, especially when it comes to higher level questions about *what* a process did.
 
-ida-ttd registers a custom debugger and loader which allows IDA to perform analysis. 
-
+Below are some of ida-ttd's many unique features:
+- Reverse trace navigation
+- Bookmarks
+- Function calls
+  - Find calls to functions based on pattern (ie `kernel32Virtual*`)
+  - Find all calls to a given function
+  - Call tree of a given function
+- Memory accesses
+  - Find all reads, writes, and/or executes on a memory region
+- Historical value tracing
+- Syscall recovery with parameters
+- Handle recovery
+  - Information recovered: handle value, type, open/close position, TID, and function which opened it
+  - Types of handles recovered:
+    - Files/Directories
+    - Registry keys
+    - Sockets
+    - Pipes
+    - Sections
+    - Threads/Processes
+    - Semaphores
+    - Events
+    - ALPC Port
+- Memory map reconstruction
+  - region timeline (allocations, maps, frees, protection changes)
+  - regions at timestamp
+    - Base/end address
+    - Size
+    - Protection
+    - Type (ie private, image, etc)
+    - Use
+    - Allocation timestamp
+  - heatmap
+- General analysis
+  - String/buffer recovery
+  - Self-modifying code
+- Annotation
+  - Indirect call resolution
+  - Instruction/Pseudocode execution highlighting
+- Python API
+ 
 ------ 
 
 A time travel recording holds every instruction a process executed, so the
