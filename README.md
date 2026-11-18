@@ -8,6 +8,8 @@ ida-ttd is an IDA Pro plugin that allows you to interact with time travel debugg
 recordings from multiple TTD backends (Microsoft and Sogen) and holistically analyze 
 traces using a multitude of TTD analysis techniques.
 
+For detailed installation and usage instructions, see the [wiki](https://github.com/HullaBrian/ida-ttd/wiki).
+
 ## Overview
 
 Time Travel Debugging (TTD) is a technique that records binary execution and, in some cases, 
@@ -55,83 +57,15 @@ one of the biggest challenges TTD has faced - immutability. With forks, you can 
   else to distribute it, so it is not included; the plugin fetches it for you
   (Installation, step 2).
 
-## Installation
-
-Paths below are relative to your IDA user directory,
-`%APPDATA%\Hex-Rays\IDA Pro` (or the first folder in `%IDAUSR%` if you set it).
-
-### 1. Install the plugin
-
-With [HCLI](https://hcli.docs.hex-rays.com/) (or IDA's plugin manager):
-
-```
-hcli plugin install ida-ttd
-```
-
-Without HCLI, download `ida-ttd.zip` from the
-[latest release](https://github.com/HullaBrian/ida-ttd/releases) and extract it
-into `plugins\`: it holds one `ida-ttd` folder.
-
-Then restart IDA. On that start the plugin copies its file loader
-(`ttd-loader.dll`, which lets **File > Open** recognize a recording) into
-`loaders\`, and the Output window says so. HCLI can only install into the
-plugin's own folder, which is why the plugin makes that copy itself;
-uninstalling leaves `loaders\ttd-loader.dll` behind, so delete it by hand. If
-you installed the loader yourself into IDA's own `loaders` folder (beside
-`ida.exe`), it is left alone and no second copy is made.
-
-### 2. Get the TTD replay runtime (Microsoft recordings)
-
-Choose **TTD > Backends > Install the TTD runtime (WinDbg)...**. The TTD menu
-is there with no database open, so this can be done before opening anything.
-(From IDAPython: `import ida_ttd_runtime; ida_ttd_runtime.install_runtime()`.)
-
-- If WinDbg is installed, its `amd64\ttd` folder is copied. Run it again after
-  WinDbg updates.
-- If not, it shows WinDbg's license and, once you accept it, downloads WinDbg's
-  x64 package (about 390 MB) from Microsoft.
-
-Either way the runtime goes in `ida-ttd\windbg\`. WinDbg's license allows
-commercial use; the standalone TTD package's license does not, which is why
-the plugin never uses it. To do it by hand, copy WinDbg's `amd64\ttd` folder
-to `ida-ttd\windbg\amd64\ttd`, or put `TTDReplay.dll` and `TTDReplayCPU.dll`
-from it next to `ida.exe`.
-
-### 3. Sogen recordings (optional extras)
-
-Sogen recordings open with no further setup. Two things only some users need:
-
-- **Your own build of the Sogen backend.** **TTD > Backends > Install the Sogen
-  backend...** installs one (built as
-  [docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md)
-  describes) into `ida-ttd\backends\`, where it takes the place of the
-  packaged one. Delete it from there to go back.
-- **Registry hives for older recordings.** The replay features (forks,
-  recovered strings and buffers) of a recording made by Sogen before
-  2026-10-21 need the exact registry hives it ran against; a new copy of the
-  same registry is not the same. Newer recordings carry what they read and
-  need none. Keep the hives in a `registry` folder beside the recording, or in
-  `ida-ttd\registry\`, and they are found and checked; a recording made in an
-  emulation root uses the root's own `registry` folder, and the plugin asks
-  where the root is if it has moved. Hives hold that machine's password
-  hashes, so share them with care.
-
-A recording made against the host replays only on a machine with the same
-Windows build, normally the one it was recorded on. Recordings from Sogen
-before 2026-11-07 (trace format 8) open and answer every query but cannot be
-forked by this backend, since their checkpoints hold an older emulator state:
-record them again (**TTD > Backends > Record a program with Sogen...**) to
-fork them.
-
-### Where things live
+### Plugin Structure
 
 Everything you add yourself goes in the `ida-ttd` folder of the IDA user
-directory, never in `plugins\ida-ttd\`: HCLI replaces that folder on every
-upgrade.
+directory, never in `plugins\ida-ttd\` (hcli replaces that folder on every
+upgrade)
 
 ```
 %APPDATA%\Hex-Rays\IDA Pro\
-  plugins\ida-ttd\     the plugin package (HCLI's; replaced on upgrade)
+  plugins\ida-ttd\     the plugin package (hcli's; replaced on upgrade)
     ida-ttd.dll
     ida-ttd-backends\    the Microsoft TTD and Sogen backends
     ida-ttd-data\        API metadata that decodes call arguments
@@ -143,10 +77,6 @@ upgrade.
     backends\            a Sogen backend of your own, if any
     registry\            registry hives for Sogen replays and forks
 ```
-
-Earlier versions used `plugins\ida-ttd-backends\` for these; it is still
-searched, and the installers move what they find there. The Output window
-names each backend as it loads, and says why when one does not.
 
 ## Usage
 
@@ -269,36 +199,6 @@ the range is rebuilt from the recording's writes, and it is disassembled again.
 | Timeline | `Ctrl+Shift+T` |
 | Go to position | `Ctrl+Shift+G` |
 | Bookmark this position | `Ctrl+Shift+B` |
-
-## Settings
-
-Nothing is asked during installation; every setting has a default. Change them
-in **TTD > Settings...**, which opens the IDA Settings Editor
-(`hcli plugin install ida-settings-editor`), or with
-`hcli plugin config ida-ttd set KEY VALUE`. Changes apply from the next stop of
-the replay. Settings are read through the `ida-settings` Python package, which
-HCLI installs with the plugin; without it (a hand install) the defaults apply.
-
-| Section | Key | Default | |
-| --- | --- | --- | --- |
-| Replay | `replay_on_open` | `true` | start the replay when a recording's database opens (off: Debugger > Start process) |
-| Symbols | `symbol_downloads` | `true` | download system DLLs' PDBs in the background |
-| | `symbol_server` | `https://msdl.microsoft.com/download/symbols` | where from |
-| Analysis | `auto_coverage` | `true` | measure and color each function the first time the replay stops in it |
-| | `auto_callsites` | `false` | comment its indirect calls with where they went, likewise |
-| Memory map | `memmap_flag_code` | `true` | color executable regions outside every loaded module |
-| Sogen | `fork_instructions` | `1000000` | the Fork dialog's default length (0: to the end) |
-| | `registry_folder` | (none) | another folder to look in for a recording's registry hives |
-| | `sogen_emulation_root` | (none) | the emulation root the Record dialog starts with, and the one a recording made in a root is replayed in when the root it was made in is not on this machine |
-| | `sogen_network` | `false` | give forks (past their position) and new recordings the real network; the dialogs start from it |
-| | `sogen_checkpoint_interval` | `500000` | instructions between a new recording's or fork's checkpoints (0: Sogen's default) |
-| | `sogen_record_reads` | `true` | keep memory reads in new recordings and forks (off: much smaller, no read queries) |
-| | `sogen_record_writes` | `true` | keep memory writes (off: no write queries, strings, buffers or self-modifying code) |
-| | `sogen_record_executes` | `true` | keep instruction fetches (off: no coverage or execute breakpoints) |
-| | `sogen_elevated` | `false` | record programs with an administrator's token: the program sees itself elevated, but its operations on this machine's files keep IDA's rights (forks keep their recording's token) |
-| | `sogen_log` | `false` | print Sogen's emulator log and the program's console output in the Output window while a fork, scan or recording runs, and the messages sent to services Sogen does not emulate (the recording window shows it either way) |
-| | `sogen_start_now` | `true` | start new recordings at the date and time recording begins rather than 1 January 1970; replays and forks see the same dates |
-| Diagnostics | `diagnostics_log` | `true` | write `%TEMP%\ida-ttd-diag.log` |
 
 ## Building from source
 
