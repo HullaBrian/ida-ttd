@@ -1,5 +1,5 @@
 > [!Warning]
-> Claude was used to program this project. I performed testing for my own use cases, but
+> Claude was used to write this project's code. I performed testing for my own use cases, but
 > you may run into issues. If you do, feel free to open an issue on this repository!
 
 # ida-ttd
@@ -16,39 +16,23 @@ to efficiently analyze a process's historical behavior and spend less time fight
 dynamic analysis headaches. Additionally, TTD extends analysis capabilities in a number of 
 ways, especially when it comes to higher level questions about *what* a process did.
 
-Below are some of ida-ttd's many unique features:
+The core ida-ttd plugin sits between IDA Pro and several "backend" TTD providers, which allows 
+for general TTD techniques to be implemented and work with multiple TTD implementations. Below 
+are some of the features:
 - Reverse trace navigation
 - Bookmarks
 - Function calls
-  - Find calls to functions based on pattern (ie `kernel32Virtual*`)
+  - Find calls to functions based on pattern (ie `kernel32!Virtual*`)
   - Find all calls to a given function
   - Call tree of a given function
-- Memory accesses
-  - Find all reads, writes, and/or executes on a memory region
+- Memory accesses (reads, writes, and/or executes)
 - Historical value tracing
 - Syscall recovery with parameters
 - Handle recovery
-  - Information recovered: handle value, type, open/close position, TID, and function which opened it
-  - Types of handles recovered:
-    - Files/Directories
-    - Registry keys
-    - Sockets
-    - Pipes
-    - Sections
-    - Threads/Processes
-    - Semaphores
-    - Events
-    - ALPC Port
 - Memory map reconstruction
-  - region timeline (allocations, maps, frees, protection changes)
-  - regions at timestamp
-    - Base/end address
-    - Size
-    - Protection
-    - Type (ie private, image, etc)
-    - Use
-    - Allocation timestamp
-  - heatmap
+  - Region timeline (allocations, maps, frees, protection changes)
+  - Regions at timestamp
+  - Heatmap
 - General analysis
   - String/buffer recovery
   - Self-modifying code
@@ -56,38 +40,12 @@ Below are some of ida-ttd's many unique features:
   - Indirect call resolution
   - Instruction/Pseudocode execution highlighting
 - Python API
- 
------- 
 
-A time travel recording holds every instruction a process executed, so the
-answer to "where did this pointer come from" or "what wrote these bytes" is
-already in the file. ida-ttd makes that recording an IDA debugger session: the
-usual debugger controls move through it in either direction, the disassembly,
-decompiler, registers and hex views show the program as it was at that moment,
-and the **TTD** menu runs queries across the whole recording.
-
-This matters most for code that is not in the binary you started with. Packed,
-injected and JIT-generated code exists only at runtime, and a recording of it
-is often the only artifact you have. ida-ttd disassembles that code, names it,
-shows which parts actually ran, and rebuilds the memory regions it lived in
-with their protections. Navigation and queries read the recording rather than
-running the sample again (only a Sogen fork or replay you ask for does), so
-every analysis gives the same answer each time.
-
-What you get:
-
-- **Reverse debugging** in IDA's debugger UI: step, step over, step out, run to
-  cursor and continue, backwards as well as forwards; a timeline; bookmarks.
-- **Runtime code recovery**: unpacked and injected code disassembled a function
-  at a time, with symbols from the recorded modules and their PDBs, and your
-  work on it kept in the database.
-- **Whole-recording queries**: every call to an API with decoded arguments,
-  every access to an address, every syscall and handle, the memory map and its
-  history, where a value came from, strings and buffers, self-modifying code,
-  execution coverage and a memory heatmap.
-- **Forks** (Sogen recordings): change registers or memory at any position and
-  let the program run on from there into a new recording.
-- **A Python API** (`import ida_ttd`) over all of it, for scripts and AI agents.
+Currently supported providers include [Microsoft's TTD](https://learn.microsoft.com/en-us/windows-hardware/drivers/debuggercmds/time-travel-debugging-overview) 
+and a [custom fork of Sogen](https://github.com/TTD-Club/sogen) which supports TTD. Currently, the custom Sogen 
+fork contains more features than Microsoft TTD. It allows for forks to be created in the recording, which overcomes 
+one of the biggest challenges TTD has faced - immutability. With forks, you can modify register/memory value 
+(or both) and re-record a trace.
 
 ## Features
 
