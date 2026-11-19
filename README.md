@@ -241,6 +241,10 @@ scripts/           the Python API, the PySide6 windows, packaging
 msbuild/           the project files and the settings they share
 ```
 
+## Future Work/Ideas
+- Function/memory query language
+- Linux support for Sogen recordings (MS recordings will never work unless there's official support from Microsoft)
+
 ## Credits
 
 ida-ttd is written and maintained by **HullaBrian**
