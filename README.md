@@ -49,19 +49,9 @@ fork contains more features than Microsoft TTD. It allows for forks to be create
 one of the biggest challenges TTD has faced - immutability. With forks, you can modify register/memory value 
 (or both) and re-record a trace.
 
-## Requirements
+### Plugin Installation Structure
 
-- IDA Pro 9.5 on Windows x64
-- For Microsoft TTD recordings, Microsoft's replay runtime (`TTDReplay.dll`,
-  `TTDReplayCPU.dll`), which comes with WinDbg. Microsoft does not allow anyone
-  else to distribute it, so it is not included; the plugin fetches it for you
-  (Installation, step 2).
-
-### Plugin Structure
-
-Everything you add yourself goes in the `ida-ttd` folder of the IDA user
-directory, never in `plugins\ida-ttd\` (hcli replaces that folder on every
-upgrade)
+Below is the structure of the plugin's installation files.
 
 ```
 %APPDATA%\Hex-Rays\IDA Pro\
@@ -269,7 +259,7 @@ It builds on the work of others:
 - [win32metadata](https://github.com/microsoft/win32metadata) (through
   [win32json](https://github.com/marlersoft/win32json)) and
   [phnt](https://github.com/winsiderss/phnt), the sources of the API argument
-  decoding, indexed by [ttd-capa-cpp](https://github.com/HullaBrian/ttd-capa-cpp).
+  decoding.
 - [Unicorn](https://github.com/unicorn-engine/unicorn) and
   [Capstone](https://github.com/capstone-engine/capstone), inside the Sogen
   backend.
@@ -293,7 +283,7 @@ Exceptions:
   its license, notices and where its source is in
   `ida-ttd-backends\ida-ttd-sogen-licenses\`; the source itself is
   `ida-ttd-sogen-source.zip` on the same release.
-- The API metadata loader (`src/common/apimeta/`, from ttd-capa-cpp) and the
+- The API metadata loader and the
   Material Symbols icons are Apache-2.0; the Codicons are CC BY 4.0.
 - The backend ABI header is CC0.
 
