@@ -8,8 +8,8 @@
  * ---------------------------------------------------------------------------
  * This file is placed in the public domain (CC0-1.0), separately from the rest
  * of ida-ttd, which is Apache-2.0 OR GPL-2.0-only. A backend has to include it
- * in order to exist, and the licence of the interface must not constrain the
- * licence of an implementation. See docs/modular-backends.md.
+ * in order to exist, and the license of the interface must not constrain the
+ * license of an implementation. See docs/modular-backends.md.
  * ---------------------------------------------------------------------------
  *
  * Why plain C:
@@ -186,7 +186,7 @@ typedef struct ittd_position_range
 #define ITTD_CAP_PREPARE          0x0080u  /* prepare() has something to do */
 #define ITTD_CAP_EXCEPTIONS       0x0100u  /* dispatched exceptions can be listed */
 /* Reading a page of memory costs about a copy, so the core can let IDA
- * analyse a whole module (reading all of its code) when its symbols load.
+ * analyze a whole module (reading all of its code) when its symbols load.
  * Without it the core applies the names and skips that analysis. */
 #define ITTD_CAP_CHEAP_READS      0x0200u
 /* query_self_modifying answers: the recording has the write and execute
@@ -894,7 +894,7 @@ typedef struct ittd_backend_api
      * the other lacks, so the whole family belongs to the backend.
      *
      * Each moves 'c' and writes an ITTD_STOP_* value to *out_stop. 'forward'
-     * is non-zero for forwards. All honour the nav_breakpoints set.
+     * is non-zero for forwards. All honor the nav_breakpoints set.
      */
     int (*nav_step)(ittd_cursor *c, int forward, int *out_stop);
     int (*nav_step_over)(ittd_cursor *c, int forward, int *out_stop);

@@ -555,7 +555,7 @@ namespace idattd
             lay_out_linear(fstart, fend);
             add_func(fstart, fend);
             // Library code is marked FUNC_LIB so it renders as <name>+offset
-            // and is de-emphasized; the analysed binary's functions stay
+            // and is de-emphasized; the analyzed binary's functions stay
             // normal.
             if ( m_modules->is_library_address(pc) && get_func_start(fstart) == fstart
               && (get_func_flags(fstart) & FUNC_LIB) == 0 )

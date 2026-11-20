@@ -62,7 +62,7 @@ namespace idattd
         // Exceptions the system dispatched can be listed (query_exceptions).
         bool exceptions       = false;
         // Reading a page costs about a copy (ITTD_CAP_CHEAP_READS): IDA may
-        // analyse whole library modules, reading all of their code.
+        // analyze whole library modules, reading all of their code.
         bool cheap_reads      = false;
         // Code the program wrote and then ran can be listed
         // (query_self_modifying).
@@ -475,7 +475,7 @@ namespace idattd
     // Stepping is a strategy, not a primitive: see the navigation section of
     // abi/ida_ttd_backend.h. Each backend implements the whole family.
     //
-    // Every call moves the cursor the navigator was made for, honours the
+    // Every call moves the cursor the navigator was made for, honors the
     // set_breakpoints() set, and says why it stopped.
     enum class StopReason
     {

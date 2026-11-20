@@ -49,7 +49,7 @@ namespace idattd
         else
             cols->at(2).sprnt("syscall 0x%X", c.number);
 
-        // NTSTATUS (nearly all are Nt* calls); failures in the error colour.
+        // NTSTATUS (nearly all are Nt* calls); failures in the error color.
         uint32_t st = (uint32_t)c.result;
         const char *sn = c.result <= 0xFFFFFFFFull ? ntstatus_name(st) : nullptr;
         if ( sn != nullptr )

@@ -296,7 +296,7 @@ namespace idattd
             cur()->RemoveMemoryWatchpoint(wp);
     }
 
-    // Run forward to 'addr' on a specific thread and frame, honouring breakpoints.
+    // Run forward to 'addr' on a specific thread and frame, honoring breakpoints.
     MsTtdNavigator::RunStop MsTtdNavigator::run_to_addr_guarded(ea_t addr, uint64_t min_sp, uint32_t utid)
     {
         MemoryWatchpointData wp{};

@@ -382,7 +382,7 @@ namespace idattd
               || (uc.nScheme != INTERNET_SCHEME_HTTPS && uc.nScheme != INTERNET_SCHEME_HTTP) )
             {
                 g_server.enabled = enabled;
-                return false;               // keep the server, honour the switch
+                return false;               // keep the server, honor the switch
             }
             srv.url    = url;
             srv.host   = std::wstring(uc.lpszHostName, uc.dwHostNameLength);

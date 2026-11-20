@@ -264,7 +264,7 @@ namespace idattd
             const bool shape = got == 6 || (got == 7 && tail == 'Z');
             const time_t when = shape && y >= 1970 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31
                              && h <= 23 && mi <= 59 && s <= 59 ? _mkgmtime(&tm) : (time_t)-1;
-            // _mkgmtime normalises 31 February into March: refuse that.
+            // _mkgmtime normalizes 31 February into March: refuse that.
             if ( when == (time_t)-1 || tm.tm_mday != d )
                 fail("'start=%s': give now, 1970 or a UTC time as YYYY-MM-DDTHH:MM:SS", start.c_str());
             req.start_time = (int64_t)when;

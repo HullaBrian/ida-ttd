@@ -1,6 +1,6 @@
 """The call tree window, drawn with PySide6.
 
-A real tree control (columns, expand arrows, theme colours) is a Qt widget,
+A real tree control (columns, expand arrows, theme colors) is a Qt widget,
 and Hex-Rays steer plugins away from Qt in C++ (it ties the binary to IDA's
 exact Qt build) towards PySide6 in IDAPython. The plugin builds the tree; this
 draws it, fetching it with ttd("ui.calltree") and travelling with

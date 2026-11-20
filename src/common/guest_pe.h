@@ -35,7 +35,7 @@ namespace idattd
         char     name[9] = { 0 };   // NUL-terminated copy of the 8-byte PE name
         uint32_t va = 0;            // RVA of the section
         uint32_t vsize = 0;         // virtual size (0 means "use rawsize")
-        uint32_t rawsize = 0;       // size of the initialised data on disk
+        uint32_t rawsize = 0;       // size of the initialized data on disk
         uint32_t characteristics = 0;
     };
 

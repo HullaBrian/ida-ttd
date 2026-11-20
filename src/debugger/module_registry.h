@@ -71,7 +71,7 @@ namespace idattd
 
         // ---- session lifetime ----------------------------------------------
         //
-        // 'target_name' is the analysed binary's file name; no PDB is fetched
+        // 'target_name' is the analyzed binary's file name; no PDB is fetched
         // for it, since IDA already owns that file.
         void bind(ITraceBackend *backend, bool is64, const char *target_name);
         void reset();
@@ -108,14 +108,14 @@ namespace idattd
         // The load based at 'base' mapped at the playhead, else the first load
         // there, or null.
         const ModuleInfo *record_at(ea_t base) const;
-        // The analysed binary's record, or null.
+        // The analyzed binary's record, or null.
         const ModuleInfo *main_module() const;
 
         // The display name ("kernel32") of the module at 'ea'.
         qstring name_at(ea_t ea) const { return name_at(ea, m_now); }
         qstring name_at(ea_t ea, Position pos) const;
 
-        // True if 'ea' is in a module other than the analysed binary (library
+        // True if 'ea' is in a module other than the analyzed binary (library
         // or system code).
         bool is_library_address(ea_t ea) const;
         // True if 'ea' is in a module loaded from the recording machine's

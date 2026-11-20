@@ -45,7 +45,7 @@ namespace idattd
     // A separator goes above a menu item, not a submenu, so the one above a
     // submenu belongs to a hidden action just above it, one per submenu (an
     // action goes on a menu once). It needs a real label: IDA 9.4 refuses to
-    // attach an action labelled "-", separator and all.
+    // attach an action labeled "-", separator and all.
     inline constexpr char SEP_CARRIER_LABEL[] = "separator";
     inline const char *const SUBMENU_SEP_ACTIONS[] =
     {

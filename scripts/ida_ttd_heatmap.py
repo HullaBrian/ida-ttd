@@ -1,7 +1,7 @@
 """The memory heatmap window, drawn with PySide6.
 
 One row per page the recording touched, in address order; one column per
-slice of time. A cell's colour is the page's access count in that slice, on a
+slice of time. A cell's color is the page's access count in that slice, on a
 log scale; in "All", writes are red, reads green and executes blue, so a mix
 blends. The plugin counts (ttd("ui.heat")); a double-click travels to the
 slice and shows the page in the hex view (ttd("ui.showbytes POS EA")).
@@ -160,7 +160,7 @@ def show():
                 src = QtCore.QRect(0, top, H["slices"], bottom - top)
                 dst = QtCore.QRect(GUTTER, top * ROW, w, (bottom - top) * ROW)
                 p.drawImage(dst, self.image, src)
-            # A rule above each run of neighbouring pages, labelled inside when
+            # A rule above each run of neighbouring pages, labeled inside when
             # the run is tall enough (a label never crosses the next rule);
             # shorter runs are named by the tooltip.
             fg = self.palette().color(QtGui.QPalette.Text)
@@ -184,7 +184,7 @@ def show():
                                QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop | QtCore.Qt.TextSingleLine,
                                "0x%X  %s" % (r["page"] << H["shift"], r["label"]))
             # The debugger's slice: a line down its middle, dark-edged to show
-            # on any cell colour.
+            # on any cell color.
             if 0 <= self.now < H["slices"]:
                 x = GUTTER + (2 * self.now + 1) * w // (2 * H["slices"])
                 y0, y1 = ev.rect().top(), ev.rect().bottom()

@@ -353,7 +353,7 @@ void idaapi load_file(linput_t * /*li*/, ushort neflags, const char *fileformatn
     }
 
     inf_set_app_bitness(is64 ? 64 : 32);
-    // f_PE, not f_LOADER: the PDB plugin and the x86 module gate behaviour on
+    // f_PE, not f_LOADER: the PDB plugin and the x86 module gate behavior on
     // it (symbols, MS calling conventions), and the debugger copies it into
     // debugger_t::filetype.
     inf_set_filetype(f_PE);

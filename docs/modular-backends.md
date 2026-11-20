@@ -132,11 +132,11 @@ gaps.
 Putting Sogen's code in the plugin DLL runs into two separate problems:
 
 1. Apache-2.0 and GPL-2.0-*only* are generally held to be incompatible, so
-   there is no licence the combined binary could be distributed under.
+   there is no license the combined binary could be distributed under.
 2. More seriously, a DLL containing GPL-2.0 code *and* linked against the
    proprietary IDA SDK violates the GPL on its own. The IDA SDK is not a system
    library, so the usual exception does not apply. This one does not go away by
-   choosing a licence; it is a property of the link.
+   choosing a license; it is a property of the link.
 
 ### The arrangement
 
@@ -144,7 +144,7 @@ Each backend is a separate DLL, and **the boundary between the core and a
 backend carries no IDA types and no C++ types**. That is
 `src/abi/ida_ttd_backend.h`: a flat C ABI of fixed-layout structs,
 caller-provided buffers and a table of function pointers, published under
-CC0 so the interface's licence constrains nobody's implementation.
+CC0 so the interface's license constrains nobody's implementation.
 
 The consequences are what matter:
 
@@ -518,7 +518,7 @@ straight after, and so can the memory map once the core folds `ITTD_MAP_STATE`.
 Each lands on its own and leaves the plugin working.
 
 **Phase 0 — the interfaces.** `abi/ida_ttd_backend.h` (the C ABI),
-`core/position.h`, `core/backend.h`, `core/backend_registry.*`. No behaviour.
+`core/position.h`, `core/backend.h`, `core/backend_registry.*`. No behavior.
 *Landed on this branch.*
 
 **Phase 1 — abstract the position.** *Landed on this branch.* The stores, the
@@ -586,7 +586,7 @@ outside `src/backend-msttd/`.
 - The ABI grew at its end, behind a size field: `set_log`, `prepared`,
   `cursor_thread_regs`, `cursor_rebuild_range`, `nav_take_notice`,
   `nav_set_progress`, and `ITTD_CAP_CHEAP_READS` (whether the core lets IDA
-  analyse whole library modules). Version 2 changed `ittd_module`.
+  analyze whole library modules). Version 2 changed `ittd_module`.
 - Project files stay in `msbuild/`, and there is no separate core static
   library: the plugin and the loader compile the core sources they need.
 - Backends load from `plugins\ida-ttd-backends\` and from
@@ -683,7 +683,7 @@ the open items of the existing code review.
 
 1. **Who ships the Sogen backend?** It is a GPL-2.0 binary built against a
    Sogen checkout, so it cannot be a release asset of an Apache-2.0 repository
-   without being clearly separated: its own release, its own licence file, its
+   without being clearly separated: its own release, its own license file, its
    own source link. The alternatives are a separate repository, or a target in
    the Sogen tree. Something has to be decided before the first release that
    includes it; nothing before then.
@@ -705,7 +705,7 @@ the open items of the existing code review.
 - `src/abi/ida_ttd_backend.h` — the C ABI between the core and a backend DLL:
   positions, capability bits, the trace/module/thread/access/call/mapping
   structs, the canonical register set, the progress sink, and the function
-  table. CC0, so a backend's licence is its own business.
+  table. CC0, so a backend's license is its own business.
 - `src/core/position.h` — the backend-neutral position and position range.
 - `src/core/backend.h` — the core-side C++ view of the same interface:
   `Capabilities`, `TraceInfo`, `ModuleInfo`, `ThreadInfo`, `TraceEvent`,

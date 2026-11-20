@@ -5,7 +5,7 @@ namespace idattd
     BackendRegistry &BackendRegistry::instance()
     {
         // A function-local static, not a file-scope object: the registrations
-        // run during static initialisation and would otherwise race the
+        // run during static initialization and would otherwise race the
         // registry's own construction across translation units.
         static BackendRegistry reg;
         return reg;

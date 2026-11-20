@@ -401,7 +401,7 @@ namespace idattd
     // jumps via the IAT. The function start, the thunk's target and the live
     // IAT pointer are all collected, so the sweep matches either path.
     //
-    // The thunk is recognised from its instruction, not from IDA's
+    // The thunk is recognized from its instruction, not from IDA's
     // FUNC_THUNK flag: in a fresh session a system DLL's thunk (kernel32's
     // VirtualProtect, a jmp into kernelbase) is not even a function until a
     // stop lands there, and the trace then missed every call made to the

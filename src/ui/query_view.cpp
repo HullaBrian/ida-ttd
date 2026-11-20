@@ -36,7 +36,7 @@ namespace idattd
         }
 
         // Control characters as spaces, for the recording window: the log
-        // carries the guest's console output, colour escapes and all.
+        // carries the guest's console output, color escapes and all.
         void blank_controls(qstring *s)
         {
             for ( size_t i = 0; i < s->length(); i++ )

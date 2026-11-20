@@ -837,7 +837,7 @@ int main(int argc, char **argv)
             double t1;
             if ( is_none(e->pos) || is_none(e->ret_pos) || (e->flags & ITTD_CALL_F_NOT_CALL) != 0 )
                 continue;
-            /* One past the return: the ret is recognised where it lands. */
+            /* One past the return: the ret is recognized where it lands. */
             win.first = e->pos;
             win.last  = e->ret_pos;
             if ( api->position_add != NULL )

@@ -142,7 +142,7 @@ namespace idattd
         void                       request_run(bool forward);
         void                       request_step_out_backward();
         // Run backward until execution reaches 'addr', a user breakpoint or
-        // the start of the trace. IDA greys out its own
+        // the start of the trace. IDA grays out its own
         // ThreadRunToCursorBackwards for this debugger.
         void                       request_run_to_cursor_backward(ea_t addr);
         // Run forward until execution reaches 'addr', a user breakpoint or the

@@ -89,9 +89,9 @@ namespace idattd
             l.name = traced_name(m_mgr, ev.func_ea);
             if ( per_arg )
                 continue;
-            // Functions share the Arguments column, so each value is labelled
+            // Functions share the Arguments column, so each value is labeled
             // with its parameter name, from the prototype the sweep used.
-            // Untyped functions' values stay unlabelled.
+            // Untyped functions' values stay unlabeled.
             TracedProto proto = resolve_traced_proto(m_mgr != nullptr ? &m_mgr->modules() : nullptr, ev.func_ea);
             if ( proto.sig != nullptr || proto.have_type )
                 l.params = std::move(proto.names);
@@ -111,7 +111,7 @@ namespace idattd
         cols->at(2).sprnt("%X", ev.tid);
         auto label = m_labels.find(ev.func_ea);
         if ( label == m_labels.end() )
-            return;                     // the constructor labelled every row's function
+            return;                     // the constructor labeled every row's function
         cols->at(3) = label->second.name;
 
         if ( per_arg )

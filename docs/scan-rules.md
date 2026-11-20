@@ -1,6 +1,6 @@
 # String and buffer recovery: the rules
 
-What `src/common/write_scans.h` computes, stated as behaviour. Both backends
+What `src/common/write_scans.h` computes, stated as behavior. Both backends
 feed it (the Microsoft backend from watchpoint replays, the Sogen backend from
 recorded write events), and both lists are meant to read the same as Sogen's
 own TTD string and buffer listings, so the rules (what counts as a string,

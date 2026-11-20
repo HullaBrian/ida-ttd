@@ -65,7 +65,7 @@ IDA  <->  plugin (ida-ttd.dll)  <->  ITraceBackend  <->  backend DLL (C ABI)
   standard-library-only on purpose: the string and buffer scanners, shared by
   both backends (the Sogen backend builds without the rest of the plugin).
   They implement `docs/scan-rules.md`, Sogen's rules written down as
-  behaviour, and were written from that document, not ported: Sogen is
+  behavior, and were written from that document, not ported: Sogen is
   GPL-2.0-only and the rest of ida-ttd is `Apache-2.0 OR GPL-2.0-only`
   (dual, so the plugin can ship with the GPL backend; `docs/licensing.md`).
   Never copy code from Sogen into anything outside `src/backend-sogen/`;
@@ -253,6 +253,10 @@ by comparing MS and Sogen recordings of the same program.
   braces on their own lines, `m_` members, `qstring`/`qvector` in plugin code
   and `std::` in backends. Comments explain *why* in full sentences, and are
   dense; match the surrounding file.
+- **American English everywhere**: code, comments, identifiers, user-facing
+  text, docs, commit messages and the wiki (color, gray, behavior, license,
+  analyze, initialize, center, labeled). Third-party text quoted verbatim
+  (license texts, Sogen's messages) stays as written.
 - **User-facing text** (menus, tooltips, messages, README) is plain and
   specific; the README is kept in step with features.
 - **Git**: work directly on `main` (the user prefers few branches). Commit with a

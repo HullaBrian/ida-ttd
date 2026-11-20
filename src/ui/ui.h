@@ -430,7 +430,7 @@ namespace idattd
     struct StepOutBackHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
-    // IDA greys out its native ThreadRunToCursorBackwards for this backend, so
+    // IDA grays out its native ThreadRunToCursorBackwards for this backend, so
     // this runs backward until execution reaches the cursor address.
     struct RunToCursorBackHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
@@ -479,7 +479,7 @@ namespace idattd
     struct OpenBookmarksHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
-    // Sweep the recording and colour the instructions that actually executed.
+    // Sweep the recording and color the instructions that actually executed.
     struct CoverageHandler : public TtdAction
     { int idaapi activate(action_activation_ctx_t *) override; };
 
@@ -715,7 +715,7 @@ namespace idattd
         constexpr const char *INSTALL_RUNTIME = "idattd:install_runtime";
         constexpr const char *INSTALL_SOGEN   = "idattd:install_sogen";
         constexpr const char *RECORD_PROGRAM  = "idattd:record_program";
-        // Greyed section headings in TTD > Backends, one per backend.
+        // Grayed section headings in TTD > Backends, one per backend.
         constexpr const char *BACKEND_HDR_MS    = "idattd:backend_hdr_msttd";
         constexpr const char *BACKEND_HDR_SOGEN = "idattd:backend_hdr_sogen";
     }

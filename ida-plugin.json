@@ -78,7 +78,7 @@
         "default": true,
         "prompt": false,
         "name": "Analysis: highlight functions automatically",
-        "documentation": "Measure and colour each function the first time the replay stops in it."
+        "documentation": "Measure and color each function the first time the replay stops in it."
       },
       {
         "key": "auto_callsites",
@@ -96,7 +96,7 @@
         "default": true,
         "prompt": false,
         "name": "Memory map: highlight executable memory outside modules",
-        "documentation": "In the Memory map, colour the executable regions no loaded module covers: code the program allocated or mapped itself, such as unpacked or injected code."
+        "documentation": "In the Memory map, color the executable regions no loaded module covers: code the program allocated or mapped itself, such as unpacked or injected code."
       },
       {
         "key": "fork_instructions",

@@ -11,7 +11,7 @@ namespace idattd
     static const uchar     BM_TAG = 'B';
 
     // Blob layout. Versioned because bookmarks are user data that must survive
-    // plugin changes; the reader rejects anything it does not recognise.
+    // plugin changes; the reader rejects anything it does not recognize.
     //   u32 magic, u32 version, u32 count
     //   count * { u64 sequence, u64 steps, u64 ea, u32 tid, str name, str comment,
     //             u64 trace (version 2 on) }

@@ -13,17 +13,17 @@ namespace idattd
     // "origin").
     //
     // Not IDA's graph viewer: there a plugin node gets only a background
-    // colour and one block of text, and custom drawing means building against
+    // color and one block of text, and custom drawing means building against
     // IDA's exact Qt.
 
     struct GraphNode
     {
         qstring title;                  // first line
-        qstring code;                   // an instruction, coloured as IDA colours one
+        qstring code;                   // an instruction, colored as IDA colors one
         qvector<qstring> lines;         // comment lines
         qstring badge;                  // the node's kind, a comment after the title
         bool    dashed = false;         // a dashed frame: something missing
-        bool    emphasis = false;       // IDA's highlight colour: where the graph starts
+        bool    emphasis = false;       // IDA's highlight color: where the graph starts
         qstring tooltip;
         // Context menu: (label, action) pairs; an empty pair is a separator.
         // The first is what a double-click does.

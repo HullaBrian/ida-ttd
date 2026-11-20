@@ -4,8 +4,8 @@ One window per kind of graph ("forks", "origin"). The plugin builds the model
 (src/ui/graph_view.cpp) and this draws it: ttd("ui.graph KIND") hands over the
 nodes and edges, ttd("ui.graphact KIND NODE ACTION") runs a node's action. It
 is drawn as IDA draws its own graphs: plain boxes with a shadow, text in the
-disassembly font and colours (the node's kind as a comment), right-angled
-edges, in a top-down tree. Colours are read from IDA's theme, so light and
+disassembly font and colors (the node's kind as a comment), right-angled
+edges, in a top-down tree. Colors are read from IDA's theme, so light and
 dark themes both work.
 
 Mouse and keys as in IDA's graphs: drag to pan, wheel to scroll, Ctrl+wheel
@@ -51,7 +51,7 @@ def show(kind, first):
                             int(a.green() + (b.green() - a.green()) * t),
                             int(a.blue() + (b.blue() - a.blue()) * t))
 
-    # IDA's theme colours, read from a disassembly view (CustomIDAMemo).
+    # IDA's theme colors, read from a disassembly view (CustomIDAMemo).
     # Fallbacks: IDA's shipped light and dark values.
     LIGHT = {
         "line-bg-default": "#ffffff", "line-fg-insn": "#000080", "line-fg-default": "#000080",
@@ -72,7 +72,7 @@ def show(kind, first):
         "graph-edge-normal": "#0043cb", "graph-node-frame-selected": "#c68e00",
     }
 
-    def theme_colours(dark):
+    def theme_colors(dark):
         out = dict(DARK if dark else LIGHT)
         memo = None
         for w in QtWidgets.QApplication.allWidgets():
@@ -93,7 +93,7 @@ def show(kind, first):
         def __init__(self, widget):
             pal = widget.palette()
             self.dark = pal.color(QtGui.QPalette.Base).lightness() < 128
-            c = dict((k, QtGui.QColor(v)) for k, v in theme_colours(self.dark).items())
+            c = dict((k, QtGui.QColor(v)) for k, v in theme_colors(self.dark).items())
             self.canvas_top = c["graph-bg-top"]
             self.canvas_bottom = c["graph-bg-bottom"]
             self.canvas = mix(self.canvas_top, self.canvas_bottom, 0.5)
@@ -143,24 +143,24 @@ def show(kind, first):
     NUMBER = re.compile(r"^(0x[0-9A-Fa-f]+|[0-9][0-9A-Fa-f]*h?)$")
 
     def insn_runs(theme, text):
-        # Mnemonic, registers, numbers and punctuation, coloured as IDA does.
+        # Mnemonic, registers, numbers and punctuation, colored as IDA does.
         runs = []
         first = True
         for tok in TOKEN.findall(text):
             if tok.isspace():
-                colour = theme.text
+                color = theme.text
             elif first:
-                colour = theme.text
+                color = theme.text
                 first = False
             elif tok.lower() in REGS:
-                colour = theme.register
+                color = theme.register
             elif NUMBER.match(tok):
-                colour = theme.number
+                color = theme.number
             elif tok.isalnum() or tok[0] == "_":
-                colour = theme.text
+                color = theme.text
             else:
-                colour = theme.punct
-            runs.append((tok, colour))
+                color = theme.punct
+            runs.append((tok, color))
         return runs
 
     class Card(QtWidgets.QGraphicsItem):
@@ -230,7 +230,7 @@ def show(kind, first):
                     runs = [(text, t.text)]
                     if extra:
                         runs.append(("  ; " + extra, t.comment))
-                for tok, colour in runs:
+                for tok, color in runs:
                     room = limit - (x - PAD_X)
                     if room <= 0:
                         break
@@ -238,7 +238,7 @@ def show(kind, first):
                     if w > room:
                         tok = f.fm.elidedText(tok, QtCore.Qt.ElideRight, int(room))
                         w = room
-                    painter.setPen(colour)
+                    painter.setPen(color)
                     painter.drawText(QtCore.QPointF(x, base), tok)
                     x += w
                 y += f.line
@@ -432,10 +432,10 @@ def show(kind, first):
             if kids[v]:
                 a = cards[kids[v][0]]
                 b = cards[kids[v][-1]]
-                centre = (a.pos().x() + a.w / 2 + b.pos().x() + b.w / 2) / 2
+                center = (a.pos().x() + a.w / 2 + b.pos().x() + b.w / 2) / 2
             else:
-                centre = left + width[v] / 2
-            cards[v].setPos(centre - cards[v].w / 2, tops[depth[v]])
+                center = left + width[v] / 2
+            cards[v].setPos(center - cards[v].w / 2, tops[depth[v]])
 
         left = 0
         for r in roots:

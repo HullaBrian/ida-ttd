@@ -161,7 +161,7 @@ namespace idattd
             m_spans.push_back(std::move(kv.second));
         }
 
-        // The analysed binary: the module the recording names as its main
+        // The analyzed binary: the module the recording names as its main
         // one, else the first loaded.
         const char *main = m_backend->info().main_module.c_str();
         for ( size_t li = 0; li < m_modules.size() && main[0] != '\0'; li++ )
@@ -358,7 +358,7 @@ namespace idattd
             return true;
         if ( m_mainLoad == NONE || li == NONE )
             return false;
-        // The analysed binary unloaded and loaded again at its base.
+        // The analyzed binary unloaded and loaded again at its base.
         const ModuleInfo &a = m_modules[li];
         const ModuleInfo &m = m_modules[m_mainLoad];
         return a.base == m.base && _stricmp(a.path.c_str(), m.path.c_str()) == 0;
@@ -792,7 +792,7 @@ namespace idattd
         if ( !stopped_here && !m_backend->capabilities().cheap_reads )
             return;
 
-        // Never for the analysed binary: IDA already has its database, and a
+        // Never for the analyzed binary: IDA already has its database, and a
         // lookup would be redundant and possibly networked. Matched by load,
         // which is authoritative.
         const size_t li = record_index(base);

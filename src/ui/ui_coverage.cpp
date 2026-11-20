@@ -1,4 +1,4 @@
-// Execution coverage: the scope/colour prompt and the two coverage actions.
+// Execution coverage: the scope/color prompt and the two coverage actions.
 #include "ui/ui.h"
 #include "ui/decompiler.h"
 #include "ui/scope.h"
@@ -9,7 +9,7 @@ namespace idattd
     // Which addresses the sweep watches. The watchpoints let the engine skip
     // parts of the recording, so a narrow scope means seconds, not minutes.
     //
-    // The colour is asked for too: IDA cannot say whether the theme is dark,
+    // The color is asked for too: IDA cannot say whether the theme is dark,
     // and a shade that reads on a light theme is nearly invisible on a dark
     // one, so the default is the last one this database used.
     static bool ask_coverage_options(TraceManager *mgr, ea_t ea,
@@ -19,7 +19,7 @@ namespace idattd
             "TTD execution coverage\n"
             "\n"
             "\n"
-            "Colour every instruction the recording actually executed.\n"
+            "Color every instruction the recording actually executed.\n"
             "A narrower scope replays much less of the trace.\n"
             "\n"
             "<~S~cope:b:0:40::>\n"
@@ -61,7 +61,7 @@ namespace idattd
         }
 
         msg("[ida-ttd] coverage%s: %llu addresses executed, %llu instructions "
-            "coloured, %llu with no code defined.\n",
+            "colored, %llu with no code defined.\n",
             r.cancelled ? " (stopped early, results are partial)" : "",
             r.executed, r.colored, r.undefined);
         if ( r.cancelled )

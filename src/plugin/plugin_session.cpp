@@ -117,7 +117,7 @@ namespace idattd
             {
                 // Assigning ::dbg by hand is no fallback. init() may, while IDA
                 // builds its debugger list; afterwards it leaves the kernel on
-                // a debugger it never initialised, and starting a process then
+                // a debugger it never initialized, and starting a process then
                 // crashed IDA.
                 if ( !m_switchReported )
                 {
@@ -164,7 +164,7 @@ namespace idattd
     int idaapi Plugin::attach_cb(void *ud)
     {
         Plugin *p = static_cast<Plugin *>(ud);
-        // ui_ready_to_run fires while a new database is still being analysed;
+        // ui_ready_to_run fires while a new database is still being analyzed;
         // starting a session then (rebase, debugger segments over the
         // loader's while analysis walks them) crashed IDA. Wait it out.
         if ( !auto_is_ok() )

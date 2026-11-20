@@ -8,7 +8,7 @@ namespace idattd
     // A backend DLL, seen through the C++ interface the core uses.
     //
     // A pure translation between the C ABI (abi/ida_ttd_backend.h) and
-    // ITraceBackend that adds no behaviour: an entry the table leaves NULL
+    // ITraceBackend that adds no behavior: an entry the table leaves NULL
     // becomes a query that did not run, a navigation that Failed, or an empty
     // list.
     //

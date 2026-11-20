@@ -133,7 +133,7 @@ namespace idattd
 
         // Every call in the window, then this thread's, nested; the entering
         // call is the root, not a row. The window ends one past the return,
-        // since a ret is recognised where it lands.
+        // since a ret is recognized where it lands.
         std::vector<CallEvent> all;
         PositionRange when{ out->from, backend->position_add(out->to, 1) };
         qr = run_query("Listing the calls this function made", [&](ProgressSink *p)

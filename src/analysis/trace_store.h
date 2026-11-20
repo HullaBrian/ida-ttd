@@ -28,6 +28,6 @@ namespace idattd
 
     // Delete every alt and blob in 'node' under each of 'tags', then stamp it
     // with the loaded recording. Only for contents that can simply be thrown
-    // away: a store that also wrote comments or colours must undo those first.
+    // away: a store that also wrote comments or colors must undo those first.
     void trace_store_reset(netnode &node, const uchar *tags, size_t ntags);
 }

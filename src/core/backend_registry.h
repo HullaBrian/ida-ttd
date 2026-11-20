@@ -10,7 +10,7 @@ namespace idattd
     // Backends are separate DLLs the core loads at startup from its backend
     // directories (docs/modular-backends.md). Installing one is dropping a
     // file in, and each backend keeps its third-party dependencies and its
-    // licence to itself.
+    // license to itself.
     //
     // add() is for a backend compiled into the core (none is today), such as
     // a test double.

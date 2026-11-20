@@ -41,7 +41,7 @@ namespace idattd::sogen
     // Answer one call of a count-then-fill pair from 'slot', running 'run'
     // (which returns the whole answer as a std::vector<T>, or throws) only
     // when the slot does not hold the answer to 'key'. The slot's lock is not
-    // held while 'run' works: the reader it takes serialises the work, and a
+    // held while 'run' works: the reader it takes serializes the work, and a
     // call on another slot never waits for it.
     template <typename T, typename Run>
     int kept_fill(kept_answer<T> &slot, const std::string &key, T *buf, size_t cap,
@@ -209,7 +209,7 @@ namespace idattd::sogen
     }
 
     // Every call made in steps [s0, s1]. The reader lists calls by target
-    // only, so this walks the execute events: a call is recognised by its
+    // only, so this walks the execute events: a call is recognized by its
     // bytes, its callee is the thread's next instruction, and its return is
     // the first ret on the thread that lands on its return address (calls
     // opened after it then left without returning: an exception, a longjmp).

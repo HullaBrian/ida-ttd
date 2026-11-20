@@ -15,7 +15,7 @@
 //
 // Where the two directions are not mirror images (a clamp, a default, a
 // field one side fills and the other ignores) the difference is the
-// historical behaviour of that side, kept on purpose and said at the pair.
+// historical behavior of that side, kept on purpose and said at the pair.
 //
 // Header-only and free of ida.lib calls beyond what qstring needs: the MS
 // backend, which does not link ida.lib, includes it through abi_export.cpp.

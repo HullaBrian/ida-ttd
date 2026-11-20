@@ -33,7 +33,7 @@ namespace idattd
     const char *change_name(uint8_t kind);
 
     // The call-chain frame to attribute an allocation to: the first that is
-    // not library code (the analysed binary, or code in no module, i.e. code
+    // not library code (the analyzed binary, or code in no module, i.e. code
     // the recording allocated and ran). Falls back to the first frame outside
     // the syscall caller's module. BADADDR when the chain is empty.
     ea_t chain_origin(TraceManager *mgr, const struct RegionChange &c);

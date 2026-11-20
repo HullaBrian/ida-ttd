@@ -831,7 +831,7 @@ namespace idattd
                 continue;
             for ( size_t i = 1; i < v->ranges.size(); i++ )
                 append_func_tail_ea(start, v->ranges[i].lo, v->ranges[i].hi);
-            // Analysed now, stack frame included: Hex-Rays matches the kept
+            // Analyzed now, stack frame included: Hex-Rays matches the kept
             // variables to the frame, and a decompilation of the stop made
             // before IDA's queue got to the function showed none of them.
             for ( const Range &rg : v->ranges )

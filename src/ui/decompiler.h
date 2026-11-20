@@ -9,8 +9,8 @@ namespace idattd
     // Many IDA installs have no Hex-Rays, so everything here is a no-op when
     // init_decompiler() reports it absent.
     //
-    // Nothing new is stored: coverage is already a per-instruction colour in
-    // the database, and a pseudocode line takes the colour of the addresses it
+    // Nothing new is stored: coverage is already a per-instruction color in
+    // the database, and a pseudocode line takes the color of the addresses it
     // came from.
     bool init_decompiler();     // true when Hex-Rays is present and hooked
     void term_decompiler();
@@ -29,7 +29,7 @@ namespace idattd
 
     // Something a paint reads changed without an IDB event (the conditional
     // moves found never to have moved), so the next refresh repaints even a
-    // view painted since the last colour change.
+    // view painted since the last color change.
     void pseudocode_paint_inputs_changed();
 
     // Close, without saving to the desktop, pseudocode views of code that

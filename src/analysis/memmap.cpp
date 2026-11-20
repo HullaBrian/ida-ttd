@@ -702,7 +702,7 @@ namespace idattd
         if ( mgr == nullptr || c.chain_n == 0 )
             return BADADDR;
 
-        // The first frame that is not library code: the analysed binary, or an
+        // The first frame that is not library code: the analyzed binary, or an
         // address in no module (code the recording allocated and ran, the case
         // that matters most in malware).
         for ( uint8_t k = 0; k < c.chain_n; k++ )

@@ -20,7 +20,7 @@ namespace idattd
     // the view's position (call site). is64 selects the convention.
     uint64_t get_int_arg(const GuestView &view, const tinfo_t &tinfo, size_t n, bool is64);
     // The same from a prototype already unpacked with get_func_details, so a
-    // caller reading many calls of one function unpacks it once. Honours
+    // caller reading many calls of one function unpacks it once. Honors
     // __fastcall and __thiscall on x86, and a __usercall prototype's own
     // argument locations (general registers and the stack).
     uint64_t get_int_arg(const GuestView &view, const func_type_data_t &fd, size_t n, bool is64);
