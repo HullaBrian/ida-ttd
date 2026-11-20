@@ -107,5 +107,5 @@ It builds on:
 
 `Apache-2.0 OR GPL-2.0-only` ([LICENSE](LICENSE), [LICENSES/GPL-2.0-only.txt](LICENSES/GPL-2.0-only.txt)).
 The Sogen backend (`src/backend-sogen/`, `ida-ttd-sogen.dll`) is GPL-2.0-only, as Sogen and
-Unicorn are; its source is `ida-ttd-sogen-source.zip` on each release. Third-party notices:
+Unicorn are; its source is `ida-ttd-sogen-source.tar.gz` on each release. Third-party notices:
 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). Details: [docs/licensing.md](docs/licensing.md).

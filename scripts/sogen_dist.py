@@ -12,13 +12,15 @@ with the GPL text, the notices of what it contains, and its complete source
         COPYING.txt             the GPL-2.0 text, which the DLL is under
         README.txt              what the DLL contains, and where its source is
         <component>-<file>      each component's own license or notice
-    <out>/ida-ttd-sogen-source.zip
+    <out>/ida-ttd-sogen-source.tar.gz
         sogen/                  the Sogen tree it was built from, deps included
         ida-ttd/                ida-ttd at the commit being built (the backend's
                                 source, the shared header, the build files)
 
 scripts/package.py puts the DLL and the licenses folder in the plugin package;
-the release workflow attaches the source archive to the same release.
+the release workflow attaches the source archive to the same release. It is a
+.tar.gz, not a .zip: hcli's direct GitHub install refuses a release with more
+than one .zip asset (HexRaysSA/ida-hcli#367), and ida-ttd.zip is the one.
 
 Two of Sogen's submodules state no license at all, so they are left out of the
 archive and named instead: minidump_cpp (its headers are on the include path,
@@ -35,11 +37,10 @@ import pathlib
 import shutil
 import subprocess
 import tarfile
-import zipfile
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 LICENSES = "ida-ttd-sogen-licenses"
-SOURCE_ZIP = "ida-ttd-sogen-source.zip"
+SOURCE_ARCHIVE = "ida-ttd-sogen-source.tar.gz"
 EXCLUDED = ("minidump_cpp", "sogen-linux-files")
 
 # What the DLL contains, by the symbols in its PDB (docs/licensing.md), and
@@ -166,7 +167,7 @@ def readme(pin, commits, urls):
         "",
         "Source",
         "",
-        "The complete source it was built from is %s, attached to" % SOURCE_ZIP,
+        "The complete source it was built from is %s, attached to" % SOURCE_ARCHIVE,
         "the same ida-ttd release as this package (https://github.com/HullaBrian/ida-ttd/releases).",
         "",
         "  Sogen    %s at %s" % (pin["repository"], pin["commit"]),
@@ -216,7 +217,7 @@ def uncommitted_changes():
 def write_source(sogen, out):
     out.parent.mkdir(parents=True, exist_ok=True)
     skip = {"deps/" + n for n in EXCLUDED}
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+    with tarfile.open(out, "w:gz", compresslevel=6) as z:
         n = 0
         for p in sorted(sogen.rglob("*")):
             rel = p.relative_to(sogen).as_posix()
@@ -225,7 +226,7 @@ def write_source(sogen, out):
                 continue
             if "/.git/" in "/" + rel + "/" or not p.is_file() or p.is_symlink():
                 continue
-            z.write(p, "sogen/" + rel)
+            z.add(p, "sogen/" + rel, recursive=False)
             n += 1
         # ida-ttd at HEAD, as git has it (no build output, no local files).
         arch = subprocess.run(["git", "-C", str(REPO), "archive", "--format=tar", "HEAD"],
@@ -233,7 +234,9 @@ def write_source(sogen, out):
         with tarfile.open(fileobj=io.BytesIO(arch)) as t:
             for m in t.getmembers():
                 if m.isfile():
-                    z.writestr("ida-ttd/" + m.name, t.extractfile(m).read())
+                    data = t.extractfile(m).read()
+                    m.name = "ida-ttd/" + m.name
+                    z.addfile(m, io.BytesIO(data))
                     n += 1
     return n
 
@@ -273,7 +276,7 @@ def main():
     write_licenses(sogen, lic, pin, commits, urls)
     print("wrote %s" % lic)
     if not args.no_source:
-        dest = pathlib.Path(args.out) / SOURCE_ZIP
+        dest = pathlib.Path(args.out) / SOURCE_ARCHIVE
         n = write_source(sogen, dest)
         print("wrote %s (%d files, %.1f MB)" % (dest, n, dest.stat().st_size / 1e6))
 

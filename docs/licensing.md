@@ -95,7 +95,7 @@ corresponding source go with the binary.
   each component's own license file, and a `README.txt` that says what the
   DLL contains and where its source is. `scripts/package.py` refuses to
   package the DLL without that folder.
-- **Source:** `sogen_dist.py` also writes `ida-ttd-sogen-source.zip`:
+- **Source:** `sogen_dist.py` also writes `ida-ttd-sogen-source.tar.gz`:
   - the Sogen tree at the pin, its submodules included;
   - ida-ttd at the commit being built.
 

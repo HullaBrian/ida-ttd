@@ -175,7 +175,7 @@ is working in: use a snapshot (`git archive` + a CMake configure with
 it checks the tag against `ida-plugin.json`'s `version` (bump that first),
 builds everything including the Sogen backend at `msbuild/sogen.pin`, runs
 `hcli plugin lint` on the zip and attaches `ida-ttd.zip`, `ttd-loader.dll`
-and `ida-ttd-sogen-source.zip` to the release. Hex-Rays' plugin repository
+and `ida-ttd-sogen-source.tar.gz` to the release. Hex-Rays' plugin repository
 indexes public GitHub repositories' releases daily; there is no submission.
 
 ## Testing
