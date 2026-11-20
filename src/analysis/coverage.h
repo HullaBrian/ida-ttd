@@ -12,19 +12,32 @@ namespace idattd
     // is light or dark.
     static const bgcolor_t COVERAGE_DEFAULT_COLOR = 0x484858;
 
-    // The colour this database was last painted with (the default if never).
+    // The color this database was last painted with (the default if never).
     bgcolor_t coverage_color();
 
-    // Every colour this database has been painted with, so callers recognise
+    // Every color this database has been painted with, so callers recognize
     // their own paint (clearing the disassembly, repainting pseudocode).
     // 'previous', when given, receives those of them that mark another
-    // recording's coverage (painted before the replay switched to this one,
-    // in the complement of its original shade). One netnode walk for both,
-    // since pseudocode painting asks on every repaint.
-    std::set<bgcolor_t> coverage_colors(std::set<bgcolor_t> *previous = nullptr);
+    // recording's coverage (painted before the replay switched to this one);
+    // 'only_here', those that mark code only this recording ran; 'both',
+    // code both ran. Every other one is a chosen color, plain coverage. One
+    // netnode walk for all, since pseudocode painting asks on every repaint.
+    std::set<bgcolor_t> coverage_colors(std::set<bgcolor_t> *previous = nullptr,
+                                        std::set<bgcolor_t> *only_here = nullptr,
+                                        std::set<bgcolor_t> *both = nullptr);
     // After the replay changed recording, repaint the other recording's
-    // coverage in the complementary shade. Only from a safe place (a timer
-    // after the stop, or a command): it writes every painted instruction.
+    // coverage in its own shade. Only from a safe place (a timer after the
+    // stop, or a command): it writes every painted instruction. Also
+    // converts paint from older builds.
+    //
+    // A sweep then compares the two in three shades at the chosen color's
+    // lightness: red for code only this recording ran, blue for code only
+    // the other one (the recording replayed before this one) ran, and a
+    // lighter purple for code both ran. For a fork, what ran in
+    // its parents before the fork position counts as its own (read from
+    // their files, through the database's fork records), and what it shares
+    // with the other recording that way counts as both even where the other
+    // one was never swept.
     void coverage_settle_recording_change();
 
     // Automatic highlighting of the function stopped in: the auto_coverage
@@ -37,7 +50,7 @@ namespace idattd
     // The session ended: what it painted in debugger segments went with them.
     void coverage_session_ended();
 
-    // Sweep and colour one function in the current colour, then mark it done.
+    // Sweep and color one function in the current color, then mark it done.
     // False when it did not complete (no trace, or cancelled); the caller
     // should not keep retrying.
     bool cover_function(TraceManager *mgr, ea_t start, ea_t end);
@@ -46,12 +59,13 @@ namespace idattd
     {
         uint64_t executed  = 0;   // distinct addresses the recording executed
         uint64_t colored   = 0;   // ...of those, ones IDA has an instruction at
-        uint64_t undefined = 0;   // ...and ones it does not (nothing to colour)
+        uint64_t both      = 0;   // ...of those, ones the other recording ran too
+        uint64_t undefined = 0;   // ...and ones it does not (nothing to color)
         bool     cancelled = false;
         qstring  error;           // why run_coverage returned false, for the caller to show
     };
 
-    // Replay the recording and colour every instruction in 'ranges' that ran.
+    // Replay the recording and color every instruction in 'ranges' that ran.
     // Ranges are [lo, hi), any order; they become Execute watchpoints, so a
     // narrow scope lets the engine skip stretches of the trace.
     //
@@ -64,7 +78,7 @@ namespace idattd
                       bgcolor_t color,
                       CoverageResult *out);
 
-    // Remove every coverage colour from the database; returns the number of
+    // Remove every coverage color from the database; returns the number of
     // instructions cleared.
     size_t clear_coverage();
 

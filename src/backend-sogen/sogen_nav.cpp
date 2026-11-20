@@ -333,10 +333,56 @@ namespace idattd::sogen
         });
     }
 
+    // The step of the ret that leaves the frame running at 'pos' on 'tid',
+    // found walking forward, for when the call that entered the frame is not
+    // in the recording: a fork's file starts at its fork position, so a frame
+    // entered before that has its call in the parent's file. Calls and rets
+    // are paired by depth. A deeper call that never returns by a ret (its
+    // callee left by an exception, or by unwinding) would put the frame's
+    // own ret at depth one and hide it, as it does walking back in
+    // entering_call; so a ret at depth zero is accepted only if its stack
+    // pointer is at or above the one here, which every deeper frame's is
+    // below, and the stack checked once per candidate.
+    static std::optional<uint64_t> frame_return_forward(ttd::trace &t, uint64_t pos, uint32_t tid,
+                                                        uint64_t max_forward, const ittd_progress *progress)
+    {
+        const ttd::operation_control ctl = control(progress);
+        std::optional<uint64_t> here_sp = thread_after(t, pos) == tid ? sp_at(t, pos) : std::nullopt;
+        uint64_t s = pos;
+        int64_t depth = 0;
+        for ( uint64_t n = 0; n < max_forward; n++ )
+        {
+            if ( (n & 0x3FFF) == 0x3FFF )
+                ctl.check();
+            std::optional<ttd::access_event> ev = t.next_instruction(s, tid);
+            if ( !ev )
+                break;
+            s = ev->step;
+            if ( is_call_insn(*ev) )
+            {
+                depth++;
+            }
+            else if ( is_ret_insn(*ev) )
+            {
+                if ( depth == 0 )
+                {
+                    std::optional<uint64_t> ret_sp = here_sp ? sp_at(t, ev->step - 1) : std::nullopt;
+                    if ( !here_sp || !ret_sp || *ret_sp >= *here_sp )
+                        return ev->step;    // just after the ret
+                    continue;               // a deeper frame's, under a call that never returned
+                }
+                depth--;
+            }
+        }
+        return std::nullopt;
+    }
+
     // Step out: find the call that entered this frame; backward, stop just
-    // before it, forward, just after its ret. With no entering call in reach
-    // (a thread's outermost frame, or one older than the walk), or a call
-    // that never returns, the cursor stays put and the error says why.
+    // before it, forward, just after its ret. Forward with no entering call
+    // in the recording (a fork's frame entered before its fork position),
+    // the frame's ret is found walking forward instead. With neither in
+    // reach (a thread's outermost frame, or one older than the walk), or a
+    // call that never returns, the cursor stays put and the error says why.
     int nav_step_out(ittd_cursor *hc, int forward, int *out_stop)
     {
         cursor_t *c = C(hc);
@@ -347,13 +393,23 @@ namespace idattd::sogen
             ttd::trace &t = *c->trace;
             uint32_t tid = thread_after(t, c->position);
             std::optional<ttd::access_event> call = entering_call(t, c->position, tid, kNavFrameWalk, true, c->progress);
-            if ( !call )
+            uint64_t dest = 0;
+            if ( !call && forward )
+            {
+                std::optional<uint64_t> ret = frame_return_forward(t, c->position, tid, kNavFrameWalk, c->progress);
+                if ( !ret )
+                {
+                    c->owner->error.set("no call entering this frame was found, nor a return from it");
+                    return ITTD_E_FAILED;
+                }
+                dest = *ret;
+            }
+            else if ( !call )
             {
                 c->owner->error.set("no call entering this frame was found");
                 return ITTD_E_FAILED;
             }
-            uint64_t dest = 0;
-            if ( forward )
+            else if ( forward )
             {
                 std::optional<uint64_t> ret = return_of(t, call->step, tid);
                 if ( !ret )

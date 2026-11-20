@@ -24,7 +24,7 @@ namespace idattd
         g_edit_hook = hook;
     }
 
-    // What a paint reads changes only with an item's colour or comment, so
+    // What a paint reads changes only with an item's color or comment, so
     // the stop-time repaint is skipped for a view painted since the last
     // such change. Any writer counts (a sweep, an annotation, the user, a
     // script): the database's own events bump the generation, rather than
@@ -107,7 +107,7 @@ namespace idattd
                 continue;
             if ( items != nullptr )
                 items->push_back(it);
-            // Colours and comments live on item heads, and an item's address
+            // Colors and comments live on item heads, and an item's address
             // need not be one.
             ea_t ea = it->ea;
             ea_t head = get_item_head(ea);
@@ -145,7 +145,7 @@ namespace idattd
     }
 
     // The text of the function's lines that show a note already, without
-    // colour tags, one per line. From 9.5 Hex-Rays prints a call
+    // color tags, one per line. From 9.5 Hex-Rays prints a call
     // instruction's repeatable comment itself, the annotation's note
     // included; before, it printed none. It puts the comment wherever its own
     // map of instructions to statements says, which is often not a line
@@ -159,7 +159,7 @@ namespace idattd
         qstring shown, text;
         for ( const simpleline_t &sl : cf->sv )
         {
-            // Cheap first: the note's prefix survives the colour tags whole.
+            // Cheap first: the note's prefix survives the color tags whole.
             if ( strstr(sl.line.c_str(), "TTD: ") == nullptr )
                 continue;
             tag_remove(&text, sl.line.c_str());
@@ -255,7 +255,7 @@ namespace idattd
         if ( joined.empty() )
             return;
 
-        // Not the automatic comment colour: too dim on a coverage colour.
+        // Not the automatic comment color: too dim on a coverage color.
         sl.line.append("  ");
         sl.line.append(SCOLOR_ON);
         sl.line.append(SCOLOR_REGCMT);
@@ -311,8 +311,8 @@ namespace idattd
         return false;
     }
 
-    // On a coverage colour, dim grey text (Hex-Rays' argument names) in the
-    // normal text colour, so it stays readable.
+    // On a coverage color, dim gray text (Hex-Rays' argument names) in the
+    // normal text color, so it stays readable.
     static void brighten_dim_text(qstring &line)
     {
         for ( size_t i = 0; i + 1 < line.length(); i++ )
@@ -324,14 +324,14 @@ namespace idattd
         }
     }
 
-    // Paint one function's pseudocode from the colours already in the database.
+    // Paint one function's pseudocode from the colors already in the database.
     // A line is covered when an address it came from carries one of the
-    // plugin's coverage colours, and takes that colour, so a database
+    // plugin's coverage colors, and takes that color, so a database
     // highlighted in two shades reads the same here as in the disassembly.
     // The exception is the body of an if made from a conditional move that
     // never moved (in_untaken_branch), which is left unpainted.
     //
-    // True when a line lost its coverage colour: its text was brightened in
+    // True when a line lost its coverage color: its text was brightened in
     // place (brighten_dim_text), and only regenerating it brings back the
     // dim argument names.
     static bool paint(cfunc_t *cf)
@@ -340,8 +340,8 @@ namespace idattd
             return false;
         bool uncovered = false;
         // Both sets once per paint: each is a netnode walk.
-        std::set<bgcolor_t> previous;
-        std::set<bgcolor_t> ours = coverage_colors(&previous);
+        std::set<bgcolor_t> previous, only_here;
+        std::set<bgcolor_t> ours = coverage_colors(&previous, &only_here);
         std::vector<ea_t>   eas;              // reused; no per-line allocation
         // Call sites whose note is already placed (see append_ttd_comments).
         std::set<ea_t>      annotated;
@@ -358,9 +358,9 @@ namespace idattd
         {
             simpleline_t &sl = cf->sv[i];
 
-            // Clear only the plugin's colours first: a line no longer covered
+            // Clear only the plugin's colors first: a line no longer covered
             // (sweep cleared, shade changed) loses a stale highlight, and a
-            // colour set by something else is left alone.
+            // color set by something else is left alone.
             const bool was_ours = ours.find(sl.bgcolor) != ours.end();
             if ( was_ours )
                 sl.bgcolor = DEFCOLOR;
@@ -376,17 +376,24 @@ namespace idattd
                 continue;
             }
 
-            // Covered if any instruction it came from ran. This recording's
-            // shade wins over another recording's (a fork's parent, or a fork).
+            // Covered if any instruction it came from ran. Where they differ,
+            // a difference wins: ran only in this recording first, then only
+            // in the other one (a fork's parent, or a fork), then in both.
+            int rank = 0;
             for ( ea_t ea : eas )
             {
                 bgcolor_t c = get_item_color(ea);
-                if ( c != DEFCOLOR && ours.find(c) != ours.end() )
+                if ( c == DEFCOLOR || ours.find(c) == ours.end() )
+                    continue;
+                // "Both" ranks with plain coverage: lowest.
+                const int r = only_here.count(c) != 0 ? 3 : previous.count(c) != 0 ? 2 : 1;
+                if ( r > rank )
                 {
+                    rank = r;
                     sl.bgcolor = c;
-                    if ( previous.find(c) == previous.end() )
-                        break;
                 }
+                if ( rank == 3 )
+                    break;
             }
             if ( sl.bgcolor != DEFCOLOR )
                 brighten_dim_text(sl.line);
@@ -408,7 +415,7 @@ namespace idattd
         switch ( ev )
         {
             case hxe_func_printed:
-                // The text has just been generated; sv may be coloured now.
+                // The text has just been generated; sv may be colored now.
                 paint(va_arg(va, cfunc_t *));
                 break;
 
@@ -514,7 +521,7 @@ namespace idattd
             // Repaint the text the view already shows, then redraw the widget.
             // A decompiler refresh only regenerates the text, so the highlight
             // did not appear until something else redrew the window; and only
-            // colours and notes changed, so regenerating would be wasted work.
+            // colors and notes changed, so regenerating would be wasted work.
             // A line that lost its highlight (coverage cleared) keeps the
             // brightened text: regenerate the text then, which paints it
             // again from scratch (hxe_func_printed), no decompiling.

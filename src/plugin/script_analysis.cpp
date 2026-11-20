@@ -259,7 +259,7 @@ namespace idattd
         if ( !run_coverage(&mgr(), { { (ea_t)a.u64(0), (ea_t)a.u64(1) } }, color, &r) )
             fail("coverage did not run: %s", r.error.c_str());
         out.num("executed", (int64_t)r.executed).num("colored", (int64_t)r.colored)
-           .num("undefined", (int64_t)r.undefined).boolean("cancelled", r.cancelled);
+           .num("both", (int64_t)r.both).num("undefined", (int64_t)r.undefined).boolean("cancelled", r.cancelled);
     }
 
     static void cmd_an_callsites(const Args &a, JObj &out)
@@ -589,7 +589,7 @@ namespace idattd
 
     static const Command ANALYSIS_COMMANDS[] = {
         { "an.search",      cmd_an_search,      "LO HI [rwx] [MAX] memory search, as the dialog runs it" },
-        { "an.coverage",    cmd_an_coverage,    "LO HI [COLOR] measure and colour execution coverage" },
+        { "an.coverage",    cmd_an_coverage,    "LO HI [COLOR] measure and color execution coverage" },
         { "an.callsites",   cmd_an_callsites,   "LO HI annotate indirect calls, and list the comments" },
         { "an.trace",       cmd_an_trace,       "EA|module!Glob* [MAX] find all calls to a function, with arguments" },
         { "an.memmap",      cmd_an_memmap,      "[MAX] [rebuild] the session's memory map (built if there is none); the regions at the playhead" },
