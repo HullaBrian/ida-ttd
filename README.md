@@ -12,6 +12,8 @@ recordings (`.run`) and recordings from a [custom fork of Sogen](https://github.
 
 The [wiki](https://github.com/HullaBrian/ida-ttd/wiki) has the full instructions.
 
+<img width="2559" height="1233" alt="image" src="https://github.com/user-attachments/assets/8275042f-1d4b-4a64-ac2e-d9e1e9197508" />
+
 ## Overview
 
 - Reverse navigation: step, step over, step out, continue and run to cursor, backwards too
