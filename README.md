@@ -40,17 +40,17 @@ Or extract `ida-ttd.zip` from the [latest release](https://github.com/HullaBrian
 into `%APPDATA%\Hex-Rays\IDA Pro\plugins\`. Restart IDA once, so **File > Open** recognizes
 recordings.
 
-Sogen recordings work right away. For Microsoft recordings, choose **TTD > Backends > Install the
-TTD runtime (WinDbg)...**: Microsoft does not allow the runtime to be redistributed, so the plugin
-copies it from your WinDbg or downloads WinDbg for you. Details are on the
-[wiki](https://github.com/HullaBrian/ida-ttd/wiki#installation).
+Microsoft recordings need the TTD runtime first:
+[Microsoft TTD](https://github.com/HullaBrian/ida-ttd/wiki#microsoft-ttd). To build the plugin
+yourself, see [Building from Source](https://github.com/HullaBrian/ida-ttd/wiki#building-from-source).
 
-## Usage
+## Usage examples
 
-**File > Open** a `.run` or `.sogttd` file. IDA builds a database from the recording and starts
-replaying it; the original binary is not needed. The TTD toolbar adds the backward controls, and
-the queries are on the **TTD** menu. See
+Each feature is described on
 [Features and Usage](https://github.com/HullaBrian/ida-ttd/wiki/Features-and-Usage).
+
+**Open a recording.** **File > Open** a `.run` or `.sogttd` file; the original binary is not
+needed. The TTD toolbar adds the backward controls, and the queries are on the **TTD** menu.
 
 **Find what wrote a buffer.** Right-click the address and choose **Find memory accesses**
 (`Ctrl+Shift+M`). Double-click a write to travel there, then press `Ctrl+Shift+W` on the stored
@@ -82,21 +82,6 @@ s.origin("rax")                             # where rax's value came from
 | `Ctrl+Shift+W` | Where did this value come from |
 | `Ctrl+Shift+G` | Go to position |
 | `Ctrl+Shift+B` | Bookmark this position |
-
-## Building from source
-
-Visual Studio 2022 or later with the C++ desktop workload:
-
-```
-git clone --recurse-submodules https://github.com/HullaBrian/ida-ttd
-cd ida-ttd
-nuget install msbuild\packages.config -OutputDirectory packages
-msbuild ida-ttd.slnx -p:Configuration=Release -p:Platform=x64 -m:1
-python scripts\package.py
-```
-
-Output goes to `build\Release\`, and the HCLI package to `dist\ida-ttd.zip`. The Sogen backend
-needs a Sogen build: [docs/building-the-sogen-backend.md](docs/building-the-sogen-backend.md).
 
 ## Future Work/Ideas
 - Function/memory query language
