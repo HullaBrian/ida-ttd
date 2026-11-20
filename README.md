@@ -37,19 +37,19 @@ hcli plugin install ida-ttd
 ```
 
 Or extract `ida-ttd.zip` from the [latest release](https://github.com/HullaBrian/ida-ttd/releases)
-into `%APPDATA%\Hex-Rays\IDA Pro\plugins\`. Restart IDA once, so **File > Open** recognizes
+into `%APPDATA%\Hex-Rays\IDA Pro\plugins\`. Restart IDA once, so `File > Open` recognizes
 recordings.
 
 Microsoft recordings need the TTD runtime first:
-[Microsoft TTD](https://github.com/HullaBrian/ida-ttd/wiki#microsoft-ttd). To build the plugin
-yourself, see [Building from Source](https://github.com/HullaBrian/ida-ttd/wiki#building-from-source).
+[Installation](https://github.com/HullaBrian/ida-ttd/wiki#installation). To build the plugin
+yourself, see [Building from Source](https://github.com/HullaBrian/ida-ttd/wiki/Building-from-Source).
 
 ## Usage examples
 
 Each feature is described on
 [Features and Usage](https://github.com/HullaBrian/ida-ttd/wiki/Features-and-Usage).
 
-**Open a recording.** **File > Open** a `.run` or `.sogttd` file; the original binary is not
+**Open a recording.** `File > Open` a `.run` or `.sogttd` file; the original binary is not
 needed. The TTD toolbar adds the backward controls, and the queries are on the **TTD** menu.
 
 **Find what wrote a buffer.** Right-click the address and choose **Find memory accesses**
@@ -59,7 +59,7 @@ register to see where its value came from.
 **Find every call to an API.** Press `Ctrl+Shift+F` and enter `kernel32!CreateFileW`.
 Double-click a call to travel to it.
 
-**Find unpacked code.** Open **TTD > Memory > Memory map**: executable memory outside every loaded
+**Find unpacked code.** Open `TTD > Memory > Memory map`: executable memory outside every loaded
 module is colored. Double-click its "Allocated at" position to travel to the allocation.
 
 **Script it** ([Scripting](https://github.com/HullaBrian/ida-ttd/wiki/Scripting)):
