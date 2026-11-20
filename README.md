@@ -76,14 +76,7 @@ for c in s.calls_to("kernel32!CreateFileW"):
 s.origin("rax")                             # where rax's value came from
 ```
 
-| Shortcut | Action |
-| --- | --- |
-| `Ctrl+Shift+F` | Find calls by name or pattern |
-| `Ctrl+Shift+C` | Find calls to this function |
-| `Ctrl+Shift+M` | Find memory accesses |
-| `Ctrl+Shift+W` | Where did this value come from |
-| `Ctrl+Shift+G` | Go to position |
-| `Ctrl+Shift+B` | Bookmark this position |
+All keyboard shortcuts: [Shortcuts](https://github.com/HullaBrian/ida-ttd/wiki/Features-and-Usage#shortcuts).
 
 ## Future Work/Ideas
 - Function/memory query language
